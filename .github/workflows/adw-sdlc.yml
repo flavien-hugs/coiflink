@@ -1,0 +1,45 @@
+name: adw_sdlc CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: adw-sdlc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck + test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    defaults:
+      run:
+        working-directory: adw_sdlc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: adw_sdlc/package-lock.json
+
+      # Optional runner SDKs are platform/engine-gated; never let one missing
+      # optional native binary fail the install (tests mock every SDK).
+      - name: Install
+        run: npm ci --no-audit --fund=false
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Secret-withholding lint gate
+        run: npm run lint:env
