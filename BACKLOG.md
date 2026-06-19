@@ -237,3 +237,46 @@
 2. **Contrainte 500 Ko** (#15, #24) : impose une discipline de schéma dès M1, difficile à rétro-fitter.
 3. **Hébergement souverain** (#8) : délai d'approvisionnement potentiellement long, à lancer dès M0.
 4. **Homologation ARTCI** (#30) : dépendance externe sur le chemin critique du lancement.
+
+---
+
+## Ordre d'implémentation recommandé
+
+> Séquence dérivée des dépendances de chaque issue. Reflétée dans le champ **`Ordre`** du [GitHub Project « HealthTech — Roadmap »](https://github.com/users/kortiene/projects/2) (tri ascendant pour la dérouler à l'écran).
+
+### Chemin critique (enchaînement bloquant le plus long)
+
+> **#1 → #2 → #6 → #10 → #9 → #14 → #16 → #17 → #19 → #21 → #25 → #30 → #31**
+
+Tout retard sur cette chaîne décale le lancement. Deux dépendances **externes** y pèsent lourd : **#8** (hébergement, à lancer immédiatement) et **#5 + #30** (conformité / homologation ARTCI) — d'où leur démarrage anticipé malgré l'absence de code.
+
+### Vagues (ce qui peut avancer en parallèle)
+
+- **Vague 0 — fondations & longs délais (J0, en parallèle) :** #1, #6, #5, #8
+- **Vague 1 — socle technique :** #2, #3, #4, #7, #15
+- **Vague 2 — cœur crypto & backend :** #10, #9, #11
+- **Vague 3 — onboarding patient (M1) :** #12, #14, #13
+- **Vague 4 — boucle de consultation (M2, quasi séquentielle) :** #16 → #17 → #18 → #19 → #20
+- **Vague 5 — résilience hors-ligne & médias (M3) :** #21, #23, #24, #22
+- **Vague 6 — durcissement & lancement (M4) :** #26, #28, #27, #29, #25, #30, #31
+
+### Séquence stricte (1 seul flux, ordre topologique)
+
+| Ordre | Issue | | Ordre | Issue |
+| ----: | ----- | --- | ----: | ----- |
+| 1  | #1 — Stack & ADR              | | 17 | #17 — Scan QR + déchiffrement RAM |
+| 2  | #6 — Modèle de menace         | | 18 | #18 — Note / ordonnance |
+| 3  | #5 — Conformité ARTCI         | | 19 | #19 — Fin de session + wipe |
+| 4  | #8 — Hébergement souverain    | | 20 | #20 — Démo end-to-end |
+| 5  | #2 — Monorepo                 | | 21 | #23 — Déport images + URL éphémère |
+| 6  | #3 — CI/CD                    | | 22 | #24 — Optimisation réseau dégradé |
+| 7  | #4 — Environnements & secrets | | 23 | #21 — File offline (SQLCipher) |
+| 8  | #15 — Schéma dossier ≤ 500 Ko | | 24 | #22 — Synchronisation réseau |
+| 9  | #10 — Module AES-256-GCM      | | 25 | #26 — Revue crypto indépendante |
+| 10 | #9 — Service blob zero-knowledge | | 26 | #28 — Affûtage UX médecin |
+| 11 | #11 — Clé maîtresse locale    | | 27 | #27 — Validation perf < 3 s |
+| 12 | #12 — Dérivation/récupération PBKDF2 | | 28 | #29 — Accessibilité bas de gamme |
+| 13 | #7 — Consentement & juridique | | 29 | #25 — Audit sécurité / pentest |
+| 14 | #13 — Création de compte chiffré | | 30 | #30 — Homologation ARTCI |
+| 15 | #14 — Sauvegarde cloud ZK     | | 31 | #31 — Pilote terrain Abidjan |
+| 16 | #16 — Génération QR temporaire | | | |
