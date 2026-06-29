@@ -111,14 +111,12 @@ const CROSS_BOUNDARY_HINTS = [
   'login',
   'sync',
   'scheduler',
-  // HealthTech domain: security-/data-boundary surfaces worth e2e coverage.
+  // Security / data-boundary surfaces worth e2e coverage.
   'crypto',
   'encryption',
   'decryption',
   'auth',
   'authentication',
-  'consent',
-  'qr',
   'offline',
   'backup',
   'recovery',

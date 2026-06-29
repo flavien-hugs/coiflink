@@ -10,7 +10,7 @@ describe('branchPrefix', () => {
     expect(branchPrefix(['type:docs', 'type:ci'])).toBe('ci');
   });
 
-  it('maps HealthTech unnamespaced labels case-insensitively', () => {
+  it('maps plain unnamespaced labels case-insensitively', () => {
     expect(branchPrefix(['bug'])).toBe('fix');
     expect(branchPrefix(['Docs'])).toBe('docs');
     expect(branchPrefix(['tech-debt'])).toBe('refactor');
@@ -30,10 +30,10 @@ describe('slugifyTitle', () => {
   });
 
   it('strips French diacritics so accented titles slug cleanly', () => {
-    expect(slugifyTitle("Dossier d'homologation ARTCI")).toBe('dossier-d-homologation-artci');
-    const slug = slugifyTitle('Validation des performances (déchiffrement < 3 s en 3G)');
+    expect(slugifyTitle("Création d'un schéma de données")).toBe('creation-d-un-schema-de-donnees');
+    const slug = slugifyTitle('Validation des performances (téléchargement accéléré)');
     expect(slug).toMatch(/^[a-z0-9-]+$/); // fully transliterated, no accents survive
-    expect(slug.startsWith('validation-des-performances-dechiffrem')).toBe(true);
+    expect(slug.startsWith('validation-des-performances-telecharg')).toBe(true);
     expect(slug.length).toBeLessThanOrEqual(40);
   });
 });

@@ -18,10 +18,9 @@ Workflow:
    - If `$2` is provided but missing, report that clearly and continue reviewing against repository context if possible.
 
 2. Read repository context before reviewing
-   - `PRD_HealthTech.md` (product requirements: local-first / zero-knowledge architecture, security spec)
-   - `BACKLOG.md` (epics, issues, milestone order, and dependencies)
+   - the repository's `README` and any relevant spec under `specs/`
    - the specific GitHub issue the PR addresses, if referenced
-   - the application source tree once it exists (the project is greenfield — if no app code exists yet, say so and review against the PRD/backlog and any committed ADRs under `docs/adr/`)
+   - the application source tree once it exists (if no app code exists yet, say so and review against the docs and any committed ADRs under `docs/adr/`)
    - changed source files, tests, and docs from the PR
 
 3. Inspect the PR
@@ -35,13 +34,10 @@ Workflow:
    - Confirm docs are updated when behavior changes.
    - Confirm tests cover the new behavior and important edge cases.
 
-5. Check HealthTech-specific requirements
-   - Preserve local-first / zero-knowledge: the patient's medical record must be encrypted client-side with AES-256-GCM before any network transit; the server only ever stores opaque encrypted blobs keyed by anonymous UUIDs and must never be able to read or decrypt them.
-   - Ensure the cryptography is never weakened; no plaintext medical data, encryption keys, or PII is ever logged or persisted.
-   - Ensure access remains ephemeral and patient-controlled: access QR codes expire (~120s); a professional decrypts the record in RAM only and the session is wiped at the end or after inactivity.
-   - Verify data residency: data stays hosted on Ivorian soil to satisfy ARTCI / loi n°2013-450.
-   - Verify degraded-network resilience: the change works offline (e.g. SQLCipher queue) and tolerates power/network cuts; the plaintext record stays <= 500 KB; heavy medical images are never stored on the patient device (only an ephemeral URL is embedded).
-   - Confirm secrets and keys are never logged or posted; use existing redaction patterns.
+5. Check the repository's documented invariants
+   - Preserve the documented architecture and any security/privacy constraints the repository states; the change must not weaken them.
+   - Ensure secrets, credentials, and PII are never logged, persisted, or posted; use existing redaction patterns.
+   - Where the repository documents trust, access-control, residency, or data-handling boundaries, verify the change respects them.
    - Do not accept misleading status claims or docs implying unimplemented behavior exists.
 
 6. Look for general review issues
@@ -57,7 +53,7 @@ Workflow:
 7. Verify checks when practical
    - Inspect existing PR/CI check status with `gh`.
    - When practical and appropriate locally, run the project's configured test gate (the command surfaced via `MX_AGENT_TEST_CMD`) plus any format/lint/build checks the project defines.
-   - HealthTech has not finalized its stack or test command yet (backlog #1). If no test command is configured, say so explicitly and recommend the exact command to run once the stack lands — do not assume a particular language, build tool, or test runner.
+   - If no test command is configured yet, say so explicitly and recommend the exact command to run once the stack lands — do not assume a particular language, build tool, or test runner.
    - If checks cannot be run, explain why and recommend exact commands.
 
 8. Comment on the PR when needed
@@ -66,7 +62,7 @@ Workflow:
    - Comment only when feedback is useful, actionable, and relevant to the PR.
    - Do not post a PR comment for purely local observations unless they affect the PR.
    - If the PR looks good, either approve if appropriate or leave a concise positive summary, depending on available permissions.
-   - Never post secrets, tokens, credentials, encryption keys, plaintext medical data, PII, private paths that matter, or sensitive data in PR comments.
+   - Never post secrets, tokens, credentials, PII, private paths that matter, or sensitive data in PR comments.
    - In the local final report, state exactly what PR comments or reviews were posted, if any.
 
 9. Produce a structured local review report

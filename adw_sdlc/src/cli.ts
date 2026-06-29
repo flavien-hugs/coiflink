@@ -38,7 +38,7 @@ export const ENGINE_IDS = ['py', 'ts'] as const;
 export type EngineId = (typeof ENGINE_IDS)[number];
 
 /**
- * Standalone HealthTech port: the cutover (PLAN.md roadmap step 12) is done —
+ * Standalone port: the cutover (PLAN.md roadmap step 12) is done —
  * `ts` is the default. The `py` engine is still selectable via
  * `--engine py` / `MX_AGENT_ENGINE=py`, but it delegates to a Python `adw/`
  * sibling that is NOT included in this standalone port, so it will fail loudly

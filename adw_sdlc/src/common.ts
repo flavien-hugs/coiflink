@@ -16,7 +16,7 @@ import { AdwError } from './errors.js';
 
 /**
  * Repository root. Both src/ and dist/ sit directly under adw_sdlc/, so two
- * levels up is the repo root (HealthTech/) from either layout — the directory
+ * levels up is the repo root from either layout — the directory
  * holding .claude/commands, .pi/prompts, adw/state.schema.json, and agents/.
  */
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');

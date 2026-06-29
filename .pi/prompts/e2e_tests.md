@@ -1,12 +1,12 @@
 ---
-description: Add or improve end-to-end tests for HealthTech patient/professional flows
+description: Add or improve end-to-end tests for the repository's cross-component flows
 argument-hint: "[spec-file|pr-url-or-number|notes]"
 ---
 Add or improve end-to-end test coverage for this target:
 
 $ARGUMENTS
 
-This command is for heavier end-to-end scenarios, especially behavior crossing the patient app, the health-professional interface, the sovereign backend, client-side crypto, ephemeral access, session lifecycle, and offline/sync boundaries. Prefer `/tests` for unit tests and deterministic non-e2e integration tests.
+This command is for heavier end-to-end scenarios, especially behavior that crosses component boundaries (e.g. client ↔ backend ↔ another service, persistence, and external integration points). Prefer `/tests` for unit tests and deterministic non-e2e integration tests.
 
 Workflow:
 
@@ -17,11 +17,10 @@ Workflow:
    - If no argument is provided, inspect the current working tree and ask for clarification only if the target is genuinely unclear.
 
 2. Read repository and test infrastructure context before editing
-   - `PRD_HealthTech.md` for product requirements and the security/architecture model.
-   - `BACKLOG.md` for the epics, issue ordering, and the specific GitHub issue (kortiene/HealthTech #1–#31) being worked.
-   - The specific GitHub issue under test, if one is named.
-   - The existing application source tree, existing tests, and any e2e harness — once they exist. The project is greenfield: there is no application source tree or e2e harness yet, so say so explicitly and base scenarios on the PRD and the issue.
-   - Any ADRs under `docs/adr/` (issue #1) once the stack is chosen, since the e2e harness depends on that choice.
+   - the repository's `README` and any relevant spec under `specs/` for the product requirements and architecture model.
+   - the specific GitHub issue under test, if one is named.
+   - the existing application source tree, existing tests, and any e2e harness — once they exist. If there is no source tree or e2e harness yet, say so explicitly and base scenarios on the docs and the issue.
+   - any ADRs under `docs/adr/` that the e2e harness depends on (for example the stack choice), once they exist.
 
 3. Decide whether e2e coverage is warranted
    - Summarize the behavior under test.
@@ -29,29 +28,23 @@ Workflow:
    - Add e2e tests only when unit or non-e2e integration tests are insufficient.
    - Prefer a small number of high-value scenarios over broad, slow, flaky coverage.
    - Clearly separate live-backend / multi-process / device-emulator tests from default tests if the project convention requires gating.
-   - High-value HealthTech end-to-end surfaces include:
-     - Patient onboarding: local encrypted account creation, client-side master-key generation, no nominative data sent in cleartext, and key recovery on a new device (PBKDF2 passphrase / cultural security questions).
-     - Ephemeral access loop: patient generates a time-boxed access QR code, professional scans it, downloads the encrypted blob, decrypts it in RAM only, edits/merges a note or prescription, ends the session, re-encrypts and uploads, and the professional's RAM is wiped. Cover QR expiry (~120s) and the inactivity timeout.
-     - Offline queue + sync: a consultation validated while the network is down is queued in the encrypted local store (e.g. SQLCipher) and synchronized once connectivity returns.
-     - Degraded-network behavior: the plaintext record stays <= 500 KB; heavy medical images are not stored on the patient device, only an ephemeral access URL is embedded.
+   - High-value end-to-end surfaces are the documented user-visible flows that cross component boundaries: primary onboarding/setup paths, the core feature loop end to end, failure/recovery paths (network or process interruption), and any documented security/trust boundary exercised across components.
 
 4. Add or improve e2e tests
    - Use existing project infrastructure and patterns.
-   - Drive the real end-to-end flow (patient app -> backend -> professional interface) rather than mocking past the boundary under test.
-   - Do not require real production services, real patient identities, or live sovereign-backend credentials; use local/test instances and synthetic fixtures.
+   - Drive the real end-to-end flow rather than mocking past the boundary under test.
+   - Do not require real production services, real user identities, or live production credentials; use local/test instances and synthetic fixtures.
    - Avoid making the default test gate depend on emulators, external networks, or live services unless that is already the project convention.
    - Prefer gated/tagged tests, or clearly documented external prerequisites, for tests that need a backend instance, a device emulator, or a local object store.
    - Keep tests reproducible, deterministic where possible, and safe to run repeatedly.
-   - Avoid arbitrary sleeps; prefer readiness checks, bounded retries, or existing synchronization helpers. For QR-expiry and inactivity timeouts, drive a controllable clock rather than wall-clock sleeps.
-   - Ensure test logs and fixtures never expose plaintext medical data, encryption keys, or PII.
+   - Avoid arbitrary sleeps; prefer readiness checks, bounded retries, or existing synchronization helpers. For time-dependent behavior (expiry, timeouts), drive a controllable clock rather than wall-clock sleeps.
+   - Ensure test logs and fixtures never expose secrets, credentials, or PII.
 
-5. Preserve HealthTech constraints
-   - Local-first / zero-knowledge: the medical record is encrypted client-side with AES-256-GCM before any network transit; the server stores only opaque encrypted blobs keyed by anonymous UUIDs and must never be able to read or decrypt them. E2E assertions must confirm the server sees only ciphertext.
-   - Never weaken the cryptography; never log or persist plaintext medical data, encryption keys, or PII — including in test output and fixtures.
-   - Ephemeral, patient-controlled access: access QR codes expire (~120s); the professional decrypts in RAM only and the session is wiped at the end or after inactivity. E2E tests must exercise expiry and wipe, not bypass them.
-   - Data residency: data must stay on Ivorian soil to satisfy ARTCI / loi n°2013-450; tests must not route real data to foreign services.
-   - Degraded-network resilience: must work offline (e.g. SQLCipher queue) and tolerate power/network cuts; the plaintext record stays <= 500 KB; heavy medical images are never stored on the patient device (only an ephemeral URL is embedded).
-   - E2E tests must not create trust/access/residency bypasses just to pass.
+5. Preserve repository invariants
+   - Respect the documented architecture and any security/privacy constraints the repository states; e2e assertions must confirm them, not bypass them.
+   - Never log or persist secrets, credentials, or PII — including in test output and fixtures.
+   - Where the repository documents trust, access-control, residency, or expiry boundaries, e2e tests must exercise them, not circumvent them.
+   - E2E tests must not create trust/access bypasses just to pass.
    - Do not imply unimplemented behavior exists unless it is actually implemented.
 
 6. Document how to run the e2e tests
@@ -62,7 +55,7 @@ Workflow:
 7. Verify before finishing
    - Run the narrowest relevant e2e test first when practical.
    - Run the project's configured test gate (the command surfaced via `MX_AGENT_TEST_CMD`) plus any format, lint, and build checks the project defines.
-   - HealthTech has not finalized its stack or test command yet (backlog #1). If no test command is configured, say so explicitly and recommend the exact commands to run once the stack lands — do not assume a particular language, build tool, or test runner, and do not invent a toolchain.
+   - If no test command is configured yet, say so explicitly and recommend the exact commands to run once the stack lands — do not assume a particular language, build tool, or test runner, and do not invent a toolchain.
    - If a check cannot be run, explain why and recommend the exact command.
 
 8. Final report

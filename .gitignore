@@ -8,6 +8,9 @@ adw_sdlc/dist/
 # ADW run workspaces / state (per-run, not source)
 agents/
 
+# Local run config / secrets for scripts/run-issue.sh (never commit credentials)
+scripts/adw.env
+
 # Test / tooling caches
 .pytest_cache/
 __pycache__/

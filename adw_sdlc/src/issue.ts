@@ -9,7 +9,7 @@ import { ghJson, note, runInherit } from './exec.js';
 
 /**
  * Issue label -> branch prefix. Matched case-insensitively. Covers both the
- * mx-agent `type:*` namespace and HealthTech's plain labels (`bug`, `docs`,
+ * namespaced `type:*` labels and plain (unnamespaced) labels (`bug`, `docs`,
  * `tech-debt`, `infra`, ...). Unlisted labels keep the "feat" default.
  */
 export const TYPE_PREFIX: Record<string, string> = {
@@ -17,7 +17,7 @@ export const TYPE_PREFIX: Record<string, string> = {
   'type:docs': 'docs',
   'type:ci': 'ci',
   'type:testing': 'test',
-  // HealthTech (unnamespaced) labels:
+  // Plain (unnamespaced) labels:
   bug: 'fix',
   docs: 'docs',
   documentation: 'docs',

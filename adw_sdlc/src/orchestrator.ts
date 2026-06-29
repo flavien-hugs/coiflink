@@ -74,8 +74,8 @@ export const MAX_OUTPUT_CHARS = 8000;
 const NO_CHECKS_SETTLE_POLLS = 3;
 
 /**
- * Default test gate. Empty in this standalone port — HealthTech has not yet
- * chosen its stack/test command (backlog #1), so nothing is assumed. Configure
+ * Default test gate. Empty in this standalone port — the project has not yet
+ * chosen its stack/test command, so nothing is assumed. Configure
  * a real command via `--test-cmd` / `MX_AGENT_TEST_CMD` once the stack lands;
  * an empty gate is skipped (treated as green) rather than run.
  */

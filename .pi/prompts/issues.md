@@ -10,7 +10,7 @@ $ARGUMENTS
 
 `/issues` is a batch orchestrator. It must process issues one at a time, in normalized order, and must return to a clean, updated `main` between issues. Do not parallelize. Do not combine multiple issues into one branch or PR unless the user explicitly asks and the issues genuinely require a shared implementation.
 
-Read `.pi/prompts/issue.md` before starting. Treat it as the phase contract for each individual issue. Apply its workflow inline for every issue; do not merely tell the user to run `/issue` separately.
+Read `.claude/commands/issue.md` before starting. Treat it as the phase contract for each individual issue. Apply its workflow inline for every issue; do not merely tell the user to run `/issue` separately.
 
 Workflow:
 
@@ -28,15 +28,14 @@ Workflow:
    - If more than 5 issues are selected, ask for confirmation before proceeding.
 
 2. Preflight all selected issues before implementing any of them
-   - For each normalized issue ID, run `python adw/work_issue.py <id> --print` to inspect the title, labels, milestone, status, scope, dependencies, and acceptance criteria.
-   - Use `~/.local/bin/gh` if `gh` is not on PATH.
-   - Cross-check each issue against `PRD_HealthTech.md` and `BACKLOG.md` for scope, milestone order, and the dependency chain.
+   - For each normalized issue ID, inspect the title, labels, milestone, status, scope, dependencies, and acceptance criteria via the issue context provided to you (or with `gh`, using `~/.local/bin/gh` if `gh` is not on PATH).
+   - Cross-check each issue against the repository's `README`, any relevant spec under `specs/`, and any documented milestone ordering for scope and the dependency chain.
    - If an issue is already CLOSED, mark it as skipped and continue.
    - If an issue is missing or inaccessible, stop and report it.
-   - Detect obvious dependency lines such as `Depends on #<id>`, and respect the `BACKLOG.md` ordering — the crypto core (#10) and zero-knowledge backend (#9) gate most downstream work, and the consultation loop (#16→#19) is the core demonstrable value.
+   - Detect obvious dependency lines such as `Depends on #<id>`, and respect any documented ordering or critical path.
    - If an issue depends on another selected issue that appears later in the normalized list, recommend reordering and ask whether to continue in the given order.
    - If an issue depends on an open issue that is not selected, ask whether to skip that issue, stop the batch, or continue anyway.
-   - Stop for real blockers such as acceptance criteria that conflict with the zero-knowledge / local-first constraints, require real secrets/credentials or real patient data, require choosing the technical stack with insufficient detail (backlog #1), or require broad architecture decisions that are not yet settled.
+   - Stop for real blockers such as acceptance criteria that conflict with the repository's documented security/privacy constraints, require real secrets/credentials or real user data, require choosing the technical stack with insufficient detail, or require broad architecture decisions that are not yet settled.
 
 3. Establish batch processing rules
    - Default branch/PR strategy: one issue → one branch → one PR → one merge.
@@ -50,33 +49,25 @@ Workflow:
 4. Process each issue sequentially using `/issue` semantics
    For each issue ID that was not skipped:
    - Confirm the repository is on `main`, updated from origin, and has a clean working tree before starting.
-   - Run the equivalent of `/issue <id> <shared notes>` inline, following `.pi/prompts/issue.md` completely:
-     - start the issue with `python adw/work_issue.py <id> --print` and `python adw/work_issue.py <id>`
-     - read repository context (PRD, backlog, the issue, and any existing source tree — noting the project is greenfield if no source exists yet)
+   - Run the equivalent of `/issue <id> <shared notes>` inline, following `.claude/commands/issue.md` completely:
+     - read repository context (README, any relevant spec, the issue, and any existing source tree — noting if no source exists yet)
      - decide whether a `/plan`-style spec is needed
      - implement using `/implement` semantics
      - strengthen focused tests using `/tests` semantics
      - evaluate e2e coverage using `/e2e_tests` semantics
      - self-review using `/review` semantics
      - run the configured test gate and any required checks
-     - commit with a message ending in `closes #<id>`
-     - push and open a PR
-     - wait for CI and fix failures until green
-     - perform final PR review
-     - merge with squash and delete the branch
-     - return to `main` and `git pull --rebase origin main`
+     - hand off a clean working tree and a commit message ending in `closes #<id>` plus a complete PR body for the orchestrator to commit, push, open the PR, watch CI, fix failures until green, review, and merge
    - Confirm the issue is closed after merge.
    - Record the result, PR number, spec path or spec-skip reason, tests added, e2e decision, checks, assumptions, and any follow-up notes.
    - Only then continue to the next issue.
 
-5. Preserve HealthTech constraints for every issue
-   - Local-first / zero-knowledge: the patient's medical record is encrypted CLIENT-SIDE with AES-256-GCM before any network transit. The server stores only opaque encrypted blobs keyed by anonymous UUIDs and must never be able to read or decrypt them.
-   - Never weaken the cryptography; never log or persist plaintext medical data, encryption keys, or PII.
-   - Ephemeral, patient-controlled access: access QR codes expire (~120s); a professional decrypts the record in RAM only and the session is wiped at the end (or after inactivity).
-   - Data residency: data must stay hosted on Ivorian soil to satisfy ARTCI / loi n°2013-450.
-   - Degraded-network resilience: must work offline (e.g. SQLCipher queue) and tolerate power/network cuts; the plaintext record stays <= 500 KB; heavy medical images are never stored on the patient device (only an ephemeral URL is embedded).
-   - Identify the owning component (patient app / professional interface / backend / crypto core / infra) and reuse existing patterns before editing.
-   - Greenfield: the technical stack (patient-app framework, professional interface, backend language, object storage, build tool, test command) is NOT chosen yet (backlog #1). Do not assume a language, build tool, or test command, and do not imply that any feature, app, or backend already exists unless a given issue actually implements it.
+5. Preserve the repository's invariants for every issue
+   - Respect the documented architecture and any security/privacy constraints the repository states; never weaken them.
+   - Never log or persist secrets, credentials, or PII.
+   - Keep documented trust, access-control, residency, and data-handling boundaries intact.
+   - Identify the owning component and reuse existing patterns before editing.
+   - If the technical stack (framework, language, object storage, build tool, test command) is NOT chosen yet, do not assume one, and do not imply that any feature or component already exists unless a given issue actually implements it.
 
 6. Final batch report
    At the end, produce a concise table with one row per normalized issue:
