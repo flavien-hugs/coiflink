@@ -19,6 +19,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0004](./0004-donnees-postgresql-redis.md) | Données — PostgreSQL + Redis | Accepté | #1 |
 | [0005](./0005-stockage-objet-s3-compatible.md) | Stockage de fichiers — objet S3-compatible | Accepté | #1 |
 | [0006](./0006-notifications-fcm-sms.md) | Notifications — FCM + SMS | Accepté | #1 |
+| [0007](./0007-arborescence-monorepo-versions.md) | Arborescence du monorepo, versions de référence & app web unique | Accepté | #2 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
@@ -30,4 +31,5 @@ ultérieure et signalés en *Conséquences* des ADR concernés :
 - **Fournisseur de stockage objet** (AWS S3 / MinIO / R2 / bucket plateforme) — déploiement (#4/#5),
   voir ADR-0005.
 - **ORM + migrations, runner de tâches async, libs JWT/hash** — voir ADR-0003, précisés en #3/#5/#6.
-- **Versions de référence** (Flutter/Dart, Python, PostgreSQL, Redis, Node) — arrêtées en #2.
+- **Versions de référence** (Flutter/Dart, Python, PostgreSQL, Redis, Node) — **arrêtées en #2**, voir
+  [ADR-0007](./0007-arborescence-monorepo-versions.md).
