@@ -20,6 +20,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0005](./0005-stockage-objet-s3-compatible.md) | Stockage de fichiers — objet S3-compatible | Accepté | #1 |
 | [0006](./0006-notifications-fcm-sms.md) | Notifications — FCM + SMS | Accepté | #1 |
 | [0007](./0007-arborescence-monorepo-versions.md) | Arborescence du monorepo, versions de référence & app web unique | Accepté | #2 |
+| [0008](./0008-architecture-hexagonale.md) | Architecture hexagonale (ports & adapters) — tous les paquets | Accepté | suite #2 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 

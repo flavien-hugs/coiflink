@@ -6,6 +6,21 @@ iOS conservé). Ce dossier est un **squelette d'initialisation** (#2) : il n'aff
 d'accueil neutre et n'implémente aucune fonctionnalité métier (réservation, disponibilités,
 historique, rappels → issues M1→).
 
+## Architecture (hexagonale — [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
+
+```
+lib/
+  domaine/        # entités & règles métier (Dart pur)
+  application/    # cas d'usage + ports
+  adapters/
+    ui/           # écrans Flutter (app.dart → CoifLinkApp)
+    data/         # API backend, stockage local (driven)
+  main.dart       # composition root (réexporte CoifLinkApp pour les tests/outils)
+```
+
+La présentation vit dans `adapters/ui/` ; le domaine et les cas d'usage ne dépendent
+pas de Flutter.
+
 ## Prérequis
 
 - **Flutter SDK stable** (canal `stable`) ; contrainte Dart `^3.12` (cf. `pubspec.yaml`).
