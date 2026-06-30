@@ -50,17 +50,19 @@ stock, multi-salons avancé, fidélité (cf. PRD §16, §21).
 
 ## 4. Architecture & stack
 
-Stack **recommandée** par le PRD (§10), **à figer par l'ADR de l'issue #1** avant tout code :
+Stack **figée par les ADR** (`docs/adr/` — source de vérité, voir l'[index](./docs/adr/README.md)),
+issue de la recommandation du PRD (§10) tranchée par l'issue #1. Le tableau ci-dessous est un résumé ;
+chaque décision et son compromis sont détaillés dans l'ADR lié.
 
-| Couche | Recommandation |
-| --- | --- |
-| Mobile client | Flutter ou React Native (Android prioritaire) |
-| Web gérant / admin | React.js / Next.js |
-| Backend | Python FastAPI ou Django REST · API REST · JWT · jobs async |
-| Base de données | PostgreSQL (+ Redis cache/queue) |
-| Fichiers | Stockage objet S3-compatible |
-| Notifications | Firebase Cloud Messaging + SMS (WhatsApp en V2) |
-| Déploiement | Docker · CI/CD GitHub Actions |
+| Couche | Décision | ADR |
+| --- | --- | --- |
+| Mobile client | Flutter (Android prioritaire) | [0001](./docs/adr/0001-app-mobile-flutter.md) |
+| Web gérant / admin | Next.js (React, TypeScript) | [0002](./docs/adr/0002-web-gerant-admin-nextjs.md) |
+| Backend | Python FastAPI · API REST · JWT · jobs async | [0003](./docs/adr/0003-backend-fastapi.md) |
+| Base de données | PostgreSQL + Redis (cache/queue) | [0004](./docs/adr/0004-donnees-postgresql-redis.md) |
+| Fichiers | Stockage objet S3-compatible | [0005](./docs/adr/0005-stockage-objet-s3-compatible.md) |
+| Notifications | Firebase Cloud Messaging + SMS (WhatsApp en V2) | [0006](./docs/adr/0006-notifications-fcm-sms.md) |
+| Déploiement | Docker · CI/CD GitHub Actions | _à figer par l'ADR de déploiement (#4/#5)_ |
 
 ## 5. Structure du dépôt
 
@@ -157,8 +159,10 @@ scripts/run-issue.sh --help                  # liste complète des options
 ```
 
 > Le **test gate** du pipeline est défini par `MX_AGENT_TEST_CMD` dans `scripts/adw.env`
-> (ex. `flutter test`, `pytest`). Il reste à configurer une fois la stack tranchée par l'ADR #1 ;
-> tant qu'il est vide, le gate est ignoré (traité comme vert).
+> (ex. `flutter test` côté mobile — cf. [ADR-0001](./docs/adr/0001-app-mobile-flutter.md) ; `pytest`
+> côté backend — cf. [ADR-0003](./docs/adr/0003-backend-fastapi.md)). La stack étant tranchée par les
+> ADR (#1), le câblage concret du gate reste à faire en #6 ; tant qu'il est vide, le gate est ignoré
+> (traité comme vert).
 
 ---
 
