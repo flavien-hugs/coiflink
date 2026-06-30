@@ -64,6 +64,11 @@ chaque décision et son compromis sont détaillés dans l'ADR lié.
 | Notifications | Firebase Cloud Messaging + SMS (WhatsApp en V2) | [0006](./docs/adr/0006-notifications-fcm-sms.md) |
 | Déploiement | Docker · CI/CD GitHub Actions | _à figer par l'ADR de déploiement (#4/#5)_ |
 
+**Versions de référence** (figées par #2 — voir [ADR-0007](./docs/adr/0007-arborescence-monorepo-versions.md)) :
+Flutter **stable** / Dart **^3.12**, Node **≥ 20 (LTS)**, Python **≥ 3.12** ; pour mémo (runtime, hors
+code en #2) PostgreSQL **16**, Redis **7**. Le `web-dashboard/` est **une seule application Next.js** à
+zones protégées par rôle (`/gerant`, `/admin`).
+
 ## 5. Structure du dépôt
 
 ```
@@ -71,6 +76,13 @@ coiflink/
 ├── prd-coiflink.md            # PRD — source de vérité produit
 ├── BACKLOG.md                 # 55 issues (M0–M6) dérivées du PRD
 ├── README.md                  # ce fichier
+├── LICENSE                    # licence propriétaire (Tous droits réservés)
+├── CONTRIBUTING.md            # conventions de commits & de contribution
+├── app-mobile/                # application mobile client (Flutter — ADR-0001)
+├── web-dashboard/             # interface web gérant / admin (Next.js — ADR-0002)
+├── backend/                   # API backend (FastAPI — ADR-0003)
+├── docs/adr/                  # Architecture Decision Records (stack & socle)
+├── specs/                     # specs de planification du pipeline ADW
 ├── adw_sdlc/                  # pipeline ADW (control plane TypeScript) — voir adw_sdlc/README.md
 ├── adw/                       # contrat d'état inter-langage (state.schema.json + fixtures)
 ├── .claude/commands/          # prompts de phases (runner claude)
@@ -82,8 +94,22 @@ coiflink/
     └── adw.env.example        # gabarit de config locale (à copier en adw.env, gitignoré)
 ```
 
-> Le code applicatif (`app-mobile/`, `web-dashboard/`, `backend/`…) n'existe pas encore : il sera
-> créé par l'issue #2 (initialisation) une fois la stack tranchée par l'ADR #1.
+Licence : **[LICENSE](./LICENSE)** (propriétaire). Conventions de contribution & de commits :
+**[CONTRIBUTING.md](./CONTRIBUTING.md)**.
+
+### Build & test par paquet
+
+Chaque paquet expose une commande de **build** et de **test** réelle (squelette runnable, sans
+fonctionnalité métier) ; voir le `README.md` du paquet pour les prérequis et le détail.
+
+| Paquet | Stack (ADR) | Build | Test |
+| --- | --- | --- | --- |
+| [`app-mobile/`](./app-mobile/README.md) | Flutter ([0001](./docs/adr/0001-app-mobile-flutter.md)) | `flutter build apk` | `flutter test` |
+| [`web-dashboard/`](./web-dashboard/README.md) | Next.js ([0002](./docs/adr/0002-web-gerant-admin-nextjs.md)) | `npm run build` | `npm test` |
+| [`backend/`](./backend/README.md) | FastAPI ([0003](./docs/adr/0003-backend-fastapi.md)) | `pip install -e .` | `pytest` |
+
+> Le **test gate** agrégé du pipeline (`MX_AGENT_TEST_CMD`) reste à câbler en #6 ; #2 garantit que ces
+> commandes par paquet sont réelles et passent sur le squelette.
 
 ---
 

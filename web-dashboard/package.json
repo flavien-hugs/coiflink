@@ -1,0 +1,31 @@
+{
+  "name": "coiflink-web-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Interface web gérant / admin CoifLink (Next.js) — squelette d'initialisation (#2).",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "next": "16.2.9",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.9",
+    "typescript": "^5",
+    "vitest": "^3"
+  }
+}

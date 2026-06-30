@@ -17,6 +17,24 @@ __pycache__/
 *.tsbuildinfo
 .vitest/
 
+# --- Paquets applicatifs (#2) ---
+# Ne JAMAIS ignorer les *.env.example (placeholders versionnés) ; seuls les .env réels sont ignorés.
+
+# backend/ (FastAPI / Python)
+backend/.venv/
+*.egg-info/
+backend/.env
+
+# web-dashboard/ (Next.js / Node) — node_modules déjà couvert globalement
+web-dashboard/.next/
+web-dashboard/out/
+web-dashboard/.env*.local
+
+# app-mobile/ (Flutter) — voir aussi app-mobile/.gitignore (motifs détaillés générés par Flutter)
+app-mobile/build/
+app-mobile/.dart_tool/
+app-mobile/.env
+
 # OS / editor
 .DS_Store
 *.swp
