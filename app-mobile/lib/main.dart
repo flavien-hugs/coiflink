@@ -1,41 +1,17 @@
-// Point d'entrée de l'application mobile CoifLink (Flutter).
+// Composition root de l'application mobile CoifLink (Flutter), hexagonal (ADR-0008).
 //
-// Squelette d'initialisation du dépôt (#2) : écran d'accueil neutre, sans
-// aucune fonctionnalité métier (réservation, historique, rappels → issues M1→).
-// Conforme à ADR-0001 (Flutter, Android prioritaire).
+// N'assemble que l'application : délègue toute la présentation à l'adapter UI
+// (`adapters/ui/app.dart`). Le domaine (`domaine/`) et les cas d'usage
+// (`application/`) restent indépendants de Flutter. Conforme à ADR-0001.
 
 import 'package:flutter/material.dart';
 
+import 'adapters/ui/app.dart';
+
+// Réexporté pour que `CoifLinkApp` reste accessible via `package:coiflink_mobile/main.dart`
+// (compatibilité des tests et points d'entrée d'outillage).
+export 'adapters/ui/app.dart';
+
 void main() {
   runApp(const CoifLinkApp());
-}
-
-class CoifLinkApp extends StatelessWidget {
-  const CoifLinkApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'CoifLink',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
-        useMaterial3: true,
-      ),
-      home: const HomePage(),
-    );
-  }
-}
-
-class HomePage extends StatelessWidget {
-  const HomePage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('CoifLink')),
-      body: const Center(
-        child: Text('CoifLink'),
-      ),
-    );
-  }
 }

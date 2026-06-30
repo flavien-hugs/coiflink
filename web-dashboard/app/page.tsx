@@ -1,4 +1,4 @@
-import { SITE_NAME } from "@/lib/site";
+import { SITE_NAME } from "@/src/domaine/site";
 
 // Page d'accueil neutre — squelette d'initialisation (#2).
 // Aucune fonctionnalité métier : les zones gérant (/gerant) et admin (/admin)

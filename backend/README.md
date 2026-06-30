@@ -5,6 +5,22 @@ API REST du backend CoifLink, conformément à **[ADR-0003](../docs/adr/0003-bac
 n'expose qu'un **endpoint de santé** et n'implémente aucune fonctionnalité métier (auth, salons,
 RDV, caisse, notifications → issues M1→ ; modèle de données / migrations → issue #3).
 
+## Architecture (hexagonale — [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
+
+```
+coiflink_api/
+  domaine/        # entités & règles métier (zéro dépendance framework/I/O)
+  application/    # cas d'usage
+    ports/        # interfaces (typing.Protocol)
+  adapters/
+    entrant/      # driving : routers HTTP FastAPI (ex. sante.py → /health)
+    sortant/      # driven : Postgres, Redis, S3, FCM/SMS (implémentent les ports)
+  main.py         # composition root : assemble l'app + monte les routers
+```
+
+La dépendance va toujours **vers l'intérieur** ; toute brique externe passe par un
+**port** + un adapter sortant (jamais d'import direct d'un client d'infra depuis le domaine).
+
 ## Prérequis
 
 - **Python ≥ 3.12** (version de référence figée par #2 — cf. [ADR-0007](../docs/adr/0007-arborescence-monorepo-versions.md)).
@@ -42,7 +58,7 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 
 | Méthode | Chemin | Réponse | Rôle |
 | --- | --- | --- | --- |
-| `GET` | `/health` | `{"status":"ok"}` | Sonde de santé (scaffolding) — aucune logique métier |
+| `GET` | `/health` | `{"status":"ok"}` | Sonde de santé (adapter entrant `adapters/entrant/sante.py`) — aucune logique métier |
 
 ## Configuration
 

@@ -10,6 +10,21 @@ est un **squelette d'initialisation** (#2) : page d'accueil neutre, aucune fonct
 > cohérent avec le RBAC backend unique (PRD §11.2). Décision tracée dans
 > [ADR-0007](../docs/adr/0007-arborescence-monorepo-versions.md) (cf. ADR-0002 *Suivi*).
 
+## Architecture (hexagonale — [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
+
+```
+src/
+  domaine/        # entités, règles & config métier (TS pur — ex. site.ts)
+  application/    # cas d'usage + ports
+  adapters/
+    ui/           # composants React (consommés par app/)
+    api/          # clients HTTP vers le backend (driven)
+app/              # routage Next.js = adapter entrant + composition root du framework
+```
+
+Le routage `app/` reste l'entrée Next.js ; le domaine et les cas d'usage vivent sous
+`src/` et ne dépendent ni de React ni du réseau.
+
 ## Prérequis
 
 - **Node ≥ 20** (LTS ; version de référence figée par #2 — cf. champ `engines` et
