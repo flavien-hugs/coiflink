@@ -53,6 +53,8 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 | --- | --- |
 | **Build** (installation du paquet) | `pip install -e .` |
 | **Test** (test gate, cf. #6) | `pytest` |
+| **Lint** (CI #4, cf. [ADR-0010](../docs/adr/0010-ci-cd-docker-packaging.md)) | `ruff check .` (installé via l'extra `dev`) |
+| **Image Docker** (build-seul en CI ; config par env, non-root) | `docker build -t coiflink-backend ./backend` |
 
 ## Endpoints
 

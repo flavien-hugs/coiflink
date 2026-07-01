@@ -1,0 +1,282 @@
+# CI applicative CoifLink — lint + tests + build par paquet, scan de dépendances
+# et build d'images Docker, déclenchés à chaque PR (issue #4, cf. docs/adr/0010).
+#
+# Distincte de `adw-sdlc.yml` (control plane ADW) : groupe de concurrence propre
+# (`ci-…`) pour ne pas s'annuler mutuellement. Jobs séparés mobile/web/backend
+# (critère d'acceptation). Aucun secret n'est requis ni journalisé ; le mot de
+# passe du service Postgres de test est éphémère, jetable et non secret.
+name: CI applicative
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Annule les runs superflus sur la même ref (comme adw-sdlc.yml, groupe distinct).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege par défaut : lecture seule du contenu. Aucun job ne pousse
+# d'image (push: false) → pas de `packages: write` (différé #5).
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------- #
+  # backend/ — Python 3.12 : lint → tests → round-trip migrations → build wheel.
+  # --------------------------------------------------------------------------- #
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    # Service PostgreSQL 16 pour exécuter les tests base + le round-trip Alembic
+    # (ADR-0009 « Suivi »). Identifiants de test éphémères et NON secrets : la
+    # base est recréée à chaque run et jetée en fin de job.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: coiflink
+          POSTGRES_PASSWORD: coiflink_ci_ephemeral
+          POSTGRES_DB: coiflink_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U coiflink -d coiflink_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Lu par migrations/env.py et par les tests base (normalisé en psycopg 3).
+      DATABASE_URL: postgresql://coiflink:coiflink_ci_ephemeral@localhost:5432/coiflink_ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Installer le paquet + outils dev
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Tests (pytest)
+        run: pytest
+
+      - name: Round-trip des migrations Alembic (Postgres 16)
+        # Valide explicitement l'idempotence up/down contre Postgres 16
+        # (extension btree_gist créée par la migration initiale, ADR-0009).
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+
+      - name: Build distribuable (wheel + sdist)
+        run: |
+          pip install build
+          python -m build
+
+      - name: Téléverser l'artefact backend (dist)
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-dist
+          path: backend/dist/*
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------- #
+  # web-dashboard/ — Node 20 : lint → tests → build Next.js (sortie standalone).
+  # --------------------------------------------------------------------------- #
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web-dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web-dashboard/package-lock.json
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Lint (eslint)
+        run: npm run lint
+
+      - name: Tests (vitest)
+        run: npm test
+
+      - name: Build (next build)
+        run: npm run build
+
+      - name: Téléverser l'artefact web (sortie standalone)
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dashboard-build
+          path: |
+            web-dashboard/.next/standalone
+            web-dashboard/.next/static
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------- #
+  # app-mobile/ — Flutter stable : analyse → tests → build APK (Android, ADR-0001).
+  # iOS non construit (runner macOS coûteux, Android prioritaire).
+  # --------------------------------------------------------------------------- #
+  mobile:
+    name: mobile
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java (Temurin 17, requis par le build Android)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter (canal stable, cache activé)
+        # Action tierce épinglée à une version majeure (chaîne d'appro).
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Récupérer les dépendances
+        run: flutter pub get
+
+      - name: Analyse statique (flutter analyze)
+        run: flutter analyze
+
+      - name: Tests (flutter test)
+        run: flutter test
+
+      - name: Build APK (debug, non signé)
+        run: flutter build apk --debug
+
+      - name: Téléverser l'artefact mobile (APK)
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-mobile-apk
+          path: app-mobile/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------- #
+  # Scan de dépendances par écosystème (Python / Node / Dart).
+  # Informatif au MVP (continue-on-error) : reporte les vulnérabilités connues à
+  # chaque PR sans verrouiller les merges du dépôt sur une CVE transitive
+  # nouvellement divulguée. La remédiation automatisée passe par Dependabot
+  # (.github/dependabot.yml). Durcissement « bloquant High/Critical » différé #5.
+  # --------------------------------------------------------------------------- #
+  dependency-scan:
+    name: dependency-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Scan des dépendances Python (pip-audit)
+        continue-on-error: true
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip install -e ./backend
+          pip-audit --desc
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web-dashboard/package-lock.json
+
+      - name: Scan des dépendances Node (npm audit)
+        continue-on-error: true
+        working-directory: web-dashboard
+        run: npm audit --audit-level=high
+
+      - name: Scan des dépendances Dart (osv-scanner)
+        continue-on-error: true
+        # osv-scanner lit directement le lockfile (aucun SDK Flutter requis).
+        # Binaire de release épinglé à une version (chaîne d'appro).
+        run: |
+          curl -fsSL -o osv-scanner \
+            https://github.com/google/osv-scanner/releases/download/v2.4.0/osv-scanner_linux_amd64
+          chmod +x osv-scanner
+          ./osv-scanner scan -L app-mobile/pubspec.lock
+
+  # --------------------------------------------------------------------------- #
+  # Build de l'image Docker backend (build-seul ; push GHCR différé #5).
+  # --------------------------------------------------------------------------- #
+  docker-backend:
+    name: docker-backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build de l'image backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          load: true
+          tags: coiflink-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test (GET /health → 200)
+        run: |
+          docker run -d --name coiflink-backend-ci -p 8000:8000 coiflink-backend:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:8000/health | grep -q '"status":"ok"'
+          docker rm -f coiflink-backend-ci
+
+  # --------------------------------------------------------------------------- #
+  # Build de l'image Docker web (Next.js standalone ; build-seul, push différé #5).
+  # --------------------------------------------------------------------------- #
+  docker-web:
+    name: docker-web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build de l'image web
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web-dashboard
+          push: false
+          load: true
+          tags: coiflink-web:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test (la page d'accueil répond)
+        run: |
+          docker run -d --name coiflink-web-ci -p 3000:3000 coiflink-web:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/ >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:3000/ >/dev/null
+          docker rm -f coiflink-web-ci

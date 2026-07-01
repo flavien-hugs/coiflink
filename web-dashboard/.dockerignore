@@ -1,0 +1,17 @@
+# Exclut du contexte de build les dépendances/artefacts locaux et les secrets :
+# node_modules et .next sont régénérés dans l'image (spec #4 §Security).
+node_modules
+.next
+out
+build
+coverage
+.git
+.gitignore
+
+# Secrets / config locale — ne JAMAIS copier dans l'image.
+.env
+.env.*
+
+# Logs / caches
+npm-debug.log*
+*.tsbuildinfo

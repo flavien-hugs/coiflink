@@ -62,7 +62,7 @@ chaque décision et son compromis sont détaillés dans l'ADR lié.
 | Base de données | PostgreSQL + Redis (cache/queue) | [0004](./docs/adr/0004-donnees-postgresql-redis.md) |
 | Fichiers | Stockage objet S3-compatible | [0005](./docs/adr/0005-stockage-objet-s3-compatible.md) |
 | Notifications | Firebase Cloud Messaging + SMS (WhatsApp en V2) | [0006](./docs/adr/0006-notifications-fcm-sms.md) |
-| Déploiement | Docker · CI/CD GitHub Actions | _à figer par l'ADR de déploiement (#4/#5)_ |
+| Déploiement | Docker · CI/CD GitHub Actions | [0010](./docs/adr/0010-ci-cd-docker-packaging.md) (CI/CD + Docker, #4) ; hébergeur/région _différés (#5)_ |
 
 **Versions de référence** (figées par #2 — voir [ADR-0007](./docs/adr/0007-arborescence-monorepo-versions.md)) :
 Flutter **stable** / Dart **^3.12**, Node **≥ 20 (LTS)**, Python **≥ 3.12**. **PostgreSQL 16** est figée
@@ -111,6 +111,33 @@ fonctionnalité métier) ; voir le `README.md` du paquet pour les prérequis et 
 
 > Le **test gate** agrégé du pipeline (`MX_AGENT_TEST_CMD`) reste à câbler en #6 ; #2 garantit que ces
 > commandes par paquet sont réelles et passent sur le squelette.
+
+### CI applicative (#4)
+
+Le workflow **[`.github/workflows/ci.yml`](./.github/workflows/ci.yml)** s'exécute **à chaque pull
+request** (et sur `push` vers `main`), distinct de `adw-sdlc.yml` (control plane). Décisions tracées
+dans **[ADR-0010](./docs/adr/0010-ci-cd-docker-packaging.md)**. Il exécute des **jobs séparés
+mobile / web / backend** — lint + tests + build par paquet — plus un scan de dépendances et le build
+des images Docker :
+
+| Job | Contenu | Artefact produit |
+| --- | --- | --- |
+| `backend` | `ruff check` · `pytest` · round-trip Alembic contre **PostgreSQL 16** · `python -m build` | `backend-dist` (wheel + sdist) |
+| `web` | `npm run lint` · `npm test` · `npm run build` (sortie **standalone**) | `web-dashboard-build` |
+| `mobile` | `flutter analyze` · `flutter test` · `flutter build apk` | `app-mobile-apk` (APK Android) |
+| `dependency-scan` | `pip-audit` · `npm audit` · `osv-scanner` (**informatif**, complété par Dependabot) | — |
+| `docker-backend` | build de l'image `backend/Dockerfile` (**build-seul**) + smoke test `GET /health` | image `coiflink-backend:ci` |
+| `docker-web` | build de l'image `web-dashboard/Dockerfile` (**build-seul**) + smoke test page d'accueil | image `coiflink-web:ci` |
+
+- **CI verte obligatoire avant merge** : les **status checks requis** sont `backend`, `web`,
+  `mobile`, `docker-backend`, `docker-web` (`dependency-scan` reste informatif). L'activation de la
+  **protection de branche `main`** correspondante est un **réglage dépôt** (non versionné), à
+  appliquer par un administrateur (cf. ADR-0010).
+- **Images Docker** : construites en CI (**build-seul**) ; le **push vers un registre** et
+  l'hébergement sont différés (**#5**). Aucun secret n'entre en CI ni dans les images (config par
+  variables d'environnement ; utilisateur non-root).
+- **Mises à jour automatisées** : **[Dependabot](./.github/dependabot.yml)** (`pip`, `npm`, `pub`,
+  `github-actions`).
 
 ---
 

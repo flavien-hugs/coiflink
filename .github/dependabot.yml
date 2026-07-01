@@ -1,0 +1,53 @@
+# Dependabot — mises à jour automatisées des dépendances (issue #4, cf. docs/adr/0010).
+# Complète le scan de dépendances de ci.yml : ouvre des PR de mise à jour par
+# écosystème. Les PR passent la CI applicative comme toute autre PR. Aucun secret.
+version: 2
+updates:
+  # Backend Python (FastAPI) — manifeste pyproject.toml sous backend/.
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - backend
+
+  # Web (Next.js) — package.json / package-lock.json sous web-dashboard/.
+  - package-ecosystem: npm
+    directory: /web-dashboard
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - web
+
+  # Mobile (Flutter) — pubspec.yaml / pubspec.lock sous app-mobile/.
+  - package-ecosystem: pub
+    directory: /app-mobile
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - mobile
+
+  # Control plane ADW — package.json sous adw_sdlc/ (workflow adw-sdlc.yml).
+  - package-ecosystem: npm
+    directory: /adw_sdlc
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+
+  # Actions GitHub utilisées par les workflows (ci.yml, adw-sdlc.yml).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
