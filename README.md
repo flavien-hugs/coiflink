@@ -65,9 +65,10 @@ chaque décision et son compromis sont détaillés dans l'ADR lié.
 | Déploiement | Docker · CI/CD GitHub Actions | _à figer par l'ADR de déploiement (#4/#5)_ |
 
 **Versions de référence** (figées par #2 — voir [ADR-0007](./docs/adr/0007-arborescence-monorepo-versions.md)) :
-Flutter **stable** / Dart **^3.12**, Node **≥ 20 (LTS)**, Python **≥ 3.12** ; pour mémo (runtime, hors
-code en #2) PostgreSQL **16**, Redis **7**. Le `web-dashboard/` est **une seule application Next.js** à
-zones protégées par rôle (`/gerant`, `/admin`).
+Flutter **stable** / Dart **^3.12**, Node **≥ 20 (LTS)**, Python **≥ 3.12**. **PostgreSQL 16** est figée
+par #3 (schéma de données initial — voir [ADR-0009](./docs/adr/0009-orm-migrations-sqlalchemy-alembic.md)) ;
+Redis **7** pour mémo (runtime, câblé ultérieurement). Le `web-dashboard/` est **une seule application
+Next.js** à zones protégées par rôle (`/gerant`, `/admin`).
 
 ## 5. Structure du dépôt
 

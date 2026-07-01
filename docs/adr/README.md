@@ -21,6 +21,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0006](./0006-notifications-fcm-sms.md) | Notifications — FCM + SMS | Accepté | #1 |
 | [0007](./0007-arborescence-monorepo-versions.md) | Arborescence du monorepo, versions de référence & app web unique | Accepté | #2 |
 | [0008](./0008-architecture-hexagonale.md) | Architecture hexagonale (ports & adapters) — tous les paquets | Accepté | suite #2 |
+| [0009](./0009-orm-migrations-sqlalchemy-alembic.md) | ORM, migrations & driver — SQLAlchemy 2.0 + Alembic + psycopg 3 | Accepté | #3 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
@@ -31,6 +32,8 @@ ultérieure et signalés en *Conséquences* des ADR concernés :
 - **Fournisseur SMS concret** (agrégateur local) — opérations (#5), voir ADR-0006.
 - **Fournisseur de stockage objet** (AWS S3 / MinIO / R2 / bucket plateforme) — déploiement (#4/#5),
   voir ADR-0005.
-- **ORM + migrations, runner de tâches async, libs JWT/hash** — voir ADR-0003, précisés en #3/#5/#6.
+- **ORM + migrations** — **tranché par [ADR-0009](./0009-orm-migrations-sqlalchemy-alembic.md)** (#3 :
+  SQLAlchemy 2.0 + Alembic + psycopg 3, PostgreSQL 16).
+- **Runner de tâches async, libs JWT/hash** — voir ADR-0003, précisés en #5/#6 et M1.
 - **Versions de référence** (Flutter/Dart, Python, PostgreSQL, Redis, Node) — **arrêtées en #2**, voir
   [ADR-0007](./0007-arborescence-monorepo-versions.md).
