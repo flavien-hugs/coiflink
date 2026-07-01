@@ -15,7 +15,7 @@
     "issue": "tsx src/cli.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.104.1",
+    "@anthropic-ai/sdk": "^0.109.0",
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
