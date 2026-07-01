@@ -65,3 +65,124 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
 les **secrets réels** (DSN base/Redis, `JWT_SECRET`, etc.) sont injectés **hors dépôt** (issue #5)
 et ne doivent **jamais** être committés.
+
+## Modèle de données & migrations
+
+Le schéma relationnel initial (issue #3) matérialise les **8 entités du PRD §9** plus une
+table de jonction, avec leurs contraintes d'intégrité critiques. L'outillage est figé par
+**[ADR-0009](../docs/adr/0009-orm-migrations-sqlalchemy-alembic.md)** : **SQLAlchemy 2.0**
+(ORM, style typé `Mapped[...]`) · **Alembic** (migrations versionnées) · **psycopg 3**
+(driver) · **PostgreSQL 16**.
+
+Conformément à l'hexagonal (ADR-0008), tables ORM, `metadata` et migrations sont un **détail
+de persistance** et vivent dans `adapters/sortant/` ; seules les **énumérations métier** sont
+des `enum.Enum` purs du `domaine/`. Aucun import de SQLAlchemy depuis `domaine/` ou
+`application/`.
+
+```
+coiflink_api/
+  domaine/enums.py                          # enums purs (Role, AppointmentStatus, ...) — source des CHECK
+  adapters/sortant/persistance/
+    base.py                                 # DeclarativeBase + metadata + convention de nommage
+    modeles.py                              # tables ORM (source de vérité du schéma)
+    session.py                              # fabrique d'engine (lit DATABASE_URL ; non câblée à l'app en #3)
+migrations/
+  env.py                                    # importe la metadata ; lit DATABASE_URL (jamais de secret)
+  versions/0001_schema_initial.py           # migration initiale up/down
+alembic.ini                                 # config Alembic (DSN via env, aucun secret)
+```
+
+### Prérequis & connexion
+
+- **PostgreSQL 16** accessible.
+- `DATABASE_URL` défini dans l'environnement (cf. `.env.example`). Il pilote l'application
+  **et** Alembic. La forme `postgresql://…` est automatiquement normalisée en
+  `postgresql+psycopg://…` (driver psycopg 3) ; `alembic.ini` ne contient **aucun**
+  identifiant.
+
+### Commandes de migration
+
+Exécutées depuis `backend/` (avec l'environnement virtuel activé et `DATABASE_URL` défini) :
+
+| Commande | Effet |
+| --- | --- |
+| `alembic upgrade head` | Applique toutes les migrations (crée le schéma). |
+| `alembic downgrade base` | Réverte tout (revient à un schéma vide). |
+| `alembic current` | Affiche la révision appliquée. |
+| `alembic history` | Liste l'historique des révisions. |
+| `alembic check` | Vérifie que la `metadata` ORM correspond à la base (aucun diff attendu). |
+| `alembic revision --autogenerate -m "…"` | Génère une nouvelle migration (à **relire** : les `CHECK`/`EXCLUDE` ne sont pas tous autogénérés). |
+
+Le round-trip `upgrade head` → `downgrade base` → `upgrade head` est **réversible et
+idempotent**.
+
+### Diagramme relationnel (ERD)
+
+```mermaid
+erDiagram
+    users ||--o{ salons : "owner_id"
+    users ||--o{ appointments : "client_id"
+    users |o--o{ appointments : "hairdresser_id"
+    users |o--o{ customer_profiles : "user_id"
+    users ||--o{ payments : "recorded_by"
+    salons ||--o{ services : ""
+    salons ||--o{ appointments : ""
+    salons ||--o{ customer_profiles : ""
+    salons ||--o{ payments : ""
+    salons ||--o{ cash_journal : ""
+    appointments ||--o{ appointment_services : ""
+    services ||--o{ appointment_services : ""
+    appointments |o--o{ payments : "appointment_id"
+    services |o--o{ payments : "service_id"
+    payments |o--o{ cash_journal : "transaction_id"
+    users |o--o{ notifications : "user_id"
+    salons |o--o{ notifications : "salon_id"
+    appointments |o--o{ notifications : "appointment_id"
+```
+
+### Dictionnaire des tables
+
+> Toutes les tables portent `id UUID PK DEFAULT gen_random_uuid()` et `created_at timestamptz`.
+> Celles qui sont mutables portent aussi `updated_at timestamptz`. Montants en `NUMERIC(12,2)`
+> (devise XOF). Suppression par défaut `ON DELETE RESTRICT`.
+
+| Table | Colonnes notables | Contraintes & index clés |
+| --- | --- | --- |
+| **`users`** | `full_name`, `phone`, `email?`, `password_hash`, `role`, `status` | `uq_users_phone` ; `uq_users_email` (unique partiel `WHERE email IS NOT NULL`) ; CHECK `role`/`status` |
+| **`salons`** | `owner_id→users`, `name`, `description`, `phone`, `address`, `city`, `commune`, `latitude`, `longitude`, `logo_url`, `status`, `opening_hours JSONB` | FK `owner_id` ; CHECK `status` ; index `(city, commune)`, `status` |
+| **`services`** | `salon_id→salons`, `name`, `price`, `duration_minutes`, `category`, `is_active` | FK `salon_id` ; `uq_services_salon_id (salon_id, id)` ; CHECK `price >= 0`, `duration_minutes > 0` ; index `salon_id` |
+| **`appointments`** | `salon_id→salons`, `client_id→users`, `hairdresser_id?→users`, `appointment_date`, `start_time`, `end_time`, `status`, `cancellation_reason?`, `client_note?`, `slot` (généré) | FK `salon_id`/`client_id` NOT NULL (§8.1) ; `uq_appointments_salon_id (salon_id, id)` ; CHECK `end_time > start_time`, `status` ; **EXCLUDE** anti double-booking ; index `(salon_id, appointment_date)`, `client_id` |
+| **`appointment_services`** *(jonction)* | `appointment_id→appointments`, `service_id→services`, `salon_id`, `price_at_booking` | PK `(appointment_id, service_id)` ; **FK composites** `(salon_id, appointment_id)` et `(salon_id, service_id)` (cohérence salon) ; `ON DELETE CASCADE` depuis le RDV ; CHECK `price >= 0` |
+| **`customer_profiles`** | `salon_id→salons`, `user_id?→users`, `full_name`, `phone?`, `notes?`, `last_visit_at?`, `total_visits` | FK `salon_id`/`user_id` ; `uq_customer_profiles_salon_user (salon_id, user_id) WHERE user_id IS NOT NULL` ; CHECK `total_visits >= 0` ; index `salon_id` |
+| **`payments`** | `salon_id→salons`, `appointment_id?`, `service_id?`, `client_id?→users`, `amount`, `currency`, `payment_method`, `status`, `recorded_by→users`, `reference?` | FK `salon_id`/`recorded_by` NOT NULL (§8.2) ; FK composites vers RDV/prestation ; **CHECK `appointment_id IS NOT NULL OR service_id IS NOT NULL`** (§8.2) ; CHECK `amount >= 0`, `payment_method`, `status` ; index `(salon_id, created_at)`, `appointment_id` |
+| **`cash_journal`** *(append-only)* | `salon_id→salons`, `transaction_id?→payments`, `operation_type`, `amount`, `performed_by→users`, `description?` | FK `salon_id`/`performed_by` NOT NULL ; `created_at` horodaté (§8.2) ; CHECK `operation_type` ; index `(salon_id, created_at)` |
+| **`notifications`** | `user_id?→users`, `salon_id?→salons`, `appointment_id?→appointments`, `type`, `channel`, `title`, `message`, `status`, `sent_at?` | CHECK `type`/`channel`/`status` ; index `user_id`, `(salon_id, created_at)` |
+
+### Contraintes clés métier
+
+- **RDV → salon + ≥ 1 prestation (§8.1)** : `salon_id` NOT NULL ; la cardinalité « ≥ 1 »
+  passe par la jonction `appointment_services`, garantie par insertion transactionnelle côté
+  application (M3). Les **FK composites** `(salon_id, …)` interdisent de mêler des entités de
+  salons différents (isolation §11.2).
+- **Paiement → prestation ou RDV (§8.2)** : `CHECK (appointment_id IS NOT NULL OR service_id IS
+  NOT NULL)`.
+- **Anti double-réservation (§8.1)** : colonne générée `slot tsrange` (Abidjan = UTC+0) +
+  `EXCLUDE USING gist (hairdresser_id WITH =, slot WITH &&)` restreinte aux RDV actifs
+  (`PENDING`/`CONFIRMED`) assignés — requiert l'extension `btree_gist`.
+- **Journal de caisse (§8.2)** : horodaté et conçu **append-only** (pas de `DELETE`/`UPDATE` ;
+  correction = nouvelle ligne `ADJUSTMENT`/`REFUND`).
+- **Pas de hard-delete d'un paiement validé (§8.2)** : `ON DELETE RESTRICT` + statut
+  `CANCELLED`/`ADJUSTED`.
+
+### Sécurité & données personnelles
+
+`DATABASE_URL` et tout identifiant sont lus **depuis l'environnement** ; aucune valeur réelle
+n'est committée (seul `.env.example`). Les colonnes PII (`users`, `customer_profiles`) et le
+`password_hash` (jamais de mot de passe en clair) ne doivent **jamais** être journalisés —
+les logs Alembic ne dumpent pas de données.
+
+### Tests
+
+Les invariants de schéma (sans base) et le round-trip de migration (PostgreSQL requis,
+**skip si aucun `DATABASE_URL`**) sont ajoutés dans une phase de tests dédiée. Les tests
+Postgres restent conditionnels tant que la CI (#4) et les secrets (#5) ne sont pas câblés.
