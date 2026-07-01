@@ -51,6 +51,7 @@ npm run dev                     # http://localhost:3000
 | **Build** | `npm run build` |
 | **Test** (test gate web, cf. #6) | `npm test` (Vitest) |
 | Lint | `npm run lint` |
+| **Image Docker** (Next.js standalone ; build-seul en CI, non-root) | `docker build -t coiflink-web ./web-dashboard` |
 
 ## Configuration
 

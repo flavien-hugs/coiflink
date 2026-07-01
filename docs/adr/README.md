@@ -22,13 +22,17 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0007](./0007-arborescence-monorepo-versions.md) | Arborescence du monorepo, versions de référence & app web unique | Accepté | #2 |
 | [0008](./0008-architecture-hexagonale.md) | Architecture hexagonale (ports & adapters) — tous les paquets | Accepté | suite #2 |
 | [0009](./0009-orm-migrations-sqlalchemy-alembic.md) | ORM, migrations & driver — SQLAlchemy 2.0 + Alembic + psycopg 3 | Accepté | #3 |
+| [0010](./0010-ci-cd-docker-packaging.md) | Pipeline CI/CD applicatif & empaquetage Docker | Accepté | #4 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
 Ces points ne sont **pas** des décisions de stack majeures ouvertes ; ils sont rattachés à une issue
 ultérieure et signalés en *Conséquences* des ADR concernés :
 
-- **Plateforme d'hébergement & région des données** — ADR de déploiement (#4/#5).
+- **Plateforme d'hébergement & région des données** — ADR de déploiement (#4/#5). La partie
+  **CI/CD GitHub Actions & empaquetage Docker** de ce point est **tranchée par
+  [ADR-0010](./0010-ci-cd-docker-packaging.md)** (#4) ; l'hébergeur, la région des données et le
+  push vers un registre restent différés (#5).
 - **Fournisseur SMS concret** (agrégateur local) — opérations (#5), voir ADR-0006.
 - **Fournisseur de stockage objet** (AWS S3 / MinIO / R2 / bucket plateforme) — déploiement (#4/#5),
   voir ADR-0005.

@@ -1,0 +1,19 @@
+# Exclut du contexte de build tout ce qui n'a pas à entrer dans l'image :
+# secrets locaux, environnements, caches et artefacts (spec #4 §Security).
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.git/
+.gitignore
+
+# Secrets / config locale — ne JAMAIS copier dans l'image (les .env.example ne
+# sont pas copiés non plus : le Dockerfile ne COPIE que le code et les manifestes).
+.env
+.env.*
+
+# Tests non nécessaires au runtime de l'image.
+tests/
