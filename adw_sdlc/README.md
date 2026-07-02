@@ -56,7 +56,7 @@ select needs to be installed; a missing SDK fails with a clear `RunnerNotInstall
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `MX_AGENT_TEST_CMD` | The project's test gate (e.g. `npm test`, `cargo test --workspace`) | empty → gate skipped (treated green) |
+| `MX_AGENT_TEST_CMD` | The project's test gate (CoifLink: `bash ../scripts/test-gate.sh` — see [docs/strategie-de-tests.md](../docs/strategie-de-tests.md)) | empty → gate skipped (treated green) |
 | `MX_AGENT_FINALIZE_GATES` | Extra pre-merge gates, **one per line** (lint, format, build, scans) | empty |
 | `REPO` | `owner/repo` for issue lookups | current repo |
 | `MX_AGENT_RUNNER` | `claude` \| `codex` \| `opencode` \| `pi` (same as `--runner`) | `claude` |
