@@ -17,6 +17,11 @@ dependencies = [
     "sqlalchemy>=2.0",
     "alembic>=1.13",
     "psycopg[binary]>=3.1",
+    # Authentification (issue #8, ADR-0012) : hachage de mot de passe argon2id
+    # (pas de troncature 72 octets, recommandé OWASP) et validation d'e-mail
+    # native de Pydantic (`EmailStr`) pour l'inscription client.
+    "argon2-cffi>=23",
+    "pydantic[email]>=2.7",
 ]
 
 [project.optional-dependencies]

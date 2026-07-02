@@ -36,9 +36,13 @@ secret est une valeur dont la divulgation compromet la sécurité ; il n'est **j
 | --- | --- | --- | --- | --- |
 | `DATABASE_URL` | **secret** | non | Variable Railway (réf. base managée) | `adapters/sortant/persistance/session.py`, `migrations/env.py` |
 | `REDIS_URL` | **secret** | non | Variable Railway (réf. Redis managé) | à câbler (M1→ ; ADR-0004) |
-| `JWT_SECRET` | **secret** | non | Variable Railway | requis dès **#8** (auth) — vide tant qu'inutilisé |
+| `JWT_SECRET` | **secret** | non | Variable Railway | requis dès **#10** (connexion/JWT) — **non utilisé par #8** (l'inscription n'émet aucun JWT) |
 | `APP_NAME` | non secret | non | Variable Railway / défaut code | `main.py` |
 | `APP_ENV` | non secret | non | Variable Railway (`staging`/`production`) | `main.py` |
+| `OTP_ENABLED` | non secret | non | `false` (défaut code) | `config.py` (`AuthConfig`) — active l'OTP à l'inscription (#8) ; envoi réel différé à M5 |
+| `OTP_CODE_LENGTH` | non secret | non | `6` (défaut code) | `config.py` — longueur du code OTP |
+| `OTP_TTL_SECONDS` | non secret | non | `300` (défaut code) | `config.py` — durée de validité OTP en secondes |
+| `OTP_MAX_ATTEMPTS` | non secret | non | `3` (défaut code) | `config.py` — nombre d'essais autorisés par OTP |
 
 ### web-dashboard (Next.js)
 
@@ -67,7 +71,7 @@ consomme pas (éviter d'impliquer une intégration inexistante) :
 | --- | --- | --- | --- |
 | `DATABASE_URL` | staging, prod | Variables Railway (réf. base managée) | Ops |
 | `REDIS_URL` | staging, prod | Variables Railway (réf. Redis managé) | Ops |
-| `JWT_SECRET` | staging, prod (dès #8) | Variables Railway | Backend |
+| `JWT_SECRET` | staging, prod (dès **#10**) | Variables Railway | Backend |
 | Clés stockage objet `S3_*` | *(futur, M2)* | Variables Railway | Ops |
 | Clés FCM / SMS | *(futur, M5)* | Variables Railway | Ops |
 
