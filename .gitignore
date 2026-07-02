@@ -22,6 +22,7 @@ __pycache__/
 
 # backend/ (FastAPI / Python)
 backend/.venv/
+backend/dist/
 *.egg-info/
 backend/.env
 
@@ -34,6 +35,9 @@ web-dashboard/.env*.local
 app-mobile/build/
 app-mobile/.dart_tool/
 app-mobile/.env
+
+# deploy/ (#5) — topologie docker-compose ; seul deploy/.env.example est versionné.
+deploy/.env
 
 # OS / editor
 .DS_Store

@@ -1,0 +1,105 @@
+# Topologie applicative CoifLink — orchestration locale/dev et base de parité `staging`.
+#
+# Décrit la topologie NON secrète des services (issue #5, cf. docs/adr/0011 et
+# docs/environnements-et-secrets.md) : les deux services applicatifs (`backend`,
+# `web`) + leurs dépendances managées (PostgreSQL 16, Redis 7 — ADR-0004/0009).
+#
+# Invariants (identiques à ceux des images #4 / ADR-0010) :
+# - AUCUN secret en clair ici : toutes les valeurs sensibles proviennent de
+#   `deploy/.env` (gitignoré), copié depuis `deploy/.env.example` ;
+# - config injectée par variables d'environnement à l'exécution ;
+# - ce fichier ne fait que RÉFÉRENCER les images buildées par #4
+#   (`backend/Dockerfile`, `web-dashboard/Dockerfile`) — il n'ajoute aucune
+#   logique métier.
+#
+# Usage :  docker compose -f deploy/docker-compose.yml up --build
+# (renseigner d'abord `deploy/.env` — un secret absent fait échouer proprement.)
+name: coiflink
+
+services:
+  # --------------------------------------------------------------------------- #
+  # PostgreSQL 16 — base relationnelle principale (ADR-0004/0009).
+  # Mot de passe LOCAL jetable via l'environnement : jamais un secret de prod.
+  # --------------------------------------------------------------------------- #
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-coiflink}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?definir POSTGRES_PASSWORD dans deploy/.env (copie de deploy/.env.example)}
+      POSTGRES_DB: ${POSTGRES_DB:-coiflink}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-coiflink} -d ${POSTGRES_DB:-coiflink}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------------------------------------------- #
+  # Redis 7 — cache / broker / clés à TTL (ADR-0004). Pas source de vérité :
+  # aucune sauvegarde critique requise (reconstructible depuis PostgreSQL).
+  # --------------------------------------------------------------------------- #
+  redis:
+    image: redis:7
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------------------------------------------- #
+  # backend — API FastAPI (ADR-0003). Image = `backend/Dockerfile` (#4).
+  # Toute la config (DSN, secrets) est injectée par l'environnement.
+  # --------------------------------------------------------------------------- #
+  backend:
+    build:
+      context: ../backend
+    image: coiflink-backend:${IMAGE_TAG:-local}
+    environment:
+      # Secret : DSN PostgreSQL. Doit refléter les POSTGRES_* ci-dessus.
+      DATABASE_URL: ${DATABASE_URL:?definir DATABASE_URL dans deploy/.env (voir deploy/.env.example)}
+      # Non secret en local (Redis sans mot de passe) ; secret en staging/prod.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Secret de signature JWT — requis dès #8 (auth) ; vide tant qu'inutilisé.
+      JWT_SECRET: ${JWT_SECRET:-}
+      APP_NAME: ${APP_NAME:-CoifLink API}
+      APP_ENV: ${APP_ENV:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      # Sonde interne (l'image n'a pas curl) : réutilise l'endpoint /health (#4).
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # --------------------------------------------------------------------------- #
+  # web — dashboard Next.js (ADR-0002). Image = `web-dashboard/Dockerfile` (#4).
+  # NEXT_PUBLIC_* est EXPOSÉ au navigateur → jamais un secret.
+  # --------------------------------------------------------------------------- #
+  web:
+    build:
+      context: ../web-dashboard
+    image: coiflink-web:${IMAGE_TAG:-local}
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+volumes:
+  pgdata:
+  redisdata:

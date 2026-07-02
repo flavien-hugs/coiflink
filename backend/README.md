@@ -65,8 +65,9 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
-les **secrets réels** (DSN base/Redis, `JWT_SECRET`, etc.) sont injectés **hors dépôt** (issue #5)
-et ne doivent **jamais** être committés.
+les **secrets réels** (DSN base/Redis, `JWT_SECRET`, etc.) sont injectés **hors dépôt** et ne doivent
+**jamais** être committés. Modèle d'environnements, matrice de configuration et politique de secrets :
+**[docs/environnements-et-secrets.md](../docs/environnements-et-secrets.md)** (ADR-0011).
 
 ## Modèle de données & migrations
 
@@ -186,5 +187,8 @@ les logs Alembic ne dumpent pas de données.
 ### Tests
 
 Les invariants de schéma (sans base) et le round-trip de migration (PostgreSQL requis,
-**skip si aucun `DATABASE_URL`**) sont ajoutés dans une phase de tests dédiée. Les tests
-Postgres restent conditionnels tant que la CI (#4) et les secrets (#5) ne sont pas câblés.
+**skip si aucun `DATABASE_URL`**) sont couverts par la suite de tests. Issue #5 ajoute
+`test_session.py` (fail-fast sur `DATABASE_URL`, normalisation du DSN — aucune infra requise)
+et `test_secrets_policy.py` (vérifications statiques sur `.gitignore`, `.env.example`,
+`docker-compose.yml`, configs Railway et Dockerfiles). La CI (#4) et les environnements &
+secrets (#5) sont désormais en place.
