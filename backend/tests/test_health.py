@@ -37,3 +37,26 @@ def test_app_name_from_env(monkeypatch: object) -> None:
     # Remettre à l'état initial pour les autres tests.
     monkeypatch.delenv("APP_NAME", raising=False)
     importlib.reload(m)
+
+
+def test_app_env_from_env(monkeypatch: object) -> None:
+    import importlib
+
+    import coiflink_api.main as m
+
+    monkeypatch.setenv("APP_ENV", "staging")
+    importlib.reload(m)
+    assert m.APP_ENV == "staging"
+    monkeypatch.delenv("APP_ENV", raising=False)
+    importlib.reload(m)
+
+
+def test_app_env_defaults_to_development(monkeypatch: object) -> None:
+    import importlib
+
+    import coiflink_api.main as m
+
+    monkeypatch.delenv("APP_ENV", raising=False)
+    importlib.reload(m)
+    assert m.APP_ENV == "development"
+    importlib.reload(m)

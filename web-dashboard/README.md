@@ -56,5 +56,6 @@ npm run dev                     # http://localhost:3000
 ## Configuration
 
 Les variables sont lues depuis l'environnement (`.env.local`, ignoré par git). Voir `.env.example` ;
-seules les variables préfixées `NEXT_PUBLIC_` sont exposées au navigateur. Aucun secret n'est committé
-(injection hors dépôt, issue #5).
+seules les variables préfixées `NEXT_PUBLIC_` sont exposées au navigateur (jamais un secret). Aucun
+secret n'est committé (injection hors dépôt). Modèle d'environnements & politique de secrets :
+**[docs/environnements-et-secrets.md](../docs/environnements-et-secrets.md)** (ADR-0011).
