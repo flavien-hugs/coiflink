@@ -159,6 +159,48 @@ describe('renderFindings', () => {
 });
 
 describe('resolveLoop', () => {
+  it('skips the gate entirely when testCmd is empty', async () => {
+    const runCmd = vi.fn(() => ({ rc: 1, output: 'should not be called' }));
+    const deps = testDeps({ runCmd });
+    const ok = await resolveLoop(
+      state5(),
+      agentCtx(createMockRunner()),
+      { testCmd: '', maxAttempts: 3, progress: noop },
+      deps,
+    );
+    expect(ok).toBe(true);
+    expect(runCmd).not.toHaveBeenCalled();
+  });
+
+  it('skips the gate when testCmd is whitespace-only', async () => {
+    const runCmd = vi.fn(() => ({ rc: 1, output: 'should not be called' }));
+    const deps = testDeps({ runCmd });
+    const ok = await resolveLoop(
+      state5(),
+      agentCtx(createMockRunner()),
+      { testCmd: '   ', maxAttempts: 3, progress: noop },
+      deps,
+    );
+    expect(ok).toBe(true);
+    expect(runCmd).not.toHaveBeenCalled();
+  });
+
+  it('splits testCmd into argv before passing to runCmd (no shell expansion)', async () => {
+    const capturedArgv: Array<readonly string[]> = [];
+    const runCmd = vi.fn((cmd: readonly string[]) => {
+      capturedArgv.push(cmd);
+      return { rc: 0, output: '' };
+    });
+    const deps = testDeps({ runCmd });
+    await resolveLoop(
+      state5(),
+      agentCtx(createMockRunner()),
+      { testCmd: 'bash ../scripts/test-gate.sh', maxAttempts: 3, progress: noop },
+      deps,
+    );
+    expect(capturedArgv[0]).toEqual(['bash', '../scripts/test-gate.sh']);
+  });
+
   it('returns immediately when the gate is green', async () => {
     const runCmd = vi.fn(() => ({ rc: 0, output: '' }));
     const agent = vi.fn();
@@ -228,6 +270,30 @@ describe('resolveLoop', () => {
     expect(ok).toBe(false);
     expect(agentCalls).toBe(2);
     expect(runCmd).toHaveBeenCalledTimes(3); // initial + after each resolve
+  });
+
+  it('passes the truncated gate failure output to the resolve agent as templateArgs', async () => {
+    const runCmd = vi
+      .fn()
+      .mockReturnValueOnce({ rc: 1, output: 'gate failure details' })
+      .mockReturnValueOnce({ rc: 0, output: '' });
+    const capturedTemplateArgs: Array<readonly string[]> = [];
+    const deps = testDeps({
+      runCmd,
+      runAgentPhase: agentStub({ resolve: { resolved: 1, remaining: 0, summary: '' } }, (o) => {
+        capturedTemplateArgs.push(o.templateArgs);
+      }),
+    });
+    const ok = await resolveLoop(
+      state5(),
+      agentCtx(createMockRunner()),
+      { testCmd: 'cargo test', maxAttempts: 3, progress: noop },
+      deps,
+    );
+    expect(ok).toBe(true);
+    // The agent must receive the gate output so it can diagnose and fix the failure.
+    expect(capturedTemplateArgs).toHaveLength(1);
+    expect(capturedTemplateArgs[0]![0]).toContain('gate failure details');
   });
 });
 
@@ -621,6 +687,38 @@ describe('run() integration', () => {
     }
   });
 
+  it('filters blank and whitespace-only lines from MX_AGENT_FINALIZE_GATES before running gates', async () => {
+    // Ensures that "\ncheck:fmt\n  \n" produces exactly one gate call ('check:fmt')
+    // and does not attempt to run empty-string commands via spawnSync.
+    process.env['MX_AGENT_FINALIZE_GATES'] = '\ncheck:fmt\n  \n';
+    try {
+      const gateCalls: Array<string> = [];
+      const runCmd = vi.fn((cmd: readonly string[]) => {
+        gateCalls.push(cmd.join(' '));
+        return { rc: 0, output: '' };
+      });
+      const issueStates = vi.fn().mockReturnValueOnce('OPEN').mockReturnValueOnce('CLOSED');
+      const deps = testDeps({
+        runCmd,
+        issueState: issueStates,
+        runAgentPhase: agentStub(PHASE_RESULTS, (opts) => {
+          if (opts.phase === 'review') {
+            mkdirSync(opts.state.workspace(), { recursive: true });
+            writeFileSync(commitMessagePath(opts.state), 'feat: x\n\ncloses #5', 'utf8');
+            writeFileSync(prBodyPath(opts.state), 'Closes #5', 'utf8');
+          }
+        }),
+      });
+      const rc = await run(5, createMockRunner(), { yes: true, noProgress: true }, deps);
+      expect(rc).toBe(0);
+      // Only 'check:fmt' must appear as a gate — blank lines must never become commands.
+      expect(gateCalls).toContain('check:fmt');
+      expect(gateCalls.some((c) => c.trim() === '')).toBe(false);
+    } finally {
+      delete process.env['MX_AGENT_FINALIZE_GATES'];
+    }
+  });
+
   it('persists classify prompt.txt and transcript.log on the structured-call path', async () => {
     const deps = testDeps({
       issueState: vi.fn().mockReturnValueOnce('OPEN').mockReturnValueOnce('CLOSED'),
@@ -686,6 +784,44 @@ describe('run() integration', () => {
     // 0.05 (classify) + 0.02 (plan) accumulate, then null (implement) poisons
     // the total for good — never a false partial sum.
     expect(AdwState.load(loadedId())?.totalCostUsd).toBeNull();
+  });
+
+  it('runs testCmd during resolveLoop AND during finalizeAndMerge — two gate executions per run', async () => {
+    // Issue #6 criterion: the test gate must fire at two points in a full run:
+    //   1. resolveLoop (resolve phase) — before opening a PR
+    //   2. finalizeAndMerge — as a pre-merge gate, after all agent phases
+    // This test verifies both calls carry the correctly argv-split command.
+    const gateCalls: Array<readonly string[]> = [];
+    const runCmd = vi.fn((cmd: readonly string[]) => {
+      if (cmd[0] === 'bash') {
+        gateCalls.push(cmd);
+      }
+      return { rc: 0, output: '' };
+    });
+    const issueStates = vi.fn().mockReturnValueOnce('OPEN').mockReturnValueOnce('CLOSED');
+    const deps = testDeps({
+      runCmd,
+      issueState: issueStates,
+      runAgentPhase: agentStub(PHASE_RESULTS, (opts) => {
+        if (opts.phase === 'review') {
+          mkdirSync(opts.state.workspace(), { recursive: true });
+          writeFileSync(commitMessagePath(opts.state), 'feat: x\n\ncloses #5', 'utf8');
+          writeFileSync(prBodyPath(opts.state), 'Closes #5', 'utf8');
+        }
+      }),
+    });
+    const rc = await run(5, createMockRunner(), {
+      testCmd: 'bash ../scripts/test-gate.sh',
+      yes: true,
+      noProgress: true,
+    }, deps);
+    expect(rc).toBe(0);
+    // resolveLoop fires once; finalizeAndMerge fires once → minimum 2 gate calls.
+    expect(gateCalls.length).toBeGreaterThanOrEqual(2);
+    // Every call must be the correctly-split argv (not a raw shell string).
+    for (const call of gateCalls) {
+      expect(call).toEqual(['bash', '../scripts/test-gate.sh']);
+    }
   });
 
   it('previews the plan under dry-run without touching anything', async () => {

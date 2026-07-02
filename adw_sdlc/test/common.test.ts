@@ -61,4 +61,25 @@ describe('shellSplit', () => {
     expect(shellSplit("bash -c 'echo a b'")).toEqual(['bash', '-c', 'echo a b']);
     expect(shellSplit('run "two words" x')).toEqual(['run', 'two words', 'x']);
   });
+
+  it('returns an empty array for an empty or whitespace-only string', () => {
+    expect(shellSplit('')).toEqual([]);
+    expect(shellSplit('   ')).toEqual([]);
+    expect(shellSplit('\t\n')).toEqual([]);
+  });
+
+  it('parses the adw.env.example gate command correctly', () => {
+    expect(shellSplit('bash ../scripts/test-gate.sh')).toEqual(['bash', '../scripts/test-gate.sh']);
+  });
+
+  it('treats shell operators as plain tokens — they are NOT shell-expanded by spawnSync', () => {
+    // The gate is launched via spawnSync (no shell: true). Operators like &&, ;,
+    // | become plain argv tokens and reach the binary as arguments, not as shell
+    // control. This test documents the intentional behavior and ensures that a
+    // mis-configured testCmd like "cmd1 && cmd2" fails explicitly rather than
+    // silently chaining two commands.
+    expect(shellSplit('cmd1 && cmd2')).toEqual(['cmd1', '&&', 'cmd2']);
+    expect(shellSplit('cmd1; cmd2')).toEqual(['cmd1;', 'cmd2']);
+    expect(shellSplit('cmd1 | cmd2')).toEqual(['cmd1', '|', 'cmd2']);
+  });
 });

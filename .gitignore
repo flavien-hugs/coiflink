@@ -35,6 +35,9 @@ web-dashboard/.env*.local
 app-mobile/build/
 app-mobile/.dart_tool/
 app-mobile/.env
+# État outil/télémétrie local à la machine, généré par `flutter test` (jamais versionné)
+app-mobile/.flutter
+app-mobile/.config/
 
 # deploy/ (#5) — topologie docker-compose ; seul deploy/.env.example est versionné.
 deploy/.env
