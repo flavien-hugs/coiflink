@@ -62,7 +62,10 @@ vérité de la stack** ; ne pas réécrire un ADR existant — en créer un nouv
 
 Ne **jamais** committer de secret (clé, mot de passe, jeton, DSN avec identifiants réels). Seuls les
 fichiers `*.env.example` (placeholders non secrets) sont versionnés ; les `.env` réels sont ignorés par
-git. La gestion des secrets hors dépôt est l'objet de l'issue #5.
+git. La **gestion des secrets hors dépôt** (magasin de la plateforme, injection par variables
+d'environnement, rotation, conduite en cas de fuite, non-journalisation) est décrite dans
+**[docs/environnements-et-secrets.md](./docs/environnements-et-secrets.md)** (décision :
+[ADR-0011](./docs/adr/0011-deploiement-environnements-secrets.md)).
 
 ## Build & test par paquet
 
