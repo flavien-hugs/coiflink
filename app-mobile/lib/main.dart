@@ -1,7 +1,7 @@
 // Composition root de l'application mobile CoifLink (Flutter), hexagonal (ADR-0008).
 //
 // N'assemble que l'application : délègue toute la présentation à l'adapter UI
-// (`adapters/ui/app.dart`). Le domaine (`domaine/`) et les cas d'usage
+// (`adapters/ui/app.dart`). Le domaine (`domain/`) et les cas d'usage
 // (`application/`) restent indépendants de Flutter. Conforme à ADR-0001.
 
 import 'package:flutter/material.dart';

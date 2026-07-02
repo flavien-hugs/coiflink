@@ -1,9 +1,9 @@
 // Tests du squelette web : configuration du site exportée depuis la couche
-// domaine (src/domaine/site.ts). Point d'ancrage vert du runner (`npm test`).
+// domaine (src/domain/site.ts). Point d'ancrage vert du runner (`npm test`).
 
 import { describe, expect, it } from "vitest";
 
-import { SITE_DESCRIPTION, SITE_NAME } from "../src/domaine/site";
+import { SITE_DESCRIPTION, SITE_NAME } from "../src/domain/site";
 
 describe("configuration du site", () => {
   it("expose le nom CoifLink", () => {

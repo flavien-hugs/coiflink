@@ -37,9 +37,9 @@ Le **composition root** instancie les adapters et les injecte dans l'application
 
 | Paquet | domaine | application | adapters entrants | adapters sortants | composition root |
 | --- | --- | --- | --- | --- | --- |
-| `backend/` (FastAPI) | `coiflink_api/domaine/` | `coiflink_api/application/` (+ `ports/`) | `adapters/entrant/` (routers HTTP) | `adapters/sortant/` (Postgres, Redis, S3...) | `coiflink_api/main.py` |
-| `web-dashboard/` (Next.js) | `src/domaine/` | `src/application/` | `app/` (routage Next.js) + `src/adapters/ui/` | `src/adapters/api/` (clients HTTP) | `app/` (layout/page) |
-| `app-mobile/` (Flutter) | `lib/domaine/` | `lib/application/` | `lib/adapters/ui/` (écrans) | `lib/adapters/data/` (API, stockage local) | `lib/main.dart` |
+| `backend/` (FastAPI) | `coiflink_api/domain/` | `coiflink_api/application/` (+ `ports/`) | `adapters/inbound/` (routers HTTP) | `adapters/outbound/` (Postgres, Redis, S3...) | `coiflink_api/main.py` |
+| `web-dashboard/` (Next.js) | `src/domain/` | `src/application/` | `app/` (routage Next.js) + `src/adapters/ui/` | `src/adapters/api/` (clients HTTP) | `app/` (layout/page) |
+| `app-mobile/` (Flutter) | `lib/domain/` | `lib/application/` | `lib/adapters/ui/` (écrans) | `lib/adapters/data/` (API, stockage local) | `lib/main.dart` |
 
 Côté front (web/mobile), l'hexagonal est appliqué dans son **esprit** : isoler le
 domaine et les cas d'usage du framework de présentation. Le routage Next.js
@@ -64,15 +64,15 @@ framework.
 - **Indépendance des briques** : les choix ADR-0004/0005/0006 (Postgres/Redis,
   S3, FCM/SMS) deviennent des **adapters sortants** interchangeables derrière des
   ports.
-- **Sécurité** (PRD §11) : autorisation/validation dans le domaine/application,
+- **Sécurité** (PRD §11) : autorisation/validation dans le domain/application,
   pas éparpillées dans les contrôleurs.
-- **Coût initial** : surcoût de structure modéré ; au démarrage `domaine`/
+- **Coût initial** : surcoût de structure modéré ; au démarrage `domain`/
   `application` sont quasi vides (assumé), et se remplissent au fil de M1→.
 
 ## Conséquences
 
 - Le **backend** est restructuré dès maintenant : `/health` devient un adapter
-  entrant (`adapters/entrant/sante.py`) et `main.py` est le composition root.
+  entrant (`adapters/inbound/health.py`) et `main.py` est le composition root.
 - **Web** et **mobile** reçoivent l'arborescence des couches + conventions
   (README par couche) ; le code métier s'y place à partir de M1.
 - Complète l'**ADR-0007** (arborescence du monorepo) en fixant l'**organisation

@@ -38,10 +38,10 @@ doivent donc être actées ici :
 ## Décision
 
 1. **Hachage = argon2id** via **`argon2-cffi`** (`argon2.PasswordHasher`, paramètres de coût sûrs par
-   défaut), derrière le port `HacheurMotDePasse` (`hacher` / `verifier`).
+   défaut), derrière le port `PasswordHasher` (`hash` / `verify`).
 2. **OTP = Option A** : logique de domaine **pure et injectable** (RNG + horloge injectés, longueur,
    expiration, **usage unique**, **limite d'essais**), **désactivée par défaut** (`OTP_ENABLED=false`),
-   dépôt **en mémoire** (port `DepotOtp`) et **envoi stub** (port `ExpediteurOtp`). **Aucune migration.**
+   dépôt **en mémoire** (port `OtpRepository`) et **envoi stub** (port `OtpSender`). **Aucune migration.**
 
 ## Justification (compromis)
 

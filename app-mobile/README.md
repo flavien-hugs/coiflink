@@ -10,7 +10,7 @@ historique, rappels → issues M1→).
 
 ```
 lib/
-  domaine/        # entités & règles métier (Dart pur)
+  domain/         # entités & règles métier (Dart pur)
   application/    # cas d'usage + ports
   adapters/
     ui/           # écrans Flutter (app.dart → CoifLinkApp)

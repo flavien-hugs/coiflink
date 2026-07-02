@@ -34,7 +34,7 @@ secret est une valeur dont la divulgation compromet la sécurité ; il n'est **j
 
 | Variable | Nature | Exposée navigateur | Source (staging/prod) | Consommée par |
 | --- | --- | --- | --- | --- |
-| `DATABASE_URL` | **secret** | non | Variable Railway (réf. base managée) | `adapters/sortant/persistance/session.py`, `migrations/env.py` |
+| `DATABASE_URL` | **secret** | non | Variable Railway (réf. base managée) | `adapters/outbound/persistence/session.py`, `migrations/env.py` |
 | `REDIS_URL` | **secret** | non | Variable Railway (réf. Redis managé) | à câbler (M1→ ; ADR-0004) |
 | `JWT_SECRET` | **secret** | non | Variable Railway | requis dès **#10** (connexion/JWT) — **non utilisé par #8** (l'inscription n'émet aucun JWT) |
 | `APP_NAME` | non secret | non | Variable Railway / défaut code | `main.py` |

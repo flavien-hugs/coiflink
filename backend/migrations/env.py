@@ -14,9 +14,9 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 # Importer le paquet de persistance enregistre tous les modèles dans la metadata.
-from coiflink_api.adapters.sortant.persistance import Base  # noqa: F401
-import coiflink_api.adapters.sortant.persistance  # noqa: F401  (enregistre les modèles)
-from coiflink_api.adapters.sortant.persistance.session import database_url
+from coiflink_api.adapters.outbound.persistence import Base  # noqa: F401
+import coiflink_api.adapters.outbound.persistence  # noqa: F401  (enregistre les modèles)
+from coiflink_api.adapters.outbound.persistence.session import database_url
 
 # Objet de configuration Alembic (donne accès aux valeurs du fichier .ini).
 config = context.config
