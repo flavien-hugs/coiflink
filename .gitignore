@@ -22,6 +22,7 @@ __pycache__/
 
 # backend/ (FastAPI / Python)
 backend/.venv/
+backend/dist/
 *.egg-info/
 backend/.env
 
