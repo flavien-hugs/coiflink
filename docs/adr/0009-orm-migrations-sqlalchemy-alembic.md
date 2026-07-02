@@ -52,7 +52,7 @@ Décisions de modélisation tranchées au passage (Open Questions de la spec #3)
 - **Clés primaires** : `UUID` avec défaut serveur `gen_random_uuid()` (fonction
   native PG ≥ 13, anti-énumération, pratique côté mobile).
 - **Énumérations** : stockées en `text` + contrainte `CHECK` *dérivée des
-  `enum.Enum` du domaine* (`coiflink_api/domaine/enums.py`) — évolutif sans
+  `enum.Enum` du domaine* (`coiflink_api/domain/enums.py`) — évolutif sans
   `ALTER TYPE`, et impossible à désynchroniser du domaine.
 - **RDV ↔ prestations** : **table de jonction** `appointment_services`
   (many-to-many), pour honorer le « **≥ 1 prestation** » du §8.1 et le futur
@@ -79,7 +79,7 @@ Décisions de modélisation tranchées au passage (Open Questions de la spec #3)
 - **Driver moderne** : psycopg 3 couvre le sync (utilisé par Alembic) et l'async
   (futur câblage FastAPI), évitant un second driver.
 - **Hexagonal (ADR-0008)** : ORM, `metadata` et migrations vivent dans
-  `adapters/sortant/persistance/` ; les `enum.Enum` du domaine restent purs. Le
+  `adapters/outbound/persistence/` ; les `enum.Enum` du domaine restent purs. Le
   domaine n'importe jamais SQLAlchemy.
 - **Compromis accepté** : SQLAlchemy 2.0 est plus verbeux que SQLModel ;
   ce coût est assumé au profit du contrôle fin des contraintes d'intégrité, qui

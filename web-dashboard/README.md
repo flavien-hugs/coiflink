@@ -14,7 +14,7 @@ est un **squelette d'initialisation** (#2) : page d'accueil neutre, aucune fonct
 
 ```
 src/
-  domaine/        # entités, règles & config métier (TS pur — ex. site.ts)
+  domain/         # entités, règles & config métier (TS pur — ex. site.ts)
   application/    # cas d'usage + ports
   adapters/
     ui/           # composants React (consommés par app/)

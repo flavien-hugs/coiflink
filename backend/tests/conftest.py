@@ -11,102 +11,102 @@ import uuid
 
 import pytest
 
-from coiflink_api.domaine.erreurs import TelephoneDejaUtilise
-from coiflink_api.domaine.otp import DefiOtp
-from coiflink_api.domaine.utilisateur import Utilisateur, UtilisateurACreer
+from coiflink_api.domain.errors import PhoneAlreadyInUse
+from coiflink_api.domain.otp import OtpChallenge
+from coiflink_api.domain.user import User, UserToCreate
 
 _CREATED_AT = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc)
-_UUID_FIXE = uuid.UUID("00000000-0000-0000-0000-000000000001")
+_FIXED_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
-class FakeHacheur:
+class FakeHasher:
     """Hacheur déterministe (préfixe « hash: »). Ne produit jamais le clair tel quel."""
 
-    def hacher(self, clair: str) -> str:
-        return f"hash:{clair}"
+    def hash(self, plain: str) -> str:
+        return f"hash:{plain}"
 
-    def verifier(self, clair: str, condensat: str) -> bool:
-        return condensat == f"hash:{clair}"
+    def verify(self, plain: str, hashed: str) -> bool:
+        return hashed == f"hash:{plain}"
 
 
-class FakeDepotUtilisateur:
+class FakeUserRepository:
     """Dépôt en mémoire pour les tests unitaires et API."""
 
-    def __init__(self, telephones_existants: set[str] | None = None) -> None:
-        self._telephones: set[str] = set(telephones_existants or [])
-        self.crees: list[UtilisateurACreer] = []
+    def __init__(self, existing_phones: set[str] | None = None) -> None:
+        self._phones: set[str] = set(existing_phones or [])
+        self.created: list[UserToCreate] = []
 
-    def telephone_existe(self, telephone: str) -> bool:
-        return telephone in self._telephones
+    def phone_exists(self, phone: str) -> bool:
+        return phone in self._phones
 
-    def creer(self, utilisateur: UtilisateurACreer) -> Utilisateur:
-        self.crees.append(utilisateur)
-        self._telephones.add(utilisateur.telephone)
-        return Utilisateur(
-            id=_UUID_FIXE,
-            full_name=utilisateur.full_name,
-            telephone=utilisateur.telephone,
-            email=utilisateur.email,
-            role=utilisateur.role,
-            status=utilisateur.status,
+    def create(self, user: UserToCreate) -> User:
+        self.created.append(user)
+        self._phones.add(user.phone)
+        return User(
+            id=_FIXED_UUID,
+            full_name=user.full_name,
+            phone=user.phone,
+            email=user.email,
+            role=user.role,
+            status=user.status,
             created_at=_CREATED_AT,
         )
 
 
-class FakeDepotUtilisateurLeveDublon:
-    """Depot dont `creer` lève TelephoneDejaUtilise (simulation d'IntegrityError concurrente)."""
+class FakeUserRepositoryRaisingDuplicate:
+    """Dépôt dont `create` lève PhoneAlreadyInUse (simulation d'IntegrityError concurrente)."""
 
-    def telephone_existe(self, telephone: str) -> bool:  # noqa: ARG002
+    def phone_exists(self, phone: str) -> bool:  # noqa: ARG002
         return False
 
-    def creer(self, utilisateur: UtilisateurACreer) -> Utilisateur:  # noqa: ARG002
-        raise TelephoneDejaUtilise("Contrainte base violée (race condition simulée).")
+    def create(self, user: UserToCreate) -> User:  # noqa: ARG002
+        raise PhoneAlreadyInUse("Contrainte base violée (race condition simulée).")
 
 
-class FakeExpediteurOtp:
+class FakeOtpSender:
     """Expéditeur OTP en mémoire ; ne journalise rien."""
 
     def __init__(self) -> None:
-        self.envois: list[tuple[str, str]] = []
+        self.sent: list[tuple[str, str]] = []
 
-    def envoyer(self, telephone: str, code: str) -> None:
-        self.envois.append((telephone, code))
+    def send(self, phone: str, code: str) -> None:
+        self.sent.append((phone, code))
 
 
-class FakeDepotOtp:
+class FakeOtpRepository:
     """Dépôt OTP en mémoire."""
 
     def __init__(self) -> None:
-        self.defis: dict[str, DefiOtp] = {}
+        self.challenges: dict[str, OtpChallenge] = {}
 
-    def enregistrer(self, telephone: str, defi: DefiOtp) -> None:
-        self.defis[telephone] = defi
+    def save(self, phone: str, challenge: OtpChallenge) -> None:
+        self.challenges[phone] = challenge
 
-    def recuperer(self, telephone: str) -> DefiOtp | None:
-        return self.defis.get(telephone)
+    def get(self, phone: str) -> OtpChallenge | None:
+        return self.challenges.get(phone)
 
-    def supprimer(self, telephone: str) -> None:
-        self.defis.pop(telephone, None)
+    def delete(self, phone: str) -> None:
+        self.challenges.pop(phone, None)
 
 
 # ── Fixtures pytest partagées ──────────────────────────────────────────────
 
 
 @pytest.fixture()
-def fake_hacheur() -> FakeHacheur:
-    return FakeHacheur()
+def fake_hasher() -> FakeHasher:
+    return FakeHasher()
 
 
 @pytest.fixture()
-def fake_depot() -> FakeDepotUtilisateur:
-    return FakeDepotUtilisateur()
+def fake_user_repository() -> FakeUserRepository:
+    return FakeUserRepository()
 
 
 @pytest.fixture()
-def fake_expediteur() -> FakeExpediteurOtp:
-    return FakeExpediteurOtp()
+def fake_otp_sender() -> FakeOtpSender:
+    return FakeOtpSender()
 
 
 @pytest.fixture()
-def fake_depot_otp() -> FakeDepotOtp:
-    return FakeDepotOtp()
+def fake_otp_repository() -> FakeOtpRepository:
+    return FakeOtpRepository()

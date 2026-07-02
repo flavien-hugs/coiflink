@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { SITE_DESCRIPTION, SITE_NAME } from "@/src/domaine/site";
+import { SITE_DESCRIPTION, SITE_NAME } from "@/src/domain/site";
 
 export const metadata: Metadata = {
   title: SITE_NAME,

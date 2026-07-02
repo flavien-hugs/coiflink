@@ -16,7 +16,7 @@ relationnel des 8 entités du PRD §9 ainsi que la table de jonction
                   `alembic downgrade base` n'échoue pas.
 
 Le mapping ORM de référence vit dans
-`coiflink_api/adapters/sortant/persistance/modeles.py` ; cette migration en est
+`coiflink_api/adapters/outbound/persistence/models.py` ; cette migration en est
 le reflet versionné. Aucun secret ni aucune donnée (PII) n'est présent ici.
 """
 
@@ -36,7 +36,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 # --------------------------------------------------------------------------- #
-# Fabriques de colonnes standard (cohérentes avec modeles.py).
+# Fabriques de colonnes standard (cohérentes avec models.py).
 # --------------------------------------------------------------------------- #
 def _id_col() -> sa.Column:
     return sa.Column(

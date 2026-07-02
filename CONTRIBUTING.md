@@ -6,8 +6,15 @@ messages de commit, rôle du pipeline ADW, langue et décisions d'architecture.
 ## Langue
 
 Le dépôt est rédigé en **français** : PRD, BACKLOG, README, ADR, specs et documentation. Les
-**identifiants techniques** (noms de variables, de fonctions, de fichiers, de paquets) et les
 **licences standard** restent dans leur forme d'origine.
+
+**Le code est nommé en anglais.** Tous les identifiants — modules/fichiers source, classes,
+fonctions, méthodes, variables, constantes, énumérations, fixtures et noms de tests — sont en
+**anglais**, dans tous les paquets (`backend/`, `web-dashboard/`, `app-mobile/`). Exemples :
+`domain/`, `adapters/inbound/`, `RegisterClient`, `normalize_phone`, `PhoneAlreadyInUse`.
+Les **docstrings, commentaires, messages d'erreur destinés aux utilisateurs** et la documentation
+restent en français. Ne pas introduire de nouveau nom français dans le code ; si un identifiant
+français subsiste, le renommer en anglais à l'occasion d'une modification du fichier concerné.
 
 ## Conventions de commits — Conventional Commits
 
