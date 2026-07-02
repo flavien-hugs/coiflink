@@ -1,18 +1,21 @@
-"""Fabrique d'engine SQLAlchemy (adapter sortant de persistance, ADR-0008).
+"""Fabrique d'engine & de session SQLAlchemy (adapter sortant, ADR-0008/0009).
 
 Lit `DATABASE_URL` **depuis l'environnement** (aucun secret en dur — PRD §11,
-`backend/.env.example`). Fournie pour l'outillage (Alembic, scripts ponctuels) ;
-elle n'est **pas câblée** à l'application FastAPI dans #3 : les *repository
-ports* (`application/ports/`) et leurs adapters concrets arrivent avec les
-features M1→. La voici volontairement minimale pour éviter de sur-construire.
+`backend/.env.example`). Fournie initialement pour l'outillage (Alembic, scripts
+ponctuels), elle est **câblée à l'application** à partir de #8 : `get_sessionmaker`
+et la dépendance FastAPI `get_session` alimentent les cas d'usage (repository
+ports) via une session **synchrone** (endpoints exécutés en threadpool par
+FastAPI ; migration async possible ultérieurement — cf. ADR-0009).
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from functools import lru_cache
 
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 
 def normaliser_dsn(url: str) -> str:
@@ -52,4 +55,45 @@ def get_engine() -> Engine:
     return create_engine(database_url(), pool_pre_ping=True, future=True)
 
 
-__all__ = ["normaliser_dsn", "database_url", "get_engine"]
+@lru_cache(maxsize=1)
+def get_sessionmaker() -> sessionmaker[Session]:
+    """Fabrique de sessions synchrones (mémoïsée), adossée à `get_engine()`.
+
+    `expire_on_commit=False` évite d'invalider les attributs déjà lus après un
+    commit ; `autoflush=False` laisse les cas d'usage maîtriser le `flush`
+    (cf. `DepotUtilisateurSql.creer`).
+    """
+
+    return sessionmaker(
+        bind=get_engine(),
+        autoflush=False,
+        expire_on_commit=False,
+        future=True,
+    )
+
+
+def get_session() -> Iterator[Session]:
+    """Dépendance FastAPI : une session par requête, commit/rollback encadrés.
+
+    Commit si la requête aboutit, rollback si une exception remonte (y compris
+    une `HTTPException` levée par l'adapter entrant), puis fermeture systématique.
+    """
+
+    session = get_sessionmaker()()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+__all__ = [
+    "normaliser_dsn",
+    "database_url",
+    "get_engine",
+    "get_sessionmaker",
+    "get_session",
+]

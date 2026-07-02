@@ -1,9 +1,9 @@
 # backend/ — API CoifLink (FastAPI)
 
 API REST du backend CoifLink, conformément à **[ADR-0003](../docs/adr/0003-backend-fastapi.md)**
-(FastAPI · Python · REST + JWT). Ce dossier est un **squelette d'initialisation** (#2) : il
-n'expose qu'un **endpoint de santé** et n'implémente aucune fonctionnalité métier (auth, salons,
-RDV, caisse, notifications → issues M1→ ; modèle de données / migrations → issue #3).
+(FastAPI · Python · REST + JWT). Le socle (issues #2–#6) installe l'architecture hexagonale,
+la CI, le schéma PostgreSQL et la politique de secrets. L'**inscription client** (US-1.1, #8)
+est la première fonctionnalité M1 livrée (salons, RDV, caisse, connexion JWT… continuent en M1→).
 
 ## Architecture (hexagonale — [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
 
@@ -61,6 +61,37 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 | Méthode | Chemin | Réponse | Rôle |
 | --- | --- | --- | --- |
 | `GET` | `/health` | `{"status":"ok"}` | Sonde de santé (adapter entrant `adapters/entrant/sante.py`) — aucune logique métier |
+| `POST` | `/auth/register` | `201` + utilisateur (sans secret) | Inscription client (US-1.1, #8) — voir ci-dessous |
+
+## Authentification — inscription client (US-1.1, #8)
+
+`POST /auth/register` crée un **compte client** (`role=CLIENT`, `status=ACTIVE`) à partir d'un
+**nom**, d'un **numéro de téléphone** et d'un **mot de passe** (e-mail optionnel). Adapter entrant :
+`adapters/entrant/auth.py` ; cas d'usage : `application/inscription.py` (architecture hexagonale,
+[ADR-0008](../docs/adr/0008-architecture-hexagonale.md)). Décisions de sécurité actées par
+**[ADR-0012](../docs/adr/0012-hachage-argon2-strategie-otp.md)**.
+
+- **Requête** (JSON) : `full_name` (requis), `phone` (requis), `password` (requis, ≥ 8 caractères),
+  `email` (optionnel).
+- **`201 Created`** : `{ id, full_name, phone, email, role, status, created_at }`. La réponse
+  n'expose **jamais** `password` ni `password_hash`.
+- **`409 Conflict`** : le numéro de téléphone (ou l'e-mail) est **déjà inscrit** (doublon refusé).
+- **`422 Unprocessable Entity`** : validation (téléphone/mot de passe/e-mail invalides, champ manquant).
+
+L'inscription **n'émet aucun JWT** (la connexion est l'issue #10).
+
+**Sécurité & vie privée :**
+- **Mot de passe jamais en clair** : haché par **argon2id** (`argon2-cffi`, pas de troncature 72 octets)
+  derrière le port `HacheurMotDePasse`. Le clair n'est **ni journalisé ni renvoyé**.
+- **Normalisation du téléphone** en **E.164** (indicatif Côte d'Ivoire `+225` par défaut) : garantit
+  l'unicité (`uq_users_phone`) — sans forme canonique, le refus de doublon serait contournable.
+- **Refus de doublon** garanti à deux niveaux : pré-vérification applicative **et** contrainte base
+  (course concurrente retraduite en `409`).
+- **OTP** : logique de génération/vérification **pure et testable** (RNG + horloge injectés, usage
+  unique, expiration, limite d'essais). **Désactivé par défaut** (`OTP_ENABLED=false`) ; l'envoi SMS
+  réel est **différé** à M5 ([ADR-0006](../docs/adr/0006-notifications-fcm-sms.md)) — l'adapter de #8
+  est un **stub** qui ne journalise rien. Le code OTP n'est **jamais** renvoyé ni journalisé.
+- **PII** (`full_name`, `phone`, `email`) et secrets ne sont **jamais** journalisés (PRD §11.1/§11.3).
 
 ## Configuration
 
@@ -68,6 +99,14 @@ La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.
 les **secrets réels** (DSN base/Redis, `JWT_SECRET`, etc.) sont injectés **hors dépôt** et ne doivent
 **jamais** être committés. Modèle d'environnements, matrice de configuration et politique de secrets :
 **[docs/environnements-et-secrets.md](../docs/environnements-et-secrets.md)** (ADR-0011).
+
+| Variable | Défaut | Rôle |
+| --- | --- | --- |
+| `OTP_ENABLED` | `false` | Active l'OTP à l'inscription (#8). Envoi réel différé à M5 ; capacité testable même désactivée. |
+| `OTP_CODE_LENGTH` | `6` | Longueur du code OTP (optionnel). |
+| `OTP_TTL_SECONDS` | `300` | Durée de validité de l'OTP en secondes (optionnel). |
+| `OTP_MAX_ATTEMPTS` | `3` | Nombre d'essais autorisés par OTP (optionnel). |
+| `JWT_SECRET` | *(vide)* | **Non utilisé par #8** ; requis dès l'émission de jetons (connexion, #10). |
 
 ## Modèle de données & migrations
 
@@ -192,3 +231,9 @@ Les invariants de schéma (sans base) et le round-trip de migration (PostgreSQL 
 et `test_secrets_policy.py` (vérifications statiques sur `.gitignore`, `.env.example`,
 `docker-compose.yml`, configs Railway et Dockerfiles). La CI (#4) et les environnements &
 secrets (#5) sont désormais en place.
+
+Issue #8 complète la suite avec des **tests unitaires** (logique de domaine : téléphone,
+mot de passe, OTP, hacheur argon2id), des **tests API** (`TestClient`, sans base réelle :
+`201`, `409` doublon, `422` validation, non-fuite du mot de passe/OTP dans la réponse) et un
+test de configuration. Les tests d'**intégration Postgres** (persistance réelle +
+contrainte `uq_users_phone`) sont inclus et **skippés proprement si `DATABASE_URL` est absent**.

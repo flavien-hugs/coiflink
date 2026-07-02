@@ -16,11 +16,27 @@ import os
 
 from fastapi import FastAPI
 
+from coiflink_api.adapters.entrant.auth import router as auth_router
 from coiflink_api.adapters.entrant.sante import router as sante_router
+from coiflink_api.adapters.sortant.notifications.expediteur_otp_stub import (
+    ExpediteurOtpStub,
+)
+from coiflink_api.adapters.sortant.securite.otp_memoire import DepotOtpMemoire
+from coiflink_api.config import charger_auth_config
 
 # Configuration lue depuis l'environnement (jamais de secret en dur).
 APP_NAME = os.environ.get("APP_NAME", "CoifLink API")
 APP_ENV = os.environ.get("APP_ENV", "development")
 
 app = FastAPI(title=APP_NAME)
+
+# Assemblage de l'authentification (issue #8) : la config OTP et les adapters
+# singletons (envoi stub, dépôt OTP en mémoire) sont déposés sur `app.state` et
+# relus par l'adapter entrant `auth` lors de l'injection de dépendances. Aucune
+# règle métier ici — uniquement du câblage (comme pour `sante_router`).
+app.state.auth_config = charger_auth_config()
+app.state.expediteur_otp = ExpediteurOtpStub()
+app.state.depot_otp = DepotOtpMemoire()
+
 app.include_router(sante_router)
+app.include_router(auth_router)
