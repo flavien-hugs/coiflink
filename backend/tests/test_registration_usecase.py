@@ -13,14 +13,16 @@ from random import Random
 
 import pytest
 
-from coiflink_api.application.registration import RegisterClient, RegisterCommand
+from coiflink_api.application.registration import RegisterClient, RegisterCommand, RegisterUser
 from coiflink_api.domain.enums import Role, UserStatus
 from coiflink_api.domain.errors import (
     InvalidName,
     InvalidPassword,
     InvalidPhone,
     PhoneAlreadyInUse,
+    RoleNotSelfRegisterable,
 )
+from coiflink_api.domain.user import SELF_REGISTERABLE_ROLES
 
 from .conftest import (
     FakeHasher,
@@ -368,3 +370,126 @@ class TestOtpWithoutFullInfrastructure:
         )
         user = uc.execute(_VALID_COMMAND)
         assert user is not None
+
+
+class TestManagerRegistration:
+    """Tests du cas d'usage RegisterUser pour le rôle MANAGER (issue #9)."""
+
+    def test_returns_user_with_manager_role(self) -> None:
+        uc = RegisterUser(
+            repository=FakeUserRepository(),
+            hasher=FakeHasher(),
+            role=Role.MANAGER,
+            rng=Random(42),
+            clock=lambda: _NOW,
+        )
+        user = uc.execute(_VALID_COMMAND)
+        assert user.role == Role.MANAGER.value
+
+    def test_returns_user_with_active_status(self) -> None:
+        uc = RegisterUser(
+            repository=FakeUserRepository(),
+            hasher=FakeHasher(),
+            role=Role.MANAGER,
+            rng=Random(42),
+            clock=lambda: _NOW,
+        )
+        user = uc.execute(_VALID_COMMAND)
+        assert user.status == UserStatus.ACTIVE.value
+
+    def test_manager_password_not_stored_as_plaintext(self) -> None:
+        repository = FakeUserRepository()
+        hasher = FakeHasher()
+        uc = RegisterUser(
+            repository=repository,
+            hasher=hasher,
+            role=Role.MANAGER,
+            rng=Random(42),
+            clock=lambda: _NOW,
+        )
+        plain = "motdepasse-solide"
+        uc.execute(_VALID_COMMAND)
+        assert repository.created[0].password_hash != plain
+        assert repository.created[0].password_hash == hasher.hash(plain)
+
+    def test_manager_phone_normalized_to_e164(self) -> None:
+        uc = RegisterUser(
+            repository=FakeUserRepository(),
+            hasher=FakeHasher(),
+            role=Role.MANAGER,
+            rng=Random(42),
+            clock=lambda: _NOW,
+        )
+        user = uc.execute(_VALID_COMMAND)
+        assert user.phone == "+2250700000000"
+
+    def test_manager_duplicate_phone_raises_phone_already_in_use(self) -> None:
+        repository = FakeUserRepository(existing_phones={"+2250700000000"})
+        uc = RegisterUser(
+            repository=repository,
+            hasher=FakeHasher(),
+            role=Role.MANAGER,
+        )
+        with pytest.raises(PhoneAlreadyInUse):
+            uc.execute(_VALID_COMMAND)
+
+    def test_manager_user_contains_no_secret(self) -> None:
+        uc = RegisterUser(
+            repository=FakeUserRepository(),
+            hasher=FakeHasher(),
+            role=Role.MANAGER,
+            rng=Random(42),
+            clock=lambda: _NOW,
+        )
+        user = uc.execute(_VALID_COMMAND)
+        assert not hasattr(user, "password")
+        assert not hasattr(user, "password_hash")
+
+
+class TestSelfRegisterableRoles:
+    """Tests du garde-fou domaine : liste blanche des rôles auto-inscriptibles."""
+
+    def test_client_role_is_self_registerable(self) -> None:
+        assert Role.CLIENT in SELF_REGISTERABLE_ROLES
+
+    def test_manager_role_is_self_registerable(self) -> None:
+        assert Role.MANAGER in SELF_REGISTERABLE_ROLES
+
+    def test_admin_role_is_not_self_registerable(self) -> None:
+        assert Role.ADMIN not in SELF_REGISTERABLE_ROLES
+
+    def test_hairdresser_role_is_not_self_registerable(self) -> None:
+        assert Role.HAIRDRESSER not in SELF_REGISTERABLE_ROLES
+
+    def test_register_user_with_admin_raises_role_not_self_registerable(self) -> None:
+        with pytest.raises(RoleNotSelfRegisterable):
+            RegisterUser(
+                repository=FakeUserRepository(),
+                hasher=FakeHasher(),
+                role=Role.ADMIN,
+            )
+
+    def test_register_user_with_hairdresser_raises_role_not_self_registerable(self) -> None:
+        with pytest.raises(RoleNotSelfRegisterable):
+            RegisterUser(
+                repository=FakeUserRepository(),
+                hasher=FakeHasher(),
+                role=Role.HAIRDRESSER,
+            )
+
+
+class TestRegisterClientAlias:
+    """Non-régression : RegisterClient reste un alias de RegisterUser (compat #8)."""
+
+    def test_register_client_alias_creates_client_role(self) -> None:
+        uc = RegisterClient(
+            repository=FakeUserRepository(),
+            hasher=FakeHasher(),
+            rng=Random(42),
+            clock=lambda: _NOW,
+        )
+        user = uc.execute(_VALID_COMMAND)
+        assert user.role == Role.CLIENT.value
+
+    def test_register_client_and_register_user_are_same_class(self) -> None:
+        assert RegisterClient is RegisterUser

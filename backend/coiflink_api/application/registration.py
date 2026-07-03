@@ -1,12 +1,19 @@
-"""Cas d'usage : **inscription d'un client** (application, ADR-0008).
+"""Cas d'usage : **inscription en libre-service** (application, ADR-0008).
 
-Orchestre le parcours US-1.1 (issue #8) en s'appuyant uniquement sur des **ports**
-(interfaces) — aucune dépendance à FastAPI, SQLAlchemy, argon2 ou au SMS. Le
+Orchestre l'inscription publique — client (US-1.1, issue #8) **et** gérant
+(US-2.1 prérequis, issue #9) — en s'appuyant uniquement sur des **ports**
+(interfaces) : aucune dépendance à FastAPI, SQLAlchemy, argon2 ou au SMS. Le
 câblage des adapters concrets est fait par le composition root (`main.py`).
+
+Le **rôle est imposé côté serveur** à la construction du cas d'usage (par le
+chemin d'inscription / l'assemblage), **jamais** par un champ de la requête, et
+validé contre la liste blanche `SELF_REGISTERABLE_ROLES` (garde-fou
+anti-élévation de privilège : un appelant ne peut pas se déclarer `ADMIN` ou
+`HAIRDRESSER`).
 
 Séquence : valider les entrées → **normaliser le téléphone** (forme canonique) →
 **pré-vérifier le doublon** → **hacher** le mot de passe → **persister**
-(`role=CLIENT`, `status=ACTIVE`) → si activé, émettre un OTP (capacité testable,
+(rôle imposé, `status=ACTIVE`) → si activé, émettre un OTP (capacité testable,
 envoi différé M5) → retourner l'entité créée **sans** secret.
 
 Garde-fous : le mot de passe en clair n'est ni journalisé ni conservé au-delà de
@@ -27,7 +34,7 @@ from coiflink_api.application.ports.otp_sender import OtpSender
 from coiflink_api.application.ports.password_hasher import PasswordHasher
 from coiflink_api.application.ports.user_repository import UserRepository
 from coiflink_api.domain.enums import Role, UserStatus
-from coiflink_api.domain.errors import PhoneAlreadyInUse
+from coiflink_api.domain.errors import PhoneAlreadyInUse, RoleNotSelfRegisterable
 from coiflink_api.domain.otp import (
     DEFAULT_OTP_LENGTH,
     DEFAULT_OTP_MAX_ATTEMPTS,
@@ -36,7 +43,12 @@ from coiflink_api.domain.otp import (
 )
 from coiflink_api.domain.password import validate_password
 from coiflink_api.domain.phone import normalize_phone
-from coiflink_api.domain.user import User, UserToCreate, validate_name
+from coiflink_api.domain.user import (
+    SELF_REGISTERABLE_ROLES,
+    User,
+    UserToCreate,
+    validate_name,
+)
 
 
 def _utc_now() -> datetime.datetime:
@@ -55,14 +67,22 @@ class RegisterCommand:
     email: str | None = None
 
 
-class RegisterClient:
-    """Cas d'usage d'inscription d'un client (rôle `CLIENT`)."""
+class RegisterUser:
+    """Cas d'usage d'inscription en libre-service (rôle imposé côté serveur).
+
+    Le `role` est fixé **à la construction** (par le chemin d'inscription /
+    l'assemblage), jamais par l'appelant HTTP, et validé contre
+    `SELF_REGISTERABLE_ROLES` : seuls `CLIENT` et `MANAGER` peuvent s'auto-inscrire.
+    Un rôle hors liste blanche lève `RoleNotSelfRegisterable` dès la construction
+    (garde-fou anti-élévation de privilège, défense en profondeur).
+    """
 
     def __init__(
         self,
         repository: UserRepository,
         hasher: PasswordHasher,
         *,
+        role: Role = Role.CLIENT,
         otp_enabled: bool = False,
         otp_sender: OtpSender | None = None,
         otp_repository: OtpRepository | None = None,
@@ -72,6 +92,13 @@ class RegisterClient:
         otp_ttl: datetime.timedelta = DEFAULT_OTP_TTL,
         otp_max_attempts: int = DEFAULT_OTP_MAX_ATTEMPTS,
     ) -> None:
+        if role not in SELF_REGISTERABLE_ROLES:
+            # Erreur de programmation/câblage : ne doit jamais provenir d'une
+            # requête (aucun endpoint n'expose le choix du rôle).
+            raise RoleNotSelfRegisterable(
+                "Ce rôle ne peut pas être attribué par auto-inscription."
+            )
+        self._role = role
         self._repository = repository
         self._hasher = hasher
         self._otp_enabled = otp_enabled
@@ -85,7 +112,7 @@ class RegisterClient:
         self._otp_max_attempts = otp_max_attempts
 
     def execute(self, command: RegisterCommand) -> User:
-        """Crée le compte client et retourne l'entité (sans secret)."""
+        """Crée le compte (rôle imposé) et retourne l'entité (sans secret)."""
 
         name = validate_name(command.full_name)
         validate_password(command.password)
@@ -105,7 +132,7 @@ class RegisterClient:
             phone=phone,
             password_hash=password_hash,
             email=email,
-            role=Role.CLIENT.value,
+            role=self._role.value,
             status=UserStatus.ACTIVE.value,
         )
         # `create` peut lever PhoneAlreadyInUse (fallback course concurrente via
@@ -137,4 +164,10 @@ class RegisterClient:
             self._otp_sender.send(phone, challenge.code)
 
 
-__all__ = ["RegisterCommand", "RegisterClient"]
+# Alias de compatibilité : l'inscription client est simplement `RegisterUser`
+# avec le rôle par défaut (`CLIENT`). Conservé pour ne pas casser les imports
+# existants (#8) tout en restant DRY (un seul cas d'usage généralisé).
+RegisterClient = RegisterUser
+
+
+__all__ = ["RegisterCommand", "RegisterUser", "RegisterClient"]

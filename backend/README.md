@@ -2,8 +2,8 @@
 
 API REST du backend CoifLink, conformément à **[ADR-0003](../docs/adr/0003-backend-fastapi.md)**
 (FastAPI · Python · REST + JWT). Le socle (issues #2–#6) installe l'architecture hexagonale,
-la CI, le schéma PostgreSQL et la politique de secrets. L'**inscription client** (US-1.1, #8)
-est la première fonctionnalité M1 livrée (salons, RDV, caisse, connexion JWT… continuent en M1→).
+la CI, le schéma PostgreSQL et la politique de secrets. L'**inscription client** (US-1.1, #8) et l'**inscription gérant** (#9) sont les deux premières
+fonctionnalités M1 livrées (salons, RDV, caisse, connexion JWT… continuent en M1→).
 
 ## Architecture (hexagonale — [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
 
@@ -61,7 +61,8 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 | Méthode | Chemin | Réponse | Rôle |
 | --- | --- | --- | --- |
 | `GET` | `/health` | `{"status":"ok"}` | Sonde de santé (adapter entrant `adapters/inbound/health.py`) — aucune logique métier |
-| `POST` | `/auth/register` | `201` + utilisateur (sans secret) | Inscription client (US-1.1, #8) — voir ci-dessous |
+| `POST` | `/auth/register` | `201` + utilisateur (sans secret) | Inscription client (`role=CLIENT`, US-1.1, #8) — voir ci-dessous |
+| `POST` | `/auth/register/manager` | `201` + utilisateur (sans secret) | Inscription gérant (`role=MANAGER`, #9) — voir ci-dessous |
 
 ## Authentification — inscription client (US-1.1, #8)
 
@@ -92,6 +93,28 @@ L'inscription **n'émet aucun JWT** (la connexion est l'issue #10).
   réel est **différé** à M5 ([ADR-0006](../docs/adr/0006-notifications-fcm-sms.md)) — l'adapter de #8
   est un **stub** qui ne journalise rien. Le code OTP n'est **jamais** renvoyé ni journalisé.
 - **PII** (`full_name`, `phone`, `email`) et secrets ne sont **jamais** journalisés (PRD §11.1/§11.3).
+
+## Authentification — inscription gérant (#9)
+
+`POST /auth/register/manager` crée un **compte propriétaire de salon** (`role=MANAGER`,
+`status=ACTIVE`) à partir des **mêmes champs** que le client (`full_name`, `phone`, `password`,
+`email` optionnel) et avec les **mêmes règles** (hachage **argon2id**, normalisation du téléphone,
+refus de doublon à deux niveaux, OTP désactivé par défaut). Le compte est alors **prêt à créer un
+salon** (`salons.owner_id → users.id`, issue #15). Même adapter (`adapters/inbound/auth.py`) et même
+cas d'usage généralisé (`RegisterUser`, `application/registration.py`) que l'inscription client.
+
+- **Requête** / **`201`** / **`409`** / **`422`** : **identiques** à l'inscription client (voir
+  ci-dessus). La réponse porte `role: "MANAGER"` et n'expose **jamais** de secret.
+- **Rôle attribué côté serveur — anti-élévation de privilège (label `security`)** : le rôle
+  `MANAGER` est déterminé par le **chemin d'inscription** (endpoint + assemblage), **jamais** par un
+  champ de la requête. Défense en profondeur : (1) `RegisterRequest` **ne déclare pas** de champ
+  `role` ; (2) `extra="forbid"` → tout champ superflu (p. ex. un `role` injecté) provoque un `422` au
+  lieu d'être ignoré ; (3) **liste blanche** de domaine `SELF_REGISTERABLE_ROLES = {CLIENT, MANAGER}`
+  au niveau du cas d'usage (un `ADMIN`/`HAIRDRESSER` n'est **jamais** auto-inscriptible).
+- **Hors périmètre #9** : l'inscription gérant **n'émet aucun JWT** (connexion = #10) et **ne crée
+  aucun salon** (US-2.1 = #15). L'attribution du rôle ne donne **aucun** accès protégé tant que le
+  RBAC (#12) n'est pas en place. Aucune migration : `MANAGER` est déjà une valeur acceptée par la
+  contrainte `ck_users_role` de la table `users` (#3).
 
 ## Configuration
 
@@ -237,3 +260,11 @@ mot de passe, OTP, hacheur argon2id), des **tests API** (`TestClient`, sans base
 `201`, `409` doublon, `422` validation, non-fuite du mot de passe/OTP dans la réponse) et un
 test de configuration. Les tests d'**intégration Postgres** (persistance réelle +
 contrainte `uq_users_phone`) sont inclus et **skippés proprement si `DATABASE_URL` est absent**.
+
+Issue #9 étend la suite avec des **tests API gérant** (`test_auth_manager_api.py`, `TestClient` :
+`201` + `role="MANAGER"`, non-fuite de secret, `409` doublon, `422` validation, anti-injection
+de rôle — label `security`) ; des tests unitaires du cas d'usage généralisé
+(`test_registration_usecase.py` : `role=MANAGER`, garde-fou `RoleNotSelfRegisterable`, liste
+blanche `SELF_REGISTERABLE_ROLES`) ; et des **tests d'intégration Postgres gérant**
+(`test_manager_postgres_integration.py` : contrainte `ck_users_role`, `uq_users_phone`, flux
+complet) — **skippés proprement si `DATABASE_URL` est absent**.

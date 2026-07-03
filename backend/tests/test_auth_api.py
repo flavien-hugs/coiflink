@@ -257,3 +257,26 @@ class TestHttpMethod:
     def test_get_register_returns_405(self, client_without_db: TestClient) -> None:
         r = client_without_db.get("/auth/register")
         assert r.status_code == 405
+
+
+class TestRoleInjectionRefused:
+    """extra="forbid" : un champ `role` en corps est rejeté en 422.
+
+    Défense en profondeur contre l'élévation de privilège : `RegisterRequest`
+    ne déclare pas de champ `role` et refuse tout champ superflu (PRD §11,
+    label `security`). Ce test couvre la route client `/auth/register`.
+    """
+
+    def test_role_admin_in_body_returns_422(self, client_without_db: TestClient) -> None:
+        r = client_without_db.post("/auth/register", json={**_VALID_BODY, "role": "ADMIN"})
+        assert r.status_code == 422
+
+    def test_role_manager_in_body_returns_422(self, client_without_db: TestClient) -> None:
+        r = client_without_db.post("/auth/register", json={**_VALID_BODY, "role": "MANAGER"})
+        assert r.status_code == 422
+
+    def test_role_client_explicit_in_body_returns_422(
+        self, client_without_db: TestClient
+    ) -> None:
+        r = client_without_db.post("/auth/register", json={**_VALID_BODY, "role": "CLIENT"})
+        assert r.status_code == 422

@@ -38,6 +38,17 @@ class EmailAlreadyInUse(DomainError):
     """Un compte existe déjà pour cette adresse e-mail (doublon refusé)."""
 
 
+class RoleNotSelfRegisterable(DomainError):
+    """Rôle demandé au cas d'usage d'inscription hors liste blanche.
+
+    Garde-fou **anti-élévation de privilège** (PRD §11, label `security`) : seuls
+    les rôles de ``SELF_REGISTERABLE_ROLES`` (``CLIENT``/``MANAGER``) peuvent
+    s'auto-inscrire. Il s'agit d'une erreur de **programmation/câblage**, jamais
+    atteignable via l'API publique (aucun endpoint n'expose le choix du rôle) :
+    elle n'est donc pas mappée à un code HTTP d'entrée utilisateur.
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -54,6 +65,7 @@ __all__ = [
     "InvalidPassword",
     "PhoneAlreadyInUse",
     "EmailAlreadyInUse",
+    "RoleNotSelfRegisterable",
     "InvalidOtp",
     "OtpExpired",
 ]
