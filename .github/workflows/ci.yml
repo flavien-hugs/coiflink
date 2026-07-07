@@ -53,7 +53,7 @@ jobs:
       # Lu par migrations/env.py et par les tests base (normalisé en psycopg 3).
       DATABASE_URL: postgresql://coiflink:coiflink_ci_ephemeral@localhost:5432/coiflink_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -106,7 +106,7 @@ jobs:
       run:
         working-directory: web-dashboard
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -146,7 +146,7 @@ jobs:
       run:
         working-directory: app-mobile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Java (Temurin 17, requis par le build Android)
         uses: actions/setup-java@v4
@@ -191,7 +191,7 @@ jobs:
     name: dependency-scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -232,7 +232,7 @@ jobs:
     name: docker-backend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: docker/setup-buildx-action@v3
 
@@ -263,7 +263,7 @@ jobs:
     name: docker-web
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: docker/setup-buildx-action@v3
 
