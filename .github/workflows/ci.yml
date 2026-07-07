@@ -67,14 +67,20 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
+      - name: Migrations Alembic (upgrade head)
+        # Applique le schéma avant pytest pour que les tests d'intégration
+        # PostgreSQL (test_manager_registration_integration.py) puissent
+        # s'exécuter : DATABASE_URL est défini au niveau du job, donc ces
+        # tests ne sont pas skippés, et la table users doit exister.
+        run: alembic upgrade head
+
       - name: Tests (pytest)
         run: pytest
 
       - name: Round-trip des migrations Alembic (Postgres 16)
-        # Valide explicitement l'idempotence up/down contre Postgres 16
-        # (extension btree_gist créée par la migration initiale, ADR-0009).
+        # Valide l'idempotence down/up contre Postgres 16 (upgrade head déjà
+        # exécuté avant pytest — on valide ici le cycle complet down→up).
         run: |
-          alembic upgrade head
           alembic downgrade base
           alembic upgrade head
 
