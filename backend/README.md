@@ -3,7 +3,8 @@
 API REST du backend CoifLink, conformément à **[ADR-0003](../docs/adr/0003-backend-fastapi.md)**
 (FastAPI · Python · REST + JWT). Le socle (issues #2–#6) installe l'architecture hexagonale,
 la CI, le schéma PostgreSQL et la politique de secrets. L'**inscription client** (US-1.1, #8)
-est la première fonctionnalité M1 livrée (salons, RDV, caisse, connexion JWT… continuent en M1→).
+et l'**inscription gérant** (#9, compte propriétaire de salon) sont les premières fonctionnalités
+M1 livrées (salons, RDV, caisse, connexion JWT… continuent en M1→).
 
 ## Architecture (hexagonale — [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
 
@@ -62,6 +63,7 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 | --- | --- | --- | --- |
 | `GET` | `/health` | `{"status":"ok"}` | Sonde de santé (adapter entrant `adapters/inbound/health.py`) — aucune logique métier |
 | `POST` | `/auth/register` | `201` + utilisateur (sans secret) | Inscription client (US-1.1, #8) — voir ci-dessous |
+| `POST` | `/auth/register/manager` | `201` + utilisateur (sans secret) | Inscription gérant (compte propriétaire de salon, #9) — voir ci-dessous |
 
 ## Authentification — inscription client (US-1.1, #8)
 
@@ -92,6 +94,33 @@ L'inscription **n'émet aucun JWT** (la connexion est l'issue #10).
   réel est **différé** à M5 ([ADR-0006](../docs/adr/0006-notifications-fcm-sms.md)) — l'adapter de #8
   est un **stub** qui ne journalise rien. Le code OTP n'est **jamais** renvoyé ni journalisé.
 - **PII** (`full_name`, `phone`, `email`) et secrets ne sont **jamais** journalisés (PRD §11.1/§11.3).
+
+## Authentification — inscription gérant (#9)
+
+`POST /auth/register/manager` crée un **compte propriétaire de salon** (`role=MANAGER`,
+`status=ACTIVE`) à partir des **mêmes champs** que l'inscription client (**nom**, **téléphone**,
+**mot de passe** ; e-mail optionnel). C'est le **prérequis** de la création d'un salon (US-2.1, #15) :
+une fois inscrit, le gérant est **prêt à créer son salon** (rattachement `salons.owner_id` traité
+par #15). L'inscription est **self-service** et **n'émet aucun JWT** (la connexion est l'issue #10).
+
+Le cas d'usage `application/registration.py` est **généralisé** en `RegisterUser` paramétré par le
+rôle ; l'inscription client reste la spécialisation `RegisterClient` (`role=CLIENT`). L'adapter
+entrant réutilise les schémas `RegisterRequest`/`UserResponse` de #8.
+
+- **Requête** (JSON) : `full_name` (requis), `phone` (requis), `password` (requis, ≥ 8 caractères),
+  `email` (optionnel). **Aucun champ `role`.**
+- **`201 Created`** : `{ id, full_name, phone, email, role: "MANAGER", status, created_at }`. La
+  réponse n'expose **jamais** `password` ni `password_hash`.
+- **`409 Conflict`** : le numéro de téléphone (ou l'e-mail) est **déjà inscrit** — quel que soit le
+  rôle du compte existant (doublon refusé, `uq_users_phone`).
+- **`422 Unprocessable Entity`** : validation (téléphone/mot de passe/e-mail invalides, champ manquant).
+
+**Sécurité :** le **rôle `MANAGER` est attribué côté serveur**, jamais lu depuis la requête — aucun
+champ `role` public n'est déclaré, donc **pas d'élévation de privilège** possible via l'inscription
+(un `role` envoyé dans le corps est ignoré). Le rôle `MANAGER` seul ne confère **aucun** accès à des
+données d'un autre salon : le RBAC et l'isolation par salon arrivent avec #12. Toutes les autres
+garanties de l'inscription client s'appliquent à l'identique (hachage argon2id, normalisation E.164
+du téléphone, refus de doublon à deux niveaux, non-journalisation des secrets/PII).
 
 ## Configuration
 
@@ -237,3 +266,17 @@ mot de passe, OTP, hacheur argon2id), des **tests API** (`TestClient`, sans base
 `201`, `409` doublon, `422` validation, non-fuite du mot de passe/OTP dans la réponse) et un
 test de configuration. Les tests d'**intégration Postgres** (persistance réelle +
 contrainte `uq_users_phone`) sont inclus et **skippés proprement si `DATABASE_URL` est absent**.
+
+Issue #9 ajoute trois suites dédiées à l'inscription gérant :
+
+- `test_manager_registration_usecase.py` — rôle `MANAGER` attribué côté serveur, statut
+  `ACTIVE`, normalisation E.164, mot de passe jamais persisté en clair, doublon (pré-check +
+  fallback `IntegrityError`), validations domaine, OTP off/on, rôle inconnu → `ValueError`,
+  non-régression #8 (`RegisterClient` reste `CLIENT`).
+- `test_manager_auth_api.py` — `201` + `role=="MANAGER"`, non-fuite du secret, `409` doublon
+  (format local et E.164, détail sans le numéro), `422` validation et bornes, anti-escalade
+  (champ `role` dans le corps ignoré), `405` sur `GET`.
+- `test_manager_registration_integration.py` (PostgreSQL, **skip propre sans `DATABASE_URL`**) —
+  persistance `role=MANAGER`/`status=ACTIVE`, `password_hash` ≠ clair dans la table,
+  contrainte `uq_users_phone` (dont doublon cross-rôle `CLIENT→MANAGER`), fallback
+  `IntegrityError` concurrente → `PhoneAlreadyInUse`.

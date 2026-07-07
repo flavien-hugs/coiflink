@@ -1,12 +1,18 @@
 """Adapter entrant (driving) : router HTTP d'authentification (ADR-0003/0008).
 
-Expose l'**inscription client** `POST /auth/register` (US-1.1, issue #8). Traduit
-la requête HTTP en commande applicative, assemble le cas d'usage `RegisterClient`
-via l'injection de dépendances FastAPI, puis retraduit les erreurs de domaine en
-codes HTTP :
+Expose l'**inscription client** `POST /auth/register` (US-1.1, issue #8) et
+l'**inscription gérant** `POST /auth/register/manager` (issue #9, compte
+propriétaire de salon). Les deux routes traduisent la requête HTTP en commande
+applicative, assemblent le cas d'usage `RegisterUser` via l'injection de
+dépendances FastAPI (**le rôle est fixé côté serveur**), puis retraduisent les
+erreurs de domaine en codes HTTP :
 - `PhoneAlreadyInUse` / `EmailAlreadyInUse` → **409 Conflict** ;
 - `InvalidPhone` / `InvalidPassword` / `InvalidName` / `InvalidEmail` →
   **422 Unprocessable Entity**.
+
+Invariant de sécurité : **aucun** champ `role` n'est déclaré dans la requête
+(`RegisterRequest`) ; le rôle est attribué par le câblage de la route, jamais
+lu depuis le corps — pas d'élévation de privilège possible via l'inscription.
 
 Les schémas Pydantic servent la documentation OpenAPI auto-générée (ADR-0003).
 La réponse n'expose **jamais** `password` ni `password_hash` (PRD §11.1). Le
@@ -29,8 +35,9 @@ from coiflink_api.adapters.outbound.persistence.user_repository import (
 )
 from coiflink_api.adapters.outbound.security.argon2_hasher import Argon2Hasher
 from coiflink_api.application.ports.password_hasher import PasswordHasher
-from coiflink_api.application.registration import RegisterClient, RegisterCommand
+from coiflink_api.application.registration import RegisterCommand, RegisterUser
 from coiflink_api.config import AuthConfig
+from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
     EmailAlreadyInUse,
     InvalidEmail,
@@ -75,22 +82,25 @@ def get_password_hasher() -> PasswordHasher:
     return Argon2Hasher()
 
 
-def get_register_client(
+def _build_register_user(
     request: Request,
-    session: Annotated[Session, Depends(get_session)],
-    hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
-) -> RegisterClient:
-    """Assemble le cas d'usage `RegisterClient` avec ses adapters (DI).
+    session: Session,
+    hasher: PasswordHasher,
+    role: str,
+) -> RegisterUser:
+    """Assemble un cas d'usage `RegisterUser` pour le `role` **fixé côté serveur**.
 
     Lit la configuration OTP et les adapters singletons déposés sur `app.state`
     par le composition root ; retombe sur des défauts sûrs (OTP désactivé) si
-    l'état n'est pas configuré.
+    l'état n'est pas configuré. Le rôle est passé explicitement par la route
+    (jamais lu depuis la requête) — garde-fou anti-élévation de privilège.
     """
 
     config: AuthConfig = getattr(request.app.state, "auth_config", None) or AuthConfig()
-    return RegisterClient(
+    return RegisterUser(
         SqlUserRepository(session),
         hasher,
+        role=role,
         otp_enabled=config.otp_enabled,
         otp_sender=getattr(request.app.state, "otp_sender", None),
         otp_repository=getattr(request.app.state, "otp_repository", None),
@@ -100,17 +110,37 @@ def get_register_client(
     )
 
 
-@router.post(
-    "/register",
-    response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Inscription d'un client (nom, téléphone, mot de passe)",
-)
-def register_client(
-    payload: RegisterRequest,
-    usecase: Annotated[RegisterClient, Depends(get_register_client)],
-) -> UserResponse:
-    """Crée un compte client (`role=CLIENT`) ; refuse un doublon de téléphone."""
+def get_register_client(
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+    hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
+) -> RegisterUser:
+    """Assemble le cas d'usage d'inscription **client** (`role=CLIENT`)."""
+
+    return _build_register_user(request, session, hasher, Role.CLIENT.value)
+
+
+def get_register_manager(
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+    hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
+) -> RegisterUser:
+    """Assemble le cas d'usage d'inscription **gérant** (`role=MANAGER`, #9).
+
+    Le rôle `MANAGER` est attribué **côté serveur** ; aucun champ `role` n'est
+    lu depuis la requête (anti-élévation de privilège).
+    """
+
+    return _build_register_user(request, session, hasher, Role.MANAGER.value)
+
+
+def _run_registration(usecase: RegisterUser, payload: RegisterRequest) -> UserResponse:
+    """Exécute l'inscription et traduit les erreurs de domaine en HTTP.
+
+    Factorisé entre les routes client et gérant : même parcours applicatif, seul
+    le rôle (fixé au câblage, dans `usecase`) diffère. La réponse ne transporte
+    **jamais** de secret.
+    """
 
     command = RegisterCommand(
         full_name=payload.full_name,
@@ -143,6 +173,41 @@ def register_client(
         status=user.status,
         created_at=user.created_at,
     )
+
+
+@router.post(
+    "/register",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Inscription d'un client (nom, téléphone, mot de passe)",
+)
+def register_client(
+    payload: RegisterRequest,
+    usecase: Annotated[RegisterUser, Depends(get_register_client)],
+) -> UserResponse:
+    """Crée un compte client (`role=CLIENT`) ; refuse un doublon de téléphone."""
+
+    return _run_registration(usecase, payload)
+
+
+@router.post(
+    "/register/manager",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Inscription d'un gérant (compte propriétaire de salon)",
+)
+def register_manager(
+    payload: RegisterRequest,
+    usecase: Annotated[RegisterUser, Depends(get_register_manager)],
+) -> UserResponse:
+    """Crée un compte gérant (`role=MANAGER`), prêt à créer un salon (#15).
+
+    Le rôle est attribué **côté serveur** : un éventuel champ `role` dans le
+    corps est ignoré (`RegisterRequest` ne le déclare pas). Refuse un doublon de
+    téléphone (`409`) et n'émet aucun JWT (la connexion est l'issue #10).
+    """
+
+    return _run_registration(usecase, payload)
 
 
 __all__ = ["router", "RegisterRequest", "UserResponse"]
