@@ -22,6 +22,8 @@ dependencies = [
     # native de Pydantic (`EmailStr`) pour l'inscription client.
     "argon2-cffi>=23",
     "pydantic[email]>=2.7",
+    # Connexion / émission de JWT (issue #10, ADR-0013) : PyJWT (HS256 symétrique).
+    "pyjwt>=2.8",
 ]
 
 [project.optional-dependencies]

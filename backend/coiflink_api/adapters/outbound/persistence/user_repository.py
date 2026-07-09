@@ -12,11 +12,14 @@ optionnel est unique partiel (`uq_users_email`).
 
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
+from coiflink_api.domain.credentials import UserCredentials
 from coiflink_api.domain.errors import EmailAlreadyInUse, PhoneAlreadyInUse
 from coiflink_api.domain.user import User, UserToCreate
 
@@ -32,6 +35,31 @@ class SqlUserRepository:
 
         stmt = select(models.User.id).where(models.User.phone == phone).limit(1)
         return self._session.scalar(stmt) is not None
+
+    def find_by_phone(self, phone: str) -> UserCredentials | None:
+        """Charge les identifiants du compte pour ce téléphone (E.164), sinon `None`."""
+
+        stmt = select(models.User).where(models.User.phone == phone).limit(1)
+        return _to_credentials(self._session.scalar(stmt))
+
+    def find_by_email(self, email: str) -> UserCredentials | None:
+        """Charge les identifiants du compte pour cet e-mail, sinon `None`."""
+
+        stmt = select(models.User).where(models.User.email == email).limit(1)
+        return _to_credentials(self._session.scalar(stmt))
+
+    def find_by_id(self, user_id: uuid.UUID | str) -> UserCredentials | None:
+        """Charge les identifiants du compte pour cet `id`, sinon `None`.
+
+        Un `id` non convertible en UUID (jeton altéré) donne `None` — jamais
+        d'erreur remontée à l'appelant.
+        """
+
+        try:
+            pk = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+        except (ValueError, TypeError):
+            return None
+        return _to_credentials(self._session.get(models.User, pk))
 
     def create(self, user: UserToCreate) -> User:
         """Insère l'utilisateur et retourne l'entité (avec `id`, `created_at`).
@@ -78,6 +106,23 @@ class SqlUserRepository:
             status=row.status,
             created_at=row.created_at,
         )
+
+
+def _to_credentials(row: "models.User | None") -> UserCredentials | None:
+    """Mappe une ligne ORM `User` vers `UserCredentials` (avec `password_hash`).
+
+    Le `password_hash` reste **interne** : `UserCredentials` n'est jamais
+    sérialisé dans une réponse HTTP (cf. `domain/credentials.py`).
+    """
+
+    if row is None:
+        return None
+    return UserCredentials(
+        id=row.id,
+        role=row.role,
+        status=row.status,
+        password_hash=row.password_hash,
+    )
 
 
 __all__ = ["SqlUserRepository"]

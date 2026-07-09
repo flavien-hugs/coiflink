@@ -16,9 +16,10 @@ Chaque énumération hérite de `str` afin que, par exemple, `Role.CLIENT ==
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import Enum, unique
 
 
+@unique
 class _StrEnum(str, Enum):
     """Base : énumération dont la valeur est la chaîne stockée en base."""
 
@@ -26,6 +27,7 @@ class _StrEnum(str, Enum):
         return self.value
 
 
+@unique
 class Role(_StrEnum):
     """Rôles utilisateur (PRD §9.1)."""
 
@@ -35,6 +37,7 @@ class Role(_StrEnum):
     ADMIN = "ADMIN"
 
 
+@unique
 class UserStatus(_StrEnum):
     """Statut de compte (désactivation logique — PRD §11.3)."""
 
@@ -43,6 +46,7 @@ class UserStatus(_StrEnum):
     SUSPENDED = "SUSPENDED"
 
 
+@unique
 class SalonStatus(_StrEnum):
     """Statut d'un salon (un salon inactif n'est plus visible — PRD §8.3)."""
 
@@ -51,6 +55,7 @@ class SalonStatus(_StrEnum):
     SUSPENDED = "SUSPENDED"
 
 
+@unique
 class AppointmentStatus(_StrEnum):
     """Statuts d'un rendez-vous (PRD §9.4)."""
 
@@ -61,6 +66,7 @@ class AppointmentStatus(_StrEnum):
     NO_SHOW = "NO_SHOW"
 
 
+@unique
 class PaymentMethod(_StrEnum):
     """Modes de paiement MVP (PRD §9.6)."""
 
@@ -70,6 +76,7 @@ class PaymentMethod(_StrEnum):
     OTHER = "OTHER"
 
 
+@unique
 class PaymentStatus(_StrEnum):
     """Statuts d'un paiement (PRD §9.6)."""
 
@@ -79,6 +86,7 @@ class PaymentStatus(_StrEnum):
     ADJUSTED = "ADJUSTED"
 
 
+@unique
 class CashOperationType(_StrEnum):
     """Types d'opération du journal de caisse (PRD §9.7)."""
 
@@ -89,6 +97,7 @@ class CashOperationType(_StrEnum):
     CASH_CLOSING = "CASH_CLOSING"
 
 
+@unique
 class NotificationType(_StrEnum):
     """Type métier d'une notification (PRD §8.4)."""
 
@@ -97,6 +106,7 @@ class NotificationType(_StrEnum):
     CANCELLATION = "CANCELLATION"
 
 
+@unique
 class NotificationChannel(_StrEnum):
     """Canaux de notification (PRD §9.8)."""
 
@@ -107,6 +117,7 @@ class NotificationChannel(_StrEnum):
     IN_APP = "IN_APP"
 
 
+@unique
 class NotificationStatus(_StrEnum):
     """Statut d'acheminement d'une notification."""
 

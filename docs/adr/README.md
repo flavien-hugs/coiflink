@@ -25,6 +25,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0010](./0010-ci-cd-docker-packaging.md) | Pipeline CI/CD applicatif & empaquetage Docker | Accepté | #4 |
 | [0011](./0011-deploiement-environnements-secrets.md) | Déploiement, environnements & gestion des secrets | Accepté | #5 |
 | [0012](./0012-hachage-argon2-strategie-otp.md) | Hachage de mot de passe (argon2id) & stratégie OTP | Accepté | #8 |
+| [0013](./0013-connexion-jwt-refresh-anti-bruteforce.md) | Connexion — bibliothèque JWT, refresh & anti-bruteforce | Accepté | #10 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
@@ -47,7 +48,8 @@ ultérieure et signalés en *Conséquences* des ADR concernés :
   SQLAlchemy 2.0 + Alembic + psycopg 3, PostgreSQL 16).
 - **Lib de hachage de mot de passe** — **tranchée par [ADR-0012](./0012-hachage-argon2-strategie-otp.md)**
   (#8 : argon2id via `argon2-cffi`), fermant le « Suivi » d'ADR-0003 côté hachage.
-- **Runner de tâches async, lib JWT** — voir ADR-0003 ; la **lib JWT** (émission de jetons) est
-  précisée par la connexion (#10).
+- **Runner de tâches async** — voir ADR-0003 (différé). La **lib JWT** (émission de jetons) est
+  **tranchée par [ADR-0013](./0013-connexion-jwt-refresh-anti-bruteforce.md)** (#10 : PyJWT, HS256 +
+  refresh rotaté + anti-bruteforce en mémoire), fermant le « Suivi » d'ADR-0003 côté JWT.
 - **Versions de référence** (Flutter/Dart, Python, PostgreSQL, Redis, Node) — **arrêtées en #2**, voir
   [ADR-0007](./0007-arborescence-monorepo-versions.md).

@@ -46,6 +46,36 @@ class OtpExpired(DomainError):
     """Le code OTP a dépassé sa fenêtre de validité."""
 
 
+class InvalidCredentials(DomainError):
+    """Échec d'authentification à la connexion (#10).
+
+    **Volontairement indistincte** : identifiant inconnu, mot de passe faux **ou**
+    compte non `ACTIVE` lèvent la *même* erreur, avec le *même* message générique,
+    pour ne jamais divulguer l'existence ou l'état d'un compte (anti-énumération,
+    PRD §11.1). Ne transporte donc aucun détail sur le motif exact.
+    """
+
+
+class TooManyLoginAttempts(DomainError):
+    """Trop d'échecs de connexion sur la fenêtre glissante (anti-bruteforce, #10).
+
+    Peut porter un `retry_after` (secondes) que l'adapter entrant expose via
+    l'en-tête HTTP `Retry-After` accompagnant le `429 Too Many Requests`.
+    """
+
+    def __init__(self, message: str = "", *, retry_after: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class InvalidToken(DomainError):
+    """Jeton (refresh) absent, altéré, de mauvaise signature ou de mauvais `type`."""
+
+
+class ExpiredToken(DomainError):
+    """Jeton (refresh) dont la fenêtre de validité (`exp`) est dépassée."""
+
+
 __all__ = [
     "DomainError",
     "InvalidName",
@@ -56,4 +86,8 @@ __all__ = [
     "EmailAlreadyInUse",
     "InvalidOtp",
     "OtpExpired",
+    "InvalidCredentials",
+    "TooManyLoginAttempts",
+    "InvalidToken",
+    "ExpiredToken",
 ]

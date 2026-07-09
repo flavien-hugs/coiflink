@@ -2,9 +2,10 @@
 
 API REST du backend CoifLink, conformément à **[ADR-0003](../docs/adr/0003-backend-fastapi.md)**
 (FastAPI · Python · REST + JWT). Le socle (issues #2–#6) installe l'architecture hexagonale,
-la CI, le schéma PostgreSQL et la politique de secrets. L'**inscription client** (US-1.1, #8)
-et l'**inscription gérant** (#9, compte propriétaire de salon) sont les premières fonctionnalités
-M1 livrées (salons, RDV, caisse, connexion JWT… continuent en M1→).
+la CI, le schéma PostgreSQL et la politique de secrets. L'**inscription client** (US-1.1, #8),
+l'**inscription gérant** (#9, compte propriétaire de salon) et la **connexion JWT** (US-1.2, #10 —
+émission d'un jeton d'accès + refresh, anti-bruteforce) sont les premières fonctionnalités M1 livrées
+(salons, RDV, caisse… continuent en M1→).
 
 ## Architecture (hexagonale — [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
 
@@ -64,6 +65,8 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 | `GET` | `/health` | `{"status":"ok"}` | Sonde de santé (adapter entrant `adapters/inbound/health.py`) — aucune logique métier |
 | `POST` | `/auth/register` | `201` + utilisateur (sans secret) | Inscription client (US-1.1, #8) — voir ci-dessous |
 | `POST` | `/auth/register/manager` | `201` + utilisateur (sans secret) | Inscription gérant (compte propriétaire de salon, #9) — voir ci-dessous |
+| `POST` | `/auth/login` | `200` + paire de jetons | Connexion (téléphone **ou** e-mail + mot de passe, US-1.2, #10) — voir ci-dessous |
+| `POST` | `/auth/refresh` | `200` + paire de jetons | Rafraîchit le jeton d'accès depuis un refresh valide (#10) — voir ci-dessous |
 
 ## Authentification — inscription client (US-1.1, #8)
 
@@ -122,6 +125,50 @@ données d'un autre salon : le RBAC et l'isolation par salon arrivent avec #12. 
 garanties de l'inscription client s'appliquent à l'identique (hachage argon2id, normalisation E.164
 du téléphone, refus de doublon à deux niveaux, non-journalisation des secrets/PII).
 
+## Authentification — connexion (US-1.2, #10)
+
+`POST /auth/login` authentifie un compte par **identifiant + mot de passe** et émet, en cas de
+succès, une **paire de jetons JWT** : un **jeton d'accès** court et un **refresh token** long.
+`POST /auth/refresh` échange un refresh valide contre une **nouvelle** paire (rotation). Adapter
+entrant : `adapters/inbound/auth.py` ; cas d'usage : `application/authentication.py` (architecture
+hexagonale). Décisions actées par **[ADR-0013](../docs/adr/0013-connexion-jwt-refresh-anti-bruteforce.md)**
+(PyJWT · HS256 · refresh rotaté · anti-bruteforce en mémoire).
+
+- **`POST /auth/login`** — corps (JSON) : `identifier` (requis — **téléphone ou e-mail**,
+  auto-détecté) et `password` (requis). Réponses :
+  - **`200 OK`** : `{ access_token, refresh_token, token_type: "bearer", expires_in }`
+    (`expires_in` = durée du **jeton d'accès** en secondes). Le `JWT_SECRET` n'apparaît **jamais**.
+  - **`401 Unauthorized`** : identifiants invalides — **message générique unique**
+    (« Identifiants invalides »), **identique** que le compte soit inconnu, le mot de passe faux ou
+    le compte non `ACTIVE` (anti-énumération).
+  - **`429 Too Many Requests`** : trop d'échecs (anti-bruteforce), avec l'en-tête **`Retry-After`**.
+  - **`422 Unprocessable Entity`** : corps malformé (champ manquant/type invalide).
+  - **`503 Service Unavailable`** : `JWT_SECRET` non configuré (émission de jetons impossible) —
+    `GET /health` et l'inscription restent disponibles.
+- **`POST /auth/refresh`** — corps (JSON) : `refresh_token` (requis). Réponses :
+  - **`200 OK`** : nouvelle paire (même schéma que `login`).
+  - **`401 Unauthorized`** : refresh invalide / expiré / altéré / de mauvais `type` — message générique.
+
+**Jeton d'accès (contrat pour le RBAC #12)** : JWT **HS256** ; claims `sub` (id utilisateur), `role`,
+`type=access`, `iat`, `exp`, `jti` — **aucune PII**. Schéma d'auth **Bearer**
+(`Authorization: Bearer <access_token>`). #10 **émet** les jetons et fournit la capacité de décodage
+(`TokenService.decode`) ; la **protection** des routes métier (deny-by-default, isolation par salon)
+relève de #12.
+
+**Sécurité & vie privée :**
+- **Mot de passe** vérifié via argon2id (`PasswordHasher.verify`) ; le clair ne vit que le temps de la
+  vérification — **jamais journalisé ni renvoyé**. Le **secret**, le **condensat** et les **jetons**
+  ne sont **jamais** journalisés.
+- **Anti-énumération** : `401` **générique et uniforme** ; quand aucun compte ne correspond, une
+  vérification argon2 **factice** est exécutée pour atténuer l'oracle temporel.
+- **Anti-bruteforce (§11.1)** : rate-limit sur les **échecs** (fenêtre glissante par **identifiant +
+  IP**), verrou temporisé (`429` + `Retry-After`), **réinitialisé au succès**. Store **en mémoire**
+  (non partagé entre instances ; adapter Redis différé, ADR-0013).
+- **Refresh** : **rotaté** à chaque rafraîchissement, avec re-lecture du `role`/`status` courant
+  (compte devenu non `ACTIVE` refusé). Pas de révocation serveur / `/auth/logout` en #10 (différé).
+- **Normalisation de l'identifiant** : téléphone en **E.164** (comme à l'inscription) ; e-mail
+  `strip`é (casse conservée, cohérente avec le stockage de #8). Transport **Bearer** supposant HTTPS.
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
@@ -135,7 +182,13 @@ les **secrets réels** (DSN base/Redis, `JWT_SECRET`, etc.) sont injectés **hor
 | `OTP_CODE_LENGTH` | `6` | Longueur du code OTP (optionnel). |
 | `OTP_TTL_SECONDS` | `300` | Durée de validité de l'OTP en secondes (optionnel). |
 | `OTP_MAX_ATTEMPTS` | `3` | Nombre d'essais autorisés par OTP (optionnel). |
-| `JWT_SECRET` | *(vide)* | **Non utilisé par #8** ; requis dès l'émission de jetons (connexion, #10). |
+| `JWT_SECRET` | *(vide)* | **SECRET** — requis pour la connexion (#10) : signe les JWT (HS256). Absent → `/auth/login` et `/auth/refresh` répondent `503`. Vit hors dépôt (ADR-0011). |
+| `JWT_ALGORITHM` | `HS256` | Algorithme de signature JWT (#10, ADR-0013). |
+| `JWT_ACCESS_TTL_SECONDS` | `900` | Durée du jeton d'accès (court) en secondes. |
+| `JWT_REFRESH_TTL_SECONDS` | `2592000` | Durée du refresh (long, rotaté) en secondes (30 j). |
+| `LOGIN_MAX_ATTEMPTS` | `5` | Anti-bruteforce : nombre d'échecs avant verrou (#10). |
+| `LOGIN_WINDOW_SECONDS` | `300` | Anti-bruteforce : fenêtre glissante des échecs, en secondes. |
+| `LOGIN_LOCKOUT_SECONDS` | `900` | Anti-bruteforce : durée du verrou après seuil, en secondes. |
 
 ## Modèle de données & migrations
 
@@ -280,3 +333,36 @@ Issue #9 ajoute trois suites dédiées à l'inscription gérant :
   persistance `role=MANAGER`/`status=ACTIVE`, `password_hash` ≠ clair dans la table,
   contrainte `uq_users_phone` (dont doublon cross-rôle `CLIENT→MANAGER`), fallback
   `IntegrityError` concurrente → `PhoneAlreadyInUse`.
+
+Issue #10 ajoute six suites dédiées à la connexion JWT et à l'anti-bruteforce :
+
+- `test_identifier.py` — classement de l'identifiant : `@` → e-mail (normalisé) ; sinon téléphone
+  normalisé en E.164 (`0700…` et `+2250700…` → même clé) ; rejet des entrées vides/malformées.
+- `test_jwt_token_service.py` — `JwtTokenService` : `issue_pair` produit access + refresh avec
+  claims corrects (`sub`, `role`, `type`, `jti`, `exp` cohérent avec le TTL) ; `decode` accepte un
+  jeton valide et rejette signature invalide / jeton expiré (horloge injectée) / `alg` inattendu /
+  mauvais `type` pour `verify_refresh`. Non-émission d'un jeton si `JWT_SECRET` vide.
+- `test_login_rate_limiter.py` — `InMemoryLoginRateLimiter` (horloge injectée) : sous le seuil →
+  passe ; au seuil → `TooManyLoginAttempts` ; expiration de la fenêtre → de nouveau autorisé ;
+  `reset` au succès ré-autorise immédiatement.
+- `test_authentication_usecase.py` — `AuthenticateUser` et `RefreshTokens` (ports 100 % fakes) :
+  succès par téléphone et par e-mail → `TokenPair` + compteur reset ; mauvais mot de passe →
+  `InvalidCredentials` + `record_failure` ; utilisateur introuvable → `InvalidCredentials` +
+  vérification **factice** appelée (anti-oracle temporel) ; compte non `ACTIVE` → `InvalidCredentials` ;
+  verrou actif → `TooManyLoginAttempts` avant tout accès base. `RefreshTokens` : refresh valide →
+  nouvelle paire (rotation) ; refresh expiré/altéré/`type=access` → `InvalidToken`/`ExpiredToken` ;
+  compte devenu non `ACTIVE` → refus.
+- `test_login_api.py` — adapter entrant (FastAPI `TestClient`, ports fakes, sans base) :
+  `POST /auth/login` → `200` + structure `{access_token, refresh_token, token_type, expires_in}` ;
+  `401` **générique et indistinguable** (inconnu vs mot de passe faux vs compte inactif) ; `429` +
+  `Retry-After` ; `422` champ manquant/vide ; `503` sans `TokenService` câblé ; non-fuite du mot de
+  passe dans les réponses. `POST /auth/refresh` → `200` + structure ; `401` sur refresh invalide ou
+  expiré ; `422` champ manquant ; `405` sur mauvaise méthode.
+- `test_login_e2e.py` — deux groupes : (a) **`TestLoginFullStackE2E`** (PostgreSQL requis, **skip
+  propre sans `DATABASE_URL`**) : pile complète sans mock (HTTP → cas d'usage → SQL + argon2 + JWT
+  réel) — inscription→login par téléphone et par e-mail, vérification des claims du JWT d'accès
+  (`sub=user_id`, `role`, `type=access`, **absence de PII**), rotation du refresh, accumulation du
+  rate-limiter jusqu'au `429` + `Retry-After`, reset du compteur après succès ; (b)
+  **`TestRateLimitAccumulationE2E`** (sans base) : N requêtes HTTP consécutives avec
+  `InMemoryLoginRateLimiter` réel capturé en closure — déclenchement du `429` au seuil, présence et
+  valeur positive de `Retry-After`, message `429` sans l'identifiant ciblé.
