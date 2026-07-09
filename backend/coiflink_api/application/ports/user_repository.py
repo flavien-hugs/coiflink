@@ -8,8 +8,10 @@ modèle ORM.
 
 from __future__ import annotations
 
+import uuid
 from typing import Protocol
 
+from coiflink_api.domain.credentials import UserCredentials
 from coiflink_api.domain.user import User, UserToCreate
 
 
@@ -26,6 +28,26 @@ class UserRepository(Protocol):
         Doit lever `domain.errors.PhoneAlreadyInUse` (resp.
         `EmailAlreadyInUse`) si la contrainte d'unicité base est violée — garde-fou
         d'ultime recours contre une course concurrente.
+        """
+        ...
+
+    def find_by_phone(self, phone: str) -> UserCredentials | None:
+        """Retourne les identifiants du compte pour ce téléphone (E.164), sinon `None`.
+
+        Utilisé par la **connexion** (#10) : l'entité renvoyée porte le
+        `password_hash` (nécessaire à `verify`) — elle n'est jamais sérialisée.
+        """
+        ...
+
+    def find_by_email(self, email: str) -> UserCredentials | None:
+        """Retourne les identifiants du compte pour cet e-mail, sinon `None`."""
+        ...
+
+    def find_by_id(self, user_id: uuid.UUID | str) -> UserCredentials | None:
+        """Retourne les identifiants du compte pour cet `id`, sinon `None`.
+
+        Utilisé au **rafraîchissement** (#10) pour relire `role`/`status` courants
+        et refuser un compte devenu non `ACTIVE`.
         """
         ...
 

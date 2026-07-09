@@ -34,21 +34,38 @@ from coiflink_api.adapters.outbound.persistence.user_repository import (
     SqlUserRepository,
 )
 from coiflink_api.adapters.outbound.security.argon2_hasher import Argon2Hasher
+from coiflink_api.adapters.outbound.security.login_rate_limiter_memory import (
+    InMemoryLoginRateLimiter,
+)
+from coiflink_api.application.authentication import (
+    AuthenticateUser,
+    LoginCommand,
+    RefreshTokens,
+)
+from coiflink_api.application.ports.login_rate_limiter import LoginRateLimiter
 from coiflink_api.application.ports.password_hasher import PasswordHasher
+from coiflink_api.application.ports.token_service import TokenService
 from coiflink_api.application.registration import RegisterCommand, RegisterUser
 from coiflink_api.config import AuthConfig
 from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
     EmailAlreadyInUse,
+    ExpiredToken,
+    InvalidCredentials,
     InvalidEmail,
     InvalidName,
     InvalidPassword,
     InvalidPhone,
+    InvalidToken,
     PhoneAlreadyInUse,
+    TooManyLoginAttempts,
 )
 from coiflink_api.domain.password import MAX_LENGTH, MIN_LENGTH
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Message générique unique pour tout échec d'authentification (anti-énumération).
+_INVALID_CREDENTIALS_DETAIL = "Identifiants invalides."
 
 
 class RegisterRequest(BaseModel):
@@ -210,4 +227,182 @@ def register_manager(
     return _run_registration(usecase, payload)
 
 
-__all__ = ["router", "RegisterRequest", "UserResponse"]
+# --------------------------------------------------------------------------- #
+# Connexion / rafraîchissement (US-1.2, issue #10 — JWT + anti-bruteforce).
+# --------------------------------------------------------------------------- #
+class LoginRequest(BaseModel):
+    """Corps de `POST /auth/login`. `password` n'est jamais renvoyé ni journalisé."""
+
+    # Identifiant unique = téléphone **ou** e-mail (auto-détecté côté domaine).
+    identifier: str = Field(min_length=1, max_length=320, examples=["0700000000"])
+    # `min_length=1` (et non la politique d'inscription) : un mot de passe trop
+    # court doit produire le **même** 401 générique qu'un mot de passe faux, pas un
+    # 422 qui divulguerait la politique / distinguerait les cas (anti-énumération).
+    password: str = Field(min_length=1, max_length=MAX_LENGTH, examples=["motdepasse-solide"])
+
+
+class RefreshRequest(BaseModel):
+    """Corps de `POST /auth/refresh`."""
+
+    refresh_token: str = Field(min_length=1)
+
+
+class TokenResponse(BaseModel):
+    """Paire de jetons émise. **Aucun** secret serveur : la clé de signature n'apparaît jamais."""
+
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+def get_token_service(request: Request) -> TokenService:
+    """Fournit le `TokenService` déposé sur `app.state` par le composition root.
+
+    Absent (p. ex. `JWT_SECRET` non configuré → non assemblé au démarrage), on
+    échoue proprement en `503` sans divulguer de valeur de secret et **sans**
+    affecter `/health` ni l'inscription (assemblage déporté aux routes d'auth).
+    """
+
+    service = getattr(request.app.state, "token_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service d'authentification indisponible (JWT_SECRET non configuré).",
+        )
+    return service
+
+
+def get_login_rate_limiter(request: Request) -> LoginRateLimiter:
+    """Fournit le limiteur anti-bruteforce singleton (état en mémoire partagé)."""
+
+    limiter = getattr(request.app.state, "login_rate_limiter", None)
+    if limiter is None:
+        # Repli sûr (tests/état non configuré) : défauts d'`AuthConfig`.
+        config: AuthConfig = getattr(request.app.state, "auth_config", None) or AuthConfig()
+        limiter = InMemoryLoginRateLimiter(
+            max_attempts=config.login_max_attempts,
+            window=config.login_window,
+            lockout=config.login_lockout,
+        )
+        request.app.state.login_rate_limiter = limiter
+    return limiter
+
+
+def get_authenticate_user(
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+    hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
+    token_service: Annotated[TokenService, Depends(get_token_service)],
+    rate_limiter: Annotated[LoginRateLimiter, Depends(get_login_rate_limiter)],
+) -> AuthenticateUser:
+    """Assemble le cas d'usage de **connexion** (aucune règle métier ici)."""
+
+    return AuthenticateUser(
+        SqlUserRepository(session),
+        hasher,
+        token_service,
+        rate_limiter,
+        dummy_hash=getattr(request.app.state, "login_dummy_hash", None),
+    )
+
+
+def get_refresh_tokens(
+    session: Annotated[Session, Depends(get_session)],
+    token_service: Annotated[TokenService, Depends(get_token_service)],
+) -> RefreshTokens:
+    """Assemble le cas d'usage de **rafraîchissement** de jeton."""
+
+    return RefreshTokens(SqlUserRepository(session), token_service)
+
+
+def _client_ip(request: Request) -> str | None:
+    """IP du pair direct (`request.client.host`).
+
+    Note (ADR-0013) : derrière le proxy Railway, l'IP réelle transiterait par
+    `X-Forwarded-For` ; son exploitation *de confiance* est différée pour éviter
+    un en-tête spoofable dans la clé d'anti-bruteforce.
+    """
+
+    return request.client.host if request.client else None
+
+
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Connexion (téléphone ou e-mail + mot de passe) — émet un JWT + refresh",
+)
+def login(
+    payload: LoginRequest,
+    request: Request,
+    usecase: Annotated[AuthenticateUser, Depends(get_authenticate_user)],
+) -> TokenResponse:
+    """Authentifie et émet une paire de jetons ; `401` générique / `429` si bruteforce."""
+
+    command = LoginCommand(
+        identifier=payload.identifier,
+        password=payload.password,
+        client_ip=_client_ip(request),
+    )
+    try:
+        pair = usecase.execute(command)
+    except TooManyLoginAttempts as exc:
+        headers = (
+            {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Trop de tentatives de connexion. Réessayez plus tard.",
+            headers=headers,
+        ) from exc
+    except InvalidCredentials as exc:
+        # Message générique constant (jamais str(exc)) : aucune énumération de comptes.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS_DETAIL
+        ) from exc
+
+    return TokenResponse(
+        access_token=pair.access_token,
+        refresh_token=pair.refresh_token,
+        token_type=pair.token_type,
+        expires_in=pair.expires_in,
+    )
+
+
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Rafraîchit le jeton d'accès à partir d'un refresh token valide",
+)
+def refresh(
+    payload: RefreshRequest,
+    usecase: Annotated[RefreshTokens, Depends(get_refresh_tokens)],
+) -> TokenResponse:
+    """Échange un refresh valide contre une **nouvelle** paire (rotation) ; `401` sinon."""
+
+    try:
+        pair = usecase.execute(payload.refresh_token)
+    except (InvalidToken, ExpiredToken) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Jeton de rafraîchissement invalide.",
+        ) from exc
+
+    return TokenResponse(
+        access_token=pair.access_token,
+        refresh_token=pair.refresh_token,
+        token_type=pair.token_type,
+        expires_in=pair.expires_in,
+    )
+
+
+__all__ = [
+    "router",
+    "RegisterRequest",
+    "UserResponse",
+    "LoginRequest",
+    "RefreshRequest",
+    "TokenResponse",
+]

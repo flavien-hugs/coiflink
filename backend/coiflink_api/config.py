@@ -1,12 +1,18 @@
 """Configuration d'authentification lue **depuis l'environnement** (ADR-0011).
 
 Le composition root (`main.py`) charge cette configuration et la dépose sur
-`app.state` ; l'adapter entrant `auth` la relit pour assembler le cas d'usage.
-Aucun secret ici : seulement des drapeaux/paramètres non sensibles (l'OTP est
-**désactivé par défaut** en #8, l'envoi SMS réel étant différé à M5).
+`app.state` ; les adapters entrants (`auth`) la relisent pour assembler les cas
+d'usage. Elle regroupe :
 
-Note : `JWT_SECRET` n'est **pas** lu par #8 — l'inscription n'émet aucun JWT
-(l'émission de jetons est traitée par la connexion, issue #10).
+- l'**inscription/OTP** (#8, non secret ; OTP désactivé par défaut) ;
+- la **connexion/JWT** (#10) : `jwt_secret` (**secret**, ADR-0011), algorithme,
+  TTL des jetons d'accès/refresh, et les paramètres d'**anti-bruteforce**.
+
+Le `jwt_secret` **n'a pas de défaut sûr** : ici il vaut `""` quand `JWT_SECRET`
+est absent. La **validation fail-fast** n'a **pas** lieu au chargement (pour ne
+pas casser `GET /health` en env mal configuré) mais à l'**assemblage du
+`TokenService`** (`JwtTokenService.__init__` lève si le secret est vide) — donc
+uniquement sur les routes `/auth/*` qui émettent des jetons.
 """
 
 from __future__ import annotations
@@ -23,6 +29,14 @@ from coiflink_api.domain.otp import (
 )
 
 _TRUTHY = {"1", "true", "yes", "on"}
+
+# Défauts de connexion/JWT (non secrets). Le secret lui-même n'a jamais de défaut.
+DEFAULT_JWT_ALGORITHM = "HS256"
+DEFAULT_ACCESS_TTL = datetime.timedelta(minutes=15)
+DEFAULT_REFRESH_TTL = datetime.timedelta(days=30)
+DEFAULT_LOGIN_MAX_ATTEMPTS = 5
+DEFAULT_LOGIN_WINDOW = datetime.timedelta(seconds=300)
+DEFAULT_LOGIN_LOCKOUT = datetime.timedelta(seconds=900)
 
 
 def _bool_env(value: str | None, default: bool) -> bool:
@@ -42,12 +56,23 @@ def _int_env(value: str | None, default: int) -> int:
 
 @dataclass(frozen=True)
 class AuthConfig:
-    """Réglages d'inscription/OTP (non secrets)."""
+    """Réglages d'inscription/OTP (non secrets) et de connexion/JWT (#10).
+
+    `jwt_secret` est le seul champ **secret** ; il vaut `""` par défaut (validation
+    fail-fast déportée à l'assemblage du `TokenService`).
+    """
 
     otp_enabled: bool = False
     otp_length: int = DEFAULT_OTP_LENGTH
     otp_ttl: datetime.timedelta = DEFAULT_OTP_TTL
     otp_max_attempts: int = DEFAULT_OTP_MAX_ATTEMPTS
+    jwt_secret: str = ""
+    jwt_algorithm: str = DEFAULT_JWT_ALGORITHM
+    access_ttl: datetime.timedelta = DEFAULT_ACCESS_TTL
+    refresh_ttl: datetime.timedelta = DEFAULT_REFRESH_TTL
+    login_max_attempts: int = DEFAULT_LOGIN_MAX_ATTEMPTS
+    login_window: datetime.timedelta = DEFAULT_LOGIN_WINDOW
+    login_lockout: datetime.timedelta = DEFAULT_LOGIN_LOCKOUT
 
 
 def load_auth_config(env: Mapping[str, str] | None = None) -> AuthConfig:
@@ -64,6 +89,36 @@ def load_auth_config(env: Mapping[str, str] | None = None) -> AuthConfig:
         ),
         otp_max_attempts=_int_env(
             source.get("OTP_MAX_ATTEMPTS"), DEFAULT_OTP_MAX_ATTEMPTS
+        ),
+        # Connexion / JWT (#10). Le secret n'a pas de défaut : "" quand absent.
+        jwt_secret=(source.get("JWT_SECRET") or "").strip(),
+        jwt_algorithm=(source.get("JWT_ALGORITHM") or DEFAULT_JWT_ALGORITHM).strip(),
+        access_ttl=datetime.timedelta(
+            seconds=_int_env(
+                source.get("JWT_ACCESS_TTL_SECONDS"),
+                int(DEFAULT_ACCESS_TTL.total_seconds()),
+            )
+        ),
+        refresh_ttl=datetime.timedelta(
+            seconds=_int_env(
+                source.get("JWT_REFRESH_TTL_SECONDS"),
+                int(DEFAULT_REFRESH_TTL.total_seconds()),
+            )
+        ),
+        login_max_attempts=_int_env(
+            source.get("LOGIN_MAX_ATTEMPTS"), DEFAULT_LOGIN_MAX_ATTEMPTS
+        ),
+        login_window=datetime.timedelta(
+            seconds=_int_env(
+                source.get("LOGIN_WINDOW_SECONDS"),
+                int(DEFAULT_LOGIN_WINDOW.total_seconds()),
+            )
+        ),
+        login_lockout=datetime.timedelta(
+            seconds=_int_env(
+                source.get("LOGIN_LOCKOUT_SECONDS"),
+                int(DEFAULT_LOGIN_LOCKOUT.total_seconds()),
+            )
         ),
     )
 

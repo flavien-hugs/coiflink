@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime
 import hmac
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, unique
 from random import Random
 
 # Paramètres par défaut (surchargés par la configuration — cf. `config.py`).
@@ -26,6 +26,7 @@ DEFAULT_OTP_TTL = datetime.timedelta(minutes=5)
 DEFAULT_OTP_MAX_ATTEMPTS = 3
 
 
+@unique
 class OtpStatus(str, Enum):
     """Issue d'une vérification d'OTP."""
 
