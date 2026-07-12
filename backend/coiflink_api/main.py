@@ -15,10 +15,11 @@ from __future__ import annotations
 import os
 import secrets
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from coiflink_api.adapters.inbound.auth import router as auth_router
 from coiflink_api.adapters.inbound.health import router as health_router
+from coiflink_api.adapters.inbound.security import require_authenticated
 from coiflink_api.adapters.outbound.notifications.otp_sender_stub import (
     StubOtpSender,
 )
@@ -36,7 +37,12 @@ from coiflink_api.config import load_auth_config
 APP_NAME = os.environ.get("APP_NAME", "CoifLink API")
 APP_ENV = os.environ.get("APP_ENV", "development")
 
-app = FastAPI(title=APP_NAME)
+# Autorisation **deny-by-default** (#12, ADR-0015) : `require_authenticated` est une
+# dépendance **globale**, donc appliquée à toutes les routes de tous les routers.
+# Une route n'est publique que si son chemin figure dans la liste d'exemption
+# explicite `security.PUBLIC_ROUTE_PATHS` — une route ajoutée sans rien déclarer
+# est **fermée**, jamais ouverte.
+app = FastAPI(title=APP_NAME, dependencies=[Depends(require_authenticated)])
 
 # Assemblage de l'authentification : la config et les adapters singletons sont
 # déposés sur `app.state` et relus par l'adapter entrant `auth` lors de

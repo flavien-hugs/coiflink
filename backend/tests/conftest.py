@@ -13,6 +13,7 @@ from typing import Union
 
 import pytest
 
+from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenService
 from coiflink_api.domain.credentials import UserCredentials
 from coiflink_api.domain.enums import NotificationChannel
 from coiflink_api.domain.errors import PhoneAlreadyInUse, TooManyLoginAttempts
@@ -39,6 +40,45 @@ FAKE_REFRESH_CLAIMS = TokenClaims(
     iat=1735725600,
     exp=1735725600 + 2592000,
 )
+
+# Claims d'**accès** synthétiques (autorisation #12) — même `sub`, `type=access`.
+FAKE_ACCESS_CLAIMS = TokenClaims(
+    sub=str(_FIXED_UUID),
+    role="CLIENT",
+    type="access",
+    jti="fake-jti-0002",
+    iat=1735725600,
+    exp=1735725600 + 900,
+)
+
+# Secret **factice** réservé aux tests : jamais un secret réel, jamais en production.
+TEST_JWT_SECRET = "test-only-jwt-secret-not-for-production-use"
+
+
+def make_access_token(
+    user_id: Union[uuid.UUID, str],
+    role: str,
+    *,
+    secret: str = TEST_JWT_SECRET,
+) -> str:
+    """Fabrique un **vrai** JWT d'accès signé avec le secret de test (#12).
+
+    Utile aux tests de gardes : ils exercent le décodage réel (`JwtTokenService`)
+    sans dépendre d'une connexion ni d'une base.
+    """
+
+    return JwtTokenService(secret).issue_pair(user_id, role).access_token
+
+
+def make_refresh_token(
+    user_id: Union[uuid.UUID, str],
+    role: str,
+    *,
+    secret: str = TEST_JWT_SECRET,
+) -> str:
+    """Fabrique un vrai **refresh** token — refusé sur une route protégée (#12)."""
+
+    return JwtTokenService(secret).issue_pair(user_id, role).refresh_token
 
 
 class FakeHasher:
@@ -123,6 +163,26 @@ class FakeAuthUserRepository(FakeUserRepository):
     def find_by_id(self, user_id: Union[uuid.UUID, str]) -> UserCredentials | None:
         return self._by_id.get(str(user_id))
 
+    def find_user_by_id(self, user_id: Union[uuid.UUID, str]) -> User | None:
+        """Entité **publique** (sans condensat) du compte — `GET /auth/me` (#12).
+
+        Dérivée des `UserCredentials` connus : le `password_hash` n'est jamais
+        recopié dans l'entité retournée. `None` si l'id est inconnu.
+        """
+
+        cred = self._by_id.get(str(user_id))
+        if cred is None:
+            return None
+        return User(
+            id=cred.id,
+            full_name="Utilisateur Test",
+            phone="+2250700000000",
+            email=None,
+            role=cred.role,
+            status=cred.status,
+            created_at=_CREATED_AT,
+        )
+
     def update_password(
         self, user_id: Union[uuid.UUID, str], new_password_hash: str
     ) -> None:
@@ -155,10 +215,14 @@ class FakeTokenService:
         *,
         pair: TokenPair | None = None,
         verify_refresh_result: Union[TokenClaims, Exception, None] = None,
+        verify_access_result: Union[TokenClaims, Exception, None] = None,
     ) -> None:
         self._pair = pair or FAKE_TOKEN_PAIR
         self._verify_refresh_result: Union[TokenClaims, Exception] = (
             verify_refresh_result if verify_refresh_result is not None else FAKE_REFRESH_CLAIMS
+        )
+        self._verify_access_result: Union[TokenClaims, Exception] = (
+            verify_access_result if verify_access_result is not None else FAKE_ACCESS_CLAIMS
         )
         self.issued: list[tuple[Union[uuid.UUID, str], str]] = []
 
@@ -173,6 +237,18 @@ class FakeTokenService:
         if isinstance(self._verify_refresh_result, Exception):
             raise self._verify_refresh_result
         return self._verify_refresh_result
+
+    def verify_access(self, token: str) -> TokenClaims:  # noqa: ARG002
+        """Vérifie un jeton d'**accès** (autorisation #12) ; refuse tout autre type.
+
+        `verify_access_result` (constructeur) permet de simuler un succès
+        (`TokenClaims`) ou un refus (exception à lever, p. ex. `InvalidToken` pour
+        un refresh présenté comme jeton d'accès).
+        """
+
+        if isinstance(self._verify_access_result, Exception):
+            raise self._verify_access_result
+        return self._verify_access_result
 
 
 class FakeLoginRateLimiter:
@@ -206,6 +282,25 @@ class FakeLoginRateLimiter:
 
     def reset(self, key: str) -> None:
         self.resets.append(key)
+
+
+class FakeSalonScopeRepository:
+    """Portée salon en mémoire (isolation §11.2, #12).
+
+    `scopes` associe un `principal_id` à ses salons. `calls` enregistre les appels
+    pour vérifier qu'un `ADMIN` **ne sollicite pas** le port (portée plateforme
+    court-circuitée par `AccessPolicy`).
+    """
+
+    def __init__(
+        self, scopes: dict[uuid.UUID, frozenset[uuid.UUID]] | None = None
+    ) -> None:
+        self.scopes: dict[uuid.UUID, frozenset[uuid.UUID]] = scopes or {}
+        self.calls: list[tuple[uuid.UUID, str]] = []
+
+    def salon_ids_for(self, principal_id: uuid.UUID, role: str) -> frozenset[uuid.UUID]:
+        self.calls.append((principal_id, role))
+        return self.scopes.get(principal_id, frozenset())
 
 
 class FakeOtpSender:
@@ -282,3 +377,8 @@ def fake_token_service() -> FakeTokenService:
 @pytest.fixture()
 def fake_rate_limiter() -> FakeLoginRateLimiter:
     return FakeLoginRateLimiter()
+
+
+@pytest.fixture()
+def fake_salon_scope_repository() -> FakeSalonScopeRepository:
+    return FakeSalonScopeRepository()

@@ -6,9 +6,16 @@ agnostique de PyJWT/HS256 — il ne connaît que la **forme** d'une paire de jet
 et des claims attendus.
 
 Le format des claims (`sub`, `role`, `type`, `iat`, `exp`, `jti`) est un
-**contrat inter-issue** partagé avec le RBAC (#12), qui consommera ces claims
-pour identifier l'utilisateur courant. Aucun claim ne porte de PII (ni téléphone,
-ni e-mail, ni nom) — cf. ADR-0013 / Security de la spec.
+**contrat inter-issue** partagé avec le RBAC (#12), qui **consomme** désormais ces
+claims sur chaque route protégée (`adapters/inbound/security.py`) : `sub` identifie
+le compte, `type` doit valoir `access` (un refresh ne peut pas ouvrir une ressource
+protégée). Aucun claim ne porte de PII (ni téléphone, ni e-mail, ni nom) — cf.
+ADR-0013 / ADR-0015.
+
+Le claim `role` est **informatif** : il n'autorise rien par lui-même. Le rôle qui
+fait foi est celui **relu en base** à chaque requête protégée (ADR-0015), afin
+qu'une rétrogradation ou une suspension prenne effet sans attendre l'expiration
+du jeton.
 """
 
 from __future__ import annotations

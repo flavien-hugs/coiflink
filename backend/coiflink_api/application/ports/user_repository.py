@@ -51,6 +51,15 @@ class UserRepository(Protocol):
         """
         ...
 
+    def find_user_by_id(self, user_id: uuid.UUID | str) -> User | None:
+        """Retourne l'entité **publique** (sans condensat) du compte, sinon `None`.
+
+        Utilisé par `GET /auth/me` (#12) : contrairement à `find_by_id`, l'entité
+        renvoyée est sérialisable (aucun secret). Retourne `None` — jamais une
+        exception — si l'`id` est inconnu ou illisible (jeton altéré).
+        """
+        ...
+
     def update_password(
         self, user_id: uuid.UUID | str, new_password_hash: str
     ) -> None:

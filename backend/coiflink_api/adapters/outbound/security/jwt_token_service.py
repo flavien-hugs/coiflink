@@ -105,6 +105,20 @@ class JwtTokenService:
             raise InvalidToken("Type de jeton invalide (refresh attendu).")
         return claims
 
+    def verify_access(self, token: str) -> TokenClaims:
+        """Décode un jeton et exige `type == "access"` (autorisation #12, ADR-0015).
+
+        Miroir de `verify_refresh` : un refresh token (TTL 30 j) présenté en
+        `Authorization: Bearer` est **refusé**. Hérite des contrôles de `decode`
+        (signature, algorithme imposé, `exp`), donc de la protection contre
+        `alg=none` et la confusion d'algorithme.
+        """
+
+        claims = self.decode(token)
+        if claims.type != ACCESS:
+            raise InvalidToken("Type de jeton invalide (accès attendu).")
+        return claims
+
     def _encode(
         self,
         sub: str,

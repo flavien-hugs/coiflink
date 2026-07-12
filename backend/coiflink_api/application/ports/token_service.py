@@ -34,5 +34,14 @@ class TokenService(Protocol):
         """Décode un jeton et exige `type == "refresh"` ; lève `InvalidToken` sinon."""
         ...
 
+    def verify_access(self, token: str) -> TokenClaims:
+        """Décode un jeton et exige `type == "access"` ; lève `InvalidToken` sinon.
+
+        Miroir strict de `verify_refresh` (autorisation #12, ADR-0015) : un
+        **refresh token** (TTL long) ne peut **jamais** servir de jeton d'accès sur
+        une route protégée. Lève `ExpiredToken` si `exp` est dépassé.
+        """
+        ...
+
 
 __all__ = ["TokenService"]

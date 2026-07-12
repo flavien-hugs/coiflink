@@ -76,6 +76,26 @@ class ExpiredToken(DomainError):
     """Jeton (refresh) dont la fenêtre de validité (`exp`) est dépassée."""
 
 
+class NotAuthenticated(DomainError):
+    """Aucune identité exploitable pour la requête (autorisation, #12).
+
+    Jeton absent, illisible, expiré, de mauvais `type` (un refresh présenté comme
+    jeton d'accès), ou compte du `sub` introuvable. **Volontairement indistincte**
+    (comme `InvalidCredentials`) : l'adapter entrant la traduit en `401` avec un
+    message générique unique, qui ne révèle jamais le motif exact.
+    """
+
+
+class PermissionDenied(DomainError):
+    """Identité valide, mais droit ou portée insuffisants (autorisation, #12).
+
+    Couvre le rôle non habilité, la permission absente de la matrice (PRD §4.1)
+    et l'**accès inter-salons** (PRD §11.2). Le message reste **générique** : il ne
+    nomme jamais la ressource visée ni son propriétaire — un refus ne doit pas
+    renseigner sur ce qui existe chez autrui.
+    """
+
+
 __all__ = [
     "DomainError",
     "InvalidName",
@@ -90,4 +110,6 @@ __all__ = [
     "TooManyLoginAttempts",
     "InvalidToken",
     "ExpiredToken",
+    "NotAuthenticated",
+    "PermissionDenied",
 ]

@@ -29,6 +29,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
+from coiflink_api.adapters.inbound.security import (
+    get_current_principal,
+    get_user_repository,
+)
 from coiflink_api.adapters.outbound.notifications.otp_sender_stub import StubOtpSender
 from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.adapters.outbound.persistence.user_repository import (
@@ -55,6 +59,7 @@ from coiflink_api.application.ports.otp_repository import OtpRepository
 from coiflink_api.application.ports.otp_sender import OtpSender
 from coiflink_api.application.ports.password_hasher import PasswordHasher
 from coiflink_api.application.ports.token_service import TokenService
+from coiflink_api.application.ports.user_repository import UserRepository
 from coiflink_api.application.registration import RegisterCommand, RegisterUser
 from coiflink_api.config import AuthConfig
 from coiflink_api.domain.enums import Role
@@ -73,6 +78,7 @@ from coiflink_api.domain.errors import (
     TooManyLoginAttempts,
 )
 from coiflink_api.domain.password import MAX_LENGTH, MIN_LENGTH
+from coiflink_api.domain.principal import Principal
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -610,6 +616,52 @@ def confirm_password_reset(
         ) from exc
 
     return MessageResponse(detail=_PASSWORD_RESET_CONFIRM_DETAIL)
+
+
+# --------------------------------------------------------------------------- #
+# Compte courant (issue #12 — première route **protégée** de l'API).
+# Prouve la chaîne d'autorisation de bout en bout et sert de garde
+# d'authentification au dashboard (#14) et à l'app mobile.
+# --------------------------------------------------------------------------- #
+@router.get(
+    "/me",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Compte de l'utilisateur authentifié (jeton d'accès requis)",
+    responses={
+        401: {"description": "Jeton absent, invalide, expiré, ou refresh présenté en accès"},
+        403: {"description": "Compte désactivé"},
+        503: {"description": "JWT_SECRET non configuré"},
+    },
+)
+def read_current_user(
+    principal: Annotated[Principal, Depends(get_current_principal)],
+    users: Annotated[UserRepository, Depends(get_user_repository)],
+) -> UserResponse:
+    """Retourne le compte du porteur du jeton — **sans aucun secret**.
+
+    L'identité vient de `get_current_principal` (rôle et statut **relus en base**,
+    jamais du claim `role`). Le compte a donc déjà été validé : un `find_user_by_id`
+    vide ne peut survenir qu'en cas de suppression concurrente → `401` générique.
+    """
+
+    user = users.find_user_by_id(principal.id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentification requise.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return UserResponse(
+        id=user.id,
+        full_name=user.full_name,
+        phone=user.phone,
+        email=user.email,
+        role=user.role,
+        status=user.status,
+        created_at=user.created_at,
+    )
 
 
 __all__ = [
