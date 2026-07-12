@@ -61,6 +61,31 @@ class SqlUserRepository:
             return None
         return _to_credentials(self._session.get(models.User, pk))
 
+    def find_user_by_id(self, user_id: uuid.UUID | str) -> User | None:
+        """Charge l'entité **publique** du compte (sans condensat), sinon `None`.
+
+        Alimente `GET /auth/me` (#12) : le `password_hash` n'est **pas** mappé, la
+        valeur retournée est donc sérialisable sans risque. Un `id` illisible
+        (jeton altéré) donne `None`, jamais une erreur.
+        """
+
+        try:
+            pk = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+        except (ValueError, TypeError):
+            return None
+        row = self._session.get(models.User, pk)
+        if row is None:
+            return None
+        return User(
+            id=row.id,
+            full_name=row.full_name,
+            phone=row.phone,
+            email=row.email,
+            role=row.role,
+            status=row.status,
+            created_at=row.created_at,
+        )
+
     def create(self, user: UserToCreate) -> User:
         """Insère l'utilisateur et retourne l'entité (avec `id`, `created_at`).
 

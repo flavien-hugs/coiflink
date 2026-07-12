@@ -37,7 +37,10 @@ numérique simple, rapide et adaptée au terrain.
 
 7 modules (cf. PRD §3) :
 
-1. **Authentification** — comptes client/gérant/employé, connexion JWT, rôles
+1. **Authentification & autorisation** — comptes client/gérant/employé, connexion JWT, rôles.
+   Le **RBAC est livré** (#12) : API **fermée par défaut**, permissions par rôle (PRD §4.1) et
+   **isolation par salon** (§11.2 — un gérant ne voit que son salon, un coiffeur que son planning, un
+   client que ses RDV) — voir [ADR-0015](./docs/adr/0015-autorisation-rbac-deny-by-default.md)
 2. **Gestion des salons** — salon, horaires, prestations
 3. **Rendez-vous** — réservation, statuts, planning, anti double-réservation
 4. **Gestion clients** — fiches, historique
@@ -59,6 +62,7 @@ chaque décision et son compromis sont détaillés dans l'ADR lié.
 | Mobile client | Flutter (Android prioritaire) | [0001](./docs/adr/0001-app-mobile-flutter.md) |
 | Web gérant / admin | Next.js (React, TypeScript) | [0002](./docs/adr/0002-web-gerant-admin-nextjs.md) |
 | Backend | Python FastAPI · API REST · JWT · jobs async | [0003](./docs/adr/0003-backend-fastapi.md) |
+| Autorisation | RBAC **deny-by-default** · permissions par rôle (§4.1) · isolation par salon (§11.2) | [0015](./docs/adr/0015-autorisation-rbac-deny-by-default.md) |
 | Base de données | PostgreSQL + Redis (cache/queue) | [0004](./docs/adr/0004-donnees-postgresql-redis.md) |
 | Fichiers | Stockage objet S3-compatible | [0005](./docs/adr/0005-stockage-objet-s3-compatible.md) |
 | Notifications | Firebase Cloud Messaging + SMS (WhatsApp en V2) | [0006](./docs/adr/0006-notifications-fcm-sms.md) |

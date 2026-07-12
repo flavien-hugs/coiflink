@@ -69,6 +69,11 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 | `POST` | `/auth/refresh` | `200` + paire de jetons | Rafraîchit le jeton d'accès depuis un refresh valide (#10) — voir ci-dessous |
 | `POST` | `/auth/password/reset/request` | `202` + message générique | Demande un code de réinitialisation (SMS **ou** e-mail, US-1.3, #11) — voir ci-dessous |
 | `POST` | `/auth/password/reset/confirm` | `200` + message générique | Confirme la réinitialisation (code + nouveau mot de passe, #11) — voir ci-dessous |
+| `GET` | `/auth/me` | `200` + utilisateur (sans secret) | **Route protégée** — compte du porteur du jeton (#12) ; `Authorization: Bearer <access_token>` requis |
+
+> Toutes les routes ci-dessus **sauf `/auth/me`** sont **publiques** : elles constituent la liste
+> d'exemption explicite du deny-by-default (`security.PUBLIC_ROUTE_PATHS`). **Toute route ajoutée
+> est protégée par défaut** — voir « Autorisation & RBAC » ci-dessous.
 
 ## Authentification — inscription client (US-1.1, #8)
 
@@ -214,6 +219,88 @@ anti-énumération, dépôt OTP dédié, canal e-mail *stub*, pas de migration).
   `503`).
 - **Non-journalisation** : code OTP, mot de passe en clair, condensat, numéro et e-mail ne sont
   **jamais** journalisés ni renvoyés. L'envoi SMS/e-mail réel est **différé M5** (stub no-op).
+
+## Autorisation & RBAC (#12 — [ADR-0015](../docs/adr/0015-autorisation-rbac-deny-by-default.md))
+
+L'API est **fermée par défaut** (*deny-by-default*) : une route n'est accessible sans jeton que si son
+chemin figure dans la liste d'exemption explicite `PUBLIC_ROUTE_PATHS`
+(`adapters/inbound/security.py`). **Une route ajoutée sans rien déclarer est protégée, pas ouverte** —
+un test énumère les routes de l'application et échoue si l'une n'est ni publique-listée ni gardée.
+
+### Rôles et permissions (PRD §4.1)
+
+La matrice vit dans le **domaine** (`domain/permissions.py`) : c'est l'**unique** source de vérité des
+droits. Elle est **fermée** (un rôle inconnu n'a aucune permission) et l'`ADMIN` **n'est pas un joker
+implicite** — ses droits de supervision sont listés, donc auditables.
+
+| Rôle | Permissions (résumé — `ROLE_PERMISSIONS` fait foi) |
+| --- | --- |
+| `CLIENT` | Consulter salons et prestations, réserver, lire **ses** rendez-vous |
+| `HAIRDRESSER` | Lire **son** salon et les RDV qui lui sont **assignés**, mettre à jour leur statut |
+| `MANAGER` | Gérer **son** salon : prestations, employés, RDV, fiches clients, caisse, statistiques |
+| `ADMIN` | Supervision plateforme : lire tous les salons, les (dés)activer, gérer les comptes, KPI globaux |
+
+La **permission** dit *ce que* le rôle peut faire ; la **portée** (`domain/access.py`, PRD §11.2) dit
+*sur quelles données* : un gérant n'accède qu'aux salons dont il est **propriétaire**, un coiffeur
+qu'à son périmètre, un client qu'à **ses** rendez-vous. La portée est **chargée en base** — le
+`salon_id` d'une requête n'est qu'une **cible à valider**. L'accès inter-salons est **bloqué**.
+
+### Contrat HTTP (s'applique à toute route protégée)
+
+| Situation | Statut | Corps / en-têtes |
+| --- | --- | --- |
+| En-tête `Authorization` absent ou mal formé | `401` | `{"detail": "Authentification requise."}` + `WWW-Authenticate: Bearer` |
+| Jeton invalide, expiré, altéré, ou **refresh présenté comme jeton d'accès** | `401` | **message identique** (motif jamais divulgué) |
+| Compte du jeton introuvable | `401` | idem |
+| Compte non `ACTIVE` (`INACTIVE` / `SUSPENDED`) | `403` | `{"detail": "Compte désactivé."}` |
+| Rôle ou permission insuffisants (§4.1) | `403` | `{"detail": "Accès refusé."}` |
+| **Accès inter-salons** (salon hors portée, §11.2) | `403` | **message identique** au cas précédent |
+| `JWT_SECRET` non configuré | `503` | cohérent avec `/auth/login` |
+
+Deux invariants à ne pas affaiblir :
+
+- **le claim `role` du JWT n'autorise rien** : le rôle et le statut sont **relus en base à chaque
+  requête protégée** — une rétrogradation ou une suspension prend effet **immédiatement**, sans
+  attendre l'expiration du jeton d'accès (15 min) ;
+- **un refresh token ne peut pas ouvrir une ressource protégée** (`verify_access` exige
+  `type == "access"`).
+
+### Protéger une nouvelle route (mode d'emploi)
+
+Déclarez une garde — **ne réimplémentez jamais** un contrôle d'accès dans un handler :
+
+```python
+from typing import Annotated
+from fastapi import Depends
+from coiflink_api.adapters.inbound.security import (
+    get_current_principal, require_roles, require_permission, require_salon_scope,
+)
+from coiflink_api.domain.access import SalonScope
+from coiflink_api.domain.permissions import Permission
+from coiflink_api.domain.principal import Principal
+
+# Authentification seule (le compte courant) :
+@router.get("/exemple")
+def exemple(principal: Annotated[Principal, Depends(get_current_principal)]): ...
+
+# Permission (matrice §4.1) + portée salon (isolation §11.2) :
+@router.get("/salons/{salon_id}/appointments")
+def list_appointments(
+    salon_id: uuid.UUID,
+    scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    principal: Annotated[
+        Principal, Depends(require_permission(Permission.APPOINTMENT_READ_SALON))
+    ],
+): ...
+```
+
+Conventions :
+
+- les ressources à portée salon se montent sous **`/salons/{salon_id}/…`** (`require_salon_scope` lit
+  `salon_id` du chemin) ;
+- `require_roles(Role.MANAGER, Role.ADMIN)` garde par rôle ; `require_permission(...)` par verbe métier ;
+- **ne jamais ajouter un chemin à `PUBLIC_ROUTE_PATHS` sans revue de sécurité** — c'est ouvrir une
+  route à Internet.
 
 ## Configuration
 
@@ -451,3 +538,41 @@ Issue #11 ajoute trois suites dédiées à la réinitialisation par OTP :
   (PostgreSQL requis, **skip propre sans `DATABASE_URL`**) : pile complète sans mock applicatif (SQL
   + argon2 + `InMemoryOtpRepository`) — inscription → reset OTP → connexion (`POST /auth/login`) :
   ancien mot de passe → `401`, nouveau → `200` + paire JWT ; OTP à usage unique sur pile réelle.
+
+Issue #12 ajoute six suites dédiées au RBAC et à l'autorisation :
+
+- `test_domain_permissions.py` — matrice du PRD §4.1 : chaque rôle a **exactement** ses permissions
+  attendues (listes exhaustives) ; rôle inconnu/forgé (`"SUPERADMIN"`, casse incorrecte) →
+  `frozenset()` (deny-by-default jusque dans le domaine) ; `ADMIN` n'est **pas** un joker —
+  `PAYMENT_RECORD`, `SERVICE_MANAGE`, `EMPLOYEE_MANAGE` absent de ses droits ; `STATS_READ_PLATFORM`
+  et `USER_MANAGE` **réservées** à `ADMIN`.
+- `test_domain_principal.py` — `Principal` (domaine pur, sans I/O) : `is_active` par statut ;
+  `has_permission` : compte actif avec/sans la permission, **compte inactif bloqué** ; `has_role` :
+  rôle correct, incorrect, inactif bloqué ; cohérence `permissions` ↔ `permissions_for()` ; invariant
+  PII : aucun champ personnel dans la structure.
+- `test_domain_access.py` — règles de portée (§11.2, fonctions pures) : `SalonScope` constructeurs
+  et `covers()` ; `can_access_salon` : `ADMIN` toujours ✅, `MANAGER`/`HAIRDRESSER` dans leur
+  portée ✅ / hors portée ❌ / inter-salons ❌, `CLIENT` toujours ❌, compte inactif bloqué ;
+  `can_access_appointment` : `CLIENT` sur **son** RDV ✅ / sur celui d'autrui ❌ ; `HAIRDRESSER`
+  sur RDV **assigné** ✅ / non assigné ❌ ; `MANAGER` sur RDV de son salon ✅ / autre salon ❌.
+- `test_authorization_policy.py` — `AccessPolicy` (avec `FakeSalonScopeRepository`) :
+  `require_roles` : rôle correct, incorrect, l'un parmi plusieurs, **compte inactif refusé même avec
+  le bon rôle** ; `require_permission` : accordée, refusée, `ADMIN` refusé pour un droit
+  d'exploitation salon ; `scope_of` : `ADMIN` → portée plateforme **sans appeler le dépôt**, compte
+  inactif → portée vide (deny-by-default), gérant/coiffeur → portée du dépôt ; `require_salon` :
+  salon dans la portée autorisé, salon hors portée → `PermissionDenied` (message **générique**),
+  `CLIENT` toujours refusé, `ADMIN` toujours autorisé, gérant inactif refusé.
+- `test_security_guards.py` — gardes HTTP (`TestClient`, sans base) : invariant deny-by-default
+  (`unprotected_routes(app)` doit être vide) ; `require_authenticated` : `401` (aucun en-tête,
+  schéma non-Bearer, jeton illisible, jeton expiré, **refresh présenté comme accès**, compte
+  introuvable) — **même message** dans tous les cas, présence de `WWW-Authenticate: Bearer` ;
+  `get_current_principal` : `401` compte introuvable, `403` compte `SUSPENDED`/`INACTIVE` ; gardes
+  `require_roles`/`require_permission` : `403` rôle/permission insuffisants ; `require_salon_scope` :
+  `403` hors portée, `200` dans la portée ; `503` si `app.state.token_service = None`.
+- `test_rbac_e2e.py` — **`TestRbacFullStackE2E`** (PostgreSQL requis, **skip propre sans
+  `DATABASE_URL`**) : pile complète (HTTP → gardes → dépôt SQL réel + JWT réel) — (1) inscription
+  gérant → connexion → `GET /auth/me` → `200`, `role=MANAGER`, **aucun** secret dans le corps ; (2)
+  **isolation inter-salons** : jeton du gérant A sur le salon du gérant B → `403`, corps sans donnée
+  de B (`SqlSalonScopeRepository` réel) ; (3) jeton altéré → `401` générique ; (4) **refresh token**
+  présenté comme jeton d'accès → `401` (même message) ; (5) compte passé à `SUSPENDED` **après**
+  émission du jeton → requête suivante → `403` (preuve que la relecture en base prime sur le claim).
