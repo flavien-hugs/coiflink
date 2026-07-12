@@ -51,5 +51,18 @@ class UserRepository(Protocol):
         """
         ...
 
+    def update_password(
+        self, user_id: uuid.UUID | str, new_password_hash: str
+    ) -> None:
+        """Remplace le `password_hash` du compte `user_id` (réinitialisation, #11).
+
+        Invariant de sécurité : **ne reçoit qu'un condensat**, jamais un mot de
+        passe en clair (le hachage est fait en amont par `PasswordHasher.hash`).
+        En pratique l'`updated_at` du compte est rafraîchi. Idempotent si l'`id`
+        n'existe pas (aucune ligne mise à jour) — le cas d'usage a déjà validé
+        l'OTP avant d'appeler cette méthode.
+        """
+        ...
+
 
 __all__ = ["UserRepository"]

@@ -107,6 +107,27 @@ class SqlUserRepository:
             created_at=row.created_at,
         )
 
+    def update_password(
+        self, user_id: uuid.UUID | str, new_password_hash: str
+    ) -> None:
+        """Remplace le `password_hash` du compte (réinitialisation, #11).
+
+        Reçoit **uniquement un condensat** (jamais un mot de passe en clair). Le
+        `flush` déclenche l'UPDATE sans committer (commit piloté par
+        `get_session`). Idempotent si l'`id` n'existe pas ou est illisible :
+        aucune ligne mise à jour (le cas d'usage a déjà validé l'OTP en amont).
+        """
+
+        try:
+            pk = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+        except (ValueError, TypeError):
+            return
+        row = self._session.get(models.User, pk)
+        if row is None:
+            return
+        row.password_hash = new_password_hash
+        self._session.flush()
+
 
 def _to_credentials(row: "models.User | None") -> UserCredentials | None:
     """Mappe une ligne ORM `User` vers `UserCredentials` (avec `password_hash`).

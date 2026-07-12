@@ -34,7 +34,7 @@ from coiflink_api.application.ports.otp_repository import OtpRepository
 from coiflink_api.application.ports.otp_sender import OtpSender
 from coiflink_api.application.ports.password_hasher import PasswordHasher
 from coiflink_api.application.ports.user_repository import UserRepository
-from coiflink_api.domain.enums import Role, UserStatus, values
+from coiflink_api.domain.enums import NotificationChannel, Role, UserStatus, values
 from coiflink_api.domain.errors import PhoneAlreadyInUse
 from coiflink_api.domain.otp import (
     DEFAULT_OTP_LENGTH,
@@ -158,7 +158,11 @@ class RegisterUser:
         if self._otp_repository is not None:
             self._otp_repository.save(phone, challenge)
         if self._otp_sender is not None:
-            self._otp_sender.send(phone, challenge.code)
+            # Inscription = canal SMS (téléphone). L'OTP de reset (#11) route le
+            # canal e-mail via le même contrat multi-canal `OtpSender`.
+            self._otp_sender.send(
+                phone, challenge.code, channel=NotificationChannel.SMS.value
+            )
 
 
 class RegisterClient(RegisterUser):

@@ -73,23 +73,43 @@ class AuthConfig:
     login_max_attempts: int = DEFAULT_LOGIN_MAX_ATTEMPTS
     login_window: datetime.timedelta = DEFAULT_LOGIN_WINDOW
     login_lockout: datetime.timedelta = DEFAULT_LOGIN_LOCKOUT
+    # Réinitialisation du mot de passe par OTP (#11). L'OTP de reset est **toujours
+    # actif** (indépendant d'`OTP_ENABLED`) ; sa longueur réutilise `otp_length`.
+    # TTL / essais / anti-abus ont des variables dédiées optionnelles, dont le
+    # défaut retombe sur les valeurs OTP (#8) et login (#10).
+    password_reset_otp_ttl: datetime.timedelta = DEFAULT_OTP_TTL
+    password_reset_otp_max_attempts: int = DEFAULT_OTP_MAX_ATTEMPTS
+    password_reset_max_attempts: int = DEFAULT_LOGIN_MAX_ATTEMPTS
+    password_reset_window: datetime.timedelta = DEFAULT_LOGIN_WINDOW
+    password_reset_lockout: datetime.timedelta = DEFAULT_LOGIN_LOCKOUT
 
 
 def load_auth_config(env: Mapping[str, str] | None = None) -> AuthConfig:
     """Construit `AuthConfig` depuis l'environnement (défauts sûrs si absent)."""
 
     source = env if env is not None else os.environ
+
+    # Valeurs OTP (#8) et login (#10) lues d'abord : elles servent de **défaut**
+    # aux réglages de reset (#11) quand les `PASSWORD_RESET_*` sont absents.
+    otp_ttl_seconds = _int_env(
+        source.get("OTP_TTL_SECONDS"), int(DEFAULT_OTP_TTL.total_seconds())
+    )
+    otp_max_attempts = _int_env(source.get("OTP_MAX_ATTEMPTS"), DEFAULT_OTP_MAX_ATTEMPTS)
+    login_max_attempts = _int_env(
+        source.get("LOGIN_MAX_ATTEMPTS"), DEFAULT_LOGIN_MAX_ATTEMPTS
+    )
+    login_window_seconds = _int_env(
+        source.get("LOGIN_WINDOW_SECONDS"), int(DEFAULT_LOGIN_WINDOW.total_seconds())
+    )
+    login_lockout_seconds = _int_env(
+        source.get("LOGIN_LOCKOUT_SECONDS"), int(DEFAULT_LOGIN_LOCKOUT.total_seconds())
+    )
+
     return AuthConfig(
         otp_enabled=_bool_env(source.get("OTP_ENABLED"), False),
         otp_length=_int_env(source.get("OTP_CODE_LENGTH"), DEFAULT_OTP_LENGTH),
-        otp_ttl=datetime.timedelta(
-            seconds=_int_env(
-                source.get("OTP_TTL_SECONDS"), int(DEFAULT_OTP_TTL.total_seconds())
-            )
-        ),
-        otp_max_attempts=_int_env(
-            source.get("OTP_MAX_ATTEMPTS"), DEFAULT_OTP_MAX_ATTEMPTS
-        ),
+        otp_ttl=datetime.timedelta(seconds=otp_ttl_seconds),
+        otp_max_attempts=otp_max_attempts,
         # Connexion / JWT (#10). Le secret n'a pas de défaut : "" quand absent.
         jwt_secret=(source.get("JWT_SECRET") or "").strip(),
         jwt_algorithm=(source.get("JWT_ALGORITHM") or DEFAULT_JWT_ALGORITHM).strip(),
@@ -105,19 +125,29 @@ def load_auth_config(env: Mapping[str, str] | None = None) -> AuthConfig:
                 int(DEFAULT_REFRESH_TTL.total_seconds()),
             )
         ),
-        login_max_attempts=_int_env(
-            source.get("LOGIN_MAX_ATTEMPTS"), DEFAULT_LOGIN_MAX_ATTEMPTS
-        ),
-        login_window=datetime.timedelta(
+        login_max_attempts=login_max_attempts,
+        login_window=datetime.timedelta(seconds=login_window_seconds),
+        login_lockout=datetime.timedelta(seconds=login_lockout_seconds),
+        # Réinitialisation (#11) : variables dédiées, défaut = valeurs OTP/login.
+        password_reset_otp_ttl=datetime.timedelta(
             seconds=_int_env(
-                source.get("LOGIN_WINDOW_SECONDS"),
-                int(DEFAULT_LOGIN_WINDOW.total_seconds()),
+                source.get("PASSWORD_RESET_OTP_TTL_SECONDS"), otp_ttl_seconds
             )
         ),
-        login_lockout=datetime.timedelta(
+        password_reset_otp_max_attempts=_int_env(
+            source.get("PASSWORD_RESET_OTP_MAX_ATTEMPTS"), otp_max_attempts
+        ),
+        password_reset_max_attempts=_int_env(
+            source.get("PASSWORD_RESET_MAX_ATTEMPTS"), login_max_attempts
+        ),
+        password_reset_window=datetime.timedelta(
             seconds=_int_env(
-                source.get("LOGIN_LOCKOUT_SECONDS"),
-                int(DEFAULT_LOGIN_LOCKOUT.total_seconds()),
+                source.get("PASSWORD_RESET_WINDOW_SECONDS"), login_window_seconds
+            )
+        ),
+        password_reset_lockout=datetime.timedelta(
+            seconds=_int_env(
+                source.get("PASSWORD_RESET_LOCKOUT_SECONDS"), login_lockout_seconds
             )
         ),
     )

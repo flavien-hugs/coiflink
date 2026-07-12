@@ -6,6 +6,7 @@ Aucune valeur secrète réelle ni PII n'est utilisée dans ces fixtures.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import uuid
 from typing import Union
@@ -13,6 +14,7 @@ from typing import Union
 import pytest
 
 from coiflink_api.domain.credentials import UserCredentials
+from coiflink_api.domain.enums import NotificationChannel
 from coiflink_api.domain.errors import PhoneAlreadyInUse, TooManyLoginAttempts
 from coiflink_api.domain.otp import OtpChallenge
 from coiflink_api.domain.tokens import TokenClaims, TokenPair
@@ -55,6 +57,8 @@ class FakeUserRepository:
     def __init__(self, existing_phones: set[str] | None = None) -> None:
         self._phones: set[str] = set(existing_phones or [])
         self.created: list[UserToCreate] = []
+        # Historique des appels à update_password (#11) : (user_id str, hash).
+        self.updated_passwords: list[tuple[str, str]] = []
 
     def phone_exists(self, phone: str) -> bool:
         return phone in self._phones
@@ -71,6 +75,13 @@ class FakeUserRepository:
             status=user.status,
             created_at=_CREATED_AT,
         )
+
+    def update_password(
+        self, user_id: Union[uuid.UUID, str], new_password_hash: str
+    ) -> None:
+        """Enregistre le remplacement du condensat (réinitialisation, #11)."""
+
+        self.updated_passwords.append((str(user_id), new_password_hash))
 
 
 class FakeUserRepositoryRaisingDuplicate:
@@ -111,6 +122,25 @@ class FakeAuthUserRepository(FakeUserRepository):
 
     def find_by_id(self, user_id: Union[uuid.UUID, str]) -> UserCredentials | None:
         return self._by_id.get(str(user_id))
+
+    def update_password(
+        self, user_id: Union[uuid.UUID, str], new_password_hash: str
+    ) -> None:
+        """Enregistre l'appel **et** met à jour le condensat des credentials stockés.
+
+        Remplace `password_hash` dans les tables de recherche pour le compte
+        correspondant (frozen dataclass ⇒ `dataclasses.replace`) : un `find_by_*`
+        ultérieur reflète le nouveau condensat (l'ancien ne s'authentifie plus).
+        """
+
+        super().update_password(user_id, new_password_hash)
+        uid = str(user_id)
+        for table in (self._by_phone, self._by_email, self._by_id):
+            for lookup_key, cred in list(table.items()):
+                if str(cred.id) == uid:
+                    table[lookup_key] = dataclasses.replace(
+                        cred, password_hash=new_password_hash
+                    )
 
 
 class FakeTokenService:
@@ -179,29 +209,41 @@ class FakeLoginRateLimiter:
 
 
 class FakeOtpSender:
-    """Expéditeur OTP en mémoire ; ne journalise rien."""
+    """Expéditeur OTP en mémoire (multi-canal) ; ne journalise rien.
+
+    `sent` conserve des couples `(recipient, code)` (compat #8) ; `sent_channels`
+    enregistre en plus le canal — `(recipient, code, channel)` — pour vérifier le
+    routage SMS/e-mail de la réinitialisation (#11).
+    """
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
+        self.sent_channels: list[tuple[str, str, str]] = []
 
-    def send(self, phone: str, code: str) -> None:
-        self.sent.append((phone, code))
+    def send(
+        self,
+        recipient: str,
+        code: str,
+        channel: str = NotificationChannel.SMS.value,
+    ) -> None:
+        self.sent.append((recipient, code))
+        self.sent_channels.append((recipient, code, channel))
 
 
 class FakeOtpRepository:
-    """Dépôt OTP en mémoire."""
+    """Dépôt OTP en mémoire (clé de destinataire : téléphone E.164 ou e-mail)."""
 
     def __init__(self) -> None:
         self.challenges: dict[str, OtpChallenge] = {}
 
-    def save(self, phone: str, challenge: OtpChallenge) -> None:
-        self.challenges[phone] = challenge
+    def save(self, key: str, challenge: OtpChallenge) -> None:
+        self.challenges[key] = challenge
 
-    def get(self, phone: str) -> OtpChallenge | None:
-        return self.challenges.get(phone)
+    def get(self, key: str) -> OtpChallenge | None:
+        return self.challenges.get(key)
 
-    def delete(self, phone: str) -> None:
-        self.challenges.pop(phone, None)
+    def delete(self, key: str) -> None:
+        self.challenges.pop(key, None)
 
 
 # ── Fixtures pytest partagées ──────────────────────────────────────────────

@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
+from coiflink_api.adapters.outbound.notifications.otp_sender_stub import StubOtpSender
 from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.adapters.outbound.persistence.user_repository import (
     SqlUserRepository,
@@ -37,12 +38,21 @@ from coiflink_api.adapters.outbound.security.argon2_hasher import Argon2Hasher
 from coiflink_api.adapters.outbound.security.login_rate_limiter_memory import (
     InMemoryLoginRateLimiter,
 )
+from coiflink_api.adapters.outbound.security.otp_in_memory import InMemoryOtpRepository
 from coiflink_api.application.authentication import (
     AuthenticateUser,
     LoginCommand,
     RefreshTokens,
 )
+from coiflink_api.application.password_reset import (
+    ConfirmPasswordReset,
+    PasswordResetConfirmCommand,
+    PasswordResetRequestCommand,
+    RequestPasswordReset,
+)
 from coiflink_api.application.ports.login_rate_limiter import LoginRateLimiter
+from coiflink_api.application.ports.otp_repository import OtpRepository
+from coiflink_api.application.ports.otp_sender import OtpSender
 from coiflink_api.application.ports.password_hasher import PasswordHasher
 from coiflink_api.application.ports.token_service import TokenService
 from coiflink_api.application.registration import RegisterCommand, RegisterUser
@@ -54,9 +64,11 @@ from coiflink_api.domain.errors import (
     InvalidCredentials,
     InvalidEmail,
     InvalidName,
+    InvalidOtp,
     InvalidPassword,
     InvalidPhone,
     InvalidToken,
+    OtpExpired,
     PhoneAlreadyInUse,
     TooManyLoginAttempts,
 )
@@ -66,6 +78,18 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 # Message générique unique pour tout échec d'authentification (anti-énumération).
 _INVALID_CREDENTIALS_DETAIL = "Identifiants invalides."
+
+# Réinitialisation du mot de passe (#11) — messages **génériques** (anti-énumération).
+# La demande répond toujours le même 202, compte existant ou non ; la confirmation
+# renvoie un unique 400 pour tout échec d'OTP et identifiant sans défi.
+_PASSWORD_RESET_REQUEST_DETAIL = (
+    "Si un compte correspond à cet identifiant, un code de réinitialisation a été envoyé."
+)
+_PASSWORD_RESET_CONFIRM_DETAIL = "Mot de passe réinitialisé."
+_PASSWORD_RESET_INVALID_OTP_DETAIL = "Code de réinitialisation invalide ou expiré."
+_PASSWORD_RESET_RATE_LIMITED_DETAIL = (
+    "Trop de demandes de réinitialisation. Réessayez plus tard."
+)
 
 
 class RegisterRequest(BaseModel):
@@ -398,6 +422,196 @@ def refresh(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Réinitialisation du mot de passe par OTP (US-1.3, issue #11).
+# Parcours en deux étapes : demande d'un code (SMS **ou** e-mail), puis
+# confirmation (code + nouveau mot de passe qui invalide l'ancien). Réponses
+# **génériques** (anti-énumération) ; indépendant de `JWT_SECRET` (pas de 503).
+# --------------------------------------------------------------------------- #
+class PasswordResetRequestSchema(BaseModel):
+    """Corps de `POST /auth/password/reset/request`."""
+
+    # Identifiant = téléphone **ou** e-mail (auto-détecté côté domaine).
+    identifier: str = Field(min_length=1, max_length=320, examples=["0700000000"])
+
+
+class PasswordResetConfirmSchema(BaseModel):
+    """Corps de `POST /auth/password/reset/confirm`. Aucun champ n'est renvoyé."""
+
+    identifier: str = Field(min_length=1, max_length=320, examples=["0700000000"])
+    # `min_length=1` (jamais la longueur exacte de l'OTP) pour ne pas divulguer la
+    # politique du code (anti-énumération).
+    code: str = Field(min_length=1, max_length=32, examples=["123456"])
+    new_password: str = Field(
+        min_length=MIN_LENGTH,
+        max_length=MAX_LENGTH,
+        examples=["nouveau-motdepasse-solide"],
+    )
+
+
+class MessageResponse(BaseModel):
+    """Réponse générique porteuse d'un seul message — **aucun** secret ni PII."""
+
+    detail: str
+
+
+def _get_password_reset_otp_repository(request: Request) -> OtpRepository:
+    """Dépôt OTP **dédié au reset** (singleton `app.state`), distinct de l'inscription.
+
+    La demande et la confirmation partagent la même instance : un code émis à la
+    demande est retrouvé à la confirmation. Repli sûr si l'état n'est pas câblé.
+    """
+
+    repo = getattr(request.app.state, "password_reset_otp_repository", None)
+    if repo is None:
+        repo = InMemoryOtpRepository()
+        request.app.state.password_reset_otp_repository = repo
+    return repo
+
+
+def _get_password_reset_sender(request: Request) -> OtpSender:
+    """Expéditeur OTP de reset (stub multi-canal). Repli sûr si non câblé."""
+
+    sender = getattr(request.app.state, "password_reset_otp_sender", None)
+    if sender is None:
+        sender = StubOtpSender()
+        request.app.state.password_reset_otp_sender = sender
+    return sender
+
+
+def _get_password_reset_rate_limiter(request: Request) -> LoginRateLimiter:
+    """Limiteur anti-flood **dédié au reset** (singleton `app.state`).
+
+    Distinct du limiteur de connexion : rate-limiter la demande de reset ne doit
+    pas verrouiller la connexion (et inversement). Repli sûr avec les seuils de
+    reset d'`AuthConfig` si l'état n'est pas configuré.
+    """
+
+    limiter = getattr(request.app.state, "password_reset_rate_limiter", None)
+    if limiter is None:
+        config: AuthConfig = (
+            getattr(request.app.state, "auth_config", None) or AuthConfig()
+        )
+        limiter = InMemoryLoginRateLimiter(
+            max_attempts=config.password_reset_max_attempts,
+            window=config.password_reset_window,
+            lockout=config.password_reset_lockout,
+        )
+        request.app.state.password_reset_rate_limiter = limiter
+    return limiter
+
+
+def get_request_password_reset(
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+) -> RequestPasswordReset:
+    """Assemble le cas d'usage de **demande** de reset (aucune règle métier ici).
+
+    L'OTP de reset est **toujours actif** (jamais gouverné par `OTP_ENABLED`) et
+    la route **ne dépend pas** de `token_service` (pas de `503`).
+    """
+
+    config: AuthConfig = getattr(request.app.state, "auth_config", None) or AuthConfig()
+    return RequestPasswordReset(
+        SqlUserRepository(session),
+        _get_password_reset_otp_repository(request),
+        _get_password_reset_sender(request),
+        rate_limiter=_get_password_reset_rate_limiter(request),
+        otp_length=config.otp_length,
+        otp_ttl=config.password_reset_otp_ttl,
+        otp_max_attempts=config.password_reset_otp_max_attempts,
+    )
+
+
+def get_confirm_password_reset(
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+    hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
+) -> ConfirmPasswordReset:
+    """Assemble le cas d'usage de **confirmation** de reset (dépôt OTP dédié partagé)."""
+
+    return ConfirmPasswordReset(
+        SqlUserRepository(session),
+        _get_password_reset_otp_repository(request),
+        hasher,
+    )
+
+
+@router.post(
+    "/password/reset/request",
+    response_model=MessageResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Demande un code de réinitialisation du mot de passe (SMS ou e-mail)",
+)
+def request_password_reset(
+    payload: PasswordResetRequestSchema,
+    request: Request,
+    usecase: Annotated[RequestPasswordReset, Depends(get_request_password_reset)],
+) -> MessageResponse:
+    """Émet un OTP de reset ; **toujours** `202` générique (anti-énumération).
+
+    `429` + `Retry-After` si la demande est rate-limitée. Ne divulgue jamais si un
+    compte existe pour l'identifiant fourni ; ne renvoie **jamais** le code OTP.
+    """
+
+    command = PasswordResetRequestCommand(
+        identifier=payload.identifier,
+        client_ip=_client_ip(request),
+    )
+    try:
+        usecase.execute(command)
+    except TooManyLoginAttempts as exc:
+        headers = (
+            {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=_PASSWORD_RESET_RATE_LIMITED_DETAIL,
+            headers=headers,
+        ) from exc
+
+    return MessageResponse(detail=_PASSWORD_RESET_REQUEST_DETAIL)
+
+
+@router.post(
+    "/password/reset/confirm",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Confirme la réinitialisation (code + nouveau mot de passe)",
+)
+def confirm_password_reset(
+    payload: PasswordResetConfirmSchema,
+    usecase: Annotated[ConfirmPasswordReset, Depends(get_confirm_password_reset)],
+) -> MessageResponse:
+    """Vérifie l'OTP puis remplace le mot de passe ; `400` générique / `422` politique.
+
+    `400` **unique** pour tout échec d'OTP (invalide, expiré, trop d'essais, déjà
+    consommé) **et** identifiant sans défi (cause exacte jamais divulguée). `422`
+    si le nouveau mot de passe viole la politique. Après succès, l'ancien mot de
+    passe ne s'authentifie plus via `POST /auth/login`.
+    """
+
+    command = PasswordResetConfirmCommand(
+        identifier=payload.identifier,
+        code=payload.code,
+        new_password=payload.new_password,
+    )
+    try:
+        usecase.execute(command)
+    except InvalidPassword as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except (InvalidOtp, OtpExpired) as exc:
+        # Message générique constant (jamais str(exc)) : cause exacte non divulguée.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_PASSWORD_RESET_INVALID_OTP_DETAIL,
+        ) from exc
+
+    return MessageResponse(detail=_PASSWORD_RESET_CONFIRM_DETAIL)
+
+
 __all__ = [
     "router",
     "RegisterRequest",
@@ -405,4 +619,7 @@ __all__ = [
     "LoginRequest",
     "RefreshRequest",
     "TokenResponse",
+    "PasswordResetRequestSchema",
+    "PasswordResetConfirmSchema",
+    "MessageResponse",
 ]
