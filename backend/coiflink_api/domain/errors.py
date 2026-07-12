@@ -38,6 +38,16 @@ class EmailAlreadyInUse(DomainError):
     """Un compte existe déjà pour cette adresse e-mail (doublon refusé)."""
 
 
+class EmployeeAlreadyInSalon(DomainError):
+    """Cet utilisateur est déjà membre (employé) de ce salon (doublon refusé, #13).
+
+    Levée quand l'unicité `(salon_id, user_id)` de la table d'appartenance
+    `salon_members` est violée : un même compte n'est employé qu'une fois par
+    salon. Le message reste neutre (ni PII ni détail SQL) — l'adapter entrant la
+    traduit en `409 Conflict`.
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -104,6 +114,7 @@ __all__ = [
     "InvalidPassword",
     "PhoneAlreadyInUse",
     "EmailAlreadyInUse",
+    "EmployeeAlreadyInSalon",
     "InvalidOtp",
     "OtpExpired",
     "InvalidCredentials",

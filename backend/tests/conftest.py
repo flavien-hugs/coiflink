@@ -1,4 +1,4 @@
-"""Faux adaptateurs partagés entre les suites de tests (inscription #8, connexion #10).
+"""Faux adaptateurs partagés entre les suites de tests (inscription #8, connexion #10, #13).
 
 Chaque fake implémente le protocole du port correspondant sans I/O réelle.
 Aucune valeur secrète réelle ni PII n'est utilisée dans ces fixtures.
@@ -16,7 +16,8 @@ import pytest
 from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenService
 from coiflink_api.domain.credentials import UserCredentials
 from coiflink_api.domain.enums import NotificationChannel
-from coiflink_api.domain.errors import PhoneAlreadyInUse, TooManyLoginAttempts
+from coiflink_api.domain.errors import EmployeeAlreadyInSalon, PhoneAlreadyInUse, TooManyLoginAttempts
+from coiflink_api.domain.membership import SalonMembershipToCreate
 from coiflink_api.domain.otp import OtpChallenge
 from coiflink_api.domain.tokens import TokenClaims, TokenPair
 from coiflink_api.domain.user import User, UserToCreate
@@ -382,3 +383,25 @@ def fake_rate_limiter() -> FakeLoginRateLimiter:
 @pytest.fixture()
 def fake_salon_scope_repository() -> FakeSalonScopeRepository:
     return FakeSalonScopeRepository()
+
+
+class FakeSalonMemberRepository:
+    """Dépôt d'appartenances employé↔salon en mémoire (#13).
+
+    `raise_duplicate=True` simule une violation d'unicité `(salon_id, user_id)`.
+    `added` enregistre chaque appel pour vérifier les données transmises.
+    """
+
+    def __init__(self, *, raise_duplicate: bool = False) -> None:
+        self._raise_duplicate = raise_duplicate
+        self.added: list[SalonMembershipToCreate] = []
+
+    def add_member(self, membership: SalonMembershipToCreate) -> None:
+        if self._raise_duplicate:
+            raise EmployeeAlreadyInSalon("Cet employé est déjà rattaché à ce salon.")
+        self.added.append(membership)
+
+
+@pytest.fixture()
+def fake_salon_member_repository() -> FakeSalonMemberRepository:
+    return FakeSalonMemberRepository()

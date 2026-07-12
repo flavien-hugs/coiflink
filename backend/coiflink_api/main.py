@@ -18,6 +18,7 @@ import secrets
 from fastapi import Depends, FastAPI
 
 from coiflink_api.adapters.inbound.auth import router as auth_router
+from coiflink_api.adapters.inbound.employees import router as employees_router
 from coiflink_api.adapters.inbound.health import router as health_router
 from coiflink_api.adapters.inbound.security import require_authenticated
 from coiflink_api.adapters.outbound.notifications.otp_sender_stub import (
@@ -93,3 +94,6 @@ else:
 
 app.include_router(health_router)
 app.include_router(auth_router)
+# Gestion des employés (#13) : route protégée par RBAC (EMPLOYEE_MANAGE + portée
+# salon) — le use case est assemblé par DI dans l'adapter (mêmes patrons que `auth`).
+app.include_router(employees_router)

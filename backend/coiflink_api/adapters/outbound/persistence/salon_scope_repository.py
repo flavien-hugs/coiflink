@@ -4,17 +4,17 @@ Implémente le port `SalonScopeRepository` sur une `Session` SQLAlchemy. C'est l
 **seule** source d'autorité de l'isolation multi-salons : la portée est lue en
 base, jamais déduite d'un paramètre de requête.
 
-Rattachements exploités (schéma existant — #12 n'ajoute **aucune** migration) :
+Rattachements exploités (schéma existant) :
 
 - `MANAGER` → `salons.owner_id` : rattachement **réel** du gérant à ses salons ;
-- `HAIRDRESSER` → `DISTINCT appointments.salon_id WHERE hairdresser_id = …`.
-  Le schéma n'a **pas encore** de table d'appartenance employé↔salon (elle arrive
-  avec #13) : la portée du coiffeur est donc dérivée des rendez-vous qui lui sont
-  **assignés**, ce qui est la lecture littérale du PRD §11.2 (« son planning ou les
-  rendez-vous qui lui sont assignés »). **Limite assumée et documentée**
-  (ADR-0015) : un coiffeur sans aucun RDV assigné a une portée **vide** — il ne
-  voit rien (sûr, mais insuffisant à terme). Quand #13 livrera la table, seule
-  cette requête change ; le port et les gardes restent identiques.
+- `HAIRDRESSER` → `salon_members.salon_id WHERE user_id = … AND status = 'ACTIVE'`.
+  Depuis #13 (ADR-0016), la portée d'un coiffeur est lue depuis la table
+  d'**appartenance** employé↔salon (`salon_members`), et non plus dérivée des
+  rendez-vous qui lui sont assignés : un coiffeur fraîchement créé « voit » son
+  salon dès sa création, sans dépendre d'un RDV. L'assignation d'un RDV reste
+  gérée séparément par `can_access_appointment` (inchangé). Un membre `INACTIVE`
+  perd sa portée (le filtre exige `ACTIVE`). Le port et les gardes restent
+  identiques (ADR-0015 : « seule la requête change »).
 - `CLIENT` / rôle inconnu → portée vide (deny-by-default).
 """
 
@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
-from coiflink_api.domain.enums import Role
+from coiflink_api.domain.enums import Role, UserStatus
 
 
 class SqlSalonScopeRepository:
@@ -41,10 +41,9 @@ class SqlSalonScopeRepository:
         if role == Role.MANAGER.value:
             stmt = select(models.Salon.id).where(models.Salon.owner_id == principal_id)
         elif role == Role.HAIRDRESSER.value:
-            stmt = (
-                select(models.Appointment.salon_id)
-                .where(models.Appointment.hairdresser_id == principal_id)
-                .distinct()
+            stmt = select(models.SalonMember.salon_id).where(
+                models.SalonMember.user_id == principal_id,
+                models.SalonMember.status == UserStatus.ACTIVE.value,
             )
         else:
             # CLIENT, ADMIN (portée plateforme, court-circuitée par AccessPolicy)

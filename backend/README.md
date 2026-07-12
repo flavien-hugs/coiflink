@@ -70,10 +70,12 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 | `POST` | `/auth/password/reset/request` | `202` + message générique | Demande un code de réinitialisation (SMS **ou** e-mail, US-1.3, #11) — voir ci-dessous |
 | `POST` | `/auth/password/reset/confirm` | `200` + message générique | Confirme la réinitialisation (code + nouveau mot de passe, #11) — voir ci-dessous |
 | `GET` | `/auth/me` | `200` + utilisateur (sans secret) | **Route protégée** — compte du porteur du jeton (#12) ; `Authorization: Bearer <access_token>` requis |
+| `POST` | `/salons/{salon_id}/employees` | `201` + utilisateur (sans secret) | **Route protégée** — création d'un compte coiffeur rattaché au salon (US-1.4, #13) ; gérant du salon requis — voir ci-dessous |
 
-> Toutes les routes ci-dessus **sauf `/auth/me`** sont **publiques** : elles constituent la liste
-> d'exemption explicite du deny-by-default (`security.PUBLIC_ROUTE_PATHS`). **Toute route ajoutée
-> est protégée par défaut** — voir « Autorisation & RBAC » ci-dessous.
+> Toutes les routes ci-dessus **sauf `/auth/me` et `/salons/{salon_id}/employees`** sont
+> **publiques** : elles constituent la liste d'exemption explicite du deny-by-default
+> (`security.PUBLIC_ROUTE_PATHS`). **Toute route ajoutée est protégée par défaut** — voir
+> « Autorisation & RBAC » ci-dessous.
 
 ## Authentification — inscription client (US-1.1, #8)
 
@@ -302,6 +304,32 @@ Conventions :
 - **ne jamais ajouter un chemin à `PUBLIC_ROUTE_PATHS` sans revue de sécurité** — c'est ouvrir une
   route à Internet.
 
+## Employés — création d'un compte coiffeur (US-1.4, #13 — [ADR-0016](../docs/adr/0016-comptes-employes-appartenance-salon.md))
+
+`POST /salons/{salon_id}/employees` permet à un **gérant** de créer le compte d'un **coiffeur**
+(`role=HAIRDRESSER`) rattaché à **son** salon. C'est une **route protégée**, gardée par la permission
+`EMPLOYEE_MANAGE` (matrice §4.1 — seul le `MANAGER` la possède) **et** par la portée salon
+(`require_salon_scope`) : un gérant ne peut créer un employé que sur un salon de son périmètre.
+
+- **Corps** (JSON) : `full_name`, `phone`, `password` (mot de passe **initial**, ≥ 8 caractères),
+  `email` (optionnel). **Aucun champ `role`** : le rôle `HAIRDRESSER` est **imposé côté serveur**
+  (anti-élévation de privilège) — un `role` fourni dans le corps est ignoré.
+- **Réponse** : `201` + l'utilisateur créé (**sans secret** : ni mot de passe ni condensat) ;
+  `role="HAIRDRESSER"`, `status="ACTIVE"`.
+- **Erreurs** : `401` (non authentifié) ; `403` (rôle insuffisant **ou** salon hors périmètre —
+  **message générique identique**, aucun oracle d'existence) ; `409` (téléphone/e-mail déjà pris, ou
+  employé déjà membre du salon) ; `422` (nom/téléphone/mot de passe/e-mail invalides) ; `503`
+  (`JWT_SECRET` non configuré).
+
+**Appartenance & portée.** La création écrit une ligne dans la table d'appartenance `salon_members`
+(créée par la migration `0002`), qui devient la **source d'autorité de la portée** du coiffeur
+(PRD §11.2) : il « voit » son salon **dès sa création**, sans dépendre d'un rendez-vous assigné. Un
+membre passé `INACTIVE` perd sa portée. La création utilisateur **et** l'appartenance sont écrites
+dans la **même transaction** — si l'une échoue, aucune n'est persistée (pas de compte orphelin).
+
+**Connexion du coiffeur.** Aucune route dédiée : le coiffeur se connecte via `POST /auth/login`
+(#10) avec son téléphone/e-mail + mot de passe initial, puis peut le changer via le reset OTP (#11).
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
@@ -392,11 +420,13 @@ erDiagram
     users |o--o{ appointments : "hairdresser_id"
     users |o--o{ customer_profiles : "user_id"
     users ||--o{ payments : "recorded_by"
+    users ||--o{ salon_members : "user_id"
     salons ||--o{ services : ""
     salons ||--o{ appointments : ""
     salons ||--o{ customer_profiles : ""
     salons ||--o{ payments : ""
     salons ||--o{ cash_journal : ""
+    salons ||--o{ salon_members : "salon_id"
     appointments ||--o{ appointment_services : ""
     services ||--o{ appointment_services : ""
     appointments |o--o{ payments : "appointment_id"
@@ -417,6 +447,7 @@ erDiagram
 | --- | --- | --- |
 | **`users`** | `full_name`, `phone`, `email?`, `password_hash`, `role`, `status` | `uq_users_phone` ; `uq_users_email` (unique partiel `WHERE email IS NOT NULL`) ; CHECK `role`/`status` |
 | **`salons`** | `owner_id→users`, `name`, `description`, `phone`, `address`, `city`, `commune`, `latitude`, `longitude`, `logo_url`, `status`, `opening_hours JSONB` | FK `owner_id` ; CHECK `status` ; index `(city, commune)`, `status` |
+| **`salon_members`** | `salon_id→salons`, `user_id→users`, `role`, `status` | `uq_salon_members_salon_user (salon_id, user_id)` (un compte est employé une seule fois par salon) ; `uq_salon_members_salon_id (salon_id, id)` ; FK `salon_id`/`user_id` RESTRICT ; CHECK `role`/`status` ; index `user_id`, `salon_id` — **source d'autorité** de la portée d'un `HAIRDRESSER` (#13, ADR-0016) |
 | **`services`** | `salon_id→salons`, `name`, `price`, `duration_minutes`, `category`, `is_active` | FK `salon_id` ; `uq_services_salon_id (salon_id, id)` ; CHECK `price >= 0`, `duration_minutes > 0` ; index `salon_id` |
 | **`appointments`** | `salon_id→salons`, `client_id→users`, `hairdresser_id?→users`, `appointment_date`, `start_time`, `end_time`, `status`, `cancellation_reason?`, `client_note?`, `slot` (généré) | FK `salon_id`/`client_id` NOT NULL (§8.1) ; `uq_appointments_salon_id (salon_id, id)` ; CHECK `end_time > start_time`, `status` ; **EXCLUDE** anti double-booking ; index `(salon_id, appointment_date)`, `client_id` |
 | **`appointment_services`** *(jonction)* | `appointment_id→appointments`, `service_id→services`, `salon_id`, `price_at_booking` | PK `(appointment_id, service_id)` ; **FK composites** `(salon_id, appointment_id)` et `(salon_id, service_id)` (cohérence salon) ; `ON DELETE CASCADE` depuis le RDV ; CHECK `price >= 0` |
@@ -576,3 +607,23 @@ Issue #12 ajoute six suites dédiées au RBAC et à l'autorisation :
   de B (`SqlSalonScopeRepository` réel) ; (3) jeton altéré → `401` générique ; (4) **refresh token**
   présenté comme jeton d'accès → `401` (même message) ; (5) compte passé à `SUSPENDED` **après**
   émission du jeton → requête suivante → `403` (preuve que la relecture en base prime sur le claim).
+
+Issue #13 ajoute deux suites dédiées à la création d'employés :
+
+- `test_create_employee_usecase.py` — `CreateEmployee` (ports 100 % fakes) : succès
+  (`role=HAIRDRESSER`, `status=ACTIVE`, téléphone normalisé E.164, e-mail optionnel) ; **rôle fixé
+  côté serveur** (`CreateEmployeeCommand` sans champ `role`, rôle inconnu → `ValueError` à la
+  construction) ; mot de passe jamais persisté en clair (le dépôt reçoit le condensat) ;
+  **appartenance au salon** (`add_member` appelé une fois, `salon_id` correct, `role=HAIRDRESSER`,
+  `status=ACTIVE`) ; doublon de téléphone → `PhoneAlreadyInUse` (pré-check et fallback race
+  condition via `IntegrityError`) + aucun `add_member` tenté + message **sans PII** (téléphone
+  absent du message d'erreur) ; appartenance déjà existante → `EmployeeAlreadyInSalon` ;
+  validations de domaine (nom vide, téléphone invalide, mot de passe trop court) → erreur avant
+  appel du dépôt ; entité retournée sans attribut `password` ni `password_hash`.
+- `test_employee_api.py` — adapter entrant (FastAPI `TestClient`, ports fakes, sans base) :
+  `POST /salons/{salon_id}/employees` → `201` + `role="HAIRDRESSER"` + non-fuite du secret ; `409`
+  sur doublon téléphone, doublon e-mail et appartenance déjà existante ; `422` sur validation
+  Pydantic et domaine ; `401` sans jeton ; `403` rôle non autorisé (`HAIRDRESSER`, `CLIENT` —
+  permission `EMPLOYEE_MANAGE` absente) ; `403` inter-salon (salon hors portée §11.2, **message
+  générique identique**) ; anti-élévation : aucun champ `role` déclaré dans le corps de la requête ;
+  route absente de `PUBLIC_ROUTE_PATHS` (deny-by-default garanti).

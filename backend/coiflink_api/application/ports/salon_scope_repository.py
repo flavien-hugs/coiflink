@@ -23,9 +23,9 @@ class SalonScopeRepository(Protocol):
         """Salons sur lesquels ce compte a une portée (PRD §11.2).
 
         - `MANAGER` : les salons dont il est **propriétaire** (`salons.owner_id`) ;
-        - `HAIRDRESSER` : les salons de son **périmètre** (RDV assignés, cf.
-          ADR-0015 — l'implémentation changera avec la table d'appartenance de #13,
-          **sans** changer ce port) ;
+        - `HAIRDRESSER` : les salons dont il est **membre `ACTIVE`** (table
+          d'appartenance `salon_members`, #13 / ADR-0016) — lecture qui a remplacé
+          la dérivation par RDV assignés, **sans** changer ce port ;
         - `CLIENT` : ensemble **vide** — un client n'a pas de portée *salon* ; il
           accède à *ses* rendez-vous, pas aux données d'un salon ;
         - rôle inconnu : ensemble **vide** (deny-by-default).

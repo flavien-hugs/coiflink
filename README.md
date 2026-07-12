@@ -40,7 +40,11 @@ numérique simple, rapide et adaptée au terrain.
 1. **Authentification & autorisation** — comptes client/gérant/employé, connexion JWT, rôles.
    Le **RBAC est livré** (#12) : API **fermée par défaut**, permissions par rôle (PRD §4.1) et
    **isolation par salon** (§11.2 — un gérant ne voit que son salon, un coiffeur que son planning, un
-   client que ses RDV) — voir [ADR-0015](./docs/adr/0015-autorisation-rbac-deny-by-default.md)
+   client que ses RDV) — voir [ADR-0015](./docs/adr/0015-autorisation-rbac-deny-by-default.md).
+   La **création de comptes employés (coiffeurs)** par un gérant est livrée (#13) :
+   `POST /salons/{salon_id}/employees` rattache le coiffeur au salon (table d'appartenance), qui se
+   connecte ensuite avec un **périmètre restreint** — voir
+   [ADR-0016](./docs/adr/0016-comptes-employes-appartenance-salon.md)
 2. **Gestion des salons** — salon, horaires, prestations
 3. **Rendez-vous** — réservation, statuts, planning, anti double-réservation
 4. **Gestion clients** — fiches, historique
