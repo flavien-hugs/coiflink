@@ -28,6 +28,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0013](./0013-connexion-jwt-refresh-anti-bruteforce.md) | Connexion — bibliothèque JWT, refresh & anti-bruteforce | Accepté | #10 |
 | [0014](./0014-reinitialisation-mot-de-passe-otp.md) | Réinitialisation du mot de passe par OTP (SMS ou e-mail) | Accepté | #11 |
 | [0015](./0015-autorisation-rbac-deny-by-default.md) | Autorisation & RBAC — deny-by-default, permissions par rôle, isolation par salon | Accepté | #12 |
+| [0016](./0016-comptes-employes-appartenance-salon.md) | Comptes employés — appartenance employé↔salon & création par le gérant | Accepté | #13 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
@@ -67,9 +68,11 @@ ultérieure et signalés en *Conséquences* des ADR concernés :
 - **Autorisation & RBAC** — **tranchée par [ADR-0015](./0015-autorisation-rbac-deny-by-default.md)**
   (#12 : gardes en dépendances FastAPI, deny-by-default par liste blanche testée, rôle **relu en
   base**, `403` uniforme sur l'accès inter-salons). Deux suivis en découlent :
-  - **table d'appartenance employé↔salon** → **#13** : le schéma n'en a pas ; la portée d'un
-    `HAIRDRESSER` est provisoirement dérivée des **RDV assignés**. Quand #13 la créera, **seule** la
-    requête de `SqlSalonScopeRepository` change (le port et les gardes restent identiques) ;
+  - **table d'appartenance employé↔salon** → **livrée par #13**
+    ([ADR-0016](./0016-comptes-employes-appartenance-salon.md)) : la table `salon_members` (migration
+    `0002`) est désormais la source d'autorité de la portée d'un `HAIRDRESSER` — la lecture
+    `SqlSalonScopeRepository` a **remplacé** la dérivation par RDV assignés, **sans** changer le port
+    ni les gardes ;
   - **index `ix_salons_owner_id`** → **#15** (première migration touchant les salons) : #12
     n'introduit **aucune** migration.
 - **Journalisation d'audit des accès sensibles** (PRD §11.4) — **rattachée à #52**. ADR-0015 pose le

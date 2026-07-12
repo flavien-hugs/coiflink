@@ -167,6 +167,48 @@ class Salon(Base):
     )
 
 
+class SalonMember(Base):
+    """Appartenance d'un compte (employé) à un salon (US-1.4, #13, ADR-0016).
+
+    Table d'autorité de la **portée** d'un employé (PRD §11.2) : un `HAIRDRESSER`
+    « voit » les salons dont il est membre `ACTIVE`, indépendamment des rendez-vous
+    qui lui sont assignés. Le rôle est stocké en `text` + `CHECK` dérivé de `Role`
+    (MVP : `HAIRDRESSER`), laissant la porte ouverte à d'autres rôles employés
+    sans `ALTER`.
+    """
+
+    __tablename__ = "salon_members"
+
+    id: Mapped[uuid.UUID] = _pk()
+    salon_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    user_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=text(f"'{enums.UserStatus.ACTIVE.value}'"),
+    )
+    created_at: Mapped[datetime.datetime] = _created_at()
+    updated_at: Mapped[datetime.datetime] = _updated_at()
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["salon_id"], ["salons.id"], name="fk_salon_members_salon_id", ondelete="RESTRICT"
+        ),
+        ForeignKeyConstraint(
+            ["user_id"], ["users.id"], name="fk_salon_members_user_id", ondelete="RESTRICT"
+        ),
+        # Un utilisateur n'est employé qu'une fois par salon.
+        UniqueConstraint("salon_id", "user_id", name="uq_salon_members_salon_user"),
+        # Cible de futures FK composites (salon_id, member_id) d'isolation.
+        UniqueConstraint("salon_id", "id", name="uq_salon_members_salon_id"),
+        enum_check("role", enums.Role, name="role"),
+        enum_check("status", enums.UserStatus, name="status"),
+        Index("ix_salon_members_user_id", "user_id"),
+        Index("ix_salon_members_salon_id", "salon_id"),
+    )
+
+
 class Service(Base):
     """Prestation proposée par un salon (PRD §9.3)."""
 
@@ -489,6 +531,7 @@ class Notification(Base):
 __all__ = [
     "User",
     "Salon",
+    "SalonMember",
     "Service",
     "Appointment",
     "AppointmentService",
