@@ -67,6 +67,8 @@ curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 | `POST` | `/auth/register/manager` | `201` + utilisateur (sans secret) | Inscription gérant (compte propriétaire de salon, #9) — voir ci-dessous |
 | `POST` | `/auth/login` | `200` + paire de jetons | Connexion (téléphone **ou** e-mail + mot de passe, US-1.2, #10) — voir ci-dessous |
 | `POST` | `/auth/refresh` | `200` + paire de jetons | Rafraîchit le jeton d'accès depuis un refresh valide (#10) — voir ci-dessous |
+| `POST` | `/auth/password/reset/request` | `202` + message générique | Demande un code de réinitialisation (SMS **ou** e-mail, US-1.3, #11) — voir ci-dessous |
+| `POST` | `/auth/password/reset/confirm` | `200` + message générique | Confirme la réinitialisation (code + nouveau mot de passe, #11) — voir ci-dessous |
 
 ## Authentification — inscription client (US-1.1, #8)
 
@@ -169,6 +171,50 @@ relève de #12.
 - **Normalisation de l'identifiant** : téléphone en **E.164** (comme à l'inscription) ; e-mail
   `strip`é (casse conservée, cohérente avec le stockage de #8). Transport **Bearer** supposant HTTPS.
 
+## Authentification — réinitialisation du mot de passe par OTP (US-1.3, #11)
+
+Parcours de **récupération de compte en deux étapes** : demander un code à usage unique (par SMS
+**ou** e-mail selon l'identifiant), puis fixer un nouveau mot de passe qui **invalide l'ancien**.
+Adapter entrant : `adapters/inbound/auth.py` ; cas d'usage : `application/password_reset.py`
+(architecture hexagonale). Décisions actées par
+**[ADR-0014](../docs/adr/0014-reinitialisation-mot-de-passe-otp.md)** (réutilisation du domaine OTP,
+anti-énumération, dépôt OTP dédié, canal e-mail *stub*, pas de migration).
+
+- **`POST /auth/password/reset/request`** — corps (JSON) : `identifier` (requis — **téléphone ou
+  e-mail**, auto-détecté). Réponses :
+  - **`202 Accepted`** (**toujours**, y compris identifiant inconnu) : message **générique**
+    (`{ "detail": "Si un compte correspond à cet identifiant, un code de réinitialisation a été
+    envoyé." }`). Ne confirme **jamais** l'existence d'un compte (anti-énumération).
+  - **`429 Too Many Requests`** (+ en-tête **`Retry-After`**) : demande rate-limitée (anti-flood /
+    « SMS bombing »), message générique.
+  - **`422 Unprocessable Entity`** : corps structurellement invalide (champ manquant).
+- **`POST /auth/password/reset/confirm`** — corps (JSON) : `identifier`, `code`, `new_password`
+  (requis). Réponses :
+  - **`200 OK`** : `{ "detail": "Mot de passe réinitialisé." }`. L'ancien mot de passe ne
+    s'authentifie **plus** via `POST /auth/login` ; l'utilisateur se reconnecte avec le nouveau.
+  - **`400 Bad Request`** — message **générique unique** (`{ "detail": "Code de réinitialisation
+    invalide ou expiré." }`) pour **tout** échec d'OTP (invalide, expiré, trop d'essais, déjà
+    consommé) **et** identifiant sans défi (cause exacte jamais divulguée).
+  - **`422 Unprocessable Entity`** : le **nouveau mot de passe** viole la politique (longueur 8–128).
+
+**Sécurité & vie privée :**
+- **OTP à usage unique et expirant** : logique de domaine réutilisée (ADR-0012) — consommation +
+  expiration + limite d'essais + comparaison **temps constant**. Le défi est **supprimé** après
+  succès (usage unique doublement garanti) ; une nouvelle demande **écrase** le défi précédent.
+- **Ancien mot de passe invalidé** : le condensat (`password_hash`) est **remplacé** ; l'ancien est
+  refusé à la connexion. **Limite assumée (ADR-0013)** : les **jetons déjà émis** restent valides
+  jusqu'à expiration (refresh stateless non révocable) — **pas** de déconnexion serveur immédiate.
+- **Anti-énumération** : `202` uniforme à la demande, `400` générique unique à la confirmation ; un
+  défi est **toujours** généré (atténuation d'oracle temporel). Comptes non `ACTIVE` traités comme
+  inexistants.
+- **Séparation des usages** : l'OTP de reset vit dans un **dépôt dédié** ; impossible de réutiliser
+  un OTP d'inscription pour un reset (ou l'inverse).
+- **OTP de reset bloquant et toujours actif** : **indépendant** d'`OTP_ENABLED` (qui ne gouverne que
+  l'OTP optionnel d'inscription). Les endpoints **ne dépendent pas** de `JWT_SECRET` (**pas** de
+  `503`).
+- **Non-journalisation** : code OTP, mot de passe en clair, condensat, numéro et e-mail ne sont
+  **jamais** journalisés ni renvoyés. L'envoi SMS/e-mail réel est **différé M5** (stub no-op).
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
@@ -189,6 +235,16 @@ les **secrets réels** (DSN base/Redis, `JWT_SECRET`, etc.) sont injectés **hor
 | `LOGIN_MAX_ATTEMPTS` | `5` | Anti-bruteforce : nombre d'échecs avant verrou (#10). |
 | `LOGIN_WINDOW_SECONDS` | `300` | Anti-bruteforce : fenêtre glissante des échecs, en secondes. |
 | `LOGIN_LOCKOUT_SECONDS` | `900` | Anti-bruteforce : durée du verrou après seuil, en secondes. |
+| `PASSWORD_RESET_OTP_TTL_SECONDS` | *(= `OTP_TTL_SECONDS`)* | Réinitialisation (#11, optionnel) : durée de validité de l'OTP de reset. Défaut = valeur OTP d'inscription. |
+| `PASSWORD_RESET_OTP_MAX_ATTEMPTS` | *(= `OTP_MAX_ATTEMPTS`)* | Réinitialisation (#11, optionnel) : essais autorisés par OTP de reset. |
+| `PASSWORD_RESET_MAX_ATTEMPTS` | *(= `LOGIN_MAX_ATTEMPTS`)* | Réinitialisation (#11, optionnel) : demandes avant verrou anti-flood. |
+| `PASSWORD_RESET_WINDOW_SECONDS` | *(= `LOGIN_WINDOW_SECONDS`)* | Réinitialisation (#11, optionnel) : fenêtre glissante de l'anti-flood, en secondes. |
+| `PASSWORD_RESET_LOCKOUT_SECONDS` | *(= `LOGIN_LOCKOUT_SECONDS`)* | Réinitialisation (#11, optionnel) : durée du verrou anti-flood, en secondes. |
+
+> La réinitialisation par OTP (#11) **ne dépend pas** d'`OTP_ENABLED` (OTP de reset **toujours actif**)
+> ni de `JWT_SECRET`. La longueur du code de reset réutilise `OTP_CODE_LENGTH`. Les variables
+> `PASSWORD_RESET_*` sont **optionnelles** : absentes, elles retombent sur les valeurs OTP (#8) et
+> login (#10).
 
 ## Modèle de données & migrations
 
@@ -366,3 +422,32 @@ Issue #10 ajoute six suites dédiées à la connexion JWT et à l'anti-bruteforc
   **`TestRateLimitAccumulationE2E`** (sans base) : N requêtes HTTP consécutives avec
   `InMemoryLoginRateLimiter` réel capturé en closure — déclenchement du `429` au seuil, présence et
   valeur positive de `Retry-After`, message `429` sans l'identifiant ciblé.
+
+Issue #11 ajoute trois suites dédiées à la réinitialisation par OTP :
+
+- `test_password_reset_usecase.py` — `RequestPasswordReset` et `ConfirmPasswordReset` (ports
+  100 % fakes) : succès par téléphone et par e-mail — OTP stocké + envoyé, canal SMS/EMAIL correct ;
+  anti-énumération (compte inconnu/inactif/suspendu, identifiant vide/invalide → silencieux, aucun
+  envoi) ; rate-limit déclenché avant tout accès base (`TooManyLoginAttempts`, `retry_after`
+  propagé) ; `record_failure` systématique (succès **et** échecs, mais pas si verrou) ; confirmation
+  — `update_password` appelé + condensat remplacé + ancien mot de passe invalidé + défi supprimé ;
+  OTP invalide/expiré/épuisé/déjà consommé/absent → `InvalidOtp` ; mot de passe trop court
+  (`InvalidPassword`) vérifié **avant** l'OTP ; indistinguabilité (même `InvalidOtp` pour toutes les
+  causes d'échec, code jamais dans le message).
+- `test_password_reset_api.py` — adapter entrant (`TestClient`, ports fakes, sans base) :
+  `POST /auth/password/reset/request` → `202` générique pour compte actif **et** inconnu (même
+  corps, OTP absent de la réponse) ; `429` + `Retry-After` (message générique) ; `422` sur champs
+  manquants/vides ; `405` sur mauvaise méthode. `POST /auth/password/reset/confirm` → `200` +
+  message générique (`Mot de passe réinitialisé.`) ; `400` **unique** pour OTP faux / absent /
+  expiré (indistinguabilité, code OTP jamais dans la réponse) ; `422` sur mot de passe trop court
+  (distinct du `400` OTP) ; `422` sur champs manquants ; `405` sur mauvaise méthode.
+- `test_password_reset_e2e.py` — trois groupes : (a) **`TestPasswordResetOtpFlowE2E`** (sans
+  base) : deux appels HTTP consécutifs partagent un `InMemoryOtpRepository` réel — le code émis par
+  `/request` est relu et accepté par `/confirm` (`200`), condensat mis à jour, ancien mot de passe
+  invalidé dans le dépôt, OTP à usage unique (second `/confirm` → `400` générique), deuxième
+  demande écrase le premier défi ; (b) **`TestPasswordResetRateLimitE2E`** (sans base) : N appels
+  HTTP accumulent l'état d'un `InMemoryLoginRateLimiter` dédié réel — `429` au seuil + `Retry-After`
+  positif, message générique sans l'identifiant ciblé ; (c) **`TestPasswordResetFullStackE2E`**
+  (PostgreSQL requis, **skip propre sans `DATABASE_URL`**) : pile complète sans mock applicatif (SQL
+  + argon2 + `InMemoryOtpRepository`) — inscription → reset OTP → connexion (`POST /auth/login`) :
+  ancien mot de passe → `401`, nouveau → `200` + paire JWT ; OTP à usage unique sur pile réelle.

@@ -122,7 +122,11 @@ export type DocumentResult = z.infer<typeof DocumentResultSchema>;
  * v4's native conversion — the plan's zod-to-json-schema dep is unnecessary.
  */
 export function phaseJsonSchema(phase: SchemaPhase): JsonSchema {
-  return z.toJSONSchema(PHASE_SCHEMAS[phase]) as JsonSchema;
+  // Drop the $schema meta-key: claude's --json-schema validator (ajv, draft-07)
+  // rejects zod v4's draft 2020-12 identifier, and the shapes emitted here are
+  // draft-agnostic anyway.
+  const { $schema: _, ...schema } = z.toJSONSchema(PHASE_SCHEMAS[phase]) as Record<string, unknown>;
+  return schema as JsonSchema;
 }
 
 /** Python bool() over JSON values: bool([]) and bool({}) are False, bool("false") is True. */

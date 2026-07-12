@@ -26,6 +26,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0011](./0011-deploiement-environnements-secrets.md) | Déploiement, environnements & gestion des secrets | Accepté | #5 |
 | [0012](./0012-hachage-argon2-strategie-otp.md) | Hachage de mot de passe (argon2id) & stratégie OTP | Accepté | #8 |
 | [0013](./0013-connexion-jwt-refresh-anti-bruteforce.md) | Connexion — bibliothèque JWT, refresh & anti-bruteforce | Accepté | #10 |
+| [0014](./0014-reinitialisation-mot-de-passe-otp.md) | Réinitialisation du mot de passe par OTP (SMS ou e-mail) | Accepté | #11 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
@@ -53,3 +54,9 @@ ultérieure et signalés en *Conséquences* des ADR concernés :
   refresh rotaté + anti-bruteforce en mémoire), fermant le « Suivi » d'ADR-0003 côté JWT.
 - **Versions de référence** (Flutter/Dart, Python, PostgreSQL, Redis, Node) — **arrêtées en #2**, voir
   [ADR-0007](./0007-arborescence-monorepo-versions.md).
+- **Store OTP persistant/partagé & invalidation immédiate des jetons** — signalés en *Conséquences*
+  d'[ADR-0014](./0014-reinitialisation-mot-de-passe-otp.md) (#11) : le dépôt OTP de reset reste **en
+  mémoire** (Redis à TTL différé, risque multi-instances documenté) et le reset invalide **le mot de
+  passe** mais **pas** les jetons déjà émis (`password_changed_at`/`token_version` + RBAC #12
+  différés). Le **canal e-mail réel** reste différé M5 (ADR-0006 à compléter — pas d'e-mail
+  transactionnel à ce jour).

@@ -48,6 +48,20 @@ app.state.auth_config = _auth_config
 app.state.otp_sender = StubOtpSender()
 app.state.otp_repository = InMemoryOtpRepository()
 
+# Réinitialisation du mot de passe par OTP (#11) : instances **dédiées** et
+# physiquement distinctes de celles de l'inscription — un OTP d'inscription ne
+# peut jamais servir à un reset (ou l'inverse). L'OTP de reset est **bloquant**
+# et **toujours actif** (indépendant d'`OTP_ENABLED`). Le limiteur dédié protège
+# la demande contre le flood d'OTP (« SMS/e-mail bombing »). Le dépôt en mémoire
+# n'est ni partagé ni persistant (limite documentée ADR-0014 ; Redis différé M5).
+app.state.password_reset_otp_repository = InMemoryOtpRepository()
+app.state.password_reset_otp_sender = StubOtpSender()
+app.state.password_reset_rate_limiter = InMemoryLoginRateLimiter(
+    max_attempts=_auth_config.password_reset_max_attempts,
+    window=_auth_config.password_reset_window,
+    lockout=_auth_config.password_reset_lockout,
+)
+
 # Connexion/JWT (#10) :
 # - le limiteur anti-bruteforce est un **singleton** (état en mémoire partagé) ;
 # - le condensat *dummy* est **pré-calculé une fois** (atténuation d'oracle
