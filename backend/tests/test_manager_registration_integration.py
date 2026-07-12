@@ -75,6 +75,14 @@ def _wipe_test_phones(pg_engine):
 
     def wipe() -> None:
         with pg_engine.connect() as conn:
+            # salon_members → users (FK RESTRICT) : supprimer avant users.
+            conn.execute(
+                text(
+                    "DELETE FROM salon_members WHERE user_id IN "
+                    "(SELECT id FROM users WHERE phone LIKE :prefix)"
+                ),
+                {"prefix": f"{_TEST_PHONE_E164_PREFIX}%"},
+            )
             conn.execute(
                 text("DELETE FROM users WHERE phone LIKE :prefix"),
                 {"prefix": f"{_TEST_PHONE_E164_PREFIX}%"},

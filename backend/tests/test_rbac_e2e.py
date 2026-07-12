@@ -66,9 +66,26 @@ _PASSWORD = "rbac-e2e-strong-password-2024"
 
 
 def _wipe_test_data() -> None:
-    """Supprime salons puis comptes de test (FK : salons avant users)."""
+    """Supprime salon_members, salons puis comptes de test (FK RESTRICT : ordre requis)."""
     engine = get_engine()
     with engine.connect() as conn:
+        # salon_members → salons (FK RESTRICT) : membres des salons de test supprimés d'abord.
+        conn.execute(
+            text(
+                "DELETE FROM salon_members WHERE salon_id IN "
+                "(SELECT id FROM salons WHERE owner_id IN "
+                "(SELECT id FROM users WHERE phone LIKE :prefix))"
+            ),
+            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+        )
+        # salon_members → users (FK RESTRICT) : comptes de test inscrits comme employés.
+        conn.execute(
+            text(
+                "DELETE FROM salon_members WHERE user_id IN "
+                "(SELECT id FROM users WHERE phone LIKE :prefix)"
+            ),
+            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+        )
         conn.execute(
             text(
                 "DELETE FROM salons WHERE owner_id IN "

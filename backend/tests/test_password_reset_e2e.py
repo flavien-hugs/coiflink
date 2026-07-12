@@ -412,6 +412,14 @@ def _fullstack_client() -> Generator[tuple[TestClient, FakeOtpSender], None, Non
     def _wipe() -> None:
         engine = get_engine()
         with engine.connect() as conn:
+            # salon_members → users (FK RESTRICT) : supprimer avant users.
+            conn.execute(
+                text(
+                    "DELETE FROM salon_members WHERE user_id IN "
+                    "(SELECT id FROM users WHERE phone LIKE :prefix)"
+                ),
+                {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            )
             conn.execute(
                 text("DELETE FROM users WHERE phone LIKE :prefix"),
                 {"prefix": f"{_E2E_PHONE_PREFIX}%"},
