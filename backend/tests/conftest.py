@@ -18,6 +18,8 @@ from coiflink_api.domain.credentials import UserCredentials
 from coiflink_api.domain.enums import NotificationChannel
 from coiflink_api.domain.errors import EmployeeAlreadyInSalon, PhoneAlreadyInUse, TooManyLoginAttempts
 from coiflink_api.domain.membership import SalonMembershipToCreate
+from coiflink_api.domain.salon import Salon as SalonEntity
+from coiflink_api.domain.salon import SalonPhoto as SalonPhotoEntity
 from coiflink_api.domain.otp import OtpChallenge
 from coiflink_api.domain.tokens import TokenClaims, TokenPair
 from coiflink_api.domain.user import User, UserToCreate
