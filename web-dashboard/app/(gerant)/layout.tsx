@@ -24,9 +24,22 @@ export default async function GerantLayout({ children }: { children: ReactNode }
   if (!decision.allow) {
     if (decision.reason === "unavailable") {
       return (
-        <main className="status-screen" role="alert">
-          <h1>Service momentanément indisponible</h1>
-          <p>Impossible de vérifier votre session pour le moment. Veuillez réessayer plus tard.</p>
+        <main className="flex min-h-screen flex-1 items-center justify-center p-6">
+          <div
+            className="w-full max-w-sm rounded-2xl border border-danger/25 bg-danger/10 p-6 text-center"
+            role="alert"
+          >
+            <h1 className="text-lg font-semibold text-danger">Service momentanément indisponible</h1>
+            <p className="mt-1.5 text-sm text-muted">
+              Impossible de vérifier votre session pour le moment. Veuillez réessayer plus tard.
+            </p>
+            <a
+              href="/gerant"
+              className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium transition hover:bg-foreground/5"
+            >
+              Réessayer
+            </a>
+          </div>
         </main>
       );
     }

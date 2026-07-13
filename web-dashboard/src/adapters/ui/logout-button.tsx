@@ -24,7 +24,12 @@ export function LogoutButton() {
   }
 
   return (
-    <button type="button" className="logout-button" onClick={onLogout} disabled={pending}>
+    <button
+      type="button"
+      className="cursor-pointer rounded-lg border border-border px-3 py-1.5 text-sm transition hover:border-danger/40 hover:bg-danger/10 hover:text-danger active:scale-[0.98] disabled:cursor-default disabled:opacity-60 disabled:hover:border-border disabled:hover:bg-transparent disabled:hover:text-foreground"
+      onClick={onLogout}
+      disabled={pending}
+    >
       {pending ? "Déconnexion…" : "Déconnexion"}
     </button>
   );
