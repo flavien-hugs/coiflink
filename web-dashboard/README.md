@@ -3,7 +3,7 @@
 Interface web **gérant** et **admin** de CoifLink, conformément à
 **[ADR-0002](../docs/adr/0002-web-gerant-admin-nextjs.md)** (Next.js · React · TypeScript). Ce dossier
 est un **squelette d'initialisation** (#2) : page d'accueil neutre, aucune fonctionnalité métier
-(salons, planning, caisse, supervision → issues M1→).
+(salons, planning, caisse, supervision → issues M2→).
 
 > **Arborescence retenue (#2)** : **une seule application Next.js** avec zones protégées par rôle
 > (`/gerant`, `/admin`) plutôt que deux applications séparées — plus simple à outiller pour le MVP et
@@ -24,6 +24,65 @@ app/              # routage Next.js = adapter entrant + composition root du fram
 
 Le routage `app/` reste l'entrée Next.js ; le domaine et les cas d'usage vivent sous
 `src/` et ne dépendent ni de React ni du réseau.
+
+## Dashboard gérant : shell, navigation, garde d'authentification (#14)
+
+Le shell de l'espace **gérant** (`/gerant`) fournit le layout (en-tête, navigation, zone de
+contenu), la navigation vers les futures sections (PRD §7.2) et une **garde d'authentification**
+(deny-by-default). Aucune fonctionnalité métier n'est encore livrée : le dashboard est **vide mais
+protégé** ; les sections Planning, Clients, Prestations, Encaissements, Employés, Paramètres sont
+affichées « à venir » (M2–M5).
+
+### Routes
+
+| Route | Accès | Rôle |
+| --- | --- | --- |
+| `/` | publique | — (accueil neutre + lien vers `/gerant`) |
+| `/login` | publique | point d'entrée de session (formulaire minimal) |
+| `/gerant` | **protégée** | `MANAGER` actif uniquement (dashboard vide) |
+| `POST /api/auth/login` | interne (BFF) | proxifie `POST /auth/login`, pose les cookies httpOnly |
+| `POST /api/auth/logout` | interne (BFF) | efface les cookies de session |
+
+`/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
+publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
+
+### Garde d'authentification (Option A — cookie httpOnly + BFF)
+
+1. **Connexion** : `LoginForm` poste vers `POST /api/auth/login`, qui appelle `POST /auth/login`
+   (#10) et pose les jetons dans des cookies **`httpOnly` / `Secure` (prod) / `SameSite=Lax`** —
+   jamais accessibles au JS du navigateur (atténue le vol par XSS).
+2. **Garde « présence » (edge)** : `proxy.ts` (convention Next.js 16, ex-`middleware`) intercepte
+   `/gerant*` et redirige vers `/login` si le cookie de session est **absent** (aucun appel réseau
+   au niveau edge).
+3. **Vérification réelle (serveur)** : le layout `app/(gerant)/layout.tsx` (Server Component)
+   appelle **`GET /auth/me`** (#12, **source de vérité**) via le cas d'usage
+   `require-manager-session`. Décision : session valide de rôle `MANAGER` actif → rendu du shell ;
+   `401`/`403` ou rôle non gérant → `redirect(/login)` ; `503`/panne → état d'erreur maîtrisé. Le
+   contenu privé n'est **jamais** envoyé à un visiteur non autorisé (pas de « flash »).
+4. **Déconnexion** : `LogoutButton` poste vers `POST /api/auth/logout` (efface les cookies) puis
+   redirige vers `/login`.
+
+La présence d'un jeton ne suffit pas : c'est la réponse `200` de `/auth/me` (rôle relu en base côté
+backend) qui autorise l'affichage. Le front traite le JWT en **opaque** (il ne le décode pas). Un
+`401` est traité comme « session expirée → redirection » ; le rafraîchissement transparent via
+`POST /auth/refresh` est un **suivi** (hors #14).
+
+### Ajouter une section
+
+1. Ajouter une entrée à `src/domain/navigation/sections.ts` (`{ key, label, href, status }`).
+2. Créer la page correspondante sous `app/(gerant)/gerant/<section>/page.tsx` et passer son
+   `status` de `"coming-soon"` à `"available"`.
+
+### Variables d'environnement
+
+- **`NEXT_PUBLIC_API_BASE_URL`** — URL de base du backend, **exposée au navigateur** (jamais un
+  secret).
+- **`API_BASE_URL`** *(optionnelle, serveur uniquement)* — URL utilisée par les appels serveur
+  Next (Route Handlers, layout `/gerant`) ; repli sur `NEXT_PUBLIC_API_BASE_URL` si absente. À
+  définir seulement si le backend est joignable par une URL interne distincte. **Non secrète.**
+
+Voir `.env.example`. `JWT_SECRET` reste **côté backend** : le front ne le connaît pas et ne valide
+aucune signature.
 
 ## Prérequis
 
