@@ -148,7 +148,9 @@ class Salon(Base):
     commune: Mapped[str | None] = mapped_column(String(128), nullable=True)
     latitude: Mapped[decimal.Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
     longitude: Mapped[decimal.Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
-    logo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Stocke une **clé d'objet** S3-compatible (`salons/{id}/logo/{uuid}.png`),
+    # jamais une URL : l'URL signée est calculée à la lecture (ADR-0005, #15).
+    logo_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default=text(f"'{enums.SalonStatus.ACTIVE.value}'")
     )
@@ -206,6 +208,40 @@ class SalonMember(Base):
         enum_check("status", enums.UserStatus, name="status"),
         Index("ix_salon_members_user_id", "user_id"),
         Index("ix_salon_members_salon_id", "salon_id"),
+    )
+
+
+class SalonPhoto(Base):
+    """Photo d'un salon (US-2.1, #15). Comble l'absence de « photos » du §9.2.
+
+    Le §9.2 (et la table `salons`) ne portent qu'un logo singulier ; US-2.1 et
+    §7.2 demandent des **photos** (pluriel). Chaque ligne référence une **clé
+    d'objet** S3-compatible (jamais une URL) : l'URL signée est calculée à la
+    lecture (ADR-0005). Une photo est **purement dépendante** de son salon (elle
+    n'a aucun sens seule) → `ON DELETE CASCADE`, par exception à la convention
+    `RESTRICT` du module (même logique que `appointment_services`).
+    """
+
+    __tablename__ = "salon_photos"
+
+    id: Mapped[uuid.UUID] = _pk()
+    salon_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    # Clé d'objet du bucket (jamais une URL publique) ; bornée à 1024 caractères.
+    object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # Ordre d'affichage (0-indexé, croissant).
+    position: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    created_at: Mapped[datetime.datetime] = _created_at()
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["salon_id"], ["salons.id"], name="fk_salon_photos_salon_id", ondelete="CASCADE"
+        ),
+        # Cible de futures FK composites (salon_id, photo_id) — convention d'isolation.
+        UniqueConstraint("salon_id", "id", name="uq_salon_photos_salon_id"),
+        # Pas de doublon de média au sein d'un salon.
+        UniqueConstraint("salon_id", "object_key", name="uq_salon_photos_salon_object_key"),
+        CheckConstraint("position >= 0", name="position_positive"),
+        Index("ix_salon_photos_salon_id", "salon_id", "position"),
     )
 
 
@@ -532,6 +568,7 @@ __all__ = [
     "User",
     "Salon",
     "SalonMember",
+    "SalonPhoto",
     "Service",
     "Appointment",
     "AppointmentService",

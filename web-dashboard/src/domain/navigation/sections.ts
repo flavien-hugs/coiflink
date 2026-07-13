@@ -1,9 +1,9 @@
 // Navigation du shell gérant — couche domaine (hexagonal, ADR-0008), TypeScript
 // pur, testable sans React. Liste **statique** des sections du dashboard cible
-// (PRD §7.2) : seule l'accueil (`/gerant`) est disponible ; les autres sont
-// marquées « à venir » et seront remplies par les issues M2–M5. Ajouter une
-// section = ajouter une entrée ici (+ éventuellement une page sous
-// `app/(gerant)/gerant/...`).
+// (PRD §7.2). `dashboard` (accueil) et `parametres` (création/consultation du
+// salon, #15) sont disponibles ; les autres restent « à venir » et seront
+// remplies par les issues M2–M5. Ajouter une section = ajouter une entrée ici
+// (+ éventuellement une page sous `app/(gerant)/gerant/...`).
 
 export type SectionStatus = "available" | "coming-soon";
 
@@ -26,5 +26,5 @@ export const DASHBOARD_SECTIONS: readonly DashboardSection[] = [
     status: "coming-soon",
   },
   { key: "employes", label: "Employés", href: "/gerant/employes", status: "coming-soon" },
-  { key: "parametres", label: "Paramètres", href: "/gerant/parametres", status: "coming-soon" },
+  { key: "parametres", label: "Paramètres", href: "/gerant/parametres", status: "available" },
 ] as const;

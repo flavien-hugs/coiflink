@@ -405,3 +405,131 @@ class FakeSalonMemberRepository:
 @pytest.fixture()
 def fake_salon_member_repository() -> FakeSalonMemberRepository:
     return FakeSalonMemberRepository()
+
+
+class FakeSalonRepository:
+    """Dépôt de salons en mémoire (création + lecture + médias, #15).
+
+    Implémente le port `SalonRepository` sans I/O réelle. `created` conserve les
+    intentions d'écriture pour vérifier que l'`owner_id` provient bien du
+    principal. Les photos sont stockées par salon (ordre d'insertion = position).
+    """
+
+    def __init__(self) -> None:
+        self.created: list = []
+        self._salons: dict[uuid.UUID, "SalonEntity"] = {}
+        self._photos: dict[uuid.UUID, list["SalonPhotoEntity"]] = {}
+
+    def create(self, salon):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.enums import SalonStatus
+        from coiflink_api.domain.salon import Salon as SalonEntity
+
+        self.created.append(salon)
+        entity = SalonEntity(
+            id=uuid.uuid4(),
+            owner_id=salon.owner_id,
+            name=salon.name,
+            description=salon.description,
+            phone=salon.phone,
+            address=salon.address,
+            city=salon.city,
+            commune=salon.commune,
+            latitude=salon.latitude,
+            longitude=salon.longitude,
+            logo_object_key=None,
+            status=SalonStatus.ACTIVE.value,
+            opening_hours=None,
+            created_at=_CREATED_AT,
+            updated_at=_CREATED_AT,
+        )
+        self._salons[entity.id] = entity
+        self._photos.setdefault(entity.id, [])
+        return entity
+
+    def find_by_id(self, salon_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        return self._salons.get(salon_id)
+
+    def list_for_owner(self, owner_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        return tuple(
+            s for s in self._salons.values() if s.owner_id == owner_id
+        )
+
+    def set_logo(self, salon_id: uuid.UUID, object_key):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.errors import SalonNotFound
+
+        salon = self._salons.get(salon_id)
+        if salon is None:
+            raise SalonNotFound("Salon introuvable.")
+        salon = _dc.replace(salon, logo_object_key=object_key)
+        self._salons[salon_id] = salon
+        return salon
+
+    def add_photo(self, salon_id: uuid.UUID, object_key: str):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.salon import SalonPhoto as SalonPhotoEntity
+
+        photos = self._photos.setdefault(salon_id, [])
+        photo = SalonPhotoEntity(
+            id=uuid.uuid4(),
+            salon_id=salon_id,
+            object_key=object_key,
+            position=len(photos),
+            created_at=_CREATED_AT,
+        )
+        photos.append(photo)
+        return photo
+
+    def list_photos(self, salon_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        return tuple(self._photos.get(salon_id, []))
+
+    def count_photos(self, salon_id: uuid.UUID) -> int:
+        return len(self._photos.get(salon_id, []))
+
+    def delete_photo(self, salon_id: uuid.UUID, photo_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        photos = self._photos.get(salon_id, [])
+        for index, photo in enumerate(photos):
+            if photo.id == photo_id:
+                del photos[index]
+                return photo.object_key
+        return None
+
+
+class FakeMediaStorage:
+    """Stockage objet en mémoire (URLs signées factices) — aucun appel réseau (#15).
+
+    `presign_*` renvoient des URLs déterministes et **non secrètes** ; `deleted`
+    et `uploads` enregistrent les appels pour assertions.
+    """
+
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+        self.uploads: list[tuple[str, str]] = []
+
+    def presign_upload(self, object_key: str, content_type: str):  # type: ignore[no-untyped-def]
+        from coiflink_api.application.ports.media_storage import PresignedUpload
+
+        self.uploads.append((object_key, content_type))
+        return PresignedUpload(
+            url=f"https://fake-bucket.local/upload/{object_key}",
+            object_key=object_key,
+            method="PUT",
+            headers={"Content-Type": content_type},
+            expires_in=900,
+        )
+
+    def presign_download(self, object_key: str) -> str:
+        return f"https://fake-bucket.local/download/{object_key}?sig=fake"
+
+    def delete(self, object_key: str) -> None:
+        self.deleted.append(object_key)
+
+
+@pytest.fixture()
+def fake_salon_repository() -> "FakeSalonRepository":
+    return FakeSalonRepository()
+
+
+@pytest.fixture()
+def fake_media_storage() -> "FakeMediaStorage":
+    return FakeMediaStorage()

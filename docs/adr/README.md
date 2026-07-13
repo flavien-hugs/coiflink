@@ -29,6 +29,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0014](./0014-reinitialisation-mot-de-passe-otp.md) | Réinitialisation du mot de passe par OTP (SMS ou e-mail) | Accepté | #11 |
 | [0015](./0015-autorisation-rbac-deny-by-default.md) | Autorisation & RBAC — deny-by-default, permissions par rôle, isolation par salon | Accepté | #12 |
 | [0016](./0016-comptes-employes-appartenance-salon.md) | Comptes employés — appartenance employé↔salon & création par le gérant | Accepté | #13 |
+| [0017](./0017-creation-salon-medias-et-reservabilite.md) | Création d'un salon — rattachement au gérant, médias par URL signée & réservabilité | Accepté | #15 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
@@ -43,8 +44,10 @@ ultérieure et signalés en *Conséquences* des ADR concernés :
 - **Fournisseur SMS concret** (agrégateur local) — **reste différé** (opérationnel, M5) ; la surface
   de secrets est documentée par ADR-0011, voir ADR-0006.
 - **Fournisseur de stockage objet** (AWS S3 / MinIO / R2 / bucket plateforme) — **provisionnement
-  concret différé** à la première feature d'upload (M2) ; la surface de secrets est documentée par
-  ADR-0011, voir ADR-0005.
+  désormais actif depuis #15** (première feature d'upload M2 — création de salon, médias par URL
+  signée) ; la configuration S3/MinIO (variables `S3_*` / `MEDIA_*`) est décrite dans
+  `docs/environnements-et-secrets.md` ; voir ADR-0005 et
+  [ADR-0017](./0017-creation-salon-medias-et-reservabilite.md).
 - **Sauvegardes automatiques** (§10.2, §12.2) — **tranchées par ADR-0011** (#5 : quotidiennes,
   rétention 7 j, restauration testée), voir ADR-0004.
 - **ORM + migrations** — **tranché par [ADR-0009](./0009-orm-migrations-sqlalchemy-alembic.md)** (#3 :

@@ -330,6 +330,27 @@ dans la **même transaction** — si l'une échoue, aucune n'est persistée (pas
 **Connexion du coiffeur.** Aucune route dédiée : le coiffeur se connecte via `POST /auth/login`
 (#10) avec son téléphone/e-mail + mot de passe initial, puis peut le changer via le reset OTP (#11).
 
+## Salons — création & médias (US-2.1, #15 — [ADR-0017](../docs/adr/0017-creation-salon-medias-et-reservabilite.md))
+
+`POST /salons` permet à un **gérant** de créer un salon **rattaché à son compte** (nom, description,
+téléphone, localisation). Route protégée par `SALON_CREATE` (matrice §4.1 — **seul** le `MANAGER`).
+L'`owner_id` est **imposé côté serveur** depuis le principal authentifié : **aucun champ `owner_id`**
+n'est lu du corps (anti-élévation de privilège). Un salon fraîchement créé a `status="ACTIVE"` et
+`opening_hours=null` ⇒ **`is_bookable=false`** : **sans horaire, un salon n'est pas encore réservable**
+(§8.3 ; la configuration des horaires est l'objet de #16).
+
+- **Consultation** : `GET /salons` (ses salons) ; `GET /salons/{salon_id}` (portée salon + `SALON_READ_OWN`
+  **ou** `SALON_READ_ANY` pour l'ADMIN). Un accès hors périmètre renvoie le `403` **générique**.
+- **Médias** (logo/photos) via **URLs signées** (ADR-0005), le binaire ne transite jamais par l'API :
+  `POST /salons/{id}/media/upload-url` → `PUT` navigateur→bucket → `PUT /salons/{id}/logo` /
+  `POST /salons/{id}/photos` (`{ object_key }`). La clé d'objet est **fabriquée par le serveur** (sans
+  PII) et **revalidée** contre le préfixe du salon. `logo_object_key` stocke une **clé**, jamais une
+  URL (l'URL signée est calculée à la lecture). Sans stockage objet configuré, les routes médias
+  répondent **503** — mais `POST /salons` reste possible (créer un salon sans logo).
+
+Créer un salon **débloque mécaniquement** la portée du gérant (`salons.owner_id`) : `POST /salons/{id}/employees`
+(#13) passe alors de `403` à `201`.
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
@@ -355,6 +376,19 @@ les **secrets réels** (DSN base/Redis, `JWT_SECRET`, etc.) sont injectés **hor
 | `PASSWORD_RESET_MAX_ATTEMPTS` | *(= `LOGIN_MAX_ATTEMPTS`)* | Réinitialisation (#11, optionnel) : demandes avant verrou anti-flood. |
 | `PASSWORD_RESET_WINDOW_SECONDS` | *(= `LOGIN_WINDOW_SECONDS`)* | Réinitialisation (#11, optionnel) : fenêtre glissante de l'anti-flood, en secondes. |
 | `PASSWORD_RESET_LOCKOUT_SECONDS` | *(= `LOGIN_LOCKOUT_SECONDS`)* | Réinitialisation (#11, optionnel) : durée du verrou anti-flood, en secondes. |
+| `S3_ENDPOINT_URL` | *(vide)* | Stockage objet médias (#15, ADR-0005) : endpoint S3-compatible (MinIO en local, fournisseur en prod). Vide ⇒ AWS S3 « pur ». |
+| `S3_BUCKET` | *(vide)* | Bucket **privé** des médias. Absent ⇒ `media_storage=None` ⇒ routes médias en `503`. |
+| `S3_REGION` | `us-east-1` | Région du bucket. |
+| `S3_ACCESS_KEY_ID` | *(vide)* | **SECRET** — clé d'accès S3. Hors dépôt (ADR-0005/0011). |
+| `S3_SECRET_ACCESS_KEY` | *(vide)* | **SECRET** — clé secrète S3. Hors dépôt. |
+| `MEDIA_URL_TTL_SECONDS` | `900` | Durée de vie des URLs signées (lecture/téléversement). |
+| `MEDIA_MAX_UPLOAD_BYTES` | `5242880` | Taille max d'un média (5 Mio). |
+| `MEDIA_MAX_PHOTOS` | `10` | Nombre max de photos par salon (`409` au-delà). |
+
+> **Médias en local** : un service **MinIO** est fourni dans `deploy/docker-compose.yml` (identifiants
+> de **développement** dans `deploy/.env`, jamais un secret réel). Le téléversement direct
+> navigateur→bucket exige que le bucket autorise l'origine du dashboard (**CORS**) — configuration
+> d'infrastructure, hors code.
 
 > La réinitialisation par OTP (#11) **ne dépend pas** d'`OTP_ENABLED` (OTP de reset **toujours actif**)
 > ni de `JWT_SECRET`. La longueur du code de reset réutilise `OTP_CODE_LENGTH`. Les variables
@@ -427,6 +461,7 @@ erDiagram
     salons ||--o{ payments : ""
     salons ||--o{ cash_journal : ""
     salons ||--o{ salon_members : "salon_id"
+    salons ||--o{ salon_photos : "salon_id"
     appointments ||--o{ appointment_services : ""
     services ||--o{ appointment_services : ""
     appointments |o--o{ payments : "appointment_id"
@@ -446,7 +481,8 @@ erDiagram
 | Table | Colonnes notables | Contraintes & index clés |
 | --- | --- | --- |
 | **`users`** | `full_name`, `phone`, `email?`, `password_hash`, `role`, `status` | `uq_users_phone` ; `uq_users_email` (unique partiel `WHERE email IS NOT NULL`) ; CHECK `role`/`status` |
-| **`salons`** | `owner_id→users`, `name`, `description`, `phone`, `address`, `city`, `commune`, `latitude`, `longitude`, `logo_url`, `status`, `opening_hours JSONB` | FK `owner_id` ; CHECK `status` ; index `(city, commune)`, `status` |
+| **`salons`** | `owner_id→users`, `name`, `description`, `phone`, `address`, `city`, `commune`, `latitude`, `longitude`, `logo_object_key`, `status`, `opening_hours JSONB` | FK `owner_id` ; CHECK `status` ; index `(city, commune)`, `status`, `owner_id` (`ix_salons_owner_id`, ajouté en `0003`) |
+| **`salon_photos`** | `salon_id→salons`, `object_key` (clé S3, jamais une URL), `position` | FK `salon_id` CASCADE ; `uq_salon_photos_salon_id (salon_id, id)` ; `uq_salon_photos_salon_object_key (salon_id, object_key)` ; CHECK `position >= 0` ; index `(salon_id, position)` |
 | **`salon_members`** | `salon_id→salons`, `user_id→users`, `role`, `status` | `uq_salon_members_salon_user (salon_id, user_id)` (un compte est employé une seule fois par salon) ; `uq_salon_members_salon_id (salon_id, id)` ; FK `salon_id`/`user_id` RESTRICT ; CHECK `role`/`status` ; index `user_id`, `salon_id` — **source d'autorité** de la portée d'un `HAIRDRESSER` (#13, ADR-0016) |
 | **`services`** | `salon_id→salons`, `name`, `price`, `duration_minutes`, `category`, `is_active` | FK `salon_id` ; `uq_services_salon_id (salon_id, id)` ; CHECK `price >= 0`, `duration_minutes > 0` ; index `salon_id` |
 | **`appointments`** | `salon_id→salons`, `client_id→users`, `hairdresser_id?→users`, `appointment_date`, `start_time`, `end_time`, `status`, `cancellation_reason?`, `client_note?`, `slot` (généré) | FK `salon_id`/`client_id` NOT NULL (§8.1) ; `uq_appointments_salon_id (salon_id, id)` ; CHECK `end_time > start_time`, `status` ; **EXCLUDE** anti double-booking ; index `(salon_id, appointment_date)`, `client_id` |
@@ -627,3 +663,33 @@ Issue #13 ajoute deux suites dédiées à la création d'employés :
   permission `EMPLOYEE_MANAGE` absente) ; `403` inter-salon (salon hors portée §11.2, **message
   générique identique**) ; anti-élévation : aucun champ `role` déclaré dans le corps de la requête ;
   route absente de `PUBLIC_ROUTE_PATHS` (deny-by-default garanti).
+
+Issue #15 ajoute quatre suites dédiées à la création de salon et aux médias :
+
+- `test_domain_salon.py` — domaine pur (aucune I/O) : `validate_salon_name` (vide, espaces, > 255
+  chars → `InvalidSalonName`, `strip()` appliqué, limite exacte acceptée) ; `validate_coordinates`
+  (une seule coordonnée → `InvalidLocation`, hors bornes WGS-84, paire `(None, None)` acceptée) ;
+  `validate_content_type` (MIME valides → extension canonique, MIME invalide → `InvalidMediaType`) ;
+  table de vérité complète de `is_bookable` (§8.3 — cœur du critère d'acceptation de #15) ;
+  propriété `Salon.is_bookable` (délègue à la même règle).
+- `test_create_salon_usecase.py` — cas d'usage (ports 100 % fakes) : `CreateSalon` : `owner_id`
+  imposé par l'appelant (anti-élévation), `status=ACTIVE` et `opening_hours=None` garantis,
+  téléphone normalisé E.164, validations nom/coordonnées **avant** toute écriture au dépôt ;
+  `_ensure_key_prefix` / `_build_object_key` via les cas d'usage médias — clé hors préfixe du salon
+  → `MediaKeyMismatch` ; `AddSalonPhoto` : limite `max_photos` → `PhotoLimitExceeded` ;
+  `AttachSalonLogo` : revalide le préfixe, nettoie l'ancien objet (best-effort) ;
+  `RemoveSalonPhoto` : suppression best-effort du stockage ; `IssueMediaUploadUrl` : clé sans PII,
+  `content_type` invalide → `InvalidMediaType` ; `GetSalon` : `SalonNotFound` si absent, URLs
+  signées résolues, sans stockage (`None`) → `logo_url`/`photos` à `None` ; `ListOwnSalons` :
+  filtre par `owner_id`.
+- `test_salon_api.py` — adapter entrant (`TestClient`, ports fakes, sans base) : matrice RBAC de
+  `POST /salons` (`MANAGER` → `201`, `CLIENT`/`HAIRDRESSER`/`ADMIN` → `403`, non authentifié →
+  `401`) ; anti-élévation (`owner_id` dans le corps ignoré) ; réponse `is_bookable=false`,
+  `opening_hours=null` à la création ; `GET /salons/{id}` par un autre gérant → `403` générique
+  (pas `404`) ; `GET /salons/{id}` par l'`ADMIN` → `200` ; `GET /salons` liste vide cohérente ;
+  routes absentes de `PUBLIC_ROUTE_PATHS` (deny-by-default).
+- `test_salon_media_api.py` — routes médias (`TestClient`, ports fakes, sans base) : MIME hors
+  liste blanche → `422` ; `object_key` d'un autre salon → `422` (isolation §11.2) ; quota photos
+  dépassé → `409` ; `media_storage=None` → `503` pour les routes d'écriture **mais** `POST /salons`
+  reste `201` ; `GET /salons` et `GET /salons/{id}` sans stockage → `200` avec `logo_url`/`photos`
+  à `null`.

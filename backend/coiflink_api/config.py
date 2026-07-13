@@ -153,4 +153,67 @@ def load_auth_config(env: Mapping[str, str] | None = None) -> AuthConfig:
     )
 
 
-__all__ = ["AuthConfig", "load_auth_config"]
+# Défauts de stockage objet (non secrets) — cf. ADR-0005 / spec #15.
+DEFAULT_S3_REGION = "us-east-1"
+DEFAULT_MEDIA_URL_TTL_SECONDS = 900  # 15 min
+DEFAULT_MEDIA_MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 Mio
+DEFAULT_MEDIA_MAX_PHOTOS = 10
+
+
+@dataclass(frozen=True)
+class MediaConfig:
+    """Configuration du **stockage objet S3-compatible** (ADR-0005, #15).
+
+    Les clés d'accès (`access_key_id` / `secret_access_key`) sont **secrètes** et
+    sans défaut : `""` quand absentes. Comme `jwt_secret`, la validation
+    fail-fast est déportée à l'assemblage (`main.py` ne crée l'adapter que si
+    `is_configured` ; sinon les routes médias répondent `503`, sans casser la
+    création de salon ni `GET /health`).
+    """
+
+    endpoint_url: str = ""
+    bucket: str = ""
+    region: str = DEFAULT_S3_REGION
+    access_key_id: str = ""
+    secret_access_key: str = ""
+    url_ttl_seconds: int = DEFAULT_MEDIA_URL_TTL_SECONDS
+    max_upload_bytes: int = DEFAULT_MEDIA_MAX_UPLOAD_BYTES
+    max_photos: int = DEFAULT_MEDIA_MAX_PHOTOS
+
+    @property
+    def is_configured(self) -> bool:
+        """Vrai si le minimum vital est présent (bucket + clés d'accès).
+
+        L'`endpoint_url` reste optionnel (AWS S3 « pur » n'en a pas besoin) ; le
+        bucket et les identifiants, eux, sont indispensables pour signer une URL.
+        """
+
+        return bool(self.bucket and self.access_key_id and self.secret_access_key)
+
+
+def load_media_config(env: Mapping[str, str] | None = None) -> MediaConfig:
+    """Construit `MediaConfig` depuis l'environnement (secrets sans défaut)."""
+
+    source = env if env is not None else os.environ
+    return MediaConfig(
+        endpoint_url=(source.get("S3_ENDPOINT_URL") or "").strip(),
+        bucket=(source.get("S3_BUCKET") or "").strip(),
+        region=(source.get("S3_REGION") or DEFAULT_S3_REGION).strip(),
+        access_key_id=(source.get("S3_ACCESS_KEY_ID") or "").strip(),
+        secret_access_key=(source.get("S3_SECRET_ACCESS_KEY") or "").strip(),
+        url_ttl_seconds=_int_env(
+            source.get("MEDIA_URL_TTL_SECONDS"), DEFAULT_MEDIA_URL_TTL_SECONDS
+        ),
+        max_upload_bytes=_int_env(
+            source.get("MEDIA_MAX_UPLOAD_BYTES"), DEFAULT_MEDIA_MAX_UPLOAD_BYTES
+        ),
+        max_photos=_int_env(source.get("MEDIA_MAX_PHOTOS"), DEFAULT_MEDIA_MAX_PHOTOS),
+    )
+
+
+__all__ = [
+    "AuthConfig",
+    "load_auth_config",
+    "MediaConfig",
+    "load_media_config",
+]
