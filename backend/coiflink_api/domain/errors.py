@@ -48,6 +48,44 @@ class EmployeeAlreadyInSalon(DomainError):
     """
 
 
+class InvalidSalonName(DomainError):
+    """Le nom du salon fourni est vide ou hors bornes (US-2.1, #15)."""
+
+
+class InvalidLocation(DomainError):
+    """Les coordonnées du salon sont incomplètes ou hors bornes (US-2.1, #15).
+
+    Levée quand une seule des deux coordonnées est fournie, ou quand la latitude
+    (`[-90, 90]`) / la longitude (`[-180, 180]`) sort de ses bornes. Message
+    neutre — l'adapter entrant la traduit en `422`.
+    """
+
+
+class SalonNotFound(DomainError):
+    """Le salon visé n'existe pas (US-2.1, #15).
+
+    N'est traduite en `404` **qu'après** validation de la portée : un salon hors
+    périmètre a déjà reçu un `403` générique (aucun oracle d'existence, §11.2).
+    """
+
+
+class InvalidMediaType(DomainError):
+    """Type MIME de média hors liste blanche (`image/jpeg|png|webp`, #15)."""
+
+
+class PhotoLimitExceeded(DomainError):
+    """Le salon a atteint le nombre maximal de photos (`MEDIA_MAX_PHOTOS`, #15)."""
+
+
+class MediaKeyMismatch(DomainError):
+    """La clé d'objet soumise n'appartient pas au préfixe du salon ciblé (#15).
+
+    Garde-fou d'isolation (§11.2) : sans cette revalidation, un gérant pourrait
+    faire référencer par son salon une clé appartenant à un autre salon. Traduite
+    en `422` par l'adapter entrant.
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -115,6 +153,12 @@ __all__ = [
     "PhoneAlreadyInUse",
     "EmailAlreadyInUse",
     "EmployeeAlreadyInSalon",
+    "InvalidSalonName",
+    "InvalidLocation",
+    "SalonNotFound",
+    "InvalidMediaType",
+    "PhotoLimitExceeded",
+    "MediaKeyMismatch",
     "InvalidOtp",
     "OtpExpired",
     "InvalidCredentials",

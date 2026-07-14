@@ -30,8 +30,8 @@ Le routage `app/` reste l'entrée Next.js ; le domaine et les cas d'usage vivent
 Le shell de l'espace **gérant** (`/gerant`) fournit le layout (en-tête, navigation, zone de
 contenu), la navigation vers les futures sections (PRD §7.2) et une **garde d'authentification**
 (deny-by-default). Aucune fonctionnalité métier n'est encore livrée : le dashboard est **vide mais
-protégé** ; les sections Planning, Clients, Prestations, Encaissements, Employés, Paramètres sont
-affichées « à venir » (M2–M5).
+protégé** ; les sections Planning, Clients, Prestations, Encaissements, Employés sont affichées
+« à venir » (M2–M5). La section **Paramètres** est **disponible** depuis #15 (voir ci-dessous).
 
 ### Routes
 
@@ -40,8 +40,11 @@ affichées « à venir » (M2–M5).
 | `/` | publique | — (accueil neutre + lien vers `/gerant`) |
 | `/login` | publique | point d'entrée de session (formulaire minimal) |
 | `/gerant` | **protégée** | `MANAGER` actif uniquement (dashboard vide) |
+| `/gerant/parametres` | **protégée** | `MANAGER` — création/consultation du salon (#15) |
 | `POST /api/auth/login` | interne (BFF) | proxifie `POST /auth/login`, pose les cookies httpOnly |
 | `POST /api/auth/logout` | interne (BFF) | efface les cookies de session |
+| `POST /api/salons` | interne (BFF) | proxifie `POST /salons` (jeton lu du cookie httpOnly) |
+| `GET /api/salons` | interne (BFF) | proxifie `GET /salons` (salons du gérant) |
 
 `/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
 publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
@@ -66,6 +69,20 @@ La présence d'un jeton ne suffit pas : c'est la réponse `200` de `/auth/me` (r
 backend) qui autorise l'affichage. Le front traite le JWT en **opaque** (il ne le décode pas). Un
 `401` est traité comme « session expirée → redirection » ; le rafraîchissement transparent via
 `POST /auth/refresh` est un **suivi** (hors #14).
+
+### Paramètres — création & consultation du salon (#15)
+
+La section **Paramètres** (`/gerant/parametres`, Server Component) charge les salons du gérant **côté
+serveur** (jeton lu du cookie httpOnly, jamais exposé au navigateur) :
+
+- **aucun salon** → formulaire de création (`SalonForm`) qui poste vers `POST /api/salons` ;
+- **un salon** → fiche « Informations générales / Localisation ».
+
+Tant que `isBookable(salon) === false` (§8.3 : `ACTIVE` **et** horaires présents — parité stricte avec
+`domain/salon.py`), un **bandeau** invite à configurer les horaires d'ouverture (l'objet de #16). Les
+médias (logo/photos) transitent par des **URLs signées** côté backend ; le téléversement direct
+navigateur→bucket exige que le bucket autorise l'origine du dashboard (**CORS**) — configuration
+d'infrastructure, hors code.
 
 ### Ajouter une section
 

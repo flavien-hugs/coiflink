@@ -27,11 +27,17 @@ describe("DASHBOARD_SECTIONS", () => {
     expect(accueil?.status).toBe("available");
   });
 
-  it("marque toutes les autres sections 'coming-soon'", () => {
-    const autres = DASHBOARD_SECTIONS.filter((s) => s.href !== "/gerant");
-    expect(autres.length).toBeGreaterThan(0);
-    for (const s of autres) {
-      expect(s.status).toBe("coming-soon");
+  it("marque 'parametres' comme 'available' (création/consultation du salon, #15)", () => {
+    const parametres = DASHBOARD_SECTIONS.find((s) => s.key === "parametres");
+    expect(parametres).toBeDefined();
+    expect(parametres?.status).toBe("available");
+  });
+
+  it("marque les sections M2–M5 restantes 'coming-soon'", () => {
+    const comingSoon = ["planning", "clients", "prestations", "encaissements", "employes"];
+    for (const key of comingSoon) {
+      const section = DASHBOARD_SECTIONS.find((s) => s.key === key);
+      expect(section?.status).toBe("coming-soon");
     }
   });
 

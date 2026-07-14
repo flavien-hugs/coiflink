@@ -43,6 +43,18 @@ secret est une valeur dont la divulgation compromet la sécurité ; il n'est **j
 | `OTP_CODE_LENGTH` | non secret | non | `6` (défaut code) | `config.py` — longueur du code OTP |
 | `OTP_TTL_SECONDS` | non secret | non | `300` (défaut code) | `config.py` — durée de validité OTP en secondes |
 | `OTP_MAX_ATTEMPTS` | non secret | non | `3` (défaut code) | `config.py` — nombre d'essais autorisés par OTP |
+| `S3_ENDPOINT_URL` | non secret | non | Variable Railway (endpoint du fournisseur) | `config.py` (`MediaConfig`) — stockage objet médias de salon (#15) |
+| `S3_BUCKET` | non secret | non | Variable Railway | `config.py` — bucket **privé** des médias |
+| `S3_REGION` | non secret | non | `us-east-1` (défaut code) | `config.py` — région du bucket |
+| `S3_ACCESS_KEY_ID` | **secret** | non | Variable Railway | `config.py` — clé d'accès S3 (**hors dépôt**, ADR-0005/0011) |
+| `S3_SECRET_ACCESS_KEY` | **secret** | non | Variable Railway | `config.py` — clé secrète S3 (**hors dépôt**) |
+| `MEDIA_URL_TTL_SECONDS` | non secret | non | `900` (défaut code) | `config.py` — durée de vie des URLs signées |
+| `MEDIA_MAX_UPLOAD_BYTES` | non secret | non | `5242880` (défaut code) | `config.py` — taille max d'un média (5 Mio) |
+| `MEDIA_MAX_PHOTOS` | non secret | non | `10` (défaut code) | `config.py` — nombre max de photos par salon |
+
+> **Stockage objet non configuré** : si `S3_BUCKET`/`S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` sont
+> absents, `app.state.media_storage = None` et les routes médias répondent **503** — sans casser
+> `GET /health`, l'authentification, ni **`POST /salons`** (créer un salon sans logo reste possible).
 
 ### web-dashboard (Next.js)
 
@@ -58,10 +70,11 @@ Documentée ici pour l'inventaire de la politique de secrets ; ces variables ne 
 le code aujourd'hui et ne doivent **pas** être ajoutées aux gabarits tant qu'une feature ne les
 consomme pas (éviter d'impliquer une intégration inexistante) :
 
-- **Stockage objet** (ADR-0005, M2) : `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`
-  *(secret)*, `S3_SECRET_ACCESS_KEY` *(secret)*.
 - **Notifications** (ADR-0006, M5) : clés **FCM** *(secret)*, identifiants **fournisseur SMS**
   *(secret)* — fournisseur concret différé (#5 → M5).
+
+> Le **stockage objet** (`S3_*` / `MEDIA_*`) n'est plus « futur » : il est **consommé depuis #15**
+> (création de salon & médias) et figure dans la matrice backend ci-dessus.
 
 ## 3. Politique de secrets
 
@@ -72,7 +85,7 @@ consomme pas (éviter d'impliquer une intégration inexistante) :
 | `DATABASE_URL` | staging, prod | Variables Railway (réf. base managée) | Ops |
 | `REDIS_URL` | staging, prod | Variables Railway (réf. Redis managé) | Ops |
 | `JWT_SECRET` | staging, prod (dès **#10**) | Variables Railway | Backend |
-| Clés stockage objet `S3_*` | *(futur, M2)* | Variables Railway | Ops |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | staging, prod (dès **#15**) | Variables Railway | Ops |
 | Clés FCM / SMS | *(futur, M5)* | Variables Railway | Ops |
 
 > Les secrets **du pipeline ADW** (`GH_TOKEN`, clé runner) ne figurent **pas** ici : ils sont gérés par
@@ -140,9 +153,11 @@ la skill **`use-railway`** / le serveur MCP `railway` (voir ADR-0011).
    `deploy/railway/web.json`.
 4. **Variables (non secrètes)** : poser `APP_ENV=staging`, `APP_NAME`, et l'URL publique de l'API dans
    `NEXT_PUBLIC_API_BASE_URL` (web).
-5. **Secrets (hors dépôt)** : renseigner `DATABASE_URL`, `REDIS_URL` (références aux bases managées) et
-   `JWT_SECRET` (dès #8) dans le magasin de secrets de l'environnement `staging`. **Jamais** dans le
-   dépôt ni les logs.
+5. **Secrets (hors dépôt)** : renseigner `DATABASE_URL`, `REDIS_URL` (références aux bases managées),
+   `JWT_SECRET` (dès #10) et — depuis #15 — `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` (clés d'accès
+   au bucket de médias) dans le magasin de secrets de l'environnement `staging`. Les variables non
+   secrètes du stockage objet (`S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`) sont posées à l'étape 4.
+   **Jamais** dans le dépôt ni les logs.
 6. **Migrations** : appliquer le schéma — `alembic upgrade head` (contexte backend, `DATABASE_URL` de
    `staging`). Le round-trip est validé en CI (#4).
 7. **Déploiement** : déployer `backend` puis `web`.
@@ -185,8 +200,9 @@ démarrage (fail-fast attendu — cf. `session.py` qui lève si `DATABASE_URL` m
 - **Cibles** : **RPO ≤ 24 h** (sauvegarde quotidienne), **RTO** documenté lors du premier test.
 - **Redis** : **pas** de sauvegarde critique — cache/queue, **pas** source de vérité (ADR-0004) ;
   reconstructible depuis PostgreSQL.
-- **Stockage objet** : lorsqu'il sera provisionné (M2), activer le **versionnement**/backup du bucket ;
-  différé jusque-là (ADR-0005).
+- **Stockage objet** : le bucket est **actif depuis #15** (médias de salon). Activer le
+  **versionnement** et le **backup** du bucket dès le provisionnement du fournisseur concret
+  (ADR-0005) — point à ne pas différer davantage.
 
 ## 6. Protection de branche & registre d'images
 

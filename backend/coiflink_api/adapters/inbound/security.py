@@ -429,6 +429,32 @@ def require_permission(permission: Permission) -> Callable[..., Principal]:
     return _mark_principal_guard(guard)
 
 
+def require_any_permission(*permissions: Permission) -> Callable[..., Principal]:
+    """Garde de **permission composable** : `403` si le rôle n'en détient **aucune**.
+
+    Élargissement lisible et testé (issue #15) : `GET /salons/{salon_id}` doit
+    laisser passer le `MANAGER`/`HAIRDRESSER` (`SALON_READ_OWN`) **et** l'`ADMIN`
+    (`SALON_READ_ANY`, matrice §4.1) — `require_permission` seule exclurait l'un
+    d'eux. La portée (`require_salon_scope`) reste appliquée **en plus** : ce n'est
+    pas un contournement, seulement un « OU » de permissions. Ne jamais l'employer
+    pour élargir un droit sans revue (cf. Risques du spec).
+    """
+
+    def guard(
+        principal: Annotated[Principal, Depends(get_current_principal)],
+        policy: Annotated[AccessPolicy, Depends(get_access_policy)],
+    ) -> Principal:
+        for permission in permissions:
+            try:
+                policy.require_permission(principal, permission)
+            except PermissionDenied:
+                continue
+            return principal
+        raise _forbidden()
+
+    return _mark_principal_guard(guard)
+
+
 def require_salon_scope(
     salon_id: uuid.UUID,
     principal: Annotated[Principal, Depends(get_current_principal)],
@@ -464,6 +490,7 @@ __all__ = [
     "get_access_policy",
     "require_roles",
     "require_permission",
+    "require_any_permission",
     "require_salon_scope",
     "is_public_path",
     "is_principal_guard",
