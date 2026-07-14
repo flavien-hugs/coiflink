@@ -159,6 +159,20 @@ def _login(client: TestClient, *, phone: str = _PHONE_A_LOCAL) -> dict:
     return resp.json()
 
 
+def _tamper_signature(token: str) -> str:
+    """Modifie la signature d'un JWT pour la rendre invalide (HMAC ne correspond plus).
+
+    Cible l'avant-dernier caractère base64url (toujours 6 bits significatifs),
+    contrairement au dernier caractère d'une signature 32 octets non paddée,
+    dont les 2 bits de poids faible sont toujours nuls — y toucher peut laisser
+    le décodage inchangé (ex: 'A'→'B' ne change rien), rendant le test flaky.
+    """
+    header_payload, signature = token.rsplit(".", 1)
+    bad_char = "A" if signature[-2] != "A" else "B"
+    tampered_signature = signature[:-2] + bad_char + signature[-1]
+    return f"{header_payload}.{tampered_signature}"
+
+
 def _insert_salon(owner_id: str) -> str:
     """Insère un salon pour `owner_id` directement en base (aucune route salon avant #15).
 
@@ -327,10 +341,7 @@ class TestRbacFullStackE2E:
         _register_manager(_e2e_client)
         tokens = _login(_e2e_client)
         access = tokens["access_token"]
-        # Modifier le dernier caractère de la partie signature (après le 2e '.')
-        header_payload, signature = access.rsplit(".", 1)
-        bad_char = "A" if signature[-1] != "A" else "B"
-        tampered = header_payload + "." + signature[:-1] + bad_char
+        tampered = _tamper_signature(access)
 
         resp = _e2e_client.get(
             "/auth/me", headers={"Authorization": f"Bearer {tampered}"}
@@ -344,9 +355,7 @@ class TestRbacFullStackE2E:
         _register_manager(_e2e_client)
         tokens = _login(_e2e_client)
         access = tokens["access_token"]
-        header_payload, signature = access.rsplit(".", 1)
-        bad_char = "A" if signature[-1] != "A" else "B"
-        tampered = header_payload + "." + signature[:-1] + bad_char
+        tampered = _tamper_signature(access)
 
         resp = _e2e_client.get(
             "/auth/me", headers={"Authorization": f"Bearer {tampered}"}
@@ -358,9 +367,7 @@ class TestRbacFullStackE2E:
         _register_manager(_e2e_client)
         tokens = _login(_e2e_client)
         access = tokens["access_token"]
-        header_payload, signature = access.rsplit(".", 1)
-        bad_char = "A" if signature[-1] != "A" else "B"
-        tampered = header_payload + "." + signature[:-1] + bad_char
+        tampered = _tamper_signature(access)
 
         resp = _e2e_client.get(
             "/auth/me", headers={"Authorization": f"Bearer {tampered}"}
