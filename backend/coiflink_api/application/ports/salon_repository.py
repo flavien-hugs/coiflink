@@ -40,6 +40,16 @@ class SalonRepository(Protocol):
         """
         ...
 
+    def set_opening_hours(self, salon_id: uuid.UUID, opening_hours: dict) -> Salon:
+        """Écrit la structure d'horaires (déjà validée) ; retourne le salon relu.
+
+        `opening_hours` est le JSONB **normalisé** produit par le domaine
+        (`domain/opening_hours.to_jsonb`). Écrire un dict non vide fait basculer
+        `is_bookable` à `True` (§8.3). Lève `domain.errors.SalonNotFound` si le
+        salon n'existe pas.
+        """
+        ...
+
     def add_photo(self, salon_id: uuid.UUID, object_key: str) -> SalonPhoto:
         """Ajoute une photo (position = fin de liste) ; retourne l'entité créée."""
         ...

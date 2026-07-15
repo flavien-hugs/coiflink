@@ -33,6 +33,7 @@ from coiflink_api.domain.errors import (
     PhotoLimitExceeded,
     SalonNotFound,
 )
+from coiflink_api.domain.opening_hours import parse_opening_hours, to_jsonb
 from coiflink_api.domain.phone import normalize_phone
 from coiflink_api.domain.salon import (
     Salon,
@@ -160,6 +161,28 @@ class CreateSalon:
                 longitude=longitude,
             )
         )
+
+
+# --------------------------------------------------------------------------- #
+# Configuration des horaires d'ouverture (US-2.2, #16).
+# --------------------------------------------------------------------------- #
+class SetOpeningHours:
+    """Valide (domaine pur) puis persiste les horaires d'un salon (§8.3, #16).
+
+    Sémantique **replace** : le JSONB normalisé remplace intégralement les horaires
+    existants. La **validation précède l'écriture** (aucun appel au dépôt si la
+    structure est invalide), et `find_by_id` distingue `404` (salon absent, portée
+    déjà validée) d'un `422` (structure invalide) — miroir d'`AttachSalonLogo`.
+    """
+
+    def __init__(self, repository: SalonRepository) -> None:
+        self._repository = repository
+
+    def execute(self, salon_id: uuid.UUID, payload: dict) -> Salon:
+        hours = parse_opening_hours(payload)
+        if self._repository.find_by_id(salon_id) is None:
+            raise SalonNotFound("Salon introuvable.")
+        return self._repository.set_opening_hours(salon_id, to_jsonb(hours))
 
 
 # --------------------------------------------------------------------------- #
@@ -306,6 +329,7 @@ __all__ = [
     "SalonView",
     "CreateSalonCommand",
     "CreateSalon",
+    "SetOpeningHours",
     "GetSalon",
     "ListOwnSalons",
     "IssueMediaUploadUrl",

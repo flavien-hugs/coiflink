@@ -29,6 +29,7 @@ dans cette issue (la visibilité client `ACTIVE`-seulement relève de #18/#19).
 
 from __future__ import annotations
 
+import datetime
 import decimal
 import uuid
 from typing import Annotated, Literal
@@ -56,12 +57,14 @@ from coiflink_api.application.salons import (
     ListOwnSalons,
     RemoveSalonPhoto,
     SalonView,
+    SetOpeningHours,
 )
 from coiflink_api.config import DEFAULT_MEDIA_MAX_PHOTOS
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.errors import (
     InvalidLocation,
     InvalidMediaType,
+    InvalidOpeningHours,
     InvalidPhone,
     InvalidSalonName,
     MediaKeyMismatch,
@@ -148,6 +151,41 @@ class AttachMediaRequest(BaseModel):
     """Corps de `PUT /salons/{salon_id}/logo` et `POST /salons/{salon_id}/photos`."""
 
     object_key: str = Field(examples=["salons/<uuid>/logo/<uuid>.png"])
+
+
+class TimeIntervalModel(BaseModel):
+    """Intervalle d'ouverture `HH:MM`–`HH:MM` (validé par le domaine, #16)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: str = Field(examples=["08:00"])
+    end: str = Field(examples=["12:00"])
+
+
+class ExceptionalDayModel(BaseModel):
+    """Jour exceptionnel daté : fermeture ou horaires exceptionnels (#16)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    date: datetime.date = Field(examples=["2026-08-07"])
+    closed: bool = Field(default=False)
+    intervals: list[TimeIntervalModel] = Field(default_factory=list)
+
+
+class OpeningHoursRequest(BaseModel):
+    """Corps de `PUT /salons/{salon_id}/opening-hours` (sémantique *replace*, #16).
+
+    `weekly` : dict jour → intervalles (jours absents = fermés). `timezone` est
+    optionnel — le défaut serveur `Africa/Abidjan` s'applique (non éditable UI MVP).
+    La structure est **revalidée par le domaine** (`parse_opening_hours`), autorité
+    des règles métier.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    weekly: dict[str, list[TimeIntervalModel]] = Field(default_factory=dict)
+    exceptions: list[ExceptionalDayModel] = Field(default_factory=list)
+    timezone: str | None = Field(default=None, examples=["Africa/Abidjan"])
 
 
 # --------------------------------------------------------------------------- #
@@ -394,6 +432,48 @@ def set_logo(
         AttachSalonLogo(repository, storage).execute(salon_id, payload.object_key)
         view = GetSalon(repository, storage).execute(salon_id)
     except MediaKeyMismatch as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except SalonNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _salon_response(view)
+
+
+@router.put(
+    "/{salon_id}/opening-hours",
+    response_model=SalonResponse,
+    summary="Configurer les horaires d'ouverture (rend le salon réservable, §8.3)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "Salon introuvable (portée déjà validée)"},
+        422: {"description": "Structure d'horaires invalide"},
+    },
+)
+def set_opening_hours(
+    salon_id: uuid.UUID,
+    payload: OpeningHoursRequest,
+    repository: Annotated[SalonRepository, Depends(get_salon_repository)],
+    storage: Annotated[MediaStorage | None, Depends(get_optional_media_storage)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.SALON_UPDATE))
+    ],
+) -> SalonResponse:
+    """Remplace les horaires du salon puis renvoie le `SalonResponse` complet.
+
+    La structure est validée/normalisée par le domaine avant écriture ; après
+    enregistrement d'horaires valides, `is_bookable` passe à `true` (§8.3, #16).
+    Sémantique *replace* (idempotente) : un `PUT` remplace intégralement l'existant.
+    """
+
+    try:
+        SetOpeningHours(repository).execute(salon_id, payload.model_dump())
+        view = GetSalon(repository, storage).execute(salon_id)
+    except InvalidOpeningHours as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc

@@ -11,6 +11,7 @@
 
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
+import { OpeningHoursForm } from "@/src/adapters/ui/opening-hours-form";
 import { SalonForm } from "@/src/adapters/ui/salon-form";
 import { isBookable, type Salon } from "@/src/domain/salon/salon";
 
@@ -113,6 +114,16 @@ function SalonDetails({ salon }: { salon: Salon }) {
             }
           />
         </dl>
+      </div>
+
+      <div className="rounded-2xl border border-border p-6">
+        <h2 className="text-lg font-semibold">Horaires d&apos;ouverture</h2>
+        <p className="mt-1 mb-5 max-w-prose text-sm text-muted">
+          Définissez vos horaires par jour (avec pauses éventuelles), vos jours fermés
+          et vos jours exceptionnels. Enregistrer des horaires rend votre salon
+          réservable par les clients.
+        </p>
+        <OpeningHoursForm salonId={salon.id} openingHours={salon.openingHours} />
       </div>
     </div>
   );

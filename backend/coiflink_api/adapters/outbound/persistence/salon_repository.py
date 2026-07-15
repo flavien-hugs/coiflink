@@ -72,6 +72,15 @@ class SqlSalonRepository:
         self._session.refresh(row)
         return _to_domain(row)
 
+    def set_opening_hours(self, salon_id: uuid.UUID, opening_hours: dict) -> Salon:
+        row = self._session.get(models.Salon, salon_id)
+        if row is None:
+            raise SalonNotFound("Salon introuvable.")
+        row.opening_hours = opening_hours
+        self._session.flush()
+        self._session.refresh(row)
+        return _to_domain(row)
+
     def add_photo(self, salon_id: uuid.UUID, object_key: str) -> SalonPhoto:
         position = self.count_photos(salon_id)
         row = models.SalonPhoto(

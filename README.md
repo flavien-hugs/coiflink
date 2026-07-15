@@ -209,8 +209,12 @@ environnements & secrets, stratégie de tests & test gate) et **M1** (#8–#14 �
 connexion JWT, OTP, RBAC deny-by-default, comptes employés, shell dashboard gérant) livrées par le
 pipeline. **M2 en cours** : la **création d'un salon** (#15, `POST /salons`) est livrée — un gérant
 crée un salon **rattaché à son compte** (nom, logo, description, téléphone, localisation, photos) et le
-consulte depuis la section **Paramètres** du dashboard. Règle §8.3 : **tant qu'aucun horaire n'est
-configuré, le salon n'est pas réservable** (`is_bookable=false` ; les horaires sont l'objet de #16).
+consulte depuis la section **Paramètres** du dashboard. La **configuration des horaires d'ouverture**
+est livrée (#16, voir [ADR-0018](./docs/adr/0018-configuration-horaires-salon.md)) :
+`PUT /salons/{id}/opening-hours` enregistre les horaires par jour, jours fermés, pauses et jours
+exceptionnels ; le gérant les édite depuis **Paramètres**. Règle §8.3 : un salon **sans horaire n'est
+pas réservable** (`is_bookable=false`) — **enregistrer des horaires valides rend le salon réservable**
+(`is_bookable=true`).
 
 ---
 

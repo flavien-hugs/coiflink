@@ -30,6 +30,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0015](./0015-autorisation-rbac-deny-by-default.md) | Autorisation & RBAC — deny-by-default, permissions par rôle, isolation par salon | Accepté | #12 |
 | [0016](./0016-comptes-employes-appartenance-salon.md) | Comptes employés — appartenance employé↔salon & création par le gérant | Accepté | #13 |
 | [0017](./0017-creation-salon-medias-et-reservabilite.md) | Création d'un salon — rattachement au gérant, médias par URL signée & réservabilité | Accepté | #15 |
+| [0018](./0018-configuration-horaires-salon.md) | Configuration des horaires d'ouverture — contrat JSONB & activation de la réservabilité | Accepté | #16 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
