@@ -49,6 +49,29 @@ L'API écoute alors sur `http://127.0.0.1:8000`. Endpoint de santé :
 curl http://127.0.0.1:8000/health   # -> {"status":"ok"}
 ```
 
+### Jeu de données de démo (`scripts/seed_dev_data.py`)
+
+Peuple une instance locale (API démarrée + base migrée) avec des comptes et un
+salon prêts à l'emploi, pour tester le design et les parcours d'authentification
+du dashboard gérant sans tout créer à la main :
+
+```bash
+DATABASE_URL=postgresql://... python scripts/seed_dev_data.py
+```
+
+Passe par le contrat HTTP réel (mots de passe hachés normalement) ; seules la
+suspension d'un compte et la fixation d'horaires d'ouverture passent par SQL
+direct, faute d'endpoint dédié à ce stade. Idempotent (relançable sans erreur).
+Comptes créés (mot de passe commun `CoifLink#2026`) :
+
+| Compte | Téléphone | Rôle | Statut | Utilité |
+| --- | --- | --- | --- | --- |
+| Aïcha Koné | `0701020304` | MANAGER | ACTIVE | salon déjà créé, réservable |
+| Fatou Diabaté | `0705060708` | MANAGER | ACTIVE | aucun salon → formulaire de création |
+| Ibrahim Touré | `0709101112` | MANAGER | SUSPENDED | connexion refusée (401 générique) |
+| Awa Bamba | `0701121314` | HAIRDRESSER | ACTIVE | refus de rôle sur `/gerant` |
+| Mariam Sanogo | `0705161718` | CLIENT | ACTIVE | refus de rôle sur `/gerant` |
+
 ## Build & test
 
 | Action | Commande |
