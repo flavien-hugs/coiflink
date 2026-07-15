@@ -3,6 +3,7 @@
 // cookie** ; ce port abstrait le contrat de `POST /salons` et `GET /salons`
 // (#15). Implémenté par un adapter dans `src/adapters/api/`.
 
+import type { OpeningHours } from "@/src/domain/salon/opening-hours";
 import type { Salon } from "@/src/domain/salon/salon";
 
 // Champs de création saisis par le gérant. **Aucun `ownerId`** : le rattachement
@@ -31,9 +32,18 @@ export type ListSalonsResult =
   | { ok: true; salons: Salon[] }
   | { ok: false; reason: "unauthenticated" | "unavailable" };
 
+// Résultat d'un enregistrement d'horaires (§8.3, #16). Motifs génériques :
+// `invalid` = `422` (structure refusée par le backend), `forbidden` = `403`
+// (rôle ≠ gérant ou salon hors périmètre), `unavailable` = `503`/panne réseau.
+export type SetOpeningHoursResult =
+  | { ok: true; salon: Salon }
+  | { ok: false; reason: "invalid" | "forbidden" | "unauthenticated" | "unavailable" };
+
 export interface SalonGateway {
   // Proxifie `POST /salons` ; renvoie le salon créé en cas de succès.
   create(input: CreateSalonInput): Promise<CreateSalonResult>;
   // Proxifie `GET /salons` (salons rattachés au principal authentifié).
   list(): Promise<ListSalonsResult>;
+  // Proxifie `PUT /salons/{id}/opening-hours` ; renvoie le salon (is_bookable à jour).
+  setOpeningHours(salonId: string, hours: OpeningHours): Promise<SetOpeningHoursResult>;
 }

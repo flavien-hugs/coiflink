@@ -374,6 +374,38 @@ n'est lu du corps (anti-élévation de privilège). Un salon fraîchement créé
 Créer un salon **débloque mécaniquement** la portée du gérant (`salons.owner_id`) : `POST /salons/{id}/employees`
 (#13) passe alors de `403` à `201`.
 
+## Horaires d'ouverture (US-2.2, #16 — [ADR-0018](../docs/adr/0018-configuration-horaires-salon.md))
+
+`PUT /salons/{salon_id}/opening-hours` permet à un **gérant** d'enregistrer les horaires de son salon
+(protégée par `SALON_UPDATE` **et** `require_salon_scope` ; `403` générique hors périmètre). Sémantique
+***replace*** : le corps remplace intégralement les horaires. La structure est **validée par le domaine
+pur** (`domain/opening_hours.py`) puis **normalisée** (clés de jour minuscules, intervalles triés,
+`version`, `timezone`) ; toute incohérence → **`422 InvalidOpeningHours`** (message neutre). Enregistrer
+des horaires valides fait passer **`is_bookable` à `true`** (§8.3) — aucune logique de réservation n'est
+ajoutée (#21+).
+
+Contrat JSONB (colonne `salons.opening_hours`, déjà au schéma — **aucune migration**) :
+
+```jsonc
+{
+  "version": 1,
+  "timezone": "Africa/Abidjan",          // défaut serveur (non éditable UI MVP)
+  "weekly": {
+    "mon": [{ "start": "08:00", "end": "12:00" }, { "start": "14:00", "end": "18:00" }], // pause 12h–14h
+    "tue": [{ "start": "08:00", "end": "18:00" }]
+    // jour absent ou [] ⇒ fermé
+  },
+  "exceptions": [
+    { "date": "2026-08-07", "closed": true, "intervals": [] },
+    { "date": "2026-12-24", "closed": false, "intervals": [{ "start": "08:00", "end": "13:00" }] }
+  ]
+}
+```
+
+Règles : `HH:MM` 24h, `end > start` (pas de passage minuit) ; intervalles d'un jour non chevauchants
+(adjacence `end == start` tolérée) ; dates d'exception distinctes ; `closed=true` ⇒ pas d'intervalle ;
+au moins un créneau d'ouverture (non-vacuité) ; bornes ≤ 6 intervalles/jour, ≤ 366 exceptions.
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
@@ -716,3 +748,25 @@ Issue #15 ajoute quatre suites dédiées à la création de salon et aux médias
   dépassé → `409` ; `media_storage=None` → `503` pour les routes d'écriture **mais** `POST /salons`
   reste `201` ; `GET /salons` et `GET /salons/{id}` sans stockage → `200` avec `logo_url`/`photos`
   à `null`.
+
+Issue #16 ajoute trois suites dédiées aux horaires d'ouverture :
+
+- `test_domain_opening_hours.py` — domaine pur (aucune I/O) : `parse_opening_hours` et `to_jsonb`
+  sans aucune I/O. Horaires par jour, jours fermés (absent ou `[]`), pauses (plusieurs intervalles),
+  intervalles invalides (`end ≤ start`, chevauchement, format `HH:MM` non conforme) ; jours
+  exceptionnels (`closed=true` sans intervalle, `closed=false` avec intervalle, doublon de date,
+  date invalide) ; **non-vacuité utile** (tout vide → `InvalidOpeningHours`) ; **normalisation
+  idempotente** (clés minuscules, intervalles triés, `version`, `timezone`) ; bornes de robustesse
+  (> `MAX_INTERVALS_PER_DAY` ou > `MAX_EXCEPTIONS` → `InvalidOpeningHours`). Chaque erreur lève
+  `InvalidOpeningHours` avec un message neutre (ni PII, ni détail SQL).
+- `test_set_opening_hours_usecase.py` — cas d'usage `SetOpeningHours` (ports 100 % fakes) :
+  validation **avant** toute écriture (aucun appel au dépôt si la structure est invalide) ;
+  `SalonNotFound` si le salon est introuvable ; JSONB normalisé (`version`, `timezone`, intervalles
+  triés) transmis au dépôt ; salon renvoyé avec `opening_hours` non null → `is_bookable=True`
+  (§8.3) ; **sémantique replace** : un second appel remplace intégralement le premier.
+- `test_salon_opening_hours_api.py` — adapter entrant (`TestClient`, ports fakes, sans base) :
+  matrice RBAC (`MANAGER` → `200`, `CLIENT`/`HAIRDRESSER`/`ADMIN` → `403`, sans jeton → `401`) ;
+  isolation : `MANAGER` visant un autre salon → `403` générique (pas `404`, message sans oracle
+  d'existence, PRD §11.1/§11.2) ; succès : `opening_hours` normalisé, `is_bookable=true` dans la
+  réponse ; validation : structure invalide → `422` (domaine, pas Pydantic uniquement) ; sémantique
+  replace : un second `PUT` écrase complètement le premier.

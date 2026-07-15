@@ -61,6 +61,16 @@ class InvalidLocation(DomainError):
     """
 
 
+class InvalidOpeningHours(DomainError):
+    """La structure d'horaires d'ouverture soumise est incohérente (US-2.2, #16).
+
+    Levée par `domain/opening_hours.py` (heures malformées, intervalles
+    chevauchants, dates d'exception invalides, horaires entièrement fermés, bornes
+    de robustesse dépassées…). Message **neutre** — ni valeur soumise in extenso
+    ni détail SQL. L'adapter entrant la traduit en `422`.
+    """
+
+
 class SalonNotFound(DomainError):
     """Le salon visé n'existe pas (US-2.1, #15).
 
@@ -155,6 +165,7 @@ __all__ = [
     "EmployeeAlreadyInSalon",
     "InvalidSalonName",
     "InvalidLocation",
+    "InvalidOpeningHours",
     "SalonNotFound",
     "InvalidMediaType",
     "PhotoLimitExceeded",

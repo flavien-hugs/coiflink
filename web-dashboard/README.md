@@ -45,6 +45,7 @@ protégé** ; les sections Planning, Clients, Prestations, Encaissements, Employ
 | `POST /api/auth/logout` | interne (BFF) | efface les cookies de session |
 | `POST /api/salons` | interne (BFF) | proxifie `POST /salons` (jeton lu du cookie httpOnly) |
 | `GET /api/salons` | interne (BFF) | proxifie `GET /salons` (salons du gérant) |
+| `PUT /api/salons/[id]/opening-hours` | interne (BFF) | proxifie `PUT /salons/{id}/opening-hours` (horaires, #16) |
 
 `/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
 publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
@@ -79,10 +80,20 @@ serveur** (jeton lu du cookie httpOnly, jamais exposé au navigateur) :
 - **un salon** → fiche « Informations générales / Localisation ».
 
 Tant que `isBookable(salon) === false` (§8.3 : `ACTIVE` **et** horaires présents — parité stricte avec
-`domain/salon.py`), un **bandeau** invite à configurer les horaires d'ouverture (l'objet de #16). Les
-médias (logo/photos) transitent par des **URLs signées** côté backend ; le téléversement direct
+`domain/salon.py`), un **bandeau** invite à configurer les horaires d'ouverture. Les médias
+(logo/photos) transitent par des **URLs signées** côté backend ; le téléversement direct
 navigateur→bucket exige que le bucket autorise l'origine du dashboard (**CORS**) — configuration
 d'infrastructure, hors code.
+
+### Paramètres — horaires d'ouverture (#16)
+
+Sous la fiche du salon, l'**éditeur d'horaires** (`OpeningHoursForm`, client) présente les 7 jours
+(bascule fermé/ouvert, un ou plusieurs intervalles = **pauses**) et une section **jours exceptionnels**
+(date + fermé/horaires ponctuels). La saisie est **validée côté client** (`validateOpeningHours`,
+`src/domain/salon/opening-hours.ts` — **parité stricte** avec `domain/opening_hours.py`) avant d'être
+postée en `PUT /api/salons/[id]/opening-hours` (le **backend reste l'autorité**). En cas de succès la
+page se rafraîchit : dès que `isBookable(salon)` devient vrai, le **bandeau §8.3 disparaît**. Le fuseau
+(`Africa/Abidjan`) n'est pas éditable dans l'UI au MVP.
 
 ### Ajouter une section
 

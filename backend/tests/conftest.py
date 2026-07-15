@@ -468,6 +468,18 @@ class FakeSalonRepository:
         self._salons[salon_id] = salon
         return salon
 
+    def set_opening_hours(self, salon_id: uuid.UUID, opening_hours):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.errors import SalonNotFound
+
+        salon = self._salons.get(salon_id)
+        if salon is None:
+            raise SalonNotFound("Salon introuvable.")
+        salon = _dc.replace(salon, opening_hours=opening_hours)
+        self._salons[salon_id] = salon
+        return salon
+
     def add_photo(self, salon_id: uuid.UUID, object_key: str):  # type: ignore[no-untyped-def]
         from coiflink_api.domain.salon import SalonPhoto as SalonPhotoEntity
 
