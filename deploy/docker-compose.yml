@@ -126,7 +126,13 @@ services:
       context: ../web-dashboard
     image: coiflink-web:${IMAGE_TAG:-local}
     environment:
+      # Navigateur (hôte) : le backend est publié sur localhost. Serveur Next
+      # (dans CE conteneur, Route Handlers + Server Components) : le backend
+      # n'est PAS sur localhost ici mais sur le réseau compose → nom de service
+      # `backend`. Sans `API_BASE_URL`, le serveur retomberait sur la valeur
+      # NEXT_PUBLIC_* (localhost) et ne joindrait jamais le backend (ECONNREFUSED).
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      API_BASE_URL: ${API_BASE_URL:-http://backend:8000}
     depends_on:
       backend:
         condition: service_healthy
