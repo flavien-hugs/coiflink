@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import uuid
 
-from coiflink_api.domain.audit import ENTITY_TYPE_SERVICE, AuditAction, AuditEntry
+from coiflink_api.domain.audit import (
+    ENTITY_TYPE_SALON,
+    ENTITY_TYPE_SERVICE,
+    AuditAction,
+    AuditEntry,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -34,8 +39,11 @@ class TestAuditAction:
     def test_service_reactivated_value(self) -> None:
         assert AuditAction.SERVICE_REACTIVATED == "SERVICE_REACTIVATED"
 
-    def test_exactly_four_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 4
+    def test_salon_updated_value(self) -> None:
+        assert AuditAction.SALON_UPDATED == "SALON_UPDATED"
+
+    def test_exactly_five_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 5
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -51,6 +59,7 @@ class TestAuditAction:
             "SERVICE_UPDATED",
             "SERVICE_DEACTIVATED",
             "SERVICE_REACTIVATED",
+            "SALON_UPDATED",
         }
 
 
@@ -137,3 +146,16 @@ class TestEntityTypeService:
 
     def test_value_is_service(self) -> None:
         assert ENTITY_TYPE_SERVICE == "service"
+
+
+# ---------------------------------------------------------------------------
+# ENTITY_TYPE_SALON
+# ---------------------------------------------------------------------------
+
+
+class TestEntityTypeSalon:
+    def test_value_is_string(self) -> None:
+        assert isinstance(ENTITY_TYPE_SALON, str)
+
+    def test_value_is_salon(self) -> None:
+        assert ENTITY_TYPE_SALON == "salon"

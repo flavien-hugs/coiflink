@@ -512,3 +512,115 @@ describe("createHttpServiceGateway().deactivate() — codes de statut", () => {
     expect(JSON.stringify(result)).not.toContain(secretToken);
   });
 });
+
+// ---------------------------------------------------------------------------
+// reactivate — codes HTTP
+// ---------------------------------------------------------------------------
+
+describe("createHttpServiceGateway().reactivate() — sans jeton", () => {
+  it("sans accessToken → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpServiceGateway({ accessToken: null }).reactivate(
+      SALON_ID,
+      SERVICE_ID,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("createHttpServiceGateway().reactivate() — codes de statut", () => {
+  it("200 → ok:true avec la prestation transformée", async () => {
+    stubFetch(200, { ...FAKE_SERVICE_PAYLOAD, is_active: true });
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).reactivate(
+      SALON_ID,
+      SERVICE_ID,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.service.id).toBe(SERVICE_ID);
+      expect(result.service.isActive).toBe(true);
+    }
+  });
+
+  it("utilise la méthode POST", async () => {
+    const fetchMock = stubFetch(200, FAKE_SERVICE_PAYLOAD);
+
+    await createHttpServiceGateway({ accessToken: TOKEN }).reactivate(SALON_ID, SERVICE_ID);
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe("POST");
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).reactivate(
+      SALON_ID,
+      SERVICE_ID,
+    );
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).reactivate(
+      SALON_ID,
+      SERVICE_ID,
+    );
+    expect(result).toEqual({ ok: false, reason: "forbidden" });
+  });
+
+  it("404 → not-found", async () => {
+    stubFetch(404, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).reactivate(
+      SALON_ID,
+      SERVICE_ID,
+    );
+    expect(result).toEqual({ ok: false, reason: "not-found" });
+  });
+
+  it("500 → unavailable", async () => {
+    stubFetch(500, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).reactivate(
+      SALON_ID,
+      SERVICE_ID,
+    );
+    expect(result).toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("erreur réseau → unavailable", async () => {
+    stubFetchNetworkError();
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).reactivate(
+      SALON_ID,
+      SERVICE_ID,
+    );
+    expect(result).toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("l'URL inclut salonId, serviceId et le suffixe /reactivate", async () => {
+    const fetchMock = stubFetch(200, FAKE_SERVICE_PAYLOAD);
+
+    await createHttpServiceGateway({ accessToken: TOKEN }).reactivate(
+      "my-salon",
+      "my-service",
+    );
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("my-salon");
+    expect(url).toContain("my-service");
+    expect(url.endsWith("/reactivate")).toBe(true);
+  });
+
+  it("le jeton ne figure pas dans le résultat", async () => {
+    stubFetch(200, FAKE_SERVICE_PAYLOAD);
+    const secretToken = "super-secret-token-xyz";
+    const result = await createHttpServiceGateway({ accessToken: secretToken }).reactivate(
+      SALON_ID,
+      SERVICE_ID,
+    );
+    expect(JSON.stringify(result)).not.toContain(secretToken);
+  });
+});

@@ -43,8 +43,10 @@ from coiflink_api.adapters.inbound.security import (
     require_permission,
     require_salon_scope,
 )
+from coiflink_api.adapters.outbound.persistence.audit_log_repository import SqlAuditLog
 from coiflink_api.adapters.outbound.persistence.salon_repository import SqlSalonRepository
 from coiflink_api.adapters.outbound.persistence.session import get_session
+from coiflink_api.application.ports.audit_log import AuditLog
 from coiflink_api.application.ports.media_storage import MediaStorage
 from coiflink_api.application.ports.salon_repository import SalonRepository
 from coiflink_api.application.salons import (
@@ -58,6 +60,8 @@ from coiflink_api.application.salons import (
     RemoveSalonPhoto,
     SalonView,
     SetOpeningHours,
+    UpdateSalon,
+    UpdateSalonCommand,
 )
 from coiflink_api.config import DEFAULT_MEDIA_MAX_PHOTOS
 from coiflink_api.domain.access import SalonScope
@@ -87,6 +91,22 @@ class CreateSalonRequest(BaseModel):
 
     Un `owner_id` présent dans le corps est **ignoré** (Pydantic `extra=ignore`) :
     l'`owner_id` réel est toujours le `Principal` authentifié.
+    """
+
+    name: str = Field(min_length=1, max_length=255, examples=["Salon Élégance"])
+    description: str | None = Field(default=None, examples=["Coiffure afro et tresses."])
+    phone: str | None = Field(default=None, examples=["0700000000"])
+    address: str | None = Field(default=None, examples=["Rue des Jardins, Cocody"])
+    city: str | None = Field(default=None, examples=["Abidjan"])
+    commune: str | None = Field(default=None, examples=["Cocody"])
+    latitude: float | None = Field(default=None, examples=[5.359952])
+    longitude: float | None = Field(default=None, examples=[-3.996643])
+
+
+class UpdateSalonRequest(BaseModel):
+    """Corps de `PUT /salons/{salon_id}`. **Aucun** `owner_id`/`status`/`opening_hours`.
+
+    Mêmes champs que `CreateSalonRequest` : sémantique *replace*, `name` requis.
     """
 
     name: str = Field(min_length=1, max_length=255, examples=["Salon Élégance"])
@@ -197,6 +217,19 @@ def get_salon_repository(
     """Dépôt de salons adossé à la session de la requête."""
 
     return SqlSalonRepository(session)
+
+
+def get_audit_log(
+    session: Annotated[Session, Depends(get_session)],
+) -> AuditLog:
+    """Journal d'audit §11.4 adossé à la **même** session (atomicité, §11.4).
+
+    FastAPI met en cache la dépendance `get_session` par requête : le dépôt de
+    salons et le journal d'audit partagent donc la **même** `Session`, d'où le
+    commit/rollback conjoint de la mutation et de sa trace.
+    """
+
+    return SqlAuditLog(session)
 
 
 def get_optional_media_storage(request: Request) -> MediaStorage | None:
@@ -359,6 +392,59 @@ def get_salon(
 
     try:
         view = GetSalon(repository, storage).execute(salon_id)
+    except SalonNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _salon_response(view)
+
+
+@router.put(
+    "/{salon_id}",
+    response_model=SalonResponse,
+    summary="Modifier les informations générales du salon (journalisé §11.4)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "Salon introuvable (portée déjà validée)"},
+        422: {"description": "Nom, téléphone ou coordonnées invalides"},
+    },
+)
+def update_salon(
+    salon_id: uuid.UUID,
+    payload: UpdateSalonRequest,
+    repository: Annotated[SalonRepository, Depends(get_salon_repository)],
+    storage: Annotated[MediaStorage | None, Depends(get_optional_media_storage)],
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    principal: Annotated[
+        Principal, Depends(require_permission(Permission.SALON_UPDATE))
+    ],
+) -> SalonResponse:
+    """Remplace les informations générales du salon puis journalise `SALON_UPDATED`.
+
+    `owner_id`, `status` et `opening_hours` ne sont pas modifiables par cette route.
+    """
+
+    command = UpdateSalonCommand(
+        name=payload.name,
+        description=payload.description,
+        phone=payload.phone,
+        address=payload.address,
+        city=payload.city,
+        commune=payload.commune,
+        latitude=_to_decimal(payload.latitude),
+        longitude=_to_decimal(payload.longitude),
+    )
+    try:
+        UpdateSalon(repository, audit_log).execute(
+            salon_id, command, actor_user_id=principal.id
+        )
+        view = GetSalon(repository, storage).execute(salon_id)
+    except (InvalidSalonName, InvalidLocation, InvalidPhone) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     except SalonNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)

@@ -25,6 +25,7 @@ from coiflink_api.application.services import (
     DeactivateService,
     GetService,
     ListSalonServices,
+    ReactivateService,
     ServiceCommand,
     UpdateService,
 )
@@ -534,6 +535,97 @@ class TestDeactivateService:
         audit = FakeAuditLog()
         with pytest.raises(ServiceNotFound):
             DeactivateService(repo, audit).execute(
+                _SALON_ID, uuid.uuid4(), actor_user_id=_ACTOR_ID
+            )
+        assert audit.recorded == []
+
+
+class TestReactivateService:
+    def test_raises_when_service_not_found(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        with pytest.raises(ServiceNotFound):
+            ReactivateService(repo, audit).execute(
+                _SALON_ID, uuid.uuid4(), actor_user_id=_ACTOR_ID
+            )
+
+    def test_reactivated_service_has_is_active_true(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = CreateService(repo, audit).execute(
+            _SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID
+        )
+        DeactivateService(repo, audit).execute(
+            _SALON_ID, service.id, actor_user_id=_ACTOR_ID
+        )
+        result = ReactivateService(repo, audit).execute(
+            _SALON_ID, service.id, actor_user_id=_ACTOR_ID
+        )
+        assert result.is_active is True
+
+    def test_audit_entry_recorded_on_reactivation(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = CreateService(repo, audit).execute(
+            _SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID
+        )
+        DeactivateService(repo, audit).execute(
+            _SALON_ID, service.id, actor_user_id=_ACTOR_ID
+        )
+        audit.recorded.clear()
+        ReactivateService(repo, audit).execute(
+            _SALON_ID, service.id, actor_user_id=_ACTOR_ID
+        )
+        assert len(audit.recorded) == 1
+
+    def test_audit_action_is_service_reactivated(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = CreateService(repo, audit).execute(
+            _SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID
+        )
+        DeactivateService(repo, audit).execute(
+            _SALON_ID, service.id, actor_user_id=_ACTOR_ID
+        )
+        audit.recorded.clear()
+        ReactivateService(repo, audit).execute(
+            _SALON_ID, service.id, actor_user_id=_ACTOR_ID
+        )
+        entry: AuditEntry = audit.recorded[0]
+        assert entry.action == AuditAction.SERVICE_REACTIVATED.value
+
+    def test_audit_actor_correct(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = CreateService(repo, audit).execute(
+            _SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID
+        )
+        DeactivateService(repo, audit).execute(
+            _SALON_ID, service.id, actor_user_id=_ACTOR_ID
+        )
+        audit.recorded.clear()
+        ReactivateService(repo, audit).execute(
+            _SALON_ID, service.id, actor_user_id=_ACTOR_ID
+        )
+        entry: AuditEntry = audit.recorded[0]
+        assert entry.actor_user_id == _ACTOR_ID
+
+    def test_service_from_other_salon_raises(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = CreateService(repo, audit).execute(
+            _OTHER_SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID
+        )
+        with pytest.raises(ServiceNotFound):
+            ReactivateService(repo, audit).execute(
+                _SALON_ID, service.id, actor_user_id=_ACTOR_ID
+            )
+
+    def test_no_audit_if_repository_find_returns_none(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        with pytest.raises(ServiceNotFound):
+            ReactivateService(repo, audit).execute(
                 _SALON_ID, uuid.uuid4(), actor_user_id=_ACTOR_ID
             )
         assert audit.recorded == []

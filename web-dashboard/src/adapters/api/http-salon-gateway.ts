@@ -14,6 +14,8 @@ import type {
   ListSalonsResult,
   SalonGateway,
   SetOpeningHoursResult,
+  UpdateSalonInput,
+  UpdateSalonResult,
 } from "@/src/application/ports/salon-gateway";
 import type { OpeningHours } from "@/src/domain/salon/opening-hours";
 import type { Salon, SalonPhoto } from "@/src/domain/salon/salon";
@@ -178,6 +180,48 @@ export function createHttpSalonGateway(deps: HttpSalonGatewayDeps = {}): SalonGa
         return { ok: false, reason: "invalid" };
       }
       // 404 (salon introuvable) et statuts inattendus : indisponibilité générique.
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async update(
+      salonId: string,
+      input: UpdateSalonInput,
+    ): Promise<UpdateSalonResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `${resolveApiBaseUrl()}/salons/${encodeURIComponent(salonId)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", ...authHeader() },
+            body: JSON.stringify(input),
+            cache: "no-store",
+          },
+        );
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as SalonResponsePayload;
+        return { ok: true, salon: toSalon(payload) };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "notFound" };
+      }
+      if (response.status === 422) {
+        return { ok: false, reason: "invalid" };
+      }
       return { ok: false, reason: "unavailable" };
     },
   };

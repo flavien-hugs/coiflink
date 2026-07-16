@@ -32,7 +32,10 @@ from coiflink_api.application.salons import (
     IssueMediaUploadUrl,
     ListOwnSalons,
     RemoveSalonPhoto,
+    UpdateSalon,
+    UpdateSalonCommand,
 )
+from coiflink_api.domain.audit import AuditAction, AuditEntry
 from coiflink_api.domain.enums import SalonStatus
 from coiflink_api.domain.errors import (
     InvalidLocation,
@@ -43,7 +46,7 @@ from coiflink_api.domain.errors import (
     SalonNotFound,
 )
 
-from .conftest import FakeMediaStorage, FakeSalonRepository
+from .conftest import FakeAuditLog, FakeMediaStorage, FakeSalonRepository
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -162,6 +165,169 @@ class TestCreateSalon:
         repo = FakeSalonRepository()
         salon = CreateSalon(repo).execute(_VALID_COMMAND, owner_id=_OWNER_ID)
         assert salon.logo_object_key is None
+
+
+# ---------------------------------------------------------------------------
+# UpdateSalon
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateSalon:
+    def _create(self, repo: FakeSalonRepository) -> uuid.UUID:
+        salon = CreateSalon(repo).execute(_VALID_COMMAND, owner_id=_OWNER_ID)
+        return salon.id
+
+    def test_updated_salon_returned(self) -> None:
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        salon_id = self._create(repo)
+        new_cmd = UpdateSalonCommand(name="Nouveau nom", phone="0701020304")
+        updated = UpdateSalon(repo, audit).execute(
+            salon_id, new_cmd, actor_user_id=_OWNER_ID
+        )
+        assert updated.name == "Nouveau nom"
+        assert updated.phone == "+2250701020304"
+
+    def test_raises_when_salon_not_found(self) -> None:
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        with pytest.raises(SalonNotFound):
+            UpdateSalon(repo, audit).execute(
+                uuid.uuid4(), UpdateSalonCommand(name="X"), actor_user_id=_OWNER_ID
+            )
+
+    def test_repository_not_called_when_name_invalid(self) -> None:
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        salon_id = self._create(repo)
+        with pytest.raises(InvalidSalonName):
+            UpdateSalon(repo, audit).execute(
+                salon_id, UpdateSalonCommand(name=""), actor_user_id=_OWNER_ID
+            )
+        assert audit.recorded == []
+        unchanged = repo.find_by_id(salon_id)
+        assert unchanged is not None
+        assert unchanged.name == _VALID_COMMAND.name
+
+    def test_no_repository_call_when_coordinates_invalid(self) -> None:
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        salon_id = self._create(repo)
+        with pytest.raises(InvalidLocation):
+            UpdateSalon(repo, audit).execute(
+                salon_id,
+                UpdateSalonCommand(
+                    name="Valide", latitude=decimal.Decimal("5"), longitude=None
+                ),
+                actor_user_id=_OWNER_ID,
+            )
+        assert audit.recorded == []
+
+    def test_no_write_when_salon_not_found(self) -> None:
+        """La validation précède `find_by_id` : aucune écriture ni audit si absent."""
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        with pytest.raises(SalonNotFound):
+            UpdateSalon(repo, audit).execute(
+                uuid.uuid4(), UpdateSalonCommand(name="X"), actor_user_id=_OWNER_ID
+            )
+        assert audit.recorded == []
+
+    def test_audit_entry_recorded_on_update(self) -> None:
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        salon_id = self._create(repo)
+        UpdateSalon(repo, audit).execute(
+            salon_id, UpdateSalonCommand(name="Nouveau nom"), actor_user_id=_OWNER_ID
+        )
+        assert len(audit.recorded) == 1
+        entry: AuditEntry = audit.recorded[0]
+        assert entry.action == AuditAction.SALON_UPDATED.value
+
+    def test_audit_actor_and_salon_id_correct(self) -> None:
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        salon_id = self._create(repo)
+        UpdateSalon(repo, audit).execute(
+            salon_id, UpdateSalonCommand(name="Nouveau nom"), actor_user_id=_OWNER_ID
+        )
+        entry: AuditEntry = audit.recorded[0]
+        assert entry.actor_user_id == _OWNER_ID
+        assert entry.salon_id == salon_id
+        assert entry.entity_id == salon_id
+
+    def test_changed_fields_contains_only_modified_field(self) -> None:
+        """Seul `phone` change → `changed == ["phone"]` (ordre de `_DIFF_FIELDS`)."""
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        salon_id = self._create(repo)
+        new_cmd = UpdateSalonCommand(
+            name=_VALID_COMMAND.name,
+            description=_VALID_COMMAND.description,
+            phone="0701020304",
+            address=_VALID_COMMAND.address,
+            city=_VALID_COMMAND.city,
+            commune=_VALID_COMMAND.commune,
+            latitude=_VALID_COMMAND.latitude,
+            longitude=_VALID_COMMAND.longitude,
+        )
+        UpdateSalon(repo, audit).execute(
+            salon_id, new_cmd, actor_user_id=_OWNER_ID
+        )
+        entry: AuditEntry = audit.recorded[0]
+        assert entry.metadata["changed"] == ["phone"]
+
+    def test_no_changed_fields_when_identical(self) -> None:
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        salon_id = self._create(repo)
+        salon = repo.find_by_id(salon_id)
+        same_cmd = UpdateSalonCommand(
+            name=salon.name,
+            description=salon.description,
+            phone=salon.phone,
+            address=salon.address,
+            city=salon.city,
+            commune=salon.commune,
+            latitude=salon.latitude,
+            longitude=salon.longitude,
+        )
+        UpdateSalon(repo, audit).execute(
+            salon_id, same_cmd, actor_user_id=_OWNER_ID
+        )
+        entry: AuditEntry = audit.recorded[0]
+        assert entry.metadata["changed"] == []
+
+    def test_metadata_contains_no_field_values(self) -> None:
+        """Non-fuite §11.4 : `metadata` ne porte que des noms de champs, jamais leur valeur."""
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        salon_id = self._create(repo)
+        UpdateSalon(repo, audit).execute(
+            salon_id,
+            UpdateSalonCommand(name="Autre nom", phone="0709080706"),
+            actor_user_id=_OWNER_ID,
+        )
+        entry: AuditEntry = audit.recorded[0]
+        assert set(entry.metadata.keys()) == {"changed"}
+        assert "Autre nom" not in entry.metadata["changed"]
+        assert "+2250709080706" not in entry.metadata["changed"]
+
+    def test_owner_id_not_modifiable(self) -> None:
+        """Invariant : la commande ne déclare pas de champ owner_id."""
+        assert not hasattr(UpdateSalonCommand(name="X"), "owner_id")
+
+    def test_salon_from_another_owner_still_found(self) -> None:
+        """`UpdateSalon` ne filtre pas par owner_id : la portée est validée en amont (HTTP)."""
+        repo = FakeSalonRepository()
+        audit = FakeAuditLog()
+        salon = CreateSalon(repo).execute(
+            CreateSalonCommand(name="Salon B"), owner_id=_OTHER_OWNER_ID
+        )
+        updated = UpdateSalon(repo, audit).execute(
+            salon.id, UpdateSalonCommand(name="Renommé"), actor_user_id=_OWNER_ID
+        )
+        assert updated.name == "Renommé"
 
 
 # ---------------------------------------------------------------------------

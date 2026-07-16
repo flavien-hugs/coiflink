@@ -39,6 +39,19 @@ export type SetOpeningHoursResult =
   | { ok: true; salon: Salon }
   | { ok: false; reason: "invalid" | "forbidden" | "unauthenticated" | "unavailable" };
 
+// Champs modifiables d'un salon existant — mêmes bornes que `CreateSalonInput`,
+// sans `ownerId`/`status`/`openingHours` (non éditables par cette route).
+export type UpdateSalonInput = CreateSalonInput;
+
+// Résultat d'une modification. `notFound` distingue le `404` backend (salon
+// absent, portée déjà validée) des autres motifs génériques.
+export type UpdateSalonResult =
+  | { ok: true; salon: Salon }
+  | {
+      ok: false;
+      reason: "invalid" | "forbidden" | "unauthenticated" | "notFound" | "unavailable";
+    };
+
 export interface SalonGateway {
   // Proxifie `POST /salons` ; renvoie le salon créé en cas de succès.
   create(input: CreateSalonInput): Promise<CreateSalonResult>;
@@ -46,4 +59,6 @@ export interface SalonGateway {
   list(): Promise<ListSalonsResult>;
   // Proxifie `PUT /salons/{id}/opening-hours` ; renvoie le salon (is_bookable à jour).
   setOpeningHours(salonId: string, hours: OpeningHours): Promise<SetOpeningHoursResult>;
+  // Proxifie `PUT /salons/{id}` (infos générales, journalisé §11.4 côté backend).
+  update(salonId: string, input: UpdateSalonInput): Promise<UpdateSalonResult>;
 }

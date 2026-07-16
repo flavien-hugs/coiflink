@@ -193,5 +193,40 @@ export function createHttpServiceGateway(
       }
       return { ok: false, reason: "unavailable" };
     },
+
+    async reactivate(
+      salonId: string,
+      serviceId: string,
+    ): Promise<MutateServiceResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(`${serviceUrl(salonId, serviceId)}/reactivate`, {
+          method: "POST",
+          headers: { ...authHeader() },
+          cache: "no-store",
+        });
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as ServiceResponsePayload;
+        return { ok: true, service: toService(payload) };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "not-found" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
   };
 }

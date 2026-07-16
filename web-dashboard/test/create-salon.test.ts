@@ -28,6 +28,9 @@ function makeGateway(result: CreateSalonResult): SalonGateway {
     async setOpeningHours() {
       return { ok: true, salon: FAKE_SALON };
     },
+    async update() {
+      return { ok: true, salon: FAKE_SALON };
+    },
   };
 }
 
@@ -87,6 +90,9 @@ describe("createSalon — validation du nom", () => {
         return { ok: true, salons: [] };
       },
       async setOpeningHours() {
+        return { ok: true, salon: FAKE_SALON };
+      },
+      async update() {
         return { ok: true, salon: FAKE_SALON };
       },
     };
@@ -179,6 +185,9 @@ describe("createSalon — succès", () => {
       async setOpeningHours() {
         return { ok: true, salon: FAKE_SALON };
       },
+      async update() {
+        return { ok: true, salon: FAKE_SALON };
+      },
     };
     await createSalon(gw, { name: "  Mon Salon  " });
     expect(sentName).toBe("Mon Salon");
@@ -195,6 +204,9 @@ describe("createSalon — succès", () => {
         return { ok: true, salons: [] };
       },
       async setOpeningHours() {
+        return { ok: true, salon: FAKE_SALON };
+      },
+      async update() {
         return { ok: true, salon: FAKE_SALON };
       },
     };
@@ -222,6 +234,9 @@ describe("createSalon — nettoyage des champs optionnels", () => {
       async setOpeningHours() {
         return { ok: true, salon: FAKE_SALON };
       },
+      async update() {
+        return { ok: true, salon: FAKE_SALON };
+      },
     };
     await createSalon(gw, { name: "Salon X", description: "   " });
     expect(sentDescription).toBeNull();
@@ -238,6 +253,9 @@ describe("createSalon — nettoyage des champs optionnels", () => {
         return { ok: true, salons: [] };
       },
       async setOpeningHours() {
+        return { ok: true, salon: FAKE_SALON };
+      },
+      async update() {
         return { ok: true, salon: FAKE_SALON };
       },
     };
@@ -258,6 +276,9 @@ describe("createSalon — nettoyage des champs optionnels", () => {
       async setOpeningHours() {
         return { ok: true, salon: FAKE_SALON };
       },
+      async update() {
+        return { ok: true, salon: FAKE_SALON };
+      },
     };
     await createSalon(gw, { name: "Salon X", phone: "" });
     expect(sentPhone).toBeNull();
@@ -274,6 +295,9 @@ describe("createSalon — nettoyage des champs optionnels", () => {
         return { ok: true, salons: [] };
       },
       async setOpeningHours() {
+        return { ok: true, salon: FAKE_SALON };
+      },
+      async update() {
         return { ok: true, salon: FAKE_SALON };
       },
     };

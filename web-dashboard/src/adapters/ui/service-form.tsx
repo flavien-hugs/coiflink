@@ -10,20 +10,23 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
+import { FieldLabel } from "@/src/adapters/ui/field-label";
 import { validateService, type Service } from "@/src/domain/service/service";
 
 const INPUT_CLASS =
-  "rounded-lg border border-border bg-transparent px-3 py-2.5 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
+  "rounded-lg border border-border bg-surface px-3 py-2.5 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
 
 export interface ServiceFormProps {
   salonId: string;
   // Prestation à éditer ; absente pour une création.
   service?: Service;
+  // Fermer le panneau après un enregistrement réussi.
+  onSaved?: () => void;
   // Fermer le formulaire (mode édition) sans enregistrer.
   onCancel?: () => void;
 }
 
-export function ServiceForm({ salonId, service, onCancel }: ServiceFormProps) {
+export function ServiceForm({ salonId, service, onCancel, onSaved }: ServiceFormProps) {
   const router = useRouter();
   const editing = service != null;
   const [name, setName] = useState(service?.name ?? "");
@@ -83,8 +86,8 @@ export function ServiceForm({ salonId, service, onCancel }: ServiceFormProps) {
           setDescription("");
           setCategory("");
         }
-        onCancel?.();
         router.refresh();
+        onSaved?.();
         return;
       }
       if (response.status === 403) {
@@ -108,7 +111,7 @@ export function ServiceForm({ salonId, service, onCancel }: ServiceFormProps) {
   return (
     <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
-        <span>Nom de la prestation *</span>
+        <FieldLabel required>Nom de la prestation</FieldLabel>
         <input
           type="text"
           name="name"
@@ -121,7 +124,7 @@ export function ServiceForm({ salonId, service, onCancel }: ServiceFormProps) {
       </label>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
-          <span>Prix (FCFA) *</span>
+          <FieldLabel required>Prix (FCFA)</FieldLabel>
           <input
             type="text"
             inputMode="decimal"
@@ -134,7 +137,7 @@ export function ServiceForm({ salonId, service, onCancel }: ServiceFormProps) {
           />
         </label>
         <label className="flex flex-col gap-1.5 text-sm font-medium">
-          <span>Durée (minutes) *</span>
+          <FieldLabel required>Durée (minutes)</FieldLabel>
           <input
             type="number"
             inputMode="numeric"
@@ -150,7 +153,7 @@ export function ServiceForm({ salonId, service, onCancel }: ServiceFormProps) {
         </label>
       </div>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
-        <span>Catégorie</span>
+        <FieldLabel optional>Catégorie</FieldLabel>
         <input
           type="text"
           name="category"
@@ -162,7 +165,7 @@ export function ServiceForm({ salonId, service, onCancel }: ServiceFormProps) {
         />
       </label>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
-        <span>Description</span>
+        <FieldLabel optional>Description</FieldLabel>
         <textarea
           name="description"
           className={INPUT_CLASS}
@@ -191,7 +194,7 @@ export function ServiceForm({ salonId, service, onCancel }: ServiceFormProps) {
               ? "Enregistrer les modifications"
               : "Ajouter la prestation"}
         </button>
-        {editing && onCancel ? (
+        {onCancel ? (
           <button
             type="button"
             className="text-sm font-medium text-muted hover:text-foreground"

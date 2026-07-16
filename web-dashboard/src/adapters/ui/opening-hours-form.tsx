@@ -1,16 +1,19 @@
 "use client";
 
-// Éditeur d'horaires d'ouverture — adapter UI (hexagonal, ADR-0008). Édite les 7
-// jours (fermé/ouvert, un ou plusieurs intervalles = pauses) et les jours
-// exceptionnels datés, valide **côté client** (parité domaine, retour immédiat),
-// puis poste vers le Route Handler BFF `PUT /api/salons/[id]/opening-hours` (qui
-// proxifie le backend avec le jeton du cookie httpOnly). En cas de succès,
-// rafraîchit la page — le bandeau §8.3 disparaît dès que `isBookable` devient vrai.
-// Messages génériques ; aucune PII journalisée. Le backend reste l'autorité (#16).
+// Éditeur d'horaires d'ouverture — adapter UI (hexagonal, ADR-0008). Édite la
+// semaine type via une grille agenda (`WeeklyAgenda`, glisser/clic) et les
+// jours exceptionnels via un mini calendrier mensuel (`ExceptionsCalendar`) —
+// valide **côté client** (parité domaine, retour immédiat), puis poste vers le
+// Route Handler BFF `PUT /api/salons/[id]/opening-hours` (qui proxifie le
+// backend avec le jeton du cookie httpOnly). En cas de succès, rafraîchit la
+// page — le bandeau §8.3 disparaît dès que `isBookable` devient vrai. Messages
+// génériques ; aucune PII journalisée. Le backend reste l'autorité (#16).
 
 import { useRouter } from "next/navigation";
 import { useMemo, useState, type FormEvent } from "react";
 
+import { ExceptionsCalendar } from "@/src/adapters/ui/exceptions-calendar";
+import { WeeklyAgenda } from "@/src/adapters/ui/weekly-agenda";
 import {
   DAY_KEYS,
   MAX_INTERVALS_PER_DAY,
@@ -22,26 +25,11 @@ import {
   type WeeklySchedule,
 } from "@/src/domain/salon/opening-hours";
 
-const DAY_LABELS: Record<DayKey, string> = {
-  mon: "Lundi",
-  tue: "Mardi",
-  wed: "Mercredi",
-  thu: "Jeudi",
-  fri: "Vendredi",
-  sat: "Samedi",
-  sun: "Dimanche",
-};
-
-const INPUT_CLASS =
-  "rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm text-foreground outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/25";
-
-interface ExceptionState {
-  date: string;
-  closed: boolean;
-  intervals: TimeInterval[];
-}
-
 const DEFAULT_INTERVAL: TimeInterval = { start: "08:00", end: "18:00" };
+
+function sortIntervals(intervals: TimeInterval[]): TimeInterval[] {
+  return [...intervals].sort((a, b) => (a.start < b.start ? -1 : 1));
+}
 
 // Reconstruit l'état éditable à partir du JSONB backend (ou d'un état par défaut).
 function initialWeekly(source: Record<string, unknown> | null): WeeklySchedule {
@@ -62,7 +50,7 @@ function initialWeekly(source: Record<string, unknown> | null): WeeklySchedule {
   return weekly;
 }
 
-function initialExceptions(source: Record<string, unknown> | null): ExceptionState[] {
+function initialExceptions(source: Record<string, unknown> | null): ExceptionalDay[] {
   const raw = source?.exceptions;
   if (!Array.isArray(raw)) return [];
   return raw.map((e) => {
@@ -95,9 +83,10 @@ export function OpeningHoursForm({
   const [weekly, setWeekly] = useState<WeeklySchedule>(() =>
     initialWeekly(openingHours),
   );
-  const [exceptions, setExceptions] = useState<ExceptionState[]>(() =>
+  const [exceptions, setExceptions] = useState<ExceptionalDay[]>(() =>
     initialExceptions(openingHours),
   );
+  const [showExceptions, setShowExceptions] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -105,10 +94,6 @@ export function OpeningHoursForm({
     const tz = openingHours?.timezone;
     return typeof tz === "string" ? tz : null;
   }, [openingHours]);
-
-  function isDayOpen(day: DayKey): boolean {
-    return (weekly[day]?.length ?? 0) > 0;
-  }
 
   function toggleDay(day: DayKey, open: boolean) {
     setWeekly((prev) => {
@@ -122,25 +107,11 @@ export function OpeningHoursForm({
     });
   }
 
-  function updateInterval(
-    day: DayKey,
-    index: number,
-    field: "start" | "end",
-    value: string,
-  ) {
+  function addIntervalAt(day: DayKey, interval: TimeInterval) {
     setWeekly((prev) => {
-      const intervals = [...(prev[day] ?? [])];
-      intervals[index] = { ...intervals[index], [field]: value };
-      return { ...prev, [day]: intervals };
-    });
-  }
-
-  function addInterval(day: DayKey) {
-    setWeekly((prev) => {
-      const intervals = [...(prev[day] ?? [])];
+      const intervals = prev[day] ?? [];
       if (intervals.length >= MAX_INTERVALS_PER_DAY) return prev;
-      intervals.push({ ...DEFAULT_INTERVAL });
-      return { ...prev, [day]: intervals };
+      return { ...prev, [day]: sortIntervals([...intervals, interval]) };
     });
   }
 
@@ -154,38 +125,38 @@ export function OpeningHoursForm({
     });
   }
 
-  function addException() {
-    setExceptions((prev) => [
-      ...prev,
-      { date: "", closed: true, intervals: [] },
-    ]);
+  function setIntervalTimes(day: DayKey, index: number, interval: TimeInterval) {
+    setWeekly((prev) => {
+      const intervals = [...(prev[day] ?? [])];
+      intervals[index] = interval;
+      return { ...prev, [day]: sortIntervals(intervals) };
+    });
   }
 
-  function updateException(index: number, patch: Partial<ExceptionState>) {
-    setExceptions((prev) =>
-      prev.map((exception, i) =>
-        i === index ? { ...exception, ...patch } : exception,
-      ),
-    );
+  function upsertException(
+    date: string,
+    patch: { closed: boolean; intervals: TimeInterval[] },
+  ) {
+    setExceptions((prev) => {
+      const index = prev.findIndex((exception) => exception.date === date);
+      if (index === -1) return [...prev, { date, ...patch }];
+      const next = [...prev];
+      next[index] = { date, ...patch };
+      return next;
+    });
   }
 
-  function removeException(index: number) {
-    setExceptions((prev) => prev.filter((_, i) => i !== index));
+  function removeExceptionByDate(date: string) {
+    setExceptions((prev) => prev.filter((exception) => exception.date !== date));
   }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
 
-    const payloadExceptions: ExceptionalDay[] = exceptions.map((e) => ({
-      date: e.date,
-      closed: e.closed,
-      intervals: e.closed ? [] : e.intervals,
-    }));
-
     const validated = validateOpeningHours({
       weekly,
-      exceptions: payloadExceptions,
+      exceptions,
       timezone,
     });
     if (!validated.ok) {
@@ -230,168 +201,52 @@ export function OpeningHoursForm({
 
   return (
     <form className="flex flex-col gap-6" onSubmit={onSubmit} noValidate>
-      <div className="flex flex-col gap-3">
-        {DAY_KEYS.map((day) => {
-          const open = isDayOpen(day);
-          return (
-            <div
-              key={day}
-              className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-3 sm:flex-row sm:items-start sm:gap-4"
-            >
-              <label className="flex w-40 shrink-0 items-center gap-2 text-sm font-medium">
-                <input
-                  type="checkbox"
-                  checked={open}
-                  onChange={(e) => toggleDay(day, e.target.checked)}
-                />
-                <span>{DAY_LABELS[day]}</span>
-              </label>
-
-              {open ? (
-                <div className="flex flex-1 flex-col gap-2">
-                  {(weekly[day] ?? []).map((interval, index) => (
-                    <div key={index} className="flex items-center gap-2">
-                      <input
-                        type="time"
-                        className={INPUT_CLASS}
-                        value={interval.start}
-                        onChange={(e) =>
-                          updateInterval(day, index, "start", e.target.value)
-                        }
-                        aria-label={`${DAY_LABELS[day]} — début`}
-                      />
-                      <span className="text-muted">–</span>
-                      <input
-                        type="time"
-                        className={INPUT_CLASS}
-                        value={interval.end}
-                        onChange={(e) =>
-                          updateInterval(day, index, "end", e.target.value)
-                        }
-                        aria-label={`${DAY_LABELS[day]} — fin`}
-                      />
-                      <button
-                        type="button"
-                        className="text-sm text-muted hover:text-danger"
-                        onClick={() => removeInterval(day, index)}
-                        aria-label="Retirer cette plage"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                  {(weekly[day]?.length ?? 0) < MAX_INTERVALS_PER_DAY ? (
-                    <button
-                      type="button"
-                      className="self-start text-sm font-medium text-accent hover:underline"
-                      onClick={() => addInterval(day)}
-                    >
-                      + Ajouter une pause
-                    </button>
-                  ) : null}
-                </div>
-              ) : (
-                <span className="text-sm text-muted">Fermé</span>
-              )}
-            </div>
-          );
-        })}
+      <div>
+        <h3 className="mb-3 text-sm font-semibold">Semaine type</h3>
+        <p className="mb-3 text-sm text-muted">
+          Glissez sur une colonne pour ajouter un créneau, glissez un créneau pour le
+          déplacer, cliquez dessus pour l&apos;ajuster précisément ou le supprimer.
+        </p>
+        <WeeklyAgenda
+          weekly={weekly}
+          onToggleDay={toggleDay}
+          onAddInterval={addIntervalAt}
+          onRemoveInterval={removeInterval}
+          onSetIntervalTimes={setIntervalTimes}
+        />
       </div>
 
-      <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Jours exceptionnels</h3>
+      <div>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">Jours exceptionnels</h3>
+            <p className="mt-0.5 text-sm text-muted">
+              {exceptions.length > 0
+                ? `${exceptions.length} jour${exceptions.length > 1 ? "s" : ""} configuré${
+                    exceptions.length > 1 ? "s" : ""
+                  }.`
+                : "Aucun jour exceptionnel configuré."}
+            </p>
+          </div>
           <button
             type="button"
-            className="text-sm font-medium text-accent hover:underline"
-            onClick={addException}
+            onClick={() => setShowExceptions((current) => !current)}
+            aria-expanded={showExceptions}
+            className="inline-flex cursor-pointer items-center justify-center rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:border-accent/40"
           >
-            + Ajouter un jour
+            {showExceptions ? "Masquer le calendrier" : "Configurer"}
           </button>
         </div>
-        {exceptions.length === 0 ? (
-          <p className="text-sm text-muted">
-            Aucun jour exceptionnel (fermeture ou horaires ponctuels).
-          </p>
-        ) : null}
-        {exceptions.map((exception, index) => (
-          <div
-            key={index}
-            className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-3"
-          >
-            <div className="flex flex-wrap items-center gap-3">
-              <input
-                type="date"
-                className={INPUT_CLASS}
-                value={exception.date}
-                onChange={(e) => updateException(index, { date: e.target.value })}
-                aria-label="Date exceptionnelle"
-              />
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={exception.closed}
-                  onChange={(e) =>
-                    updateException(index, {
-                      closed: e.target.checked,
-                      intervals: e.target.checked
-                        ? []
-                        : exception.intervals.length > 0
-                          ? exception.intervals
-                          : [{ ...DEFAULT_INTERVAL }],
-                    })
-                  }
-                />
-                <span>Fermé</span>
-              </label>
-              <button
-                type="button"
-                className="ml-auto text-sm text-muted hover:text-danger"
-                onClick={() => removeException(index)}
-                aria-label="Retirer ce jour exceptionnel"
-              >
-                ✕
-              </button>
-            </div>
-            {!exception.closed ? (
-              <div className="flex items-center gap-2">
-                <input
-                  type="time"
-                  className={INPUT_CLASS}
-                  value={exception.intervals[0]?.start ?? "08:00"}
-                  onChange={(e) =>
-                    updateException(index, {
-                      intervals: [
-                        {
-                          start: e.target.value,
-                          end: exception.intervals[0]?.end ?? "18:00",
-                        },
-                      ],
-                    })
-                  }
-                  aria-label="Horaire exceptionnel — début"
-                />
-                <span className="text-muted">–</span>
-                <input
-                  type="time"
-                  className={INPUT_CLASS}
-                  value={exception.intervals[0]?.end ?? "18:00"}
-                  onChange={(e) =>
-                    updateException(index, {
-                      intervals: [
-                        {
-                          start: exception.intervals[0]?.start ?? "08:00",
-                          end: e.target.value,
-                        },
-                      ],
-                    })
-                  }
-                  aria-label="Horaire exceptionnel — fin"
-                />
-              </div>
-            ) : null}
+
+        {showExceptions ? (
+          <div className="mt-4">
+            <ExceptionsCalendar
+              exceptions={exceptions}
+              onUpsert={upsertException}
+              onRemove={removeExceptionByDate}
+            />
           </div>
-        ))}
+        ) : null}
       </div>
 
       {error ? (

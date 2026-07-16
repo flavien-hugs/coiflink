@@ -26,8 +26,10 @@ import decimal
 import uuid
 from dataclasses import dataclass
 
+from coiflink_api.application.ports.audit_log import AuditLog
 from coiflink_api.application.ports.media_storage import MediaStorage, PresignedUpload
 from coiflink_api.application.ports.salon_repository import SalonRepository
+from coiflink_api.domain.audit import ENTITY_TYPE_SALON, AuditAction, AuditEntry
 from coiflink_api.domain.errors import (
     MediaKeyMismatch,
     PhotoLimitExceeded,
@@ -39,6 +41,7 @@ from coiflink_api.domain.salon import (
     Salon,
     SalonPhoto,
     SalonToCreate,
+    SalonUpdate,
     validate_content_type,
     validate_coordinates,
     validate_salon_name,
@@ -49,6 +52,19 @@ from coiflink_api.domain.salon import (
 _KIND_SEGMENTS: dict[str, str] = {"logo": "logo", "photo": "photos"}
 
 DEFAULT_MAX_PHOTOS = 10
+
+# Champs comparés pour le diff neutre de `UpdateSalon` (ordre stable). Seuls des
+# **noms de champs** sont journalisés — jamais les valeurs (règle de non-fuite).
+_DIFF_FIELDS: tuple[str, ...] = (
+    "name",
+    "description",
+    "phone",
+    "address",
+    "city",
+    "commune",
+    "latitude",
+    "longitude",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -161,6 +177,89 @@ class CreateSalon:
                 longitude=longitude,
             )
         )
+
+
+# --------------------------------------------------------------------------- #
+# Modification des informations générales du salon (journalisée, §11.4).
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class UpdateSalonCommand:
+    """Données d'entrée de modification — **sans** `owner_id`, `status` ni `opening_hours`.
+
+    Mêmes champs que `CreateSalonCommand` : un `PUT` remplace intégralement les
+    informations générales du salon (sémantique *replace*).
+    """
+
+    name: str
+    description: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    city: str | None = None
+    commune: str | None = None
+    latitude: decimal.Decimal | None = None
+    longitude: decimal.Decimal | None = None
+
+
+def _changed_fields(current: Salon, changes: SalonUpdate) -> list[str]:
+    """Noms des champs dont la valeur change (diff **neutre**, ordre stable).
+
+    Ne compare que les **noms** de champs modifiés : aucune valeur n'entre dans le
+    journal d'audit (règle de non-fuite §11.4).
+    """
+
+    return [
+        field
+        for field in _DIFF_FIELDS
+        if getattr(current, field) != getattr(changes, field)
+    ]
+
+
+class UpdateSalon:
+    """Modifie les informations générales d'un salon (sémantique *replace*) et journalise (§11.4).
+
+    Séquence (miroir `UpdateService` #17) : validation domaine → `find_by_id` (404
+    si absent, portée déjà validée par la garde HTTP) → diff neutre → `repository.update(...)`
+    → `audit_log.record(SALON_UPDATED)` avec `metadata.changed` (noms de champs uniquement).
+    """
+
+    def __init__(self, repository: SalonRepository, audit_log: AuditLog) -> None:
+        self._repository = repository
+        self._audit_log = audit_log
+
+    def execute(
+        self, salon_id: uuid.UUID, command: UpdateSalonCommand, *, actor_user_id: uuid.UUID
+    ) -> Salon:
+        name = validate_salon_name(command.name)
+        latitude, longitude = validate_coordinates(command.latitude, command.longitude)
+        phone = normalize_phone(command.phone) if command.phone else None
+
+        current = self._repository.find_by_id(salon_id)
+        if current is None:
+            raise SalonNotFound("Salon introuvable.")
+
+        changes = SalonUpdate(
+            name=name,
+            description=command.description or None,
+            phone=phone,
+            address=command.address or None,
+            city=command.city or None,
+            commune=command.commune or None,
+            latitude=latitude,
+            longitude=longitude,
+        )
+        changed = _changed_fields(current, changes)
+        salon = self._repository.update(salon_id, changes)
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.SALON_UPDATED.value,
+                actor_user_id=actor_user_id,
+                salon_id=salon_id,
+                entity_type=ENTITY_TYPE_SALON,
+                entity_id=salon_id,
+                metadata={"changed": changed},
+            )
+        )
+        return salon
 
 
 # --------------------------------------------------------------------------- #
@@ -329,6 +428,8 @@ __all__ = [
     "SalonView",
     "CreateSalonCommand",
     "CreateSalon",
+    "UpdateSalonCommand",
+    "UpdateSalon",
     "SetOpeningHours",
     "GetSalon",
     "ListOwnSalons",

@@ -12,6 +12,7 @@
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { OpeningHoursForm } from "@/src/adapters/ui/opening-hours-form";
+import { SalonDetails as SalonDetailsCard } from "@/src/adapters/ui/salon-details";
 import { SalonForm } from "@/src/adapters/ui/salon-form";
 import { isBookable, type Salon } from "@/src/domain/salon/salon";
 
@@ -74,47 +75,23 @@ function SalonDetails({ salon }: { salon: Salon }) {
     <div className="flex flex-col gap-6">
       {!bookable ? (
         <div
-          className="rounded-2xl border border-accent/30 bg-accent/10 p-4 text-sm text-foreground"
+          className="flex items-start gap-3 rounded-2xl border border-accent/30 bg-accent/10 p-4 text-sm text-foreground"
           role="status"
         >
-          <p className="font-semibold text-accent">
-            Ce salon n&apos;est pas encore réservable.
-          </p>
-          <p className="mt-1 text-muted">
-            Configurez vos horaires d&apos;ouverture pour rendre votre salon réservable par
-            les clients.
-          </p>
+          <NotBookableIcon className="mt-0.5 shrink-0 text-accent" />
+          <div>
+            <p className="font-semibold text-accent">
+              Ce salon n&apos;est pas encore réservable.
+            </p>
+            <p className="mt-1 text-muted">
+              Configurez vos horaires d&apos;ouverture pour rendre votre salon réservable
+              par les clients.
+            </p>
+          </div>
         </div>
       ) : null}
 
-      <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-semibold">{salon.name}</h2>
-            {salon.description ? (
-              <p className="mt-1 max-w-prose text-sm text-muted">{salon.description}</p>
-            ) : null}
-          </div>
-          <span className="rounded-full bg-foreground/5 px-2.5 py-1 text-xs font-medium tracking-wide uppercase">
-            {salon.status}
-          </span>
-        </div>
-
-        <dl className="mt-5 grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
-          <Field label="Téléphone" value={salon.phone} />
-          <Field label="Adresse" value={salon.address} />
-          <Field label="Ville" value={salon.city} />
-          <Field label="Commune" value={salon.commune} />
-          <Field
-            label="Coordonnées"
-            value={
-              salon.latitude != null && salon.longitude != null
-                ? `${salon.latitude}, ${salon.longitude}`
-                : null
-            }
-          />
-        </dl>
-      </div>
+      <SalonDetailsCard salon={salon} />
 
       <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
         <h2 className="text-lg font-semibold">Horaires d&apos;ouverture</h2>
@@ -129,11 +106,21 @@ function SalonDetails({ salon }: { salon: Salon }) {
   );
 }
 
-function Field({ label, value }: { label: string; value: string | null }) {
+function NotBookableIcon({ className = "" }: { className?: string }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-xs font-medium tracking-wide text-muted uppercase">{label}</dt>
-      <dd>{value ?? <span className="text-muted">—</span>}</dd>
-    </div>
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`size-4 ${className}`}
+      aria-hidden="true"
+    >
+      <circle cx="10" cy="10" r="7.25" />
+      <path d="M10 6.5v4" />
+      <path d="M10 13.25h.01" />
+    </svg>
   );
 }

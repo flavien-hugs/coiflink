@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Protocol
 
-from coiflink_api.domain.salon import Salon, SalonPhoto, SalonToCreate
+from coiflink_api.domain.salon import Salon, SalonPhoto, SalonToCreate, SalonUpdate
 
 
 class SalonRepository(Protocol):
@@ -27,6 +27,13 @@ class SalonRepository(Protocol):
 
     def find_by_id(self, salon_id: uuid.UUID) -> Salon | None:
         """Retourne le salon pour cet `id`, sinon `None`."""
+        ...
+
+    def update(self, salon_id: uuid.UUID, changes: SalonUpdate) -> Salon:
+        """Remplace les champs modifiables du salon (sémantique *replace*) ; retourne le salon relu.
+
+        Lève `domain.errors.SalonNotFound` si le salon n'existe pas.
+        """
         ...
 
     def list_for_owner(self, owner_id: uuid.UUID) -> tuple[Salon, ...]:

@@ -817,6 +817,107 @@ class TestDeleteService:
         assert r.status_code == 403
 
 
+class TestReactivateService:
+    def test_manager_gets_200(
+        self,
+        manager_client_with_service: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, service_id = manager_client_with_service
+        client.delete(
+            _service_url(_SALON_ID, service_id),
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        r = client.post(
+            f"{_service_url(_SALON_ID, service_id)}/reactivate",
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 200
+        assert r.json()["is_active"] is True
+
+    def test_no_token_returns_401(
+        self,
+        manager_client_with_service: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, service_id = manager_client_with_service
+        r = client.post(f"{_service_url(_SALON_ID, service_id)}/reactivate")
+        assert r.status_code == 401
+
+    def test_unknown_service_returns_404(self, manager_client: TestClient) -> None:
+        r = manager_client.post(
+            f"{_service_url(_SALON_ID, uuid.uuid4())}/reactivate",
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 404
+
+    def test_service_is_active_after_reactivate(
+        self,
+        service_repo: FakeServiceRepository,
+        manager_client_with_service: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, service_id = manager_client_with_service
+        client.delete(
+            _service_url(_SALON_ID, service_id),
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        client.post(
+            f"{_service_url(_SALON_ID, service_id)}/reactivate",
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        service = service_repo.find_by_id(_SALON_ID, service_id)
+        assert service is not None
+        assert service.is_active is True
+
+    def test_audit_entry_recorded_on_reactivation(
+        self,
+        audit_log: FakeAuditLog,
+        manager_client_with_service: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, service_id = manager_client_with_service
+        client.delete(
+            _service_url(_SALON_ID, service_id),
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        audit_log.recorded.clear()
+        client.post(
+            f"{_service_url(_SALON_ID, service_id)}/reactivate",
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert len(audit_log.recorded) == 1
+        assert audit_log.recorded[0].action == "SERVICE_REACTIVATED"
+
+    def test_hairdresser_returns_403(
+        self,
+        service_repo: FakeServiceRepository,
+        audit_log: FakeAuditLog,
+        manager_client_with_service: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        _, service_id = manager_client_with_service
+
+        creds = _creds(_HAIRDRESSER_ID, Role.HAIRDRESSER.value)
+        user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
+        scope_repo = FakeSalonScopeRepository(
+            scopes={_HAIRDRESSER_ID: frozenset({_SALON_ID})}
+        )
+        token = make_access_token(_HAIRDRESSER_ID, Role.HAIRDRESSER.value)
+
+        app.dependency_overrides[get_service_repository] = lambda: service_repo
+        app.dependency_overrides[get_audit_log] = lambda: audit_log
+        app.dependency_overrides[get_user_repository] = lambda: user_repo
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+        try:
+            with TestClient(app) as c:
+                r = c.post(
+                    f"{_service_url(_SALON_ID, service_id)}/reactivate",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        finally:
+            app.dependency_overrides.pop(get_service_repository, None)
+            app.dependency_overrides.pop(get_audit_log, None)
+            app.dependency_overrides.pop(get_user_repository, None)
+            app.dependency_overrides.pop(get_access_policy, None)
+        assert r.status_code == 403
+
+
 # ---------------------------------------------------------------------------
 # Deny-by-default (invariant RBAC)
 # ---------------------------------------------------------------------------

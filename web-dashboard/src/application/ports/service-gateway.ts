@@ -40,4 +40,6 @@ export interface ServiceGateway {
   ): Promise<MutateServiceResult>;
   // Proxifie `DELETE /salons/{id}/services/{serviceId}` (désactivation, §11.4).
   deactivate(salonId: string, serviceId: string): Promise<DeactivateServiceResult>;
+  // Proxifie `POST /salons/{id}/services/{serviceId}/reactivate` (§11.4) ; renvoie la prestation.
+  reactivate(salonId: string, serviceId: string): Promise<MutateServiceResult>;
 }

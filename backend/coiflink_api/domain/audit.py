@@ -27,6 +27,9 @@ from coiflink_api.domain.enums import _StrEnum
 # Type d'entité journalisée pour les prestations (extensible aux futures §11.4).
 ENTITY_TYPE_SERVICE = "service"
 
+# Type d'entité journalisée pour les salons (extensible aux futures §11.4).
+ENTITY_TYPE_SALON = "salon"
+
 
 @unique
 class AuditAction(_StrEnum):
@@ -41,6 +44,9 @@ class AuditAction(_StrEnum):
     SERVICE_UPDATED = "SERVICE_UPDATED"
     SERVICE_DEACTIVATED = "SERVICE_DEACTIVATED"
     SERVICE_REACTIVATED = "SERVICE_REACTIVATED"
+
+    # Salon (§11.4 « Modification salon »).
+    SALON_UPDATED = "SALON_UPDATED"
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,7 @@ class AuditEntry:
 
 __all__ = [
     "ENTITY_TYPE_SERVICE",
+    "ENTITY_TYPE_SALON",
     "AuditAction",
     "AuditEntry",
 ]

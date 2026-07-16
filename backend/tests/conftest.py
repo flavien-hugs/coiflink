@@ -456,6 +456,28 @@ class FakeSalonRepository:
             s for s in self._salons.values() if s.owner_id == owner_id
         )
 
+    def update(self, salon_id: uuid.UUID, changes):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.errors import SalonNotFound
+
+        salon = self._salons.get(salon_id)
+        if salon is None:
+            raise SalonNotFound("Salon introuvable.")
+        salon = _dc.replace(
+            salon,
+            name=changes.name,
+            description=changes.description,
+            phone=changes.phone,
+            address=changes.address,
+            city=changes.city,
+            commune=changes.commune,
+            latitude=changes.latitude,
+            longitude=changes.longitude,
+        )
+        self._salons[salon_id] = salon
+        return salon
+
     def set_logo(self, salon_id: uuid.UUID, object_key):  # type: ignore[no-untyped-def]
         import dataclasses as _dc
 

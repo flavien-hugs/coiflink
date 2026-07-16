@@ -53,6 +53,7 @@ from coiflink_api.application.services import (
     DeactivateService,
     GetService,
     ListSalonServices,
+    ReactivateService,
     ServiceCommand,
     UpdateService,
 )
@@ -343,6 +344,42 @@ def delete_service(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{salon_id}/services/{service_id}/reactivate",
+    response_model=ServiceResponse,
+    summary="Réactiver une prestation désactivée (journalisé §11.4)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "Prestation introuvable (portée déjà validée)"},
+    },
+)
+def reactivate_service(
+    salon_id: uuid.UUID,
+    service_id: uuid.UUID,
+    repository: Annotated[ServiceRepository, Depends(get_service_repository)],
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    principal: Annotated[
+        Principal, Depends(require_permission(Permission.SERVICE_MANAGE))
+    ],
+) -> ServiceResponse:
+    """Réactive la prestation (`is_active=true`) — symétrique de la désactivation.
+
+    Journalise `SERVICE_REACTIVATED` (§11.4).
+    """
+
+    try:
+        service = ReactivateService(repository, audit_log).execute(
+            salon_id, service_id, actor_user_id=principal.id
+        )
+    except ServiceNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _service_response(service)
 
 
 __all__ = ["router"]

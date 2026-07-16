@@ -2,7 +2,7 @@
 // #17). Charge **côté serveur** (jeton du cookie httpOnly, jamais exposé au
 // navigateur, invariant #14) le salon du gérant puis ses prestations :
 //   - aucun salon → invite à créer d'abord le salon (Paramètres, #15) ;
-//   - un salon    → catalogue (actives + désactivées) + formulaire d'ajout.
+//   - un salon    → catalogue filtrable + drawer d'ajout/modification.
 // La modification et la désactivation sont journalisées §11.4 côté backend.
 //
 // PRD §7.2 range « Prestations » dans **Offre & caisse** : cette page occupe la
@@ -13,7 +13,6 @@ import Link from "next/link";
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { createHttpServiceGateway } from "@/src/adapters/api/http-service-gateway";
-import { ServiceForm } from "@/src/adapters/ui/service-form";
 import { ServiceList } from "@/src/adapters/ui/service-list";
 import type { Service } from "@/src/domain/service/service";
 
@@ -100,23 +99,15 @@ function NoSalonPanel() {
 
 function Catalogue({ salonId, services }: { salonId: string; services: Service[] }) {
   return (
-    <div className="flex flex-col gap-6">
-      <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
-        <h2 className="text-lg font-semibold">Ajouter une prestation</h2>
-        <p className="mt-1 mb-5 max-w-prose text-sm text-muted">
-          La durée et le prix sont obligatoires. La catégorie est libre.
-        </p>
-        <ServiceForm salonId={salonId} />
-      </div>
-
-      <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
+    <div className="flex flex-col gap-5">
+      <div>
         <h2 className="text-lg font-semibold">Catalogue</h2>
-        <p className="mt-1 mb-5 max-w-prose text-sm text-muted">
+        <p className="mt-1 max-w-prose text-sm text-muted">
           Vos prestations actives et désactivées. Une prestation désactivée n&apos;est
           plus proposée à la réservation mais reste dans l&apos;historique.
         </p>
-        <ServiceList salonId={salonId} services={services} />
       </div>
+      <ServiceList salonId={salonId} services={services} />
     </div>
   );
 }

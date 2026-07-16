@@ -253,6 +253,40 @@ class DeactivateService:
         return service
 
 
+class ReactivateService:
+    """Réactive une prestation désactivée et journalise (§11.4).
+
+    Symétrique de `DeactivateService` : `find_by_id` avant écriture distingue
+    `404` d'une simple portée validée. Enregistre `SERVICE_REACTIVATED`.
+    """
+
+    def __init__(self, repository: ServiceRepository, audit_log: AuditLog) -> None:
+        self._repository = repository
+        self._audit_log = audit_log
+
+    def execute(
+        self,
+        salon_id: uuid.UUID,
+        service_id: uuid.UUID,
+        *,
+        actor_user_id: uuid.UUID,
+    ) -> Service:
+        if self._repository.find_by_id(salon_id, service_id) is None:
+            raise ServiceNotFound("Prestation introuvable.")
+        service = self._repository.set_active(salon_id, service_id, active=True)
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.SERVICE_REACTIVATED.value,
+                actor_user_id=actor_user_id,
+                salon_id=salon_id,
+                entity_type=ENTITY_TYPE_SERVICE,
+                entity_id=service_id,
+                metadata={},
+            )
+        )
+        return service
+
+
 __all__ = [
     "ServiceCommand",
     "CreateService",
@@ -260,4 +294,5 @@ __all__ = [
     "GetService",
     "UpdateService",
     "DeactivateService",
+    "ReactivateService",
 ]

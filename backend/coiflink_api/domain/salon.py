@@ -138,6 +138,24 @@ class SalonToCreate:
 
 
 @dataclass(frozen=True)
+class SalonUpdate:
+    """Champs modifiables d'un salon existant (hors `owner_id`, `status`, `opening_hours`).
+
+    Le `owner_id` ne se modifie jamais par cette route ; `status`/`opening_hours`
+    ont leurs propres mécanismes (désactivation future, `SetOpeningHours` #16).
+    """
+
+    name: str
+    description: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    city: str | None = None
+    commune: str | None = None
+    latitude: decimal.Decimal | None = None
+    longitude: decimal.Decimal | None = None
+
+
+@dataclass(frozen=True)
 class SalonPhoto:
     """Photo de salon persistée : référence une **clé d'objet**, jamais une URL.
 
@@ -191,6 +209,7 @@ __all__ = [
     "validate_content_type",
     "is_bookable",
     "SalonToCreate",
+    "SalonUpdate",
     "SalonPhoto",
     "Salon",
 ]

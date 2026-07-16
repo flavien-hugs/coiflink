@@ -1,16 +1,27 @@
 "use client";
 
-// Formulaire de création de salon — adapter UI (hexagonal, ADR-0008). Poste les
-// informations générales vers le Route Handler BFF `POST /api/salons` (qui
-// proxifie `POST /salons` avec le jeton du cookie httpOnly). En cas de succès,
-// rafraîchit la page (le Server Component réaffiche la fiche du salon). Les
-// messages d'erreur restent génériques ; aucune PII n'est journalisée.
+// Formulaire de salon (création **ou** modification) — adapter UI (hexagonal,
+// ADR-0008). Poste vers le Route Handler BFF `POST /api/salons` (création) ou
+// `PUT /api/salons/{id}` (modification, journalisée §11.4 côté backend). En
+// cas de succès, rafraîchit la page. Messages génériques ; aucune PII journalisée.
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
+import { FieldLabel } from "@/src/adapters/ui/field-label";
+import type { Salon } from "@/src/domain/salon/salon";
+
 const INPUT_CLASS =
-  "rounded-lg border border-border bg-transparent px-3 py-2.5 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
+  "rounded-lg border border-border bg-surface px-3 py-2.5 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
+
+export interface SalonFormProps {
+  // Salon à modifier ; absent pour une création.
+  salon?: Salon;
+  // Fermer le panneau après un enregistrement réussi.
+  onSaved?: () => void;
+  // Fermer le formulaire (mode édition) sans enregistrer.
+  onCancel?: () => void;
+}
 
 function parseCoordinate(value: string): number | null {
   const trimmed = value.trim();
@@ -19,16 +30,21 @@ function parseCoordinate(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
-export function SalonForm() {
+export function SalonForm({ salon, onCancel, onSaved }: SalonFormProps) {
   const router = useRouter();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [phone, setPhone] = useState("");
-  const [address, setAddress] = useState("");
-  const [city, setCity] = useState("");
-  const [commune, setCommune] = useState("");
-  const [latitude, setLatitude] = useState("");
-  const [longitude, setLongitude] = useState("");
+  const editing = salon != null;
+  const [name, setName] = useState(salon?.name ?? "");
+  const [description, setDescription] = useState(salon?.description ?? "");
+  const [phone, setPhone] = useState(salon?.phone ?? "");
+  const [address, setAddress] = useState(salon?.address ?? "");
+  const [city, setCity] = useState(salon?.city ?? "");
+  const [commune, setCommune] = useState(salon?.commune ?? "");
+  const [latitude, setLatitude] = useState(
+    salon?.latitude != null ? String(salon.latitude) : "",
+  );
+  const [longitude, setLongitude] = useState(
+    salon?.longitude != null ? String(salon.longitude) : "",
+  );
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -49,8 +65,9 @@ export function SalonForm() {
 
     setPending(true);
     try {
-      const response = await fetch("/api/salons", {
-        method: "POST",
+      const url = editing ? `/api/salons/${encodeURIComponent(salon.id)}` : "/api/salons";
+      const response = await fetch(url, {
+        method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name,
@@ -66,10 +83,13 @@ export function SalonForm() {
 
       if (response.ok) {
         router.refresh();
+        onSaved?.();
         return;
       }
       if (response.status === 403) {
-        setError("Seul un gérant peut créer un salon.");
+        setError("Action non autorisée sur ce salon.");
+      } else if (response.status === 404) {
+        setError("Salon introuvable.");
       } else if (response.status === 422 || response.status === 400) {
         setError("Informations du salon invalides.");
       } else if (response.status === 401) {
@@ -87,7 +107,7 @@ export function SalonForm() {
   return (
     <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
-        <span>Nom du salon *</span>
+        <FieldLabel required>Nom du salon</FieldLabel>
         <input
           type="text"
           name="name"
@@ -99,7 +119,7 @@ export function SalonForm() {
         />
       </label>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
-        <span>Description</span>
+        <FieldLabel optional>Description</FieldLabel>
         <textarea
           name="description"
           className={INPUT_CLASS}
@@ -109,7 +129,7 @@ export function SalonForm() {
         />
       </label>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
-        <span>Téléphone</span>
+        <FieldLabel optional>Téléphone</FieldLabel>
         <input
           type="tel"
           name="phone"
@@ -119,7 +139,7 @@ export function SalonForm() {
         />
       </label>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
-        <span>Adresse</span>
+        <FieldLabel optional>Adresse</FieldLabel>
         <input
           type="text"
           name="address"
@@ -130,7 +150,7 @@ export function SalonForm() {
       </label>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
-          <span>Ville</span>
+          <FieldLabel optional>Ville</FieldLabel>
           <input
             type="text"
             name="city"
@@ -140,7 +160,7 @@ export function SalonForm() {
           />
         </label>
         <label className="flex flex-col gap-1.5 text-sm font-medium">
-          <span>Commune</span>
+          <FieldLabel optional>Commune</FieldLabel>
           <input
             type="text"
             name="commune"
@@ -152,7 +172,7 @@ export function SalonForm() {
       </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
-          <span>Latitude</span>
+          <FieldLabel optional>Latitude</FieldLabel>
           <input
             type="text"
             inputMode="decimal"
@@ -164,7 +184,7 @@ export function SalonForm() {
           />
         </label>
         <label className="flex flex-col gap-1.5 text-sm font-medium">
-          <span>Longitude</span>
+          <FieldLabel optional>Longitude</FieldLabel>
           <input
             type="text"
             inputMode="decimal"
@@ -184,13 +204,29 @@ export function SalonForm() {
           {error}
         </p>
       ) : null}
-      <button
-        type="submit"
-        className="mt-1 inline-flex cursor-pointer items-center justify-center rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
-        disabled={pending}
-      >
-        {pending ? "Création…" : "Créer le salon"}
-      </button>
+      <div className="flex items-center gap-3">
+        <button
+          type="submit"
+          className="mt-1 inline-flex cursor-pointer items-center justify-center rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
+          disabled={pending}
+        >
+          {pending
+            ? "Enregistrement…"
+            : editing
+              ? "Enregistrer les modifications"
+              : "Créer le salon"}
+        </button>
+        {onCancel ? (
+          <button
+            type="button"
+            className="text-sm font-medium text-muted hover:text-foreground"
+            onClick={onCancel}
+            disabled={pending}
+          >
+            Annuler
+          </button>
+        ) : null}
+      </div>
     </form>
   );
 }

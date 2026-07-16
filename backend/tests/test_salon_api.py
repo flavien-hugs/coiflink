@@ -26,7 +26,7 @@ from collections.abc import Generator
 import pytest
 from fastapi.testclient import TestClient
 
-from coiflink_api.adapters.inbound.salons import get_salon_repository
+from coiflink_api.adapters.inbound.salons import get_audit_log, get_salon_repository
 from coiflink_api.adapters.inbound.security import (
     PUBLIC_ROUTE_PATHS,
     get_access_policy,
@@ -41,6 +41,7 @@ from coiflink_api.main import app
 from .conftest import (
     FAKE_ACCESS_CLAIMS,
     TEST_JWT_SECRET,
+    FakeAuditLog,
     FakeAuthUserRepository,
     FakeSalonRepository,
     FakeSalonScopeRepository,
@@ -109,26 +110,35 @@ def salon_repo() -> FakeSalonRepository:
 
 
 @pytest.fixture()
-def manager_client(salon_repo: FakeSalonRepository) -> Generator[TestClient, None, None]:
+def audit_log() -> FakeAuditLog:
+    return FakeAuditLog()
+
+
+@pytest.fixture()
+def manager_client(
+    salon_repo: FakeSalonRepository, audit_log: FakeAuditLog
+) -> Generator[TestClient, None, None]:
     """TestClient avec MANAGER authentifié (portée vide à la création)."""
     creds = _creds(_MANAGER_ID, Role.MANAGER.value)
     user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
     scope_repo = FakeSalonScopeRepository(scopes={creds.id: frozenset()})
 
     app.dependency_overrides[get_salon_repository] = lambda: salon_repo
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
     app.dependency_overrides[get_user_repository] = lambda: user_repo
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.pop(get_salon_repository, None)
+        app.dependency_overrides.pop(get_audit_log, None)
         app.dependency_overrides.pop(get_user_repository, None)
         app.dependency_overrides.pop(get_access_policy, None)
 
 
 @pytest.fixture()
 def manager_client_with_salon(
-    salon_repo: FakeSalonRepository,
+    salon_repo: FakeSalonRepository, audit_log: FakeAuditLog
 ) -> Generator[tuple[TestClient, uuid.UUID], None, None]:
     """MANAGER dont le dépôt contient déjà un salon (_SALON_ID simulé)."""
     creds = _creds(_MANAGER_ID, Role.MANAGER.value)
@@ -143,12 +153,14 @@ def manager_client_with_salon(
     scope_repo = FakeSalonScopeRepository(scopes={creds.id: frozenset({salon.id})})
 
     app.dependency_overrides[get_salon_repository] = lambda: salon_repo
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
     app.dependency_overrides[get_user_repository] = lambda: user_repo
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
     try:
         yield TestClient(app), salon.id
     finally:
         app.dependency_overrides.pop(get_salon_repository, None)
+        app.dependency_overrides.pop(get_audit_log, None)
         app.dependency_overrides.pop(get_user_repository, None)
         app.dependency_overrides.pop(get_access_policy, None)
 
@@ -538,6 +550,228 @@ class TestGetSalonAccessControl:
         client, salon_id = manager_client_with_salon
         r = client.get(f"{_SALONS_URL}/{salon_id}")
         assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# PUT /salons/{salon_id} — modification journalisée (§11.4)
+# ---------------------------------------------------------------------------
+
+_UPDATE_BODY = {
+    "name": "Salon Renommé",
+    "description": "Nouvelle description.",
+    "phone": "0709080706",
+    "address": "Nouvelle adresse",
+    "city": "Abidjan",
+    "commune": "Marcory",
+    "latitude": 5.3,
+    "longitude": -4.0,
+}
+
+
+class TestUpdateSalon:
+    def test_manager_gets_200(
+        self,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, salon_id = manager_client_with_salon
+        r = client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json=_UPDATE_BODY,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 200
+        assert r.json()["name"] == "Salon Renommé"
+        assert r.json()["commune"] == "Marcory"
+
+    def test_no_token_returns_401(
+        self,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, salon_id = manager_client_with_salon
+        r = client.put(f"{_SALONS_URL}/{salon_id}", json=_UPDATE_BODY)
+        assert r.status_code == 401
+
+    def test_unknown_salon_id_in_scope_returns_404(
+        self,
+        salon_repo: FakeSalonRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """`salon_id` dans la portée du gérant mais absent du dépôt → 404 opaque."""
+        unknown_id = uuid.uuid4()
+        creds = _creds(_MANAGER_ID, Role.MANAGER.value)
+        user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
+        scope_repo = FakeSalonScopeRepository(scopes={_MANAGER_ID: frozenset({unknown_id})})
+
+        app.dependency_overrides[get_salon_repository] = lambda: salon_repo
+        app.dependency_overrides[get_audit_log] = lambda: audit_log
+        app.dependency_overrides[get_user_repository] = lambda: user_repo
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+        try:
+            with TestClient(app) as c:
+                r = c.put(
+                    f"{_SALONS_URL}/{unknown_id}",
+                    json=_UPDATE_BODY,
+                    headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+                )
+        finally:
+            app.dependency_overrides.pop(get_salon_repository, None)
+            app.dependency_overrides.pop(get_audit_log, None)
+            app.dependency_overrides.pop(get_user_repository, None)
+            app.dependency_overrides.pop(get_access_policy, None)
+        assert r.status_code == 404
+
+    def test_other_manager_salon_returns_403_not_404(
+        self,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        """Salon hors périmètre (autre gérant) → 403 générique, pas 404 (isolation §11.2)."""
+        client, _ = manager_client_with_salon
+        r = client.put(
+            f"{_SALONS_URL}/{uuid.uuid4()}",
+            json=_UPDATE_BODY,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Accès refusé."
+
+    def test_client_role_returns_403(
+        self,
+        salon_repo: FakeSalonRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        from coiflink_api.application.salons import CreateSalon, CreateSalonCommand
+
+        salon = CreateSalon(salon_repo).execute(
+            CreateSalonCommand(name="Salon"), owner_id=_MANAGER_ID
+        )
+        client_id = uuid.UUID("cccccccc-0000-0000-0000-000000000003")
+        creds = _creds(client_id, Role.CLIENT.value)
+        user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
+        scope_repo = FakeSalonScopeRepository(scopes={client_id: frozenset({salon.id})})
+        token = make_access_token(client_id, Role.CLIENT.value)
+
+        app.dependency_overrides[get_salon_repository] = lambda: salon_repo
+        app.dependency_overrides[get_audit_log] = lambda: audit_log
+        app.dependency_overrides[get_user_repository] = lambda: user_repo
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+        try:
+            with TestClient(app) as c:
+                r = c.put(
+                    f"{_SALONS_URL}/{salon.id}",
+                    json=_UPDATE_BODY,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        finally:
+            app.dependency_overrides.pop(get_salon_repository, None)
+            app.dependency_overrides.pop(get_audit_log, None)
+            app.dependency_overrides.pop(get_user_repository, None)
+            app.dependency_overrides.pop(get_access_policy, None)
+        assert r.status_code == 403
+
+    def test_hairdresser_role_returns_403(
+        self,
+        salon_repo: FakeSalonRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Le coiffeur a une portée (SALON_READ) mais pas `SALON_UPDATE`."""
+        from coiflink_api.application.salons import CreateSalon, CreateSalonCommand
+
+        salon = CreateSalon(salon_repo).execute(
+            CreateSalonCommand(name="Salon"), owner_id=_MANAGER_ID
+        )
+        hd_id = uuid.UUID("dddddddd-0000-0000-0000-000000000004")
+        creds = _creds(hd_id, Role.HAIRDRESSER.value)
+        user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
+        scope_repo = FakeSalonScopeRepository(scopes={hd_id: frozenset({salon.id})})
+        token = make_access_token(hd_id, Role.HAIRDRESSER.value)
+
+        app.dependency_overrides[get_salon_repository] = lambda: salon_repo
+        app.dependency_overrides[get_audit_log] = lambda: audit_log
+        app.dependency_overrides[get_user_repository] = lambda: user_repo
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+        try:
+            with TestClient(app) as c:
+                r = c.put(
+                    f"{_SALONS_URL}/{salon.id}",
+                    json=_UPDATE_BODY,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        finally:
+            app.dependency_overrides.pop(get_salon_repository, None)
+            app.dependency_overrides.pop(get_audit_log, None)
+            app.dependency_overrides.pop(get_user_repository, None)
+            app.dependency_overrides.pop(get_access_policy, None)
+        assert r.status_code == 403
+
+    def test_empty_name_returns_422(
+        self,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, salon_id = manager_client_with_salon
+        r = client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json={**_UPDATE_BODY, "name": ""},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+
+    def test_one_sided_coordinates_returns_422(
+        self,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, salon_id = manager_client_with_salon
+        r = client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json={**_UPDATE_BODY, "longitude": None},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+
+    def test_owner_id_in_body_ignored(
+        self,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, salon_id = manager_client_with_salon
+        body = {**_UPDATE_BODY, "owner_id": str(_OTHER_MANAGER_ID)}
+        r = client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json=body,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 200
+        assert r.json()["owner_id"] == str(_MANAGER_ID)
+
+    def test_audit_entry_recorded_with_changed_fields(
+        self,
+        audit_log: FakeAuditLog,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, salon_id = manager_client_with_salon
+        client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json=_UPDATE_BODY,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert len(audit_log.recorded) == 1
+        entry = audit_log.recorded[0]
+        assert entry.action == "SALON_UPDATED"
+        assert "name" in entry.metadata["changed"]
+        assert "phone" in entry.metadata["changed"]
+
+    def test_audit_metadata_has_no_field_values(
+        self,
+        audit_log: FakeAuditLog,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        client, salon_id = manager_client_with_salon
+        client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json=_UPDATE_BODY,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        entry = audit_log.recorded[0]
+        assert set(entry.metadata.keys()) == {"changed"}
+        assert "Salon Renommé" not in entry.metadata["changed"]
 
 
 # ---------------------------------------------------------------------------

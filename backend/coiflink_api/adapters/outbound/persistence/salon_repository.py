@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.errors import SalonNotFound
-from coiflink_api.domain.salon import Salon, SalonPhoto, SalonToCreate
+from coiflink_api.domain.salon import Salon, SalonPhoto, SalonToCreate, SalonUpdate
 
 
 class SqlSalonRepository:
@@ -62,6 +62,22 @@ class SqlSalonRepository:
             .order_by(models.Salon.created_at.desc())
         )
         return tuple(_to_domain(row) for row in self._session.scalars(stmt).all())
+
+    def update(self, salon_id: uuid.UUID, changes: SalonUpdate) -> Salon:
+        row = self._session.get(models.Salon, salon_id)
+        if row is None:
+            raise SalonNotFound("Salon introuvable.")
+        row.name = changes.name
+        row.description = changes.description
+        row.phone = changes.phone
+        row.address = changes.address
+        row.city = changes.city
+        row.commune = changes.commune
+        row.latitude = changes.latitude
+        row.longitude = changes.longitude
+        self._session.flush()
+        self._session.refresh(row)
+        return _to_domain(row)
 
     def set_logo(self, salon_id: uuid.UUID, object_key: str | None) -> Salon:
         row = self._session.get(models.Salon, salon_id)
