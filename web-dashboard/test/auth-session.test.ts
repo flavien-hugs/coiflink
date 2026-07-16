@@ -1,9 +1,10 @@
 // Tests unitaires — domaine `auth/session` et `auth/role` (TypeScript pur,
-// sans React ni réseau). Couvre `canAccessGerant` et `isManager`.
+// sans React ni réseau). Couvre `canAccessGerant`, `isManager` et les libellés
+// d'affichage des rôles.
 
 import { describe, expect, it } from "vitest";
 
-import { isManager } from "../src/domain/auth/role";
+import { displayRoleLabel, isManager } from "../src/domain/auth/role";
 import { canAccessGerant, type AuthenticatedUser } from "../src/domain/auth/session";
 
 function makeUser(
@@ -28,6 +29,15 @@ describe("isManager", () => {
 
   it("retourne false pour HAIRDRESSER", () => {
     expect(isManager("HAIRDRESSER")).toBe(false);
+  });
+});
+
+describe("displayRoleLabel", () => {
+  it("retourne le libellé utilisateur attendu pour chaque rôle", () => {
+    expect(displayRoleLabel("CLIENT")).toBe("Client");
+    expect(displayRoleLabel("MANAGER")).toBe("Gérant");
+    expect(displayRoleLabel("HAIRDRESSER")).toBe("Employé");
+    expect(displayRoleLabel("ADMIN")).toBe("Admin");
   });
 });
 

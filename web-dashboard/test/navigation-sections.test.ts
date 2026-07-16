@@ -3,11 +3,30 @@
 
 import { describe, expect, it } from "vitest";
 
-import { DASHBOARD_SECTIONS } from "../src/domain/navigation/sections";
+import {
+  DASHBOARD_SECTION_CATEGORIES,
+  DASHBOARD_SECTION_GROUPS,
+  DASHBOARD_SECTIONS,
+} from "../src/domain/navigation/sections";
 
 describe("DASHBOARD_SECTIONS", () => {
   it("contient les 7 sections du §7.2", () => {
     expect(DASHBOARD_SECTIONS).toHaveLength(7);
+  });
+
+  it("déclare les catégories de navigation attendues", () => {
+    expect(DASHBOARD_SECTION_CATEGORIES.map((c) => c.key)).toEqual([
+      "pilotage",
+      "operations",
+      "offre-caisse",
+      "salon",
+    ]);
+    expect(DASHBOARD_SECTION_CATEGORIES.map((c) => c.label)).toEqual([
+      "Pilotage",
+      "Opérations",
+      "Offre & caisse",
+      "Salon",
+    ]);
   });
 
   it("contient toutes les clés attendues", () => {
@@ -33,8 +52,14 @@ describe("DASHBOARD_SECTIONS", () => {
     expect(parametres?.status).toBe("available");
   });
 
+  it("marque 'prestations' comme 'available' (CRUD des prestations, #17)", () => {
+    const prestations = DASHBOARD_SECTIONS.find((s) => s.key === "prestations");
+    expect(prestations).toBeDefined();
+    expect(prestations?.status).toBe("available");
+  });
+
   it("marque les sections M2–M5 restantes 'coming-soon'", () => {
-    const comingSoon = ["planning", "clients", "prestations", "encaissements", "employes"];
+    const comingSoon = ["planning", "clients", "encaissements", "employes"];
     for (const key of comingSoon) {
       const section = DASHBOARD_SECTIONS.find((s) => s.key === key);
       expect(section?.status).toBe("coming-soon");
@@ -60,6 +85,28 @@ describe("DASHBOARD_SECTIONS", () => {
   it("a un label non vide pour chaque section", () => {
     for (const s of DASHBOARD_SECTIONS) {
       expect(s.label.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("classe chaque section dans une catégorie connue", () => {
+    const categoryKeys = new Set(DASHBOARD_SECTION_CATEGORIES.map((c) => c.key));
+    for (const s of DASHBOARD_SECTIONS) {
+      expect(categoryKeys.has(s.category)).toBe(true);
+    }
+  });
+
+  it("regroupe toutes les sections sans doublon ni perte", () => {
+    const groupedKeys = DASHBOARD_SECTION_GROUPS.flatMap((group) =>
+      group.sections.map((section) => section.key),
+    );
+
+    expect(groupedKeys).toEqual(DASHBOARD_SECTIONS.map((section) => section.key));
+    expect(new Set(groupedKeys).size).toBe(DASHBOARD_SECTIONS.length);
+  });
+
+  it("ne contient aucune catégorie vide", () => {
+    for (const group of DASHBOARD_SECTION_GROUPS) {
+      expect(group.sections.length).toBeGreaterThan(0);
     }
   });
 

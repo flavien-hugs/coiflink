@@ -8,8 +8,14 @@
   --color-muted: var(--muted);
   --color-border: var(--border);
   --color-surface: var(--surface);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+  --color-terracotta: var(--terracotta);
+  --color-gold: var(--gold);
+  --color-palm: var(--palm);
   --color-danger: var(--danger);
   --color-danger-foreground: var(--danger-foreground);
   --shadow-soft: 0 1px 2px var(--shadow-tint), 0 8px 24px -12px var(--shadow-tint-strong);
@@ -17,41 +23,28 @@
 }
 
 :root {
-  --background: #fbfaf8;
-  --foreground: #221d19;
-  --muted: #746a62;
-  --border: #e7dfd7;
-  --surface: #ffffff;
-  --accent: #a8455a;
-  --accent-foreground: #fff7f5;
-  --danger: #b3423a;
-  --danger-foreground: #fdf1ef;
-  --shadow-tint: rgb(35 25 18 / 6%);
-  --shadow-tint-strong: rgb(35 25 18 / 16%);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #17130f;
-    --foreground: #f4eee7;
-    --muted: #ab9f95;
-    --border: #37312a;
-    --surface: #201a16;
-    --accent: #dd8093;
-    --accent-foreground: #241016;
-    --danger: #e2887e;
-    --danger-foreground: #2a1410;
-    --shadow-tint: rgb(0 0 0 / 30%);
-    --shadow-tint-strong: rgb(0 0 0 / 45%);
-  }
-
-  html {
-    color-scheme: dark;
-  }
+  --background: #f8efe1;
+  --foreground: #1f1811;
+  --muted: #8d7b67;
+  --border: #e5d8c4;
+  --surface: #fffefd;
+  --sidebar: #422c19;
+  --sidebar-foreground: #fbf2df;
+  --sidebar-muted: #c4aa7b;
+  --accent: #c86a4a;
+  --accent-foreground: #ffffff;
+  --terracotta: #c86a4a;
+  --gold: #e8a33d;
+  --palm: #3f5e3c;
+  --danger: #a1213e;
+  --danger-foreground: #ffffff;
+  --shadow-tint: rgb(31 24 17 / 6%);
+  --shadow-tint-strong: rgb(31 24 17 / 16%);
 }
 
 html {
   scroll-behavior: smooth;
+  color-scheme: light;
 }
 
 body {
@@ -66,4 +59,17 @@ body {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.coiflink-sidebar-surface {
+  background-color: var(--sidebar);
+}
+
+.coiflink-page-surface {
+  background-color: var(--background);
+}
+
+.coiflink-page-surface h1 {
+  font-family: Georgia, "Times New Roman", serif;
+  letter-spacing: -0.02em;
 }

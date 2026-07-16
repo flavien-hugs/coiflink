@@ -33,7 +33,7 @@ const DAY_LABELS: Record<DayKey, string> = {
 };
 
 const INPUT_CLASS =
-  "rounded-lg border border-border bg-transparent px-2.5 py-1.5 text-sm text-foreground outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/25";
+  "rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm text-foreground outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/25";
 
 interface ExceptionState {
   date: string;
@@ -236,7 +236,7 @@ export function OpeningHoursForm({
           return (
             <div
               key={day}
-              className="flex flex-col gap-2 rounded-xl border border-border p-3 sm:flex-row sm:items-start sm:gap-4"
+              className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-3 sm:flex-row sm:items-start sm:gap-4"
             >
               <label className="flex w-40 shrink-0 items-center gap-2 text-sm font-medium">
                 <input
@@ -317,7 +317,7 @@ export function OpeningHoursForm({
         {exceptions.map((exception, index) => (
           <div
             key={index}
-            className="flex flex-col gap-2 rounded-xl border border-border p-3"
+            className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-3"
           >
             <div className="flex flex-wrap items-center gap-3">
               <input

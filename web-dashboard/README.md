@@ -30,8 +30,9 @@ Le routage `app/` reste l'entrée Next.js ; le domaine et les cas d'usage vivent
 Le shell de l'espace **gérant** (`/gerant`) fournit le layout (en-tête, navigation, zone de
 contenu), la navigation vers les futures sections (PRD §7.2) et une **garde d'authentification**
 (deny-by-default). Aucune fonctionnalité métier n'est encore livrée : le dashboard est **vide mais
-protégé** ; les sections Planning, Clients, Prestations, Encaissements, Employés sont affichées
-« à venir » (M2–M5). La section **Paramètres** est **disponible** depuis #15 (voir ci-dessous).
+protégé** ; les sections Planning, Clients, Encaissements, Employés sont affichées
+« à venir » (M2–M5). Les sections **Paramètres** (#15) et **Prestations** (#17) sont **disponibles**
+(voir ci-dessous).
 
 ### Routes
 
@@ -41,11 +42,16 @@ protégé** ; les sections Planning, Clients, Prestations, Encaissements, Employ
 | `/login` | publique | point d'entrée de session (formulaire minimal) |
 | `/gerant` | **protégée** | `MANAGER` actif uniquement (dashboard vide) |
 | `/gerant/parametres` | **protégée** | `MANAGER` — création/consultation du salon (#15) |
+| `/gerant/prestations` | **protégée** | `MANAGER` — catalogue et gestion des prestations (#17) |
 | `POST /api/auth/login` | interne (BFF) | proxifie `POST /auth/login`, pose les cookies httpOnly |
 | `POST /api/auth/logout` | interne (BFF) | efface les cookies de session |
 | `POST /api/salons` | interne (BFF) | proxifie `POST /salons` (jeton lu du cookie httpOnly) |
 | `GET /api/salons` | interne (BFF) | proxifie `GET /salons` (salons du gérant) |
 | `PUT /api/salons/[id]/opening-hours` | interne (BFF) | proxifie `PUT /salons/{id}/opening-hours` (horaires, #16) |
+| `GET /api/salons/[id]/services` | interne (BFF) | proxifie `GET /salons/{id}/services` (catalogue, #17) |
+| `POST /api/salons/[id]/services` | interne (BFF) | proxifie `POST /salons/{id}/services` (création, #17) |
+| `PUT /api/salons/[id]/services/[serviceId]` | interne (BFF) | proxifie `PUT /salons/{id}/services/{id}` (modification journalisée, #17) |
+| `DELETE /api/salons/[id]/services/[serviceId]` | interne (BFF) | proxifie `DELETE …` (désactivation soft-delete, #17) |
 
 `/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
 publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
@@ -95,11 +101,29 @@ postée en `PUT /api/salons/[id]/opening-hours` (le **backend reste l'autorité*
 page se rafraîchit : dès que `isBookable(salon)` devient vrai, le **bandeau §8.3 disparaît**. Le fuseau
 (`Africa/Abidjan`) n'est pas éditable dans l'UI au MVP.
 
+### Prestations — catalogue du salon (#17)
+
+La section **Prestations** (`/gerant/prestations`, Server Component) est **disponible** depuis #17. Elle
+charge **côté serveur** (jeton du cookie httpOnly, jamais exposé) le salon du gérant puis ses
+prestations : sans salon, elle invite à en créer un d'abord (Paramètres) ; sinon elle affiche un
+**formulaire d'ajout** (`ServiceForm`) et le **catalogue** (`ServiceList`) — prestations actives **et**
+désactivées (badge « Désactivée »), avec **édition en ligne** et bouton **Désactiver**.
+
+La saisie (nom, prix, durée, catégorie, description) est **validée côté client** (`validateService`,
+`src/domain/service/service.ts` — **parité stricte** avec `domain/service.py` : prix `>= 0` borné et au
+plus 2 décimales, durée entière `> 0` ≤ 24 h, nom non vide) avant d'être postée aux Route Handlers BFF
+`POST/PUT /api/salons/[id]/services[/serviceId]` et `DELETE …` (désactivation). Le **backend reste
+l'autorité** ; la modification et la désactivation y sont **journalisées §11.4**. Le catalogue **client
+public** (#18/#19) et la **réservation** (#21+) restent hors périmètre.
+
 ### Ajouter une section
 
-1. Ajouter une entrée à `src/domain/navigation/sections.ts` (`{ key, label, href, status }`).
+1. Ajouter une entrée à `src/domain/navigation/sections.ts`
+   (`{ key, label, href, status, category }`).
 2. Créer la page correspondante sous `app/(gerant)/gerant/<section>/page.tsx` et passer son
    `status` de `"coming-soon"` à `"available"`.
+3. Si la section ne rentre dans aucune catégorie existante, ajouter la catégorie dans
+   `DASHBOARD_SECTION_CATEGORIES`.
 
 ### Variables d'environnement
 

@@ -96,6 +96,39 @@ class MediaKeyMismatch(DomainError):
     """
 
 
+class InvalidServiceName(DomainError):
+    """Le nom de la prestation fourni est vide ou hors bornes (US-2.3, #17)."""
+
+
+class InvalidServicePrice(DomainError):
+    """Le prix de la prestation est absent, non numérique ou hors bornes (US-2.3, #17).
+
+    Levée quand le prix — **obligatoire** — est manquant, négatif, non fini, au-delà
+    de la précision `NUMERIC(12,2)` ou comporte plus de deux décimales. Message
+    neutre — l'adapter entrant la traduit en `422`.
+    """
+
+
+class InvalidServiceDuration(DomainError):
+    """La durée de la prestation est absente ou hors bornes (US-2.3, #17).
+
+    Levée quand la durée — **obligatoire** — est manquante, nulle, négative ou
+    au-delà d'une journée. Message neutre — traduite en `422`.
+    """
+
+
+class InvalidServiceCategory(DomainError):
+    """La catégorie de la prestation dépasse la longueur autorisée (US-2.3, #17)."""
+
+
+class ServiceNotFound(DomainError):
+    """La prestation visée n'existe pas pour ce salon (US-2.3, #17).
+
+    N'est traduite en `404` **qu'après** validation de la portée : une prestation
+    hors périmètre a déjà reçu un `403` générique (aucun oracle d'existence, §11.2).
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -170,6 +203,11 @@ __all__ = [
     "InvalidMediaType",
     "PhotoLimitExceeded",
     "MediaKeyMismatch",
+    "InvalidServiceName",
+    "InvalidServicePrice",
+    "InvalidServiceDuration",
+    "InvalidServiceCategory",
+    "ServiceNotFound",
     "InvalidOtp",
     "OtpExpired",
     "InvalidCredentials",

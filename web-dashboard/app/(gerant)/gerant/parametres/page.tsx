@@ -56,7 +56,7 @@ function Header() {
 
 function CreatePanel() {
   return (
-    <div className="rounded-2xl border border-border p-6">
+    <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
       <h2 className="text-lg font-semibold">Créer votre salon</h2>
       <p className="mt-1 mb-5 max-w-prose text-sm text-muted">
         Renseignez les informations de votre salon. Vous pourrez ajouter votre logo, vos
@@ -87,7 +87,7 @@ function SalonDetails({ salon }: { salon: Salon }) {
         </div>
       ) : null}
 
-      <div className="rounded-2xl border border-border p-6">
+      <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold">{salon.name}</h2>
@@ -116,7 +116,7 @@ function SalonDetails({ salon }: { salon: Salon }) {
         </dl>
       </div>
 
-      <div className="rounded-2xl border border-border p-6">
+      <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
         <h2 className="text-lg font-semibold">Horaires d&apos;ouverture</h2>
         <p className="mt-1 mb-5 max-w-prose text-sm text-muted">
           Définissez vos horaires par jour (avec pauses éventuelles), vos jours fermés
