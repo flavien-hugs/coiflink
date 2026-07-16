@@ -9,7 +9,18 @@ export type Role = (typeof ROLES)[number];
 
 export const MANAGER_ROLE: Role = "MANAGER";
 
+export const ROLE_DISPLAY_LABELS: Record<Role, string> = {
+  CLIENT: "Client",
+  HAIRDRESSER: "Employé",
+  MANAGER: "Gérant",
+  ADMIN: "Admin",
+};
+
 // Vrai si le rôle est celui du gérant (seul rôle habilité pour la zone /gerant).
 export function isManager(role: Role): boolean {
   return role === MANAGER_ROLE;
+}
+
+export function displayRoleLabel(role: Role): string {
+  return ROLE_DISPLAY_LABELS[role];
 }

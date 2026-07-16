@@ -22,6 +22,7 @@ from coiflink_api.adapters.inbound.employees import router as employees_router
 from coiflink_api.adapters.inbound.health import router as health_router
 from coiflink_api.adapters.inbound.salons import router as salons_router
 from coiflink_api.adapters.inbound.security import require_authenticated
+from coiflink_api.adapters.inbound.services import router as services_router
 from coiflink_api.adapters.outbound.notifications.otp_sender_stub import (
     StubOtpSender,
 )
@@ -116,3 +117,7 @@ app.include_router(employees_router)
 # Gestion des salons (#15) : création rattachée au gérant + consultation + médias.
 # Routes protégées par RBAC (SALON_CREATE/READ/UPDATE + portée salon).
 app.include_router(salons_router)
+# Gestion des prestations (#17) : CRUD par salon sous /salons/{salon_id}/services.
+# Routes protégées par RBAC (SERVICE_MANAGE/READ + portée salon) ; mutations
+# journalisées (§11.4) dans la même unité de travail que l'écriture métier.
+app.include_router(services_router)

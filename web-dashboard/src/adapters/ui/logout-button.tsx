@@ -7,7 +7,11 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-export function LogoutButton() {
+interface LogoutButtonProps {
+  compact?: boolean;
+}
+
+export function LogoutButton({ compact = false }: LogoutButtonProps) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
 
@@ -26,11 +30,26 @@ export function LogoutButton() {
   return (
     <button
       type="button"
-      className="cursor-pointer rounded-lg border border-border px-3 py-1.5 text-sm transition hover:border-danger/40 hover:bg-danger/10 hover:text-danger active:scale-[0.98] disabled:cursor-default disabled:opacity-60 disabled:hover:border-border disabled:hover:bg-transparent disabled:hover:text-foreground"
+      className={
+        compact
+          ? "flex size-10 cursor-pointer items-center justify-center rounded-lg border border-sidebar-foreground/15 text-sm font-semibold text-sidebar-foreground/70 transition hover:border-accent/50 hover:bg-accent/15 hover:text-sidebar-foreground active:scale-[0.98] disabled:cursor-default disabled:opacity-60 disabled:hover:border-sidebar-foreground/15 disabled:hover:bg-transparent disabled:hover:text-sidebar-foreground/70"
+          : "w-full cursor-pointer rounded-lg border border-sidebar-foreground/15 px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:border-accent/50 hover:bg-accent/15 hover:text-sidebar-foreground active:scale-[0.98] disabled:cursor-default disabled:opacity-60 disabled:hover:border-sidebar-foreground/15 disabled:hover:bg-transparent disabled:hover:text-sidebar-foreground/70"
+      }
       onClick={onLogout}
       disabled={pending}
+      aria-label={pending ? "Déconnexion en cours" : "Se déconnecter"}
+      title={pending ? "Déconnexion en cours" : "Se déconnecter"}
     >
-      {pending ? "Déconnexion…" : "Déconnexion"}
+      {compact ? (
+        <>
+          <span aria-hidden="true">{pending ? "..." : "↪"}</span>
+          <span className="sr-only">{pending ? "Déconnexion…" : "Déconnexion"}</span>
+        </>
+      ) : pending ? (
+        "Déconnexion…"
+      ) : (
+        "Déconnexion"
+      )}
     </button>
   );
 }

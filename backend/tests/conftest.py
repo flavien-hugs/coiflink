@@ -547,3 +547,104 @@ def fake_salon_repository() -> "FakeSalonRepository":
 @pytest.fixture()
 def fake_media_storage() -> "FakeMediaStorage":
     return FakeMediaStorage()
+
+
+class FakeServiceRepository:
+    """Dépôt de prestations en mémoire (US-2.3, #17).
+
+    Implémente le port `ServiceRepository` sans I/O réelle. Isolation §11.2 :
+    `find_by_id` et les mutations filtrent sur `(salon_id, service_id)` —
+    une prestation d'un autre salon est indiscernable d'une prestation inexistante.
+    """
+
+    def __init__(self) -> None:
+        self._services: dict[uuid.UUID, object] = {}
+        self.created: list = []
+
+    def create(self, service):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.service import Service
+
+        entity = Service(
+            id=uuid.uuid4(),
+            salon_id=service.salon_id,
+            name=service.name,
+            description=service.description,
+            price=service.price,
+            duration_minutes=service.duration_minutes,
+            category=service.category,
+            is_active=True,
+            created_at=_CREATED_AT,
+            updated_at=_CREATED_AT,
+        )
+        self._services[entity.id] = entity
+        self.created.append(service)
+        return entity
+
+    def find_by_id(self, salon_id: uuid.UUID, service_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        service = self._services.get(service_id)
+        if service is None or service.salon_id != salon_id:  # type: ignore[union-attr]
+            return None
+        return service
+
+    def list_for_salon(self, salon_id: uuid.UUID, *, include_inactive: bool = True):  # type: ignore[no-untyped-def]
+        return tuple(
+            s
+            for s in self._services.values()
+            if s.salon_id == salon_id  # type: ignore[union-attr]
+            and (include_inactive or s.is_active)  # type: ignore[union-attr]
+        )
+
+    def update(self, salon_id: uuid.UUID, service_id: uuid.UUID, changes):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.errors import ServiceNotFound
+
+        service = self.find_by_id(salon_id, service_id)
+        if service is None:
+            raise ServiceNotFound("Prestation introuvable.")
+        updated = _dc.replace(
+            service,
+            name=changes.name,
+            price=changes.price,
+            duration_minutes=changes.duration_minutes,
+            description=changes.description,
+            category=changes.category,
+            updated_at=_CREATED_AT,
+        )
+        self._services[service_id] = updated
+        return updated
+
+    def set_active(self, salon_id: uuid.UUID, service_id: uuid.UUID, active: bool):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.errors import ServiceNotFound
+
+        service = self.find_by_id(salon_id, service_id)
+        if service is None:
+            raise ServiceNotFound("Prestation introuvable.")
+        updated = _dc.replace(service, is_active=active, updated_at=_CREATED_AT)
+        self._services[service_id] = updated
+        return updated
+
+
+class FakeAuditLog:
+    """Journal d'audit en mémoire (§11.4, US-2.3, #17).
+
+    Accumule les `AuditEntry` pour vérification dans les tests.
+    """
+
+    def __init__(self) -> None:
+        self.recorded: list = []
+
+    def record(self, entry) -> None:  # type: ignore[no-untyped-def]
+        self.recorded.append(entry)
+
+
+@pytest.fixture()
+def fake_service_repository() -> "FakeServiceRepository":
+    return FakeServiceRepository()
+
+
+@pytest.fixture()
+def fake_audit_log() -> "FakeAuditLog":
+    return FakeAuditLog()

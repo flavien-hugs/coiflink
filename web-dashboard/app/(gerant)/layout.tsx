@@ -48,5 +48,9 @@ export default async function GerantLayout({ children }: { children: ReactNode }
     redirect("/login");
   }
 
-  return <DashboardShell userName={decision.user.fullName}>{children}</DashboardShell>;
+  return (
+    <DashboardShell userName={decision.user.fullName} userRole={decision.user.role}>
+      {children}
+    </DashboardShell>
+  );
 }

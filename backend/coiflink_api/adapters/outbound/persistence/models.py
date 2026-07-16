@@ -564,6 +564,64 @@ class Notification(Base):
     )
 
 
+class AuditLog(Base):
+    """Journal d'audit §11.4 — trace *qui* fait *quelle* action sur *quelle*
+    entité de *quel* salon, *quand* (US-2.3, #17).
+
+    Première matérialisation de la « Journalisation des accès sensibles » (§11.3)
+    et de la liste §11.4. Câblée au MVP sur les **prestations** ; le vocabulaire
+    (`domain.audit.AuditAction`) et cette table sont conçus pour être réutilisés
+    par les actions §11.4 suivantes (RDV, paiement, caisse, désactivation salon).
+
+    **Invariant de non-fuite** : aucune ligne ne porte de secret ni de PII.
+    `actor_user_id` est un UUID **opaque** (pas le nom ni le téléphone), `metadata`
+    ne contient que du contexte neutre (p. ex. `{"changed": ["price"]}`).
+
+    **`ON DELETE RESTRICT`** sur `actor_user_id` et `salon_id` : un journal d'audit
+    ne doit **pas** perdre ses lignes quand un compte/salon disparaît (traçabilité).
+    Cohérent avec la convention `RESTRICT` par défaut du module.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[uuid.UUID] = _pk()
+    # Valeur d'`AuditAction` (domaine fermé), stockée en texte borné.
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Qui : le `Principal` authentifié — jamais nul (une action a toujours un auteur).
+    actor_user_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    # Portée : le salon concerné, `NULL` pour une action hors portée salon.
+    salon_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
+    # Ressource visée : type ("service") + identifiant.
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    # Contexte **neutre** (noms de champs modifiés…) ; jamais de secret ni de PII.
+    # L'attribut Python est renommé (`metadata` est réservé par SQLAlchemy sur
+    # `Base.metadata`) mais la colonne SQL reste bien `metadata`.
+    event_metadata: Mapped[dict] = mapped_column(
+        "metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime.datetime] = _created_at()
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["actor_user_id"], ["users.id"], name="fk_audit_logs_actor_user_id", ondelete="RESTRICT"
+        ),
+        ForeignKeyConstraint(
+            ["salon_id"], ["salons.id"], name="fk_audit_logs_salon_id", ondelete="RESTRICT"
+        ),
+        # Lecture chronologique par salon (base de la supervision §11.3).
+        Index(
+            "ix_audit_logs_salon_id_created_at",
+            "salon_id",
+            text("created_at DESC"),
+        ),
+        # Historique d'une entité donnée (une prestation).
+        Index("ix_audit_logs_entity", "entity_type", "entity_id"),
+        # Actions d'un acteur donné.
+        Index("ix_audit_logs_actor", "actor_user_id"),
+    )
+
+
 __all__ = [
     "User",
     "Salon",
@@ -576,5 +634,6 @@ __all__ = [
     "Payment",
     "CashJournal",
     "Notification",
+    "AuditLog",
     "enum_check",
 ]

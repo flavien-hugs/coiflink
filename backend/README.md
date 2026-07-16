@@ -406,6 +406,36 @@ Règles : `HH:MM` 24h, `end > start` (pas de passage minuit) ; intervalles d'un 
 (adjacence `end == start` tolérée) ; dates d'exception distinctes ; `closed=true` ⇒ pas d'intervalle ;
 au moins un créneau d'ouverture (non-vacuité) ; bornes ≤ 6 intervalles/jour, ≤ 366 exceptions.
 
+### Gestion des prestations (US-2.3, #17)
+
+Le **CRUD des prestations d'un salon** est monté sous `/salons/{salon_id}/services` (imbriqué pour
+hériter de `require_salon_scope`, isolation §11.2). Toutes les routes sont **protégées** ; aucune n'est
+publique (le catalogue client relève de #18/#19). Détails dans
+[ADR-0019](../docs/adr/0019-journalisation-audit-et-prestations.md).
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `POST` | `/salons/{salon_id}/services` | `SERVICE_MANAGE` + portée | `201` + prestation | `SERVICE_CREATED` |
+| `GET` | `/salons/{salon_id}/services` | `SERVICE_READ` + portée | `200` + liste (actives **et** désactivées) | — |
+| `GET` | `/salons/{salon_id}/services/{service_id}` | `SERVICE_READ` + portée | `200` \| `404` | — |
+| `PUT` | `/salons/{salon_id}/services/{service_id}` | `SERVICE_MANAGE` + portée | `200` (*replace*) \| `404` \| `422` | `SERVICE_UPDATED` |
+| `DELETE` | `/salons/{salon_id}/services/{service_id}` | `SERVICE_MANAGE` + portée | `204` (**désactivation**) \| `404` | `SERVICE_DEACTIVATED` |
+
+- **Champs** (`domain/service.py`, validation **avant** écriture — les `CHECK` SQL restent un filet) :
+  `name` non vide ≤ 255 ; `price` **obligatoire**, `>= 0`, ≤ `NUMERIC(12,2)`, au plus 2 décimales ;
+  `duration_minutes` **obligatoire**, entier `> 0`, ≤ 24 h ; `category` libre ≤ 128 ; `description`
+  libre. `salon_id`/`id`/`is_active` ne sont **jamais** lus du corps. Invalide → **`422`**.
+- **`DELETE` = désactivation (soft-delete)** : passe `is_active=false` (pas de suppression physique —
+  la FK `appointment_services → services` est `ON DELETE RESTRICT`, et l'historique/`price_at_booking`
+  des RDV est préservé). Une réactivation (`is_active=true`) journalise `SERVICE_REACTIVATED`.
+
+**Journalisation §11.4** — la table `audit_logs` (migration `0004`, modèle ORM `AuditLog`) trace *qui*
+(`actor_user_id`, UUID opaque = le `Principal`) a fait *quelle* action sur *quelle* prestation de
+*quel* salon, *quand*, avec un `metadata` **neutre** (`{"changed": [...]}` : noms de champs modifiés).
+L'entrée d'audit partage la **même `Session`** que la mutation (commit/rollback conjoint — pas de trace
+« fantôme »). **Invariant : aucun secret ni PII dans l'audit** (`test_secrets_policy.py`). La lecture du
+journal (supervision) est hors périmètre (#17 **écrit** seulement).
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
@@ -770,3 +800,38 @@ Issue #16 ajoute trois suites dédiées aux horaires d'ouverture :
   d'existence, PRD §11.1/§11.2) ; succès : `opening_hours` normalisé, `is_bookable=true` dans la
   réponse ; validation : structure invalide → `422` (domaine, pas Pydantic uniquement) ; sémantique
   replace : un second `PUT` écrase complètement le premier.
+
+Issue #17 ajoute cinq suites dédiées à la gestion des prestations et au journal d'audit §11.4 :
+
+- `test_domain_audit.py` — domaine pur (aucune I/O) : `AuditAction` (domaine fermé, valeurs string,
+  membres `SERVICE_CREATED`/`SERVICE_UPDATED`/`SERVICE_DEACTIVATED`/`SERVICE_REACTIVATED`) ;
+  `AuditEntry` (construction, `metadata` par défaut, `salon_id` par défaut) ; invariant de non-fuite :
+  aucun champ PII ni secret dans la structure.
+- `test_domain_service.py` — domaine pur (aucune I/O) : `validate_service_name` (trim, vide, > 255
+  chars → `InvalidServiceName`) ; `validate_price` (requis, `None`/booléen/flottant refusés, négatif,
+  hors borne `NUMERIC(12,2)`, > 2 décimales → `InvalidServicePrice`) ; `validate_duration` (requis,
+  `None`/booléen/flottant refusés, `0`, négatif, > 24 h → `InvalidServiceDuration`) ;
+  `normalize_category` (`None`/vide → `None`, trop longue, non-chaîne → `InvalidServiceCategory`) ;
+  `normalize_description` (`None`/vide → `None`, trim).
+- `test_service_usecases.py` — cas d'usage (ports 100 % fakes, sans base) : `CreateService` :
+  `salon_id` imposé par l'argument (anti-élévation), `is_active=True` garanti, validation **avant**
+  toute écriture, audit `SERVICE_CREATED` avec le bon acteur — **aucun audit si validation échoue** ;
+  `ListSalonServices` : liste vide, filtrée par `salon_id` ; `GetService` : `ServiceNotFound` si
+  absent ; `UpdateService` : `ServiceNotFound` si absent, validation avant écriture, `metadata.changed`
+  correct, audit `SERVICE_UPDATED` — aucun audit sur validation échouée ; `DeactivateService` :
+  `ServiceNotFound` si absent, `is_active=False` garanti, audit `SERVICE_DEACTIVATED` ; atomicité :
+  si le dépôt échoue avant l'audit, aucune entrée n'est laissée.
+- `test_service_api.py` — adapter entrant (`TestClient`, ports fakes, sans base) : matrice RBAC —
+  `MANAGER` → `201`/`200`/`204`, `HAIRDRESSER` (avec portée) → `200` en lecture / `403` en mutation,
+  `CLIENT`/`ADMIN` → `403`, non authentifié → `401` ; isolation inter-salons → `403` générique (pas
+  `404`) ; validation : corps sans `price`/`duration_minutes` → `422`, prix négatif → `422` ; `404`
+  pour prestation inconnue (portée validée) ; journalisation : après `PUT`, une entrée
+  `SERVICE_UPDATED` est enregistrée ; `unprotected_routes(app)` reste vide (deny-by-default).
+- `test_service_e2e.py` — **`TestServiceCrudE2E`** (PostgreSQL requis, **skip propre sans
+  `DATABASE_URL`**) : pile complète sans mock (HTTP → cas d'usage → SQL réel + `audit_logs` réels +
+  JWT réel) — inscription gérant → connexion → création salon → création prestation → liste → modification
+  (valeurs à jour, audit) → consultation → désactivation (`is_active=false`, audit) ; traçabilité
+  complète (`SERVICE_CREATED` → `SERVICE_UPDATED` → `SERVICE_DEACTIVATED` dans l'ordre, bon acteur,
+  aucun secret/PII dans `metadata`, invariant §11.3/§11.4) ; isolation inter-salons → `403` générique ;
+  validation bout-en-bout : prix ou durée manquants/invalides → `422`, aucune entrée d'audit créée
+  (atomicité) ; deny-by-default : toutes les routes → `401` sans jeton.

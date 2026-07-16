@@ -214,7 +214,12 @@ est livrée (#16, voir [ADR-0018](./docs/adr/0018-configuration-horaires-salon.m
 `PUT /salons/{id}/opening-hours` enregistre les horaires par jour, jours fermés, pauses et jours
 exceptionnels ; le gérant les édite depuis **Paramètres**. Règle §8.3 : un salon **sans horaire n'est
 pas réservable** (`is_bookable=false`) — **enregistrer des horaires valides rend le salon réservable**
-(`is_bookable=true`).
+(`is_bookable=true`). La **gestion des prestations** est livrée (#17, voir
+[ADR-0019](./docs/adr/0019-journalisation-audit-et-prestations.md)) : le CRUD par salon
+(`/salons/{id}/services`, durée et prix **obligatoires**) depuis la section **Prestations** du
+dashboard, la « suppression » étant une **désactivation** (soft-delete). Les **modifications sont
+journalisées** (§11.4) dans une table `audit_logs` — première matérialisation du mécanisme d'audit,
+réutilisable par les actions §11.4 suivantes.
 
 ---
 

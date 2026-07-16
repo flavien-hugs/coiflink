@@ -31,6 +31,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0016](./0016-comptes-employes-appartenance-salon.md) | Comptes employés — appartenance employé↔salon & création par le gérant | Accepté | #13 |
 | [0017](./0017-creation-salon-medias-et-reservabilite.md) | Création d'un salon — rattachement au gérant, médias par URL signée & réservabilité | Accepté | #15 |
 | [0018](./0018-configuration-horaires-salon.md) | Configuration des horaires d'ouverture — contrat JSONB & activation de la réservabilité | Accepté | #16 |
+| [0019](./0019-journalisation-audit-et-prestations.md) | Journalisation d'audit §11.4 (table persistée) & gestion des prestations (soft-delete) | Accepté | #17 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
@@ -79,6 +80,10 @@ ultérieure et signalés en *Conséquences* des ADR concernés :
     ni les gardes ;
   - **index `ix_salons_owner_id`** → **#15** (première migration touchant les salons) : #12
     n'introduit **aucune** migration.
-- **Journalisation d'audit des accès sensibles** (PRD §11.4) — **rattachée à #52**. ADR-0015 pose le
-  cadre : un éventuel log de refus ne contient **que** `user_id` (UUID), `role`, méthode + chemin et
-  décision — **jamais** de jeton, mot de passe, téléphone, e-mail ou nom.
+- **Journalisation d'audit** (PRD §11.4) — la **table `audit_logs`** (mécanisme de persistance) est
+  **établie par #17** ([ADR-0019](./0019-journalisation-audit-et-prestations.md)) et journalise les
+  mutations de prestations (`SERVICE_CREATED`, `SERVICE_UPDATED`, `SERVICE_DEACTIVATED`). La
+  journalisation des **refus d'accès** (log de sécurité) reste **rattachée à #52** et peut réutiliser
+  la même table via le port `AuditLog`. ADR-0015 pose le cadre : un éventuel log de refus ne contient
+  **que** `user_id` (UUID), `role`, méthode + chemin et décision — **jamais** de jeton, mot de passe,
+  téléphone, e-mail ou nom.
