@@ -126,9 +126,15 @@ class SqlSalonCatalogRepository:
             pattern = f"%{escape_like(query.text)}%"
             stmt = stmt.where(models.Salon.name.ilike(pattern, escape=_LIKE_ESCAPE))
         if query.city:
-            stmt = stmt.where(models.Salon.city.ilike(query.city))
+            stmt = stmt.where(
+                models.Salon.city.ilike(escape_like(query.city), escape=_LIKE_ESCAPE)
+            )
         if query.commune:
-            stmt = stmt.where(models.Salon.commune.ilike(query.commune))
+            stmt = stmt.where(
+                models.Salon.commune.ilike(
+                    escape_like(query.commune), escape=_LIKE_ESCAPE
+                )
+            )
         return stmt
 
 
