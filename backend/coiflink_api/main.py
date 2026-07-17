@@ -18,6 +18,7 @@ import secrets
 from fastapi import Depends, FastAPI
 
 from coiflink_api.adapters.inbound.auth import router as auth_router
+from coiflink_api.adapters.inbound.catalog import router as catalog_router
 from coiflink_api.adapters.inbound.employees import router as employees_router
 from coiflink_api.adapters.inbound.health import router as health_router
 from coiflink_api.adapters.inbound.salons import router as salons_router
@@ -121,3 +122,8 @@ app.include_router(salons_router)
 # Routes protégées par RBAC (SERVICE_MANAGE/READ + portée salon) ; mutations
 # journalisées (§11.4) dans la même unité de travail que l'écriture métier.
 app.include_router(services_router)
+# Catalogue client (#18) : recherche/liste publique des salons ACTIVE (§8.3) sous
+# /catalog/salons. Ressource distincte de /salons (gestion) ; lecture seule,
+# projection de vitrine sans owner_id/PII. La route est publique-listée dans
+# `security.PUBLIC_ROUTE_PATHS` (décision de sécurité revue, ADR-0015).
+app.include_router(catalog_router)

@@ -219,7 +219,12 @@ pas réservable** (`is_bookable=false`) — **enregistrer des horaires valides r
 (`/salons/{id}/services`, durée et prix **obligatoires**) depuis la section **Prestations** du
 dashboard, la « suppression » étant une **désactivation** (soft-delete). Les **modifications sont
 journalisées** (§11.4) dans une table `audit_logs` — première matérialisation du mécanisme d'audit,
-réutilisable par les actions §11.4 suivantes.
+réutilisable par les actions §11.4 suivantes. Le **catalogue client** est livré (#18, voir
+[ADR-0020](./docs/adr/0020-catalogue-salons-cote-client.md)) : `GET /catalog/salons` liste/recherche
+les salons **`ACTIVE` uniquement** (§8.3 — un salon désactivé n'apparaît **jamais**), en **lecture
+seule** et **sans authentification**, avec une projection de vitrine (nom, localisation, logo signé,
+`is_bookable`) **sans** `owner_id` ni donnée de gestion ; côté application mobile, l'écran de
+**recherche/liste** (§7.1) et la première couche réseau du paquet Flutter accompagnent cette route.
 
 ---
 

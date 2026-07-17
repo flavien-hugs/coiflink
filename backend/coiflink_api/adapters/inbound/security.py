@@ -110,6 +110,12 @@ PUBLIC_ROUTE_PATHS: frozenset[str] = frozenset(
         "/auth/refresh",
         "/auth/password/reset/request",
         "/auth/password/reset/confirm",
+        # Catalogue client (#18) — décision de sécurité revue (spec §A.2, ADR-0015) :
+        # recherche/liste **en lecture seule** des salons `ACTIVE` (§8.3), projection
+        # de vitrine (nom, ville, logo signé, `is_bookable`) **sans** `owner_id` ni
+        # PII de gestion. Ouvre le parcours client §7.1/§5.1 (browse avant connexion)
+        # alors que l'auth cliente n'existe pas encore côté mobile.
+        "/catalog/salons",
     }
 )
 
