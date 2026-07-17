@@ -649,6 +649,45 @@ class FakeServiceRepository:
         return updated
 
 
+class FakeSalonCatalogRepository:
+    """Dépôt de catalogue public en mémoire (lecture `ACTIVE`-only, §8.3, #18).
+
+    Filtre en mémoire : sert à isoler la couche applicative de la base de données
+    dans les tests unitaires et d'API. Le filtre `status == ACTIVE` est appliqué
+    en premier (invariant du port). La recherche par nom est une sous-chaîne
+    insensible à la casse (même sémantique que l'ILIKE SQL).
+    """
+
+    def __init__(self, salons: list | None = None) -> None:
+        self._salons: list = list(salons or [])
+
+    def _active_matching(self, query) -> list:  # type: ignore[no-untyped-def]
+        active = [s for s in self._salons if s.status == "ACTIVE"]
+        if query.text:
+            t = query.text.lower()
+            active = [s for s in active if t in s.name.lower()]
+        if query.city:
+            c = query.city.lower()
+            active = [s for s in active if s.city and s.city.lower() == c]
+        if query.commune:
+            co = query.commune.lower()
+            active = [s for s in active if s.commune and s.commune.lower() == co]
+        return active
+
+    def search_active(self, query) -> tuple:  # type: ignore[no-untyped-def]
+        matching = sorted(self._active_matching(query), key=lambda s: s.name)
+        return tuple(matching[query.offset : query.offset + query.limit])
+
+    def count_active(self, query) -> int:  # type: ignore[no-untyped-def]
+        return len(self._active_matching(query))
+
+    def get_active(self, salon_id):  # type: ignore[no-untyped-def]
+        for s in self._salons:
+            if s.id == salon_id and s.status == "ACTIVE":
+                return s
+        return None
+
+
 class FakeAuditLog:
     """Journal d'audit en mémoire (§11.4, US-2.3, #17).
 
@@ -670,3 +709,8 @@ def fake_service_repository() -> "FakeServiceRepository":
 @pytest.fixture()
 def fake_audit_log() -> "FakeAuditLog":
     return FakeAuditLog()
+
+
+@pytest.fixture()
+def fake_salon_catalog_repository() -> "FakeSalonCatalogRepository":
+    return FakeSalonCatalogRepository()

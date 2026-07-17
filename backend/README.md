@@ -364,6 +364,7 @@ n'est lu du corps (anti-élévation de privilège). Un salon fraîchement créé
 
 - **Consultation** : `GET /salons` (ses salons) ; `GET /salons/{salon_id}` (portée salon + `SALON_READ_OWN`
   **ou** `SALON_READ_ANY` pour l'ADMIN). Un accès hors périmètre renvoie le `403` **générique**.
+- **Catalogue client** : `GET /catalog/salons` (voir ci-dessous) — ressource **distincte** de gestion.
 - **Médias** (logo/photos) via **URLs signées** (ADR-0005), le binaire ne transite jamais par l'API :
   `POST /salons/{id}/media/upload-url` → `PUT` navigateur→bucket → `PUT /salons/{id}/logo` /
   `POST /salons/{id}/photos` (`{ object_key }`). La clé d'objet est **fabriquée par le serveur** (sans
@@ -435,6 +436,50 @@ publique (le catalogue client relève de #18/#19). Détails dans
 L'entrée d'audit partage la **même `Session`** que la mutation (commit/rollback conjoint — pas de trace
 « fantôme »). **Invariant : aucun secret ni PII dans l'audit** (`test_secrets_policy.py`). La lecture du
 journal (supervision) est hors périmètre (#17 **écrit** seulement).
+
+## Catalogue client — recherche/liste des salons (US-2.3, #18 — [ADR-0020](../docs/adr/0020-catalogue-salons-cote-client.md))
+
+`GET /catalog/salons` liste/recherche les salons **`ACTIVE` uniquement** (§8.3) pour le client. C'est
+une **ressource distincte** de `/salons` (gestion) : lecture seule, projection de **vitrine**. La route
+est **publique** (ajoutée à `PUBLIC_ROUTE_PATHS`, décision de sécurité revue — voir l'ADR) : elle
+répond `200` **sans jeton**. Le filtre `status = ACTIVE` est appliqué **au niveau SQL** (premier
+`where`, port dédié `SalonCatalogRepository`) — un salon `INACTIVE`/`SUSPENDED` **n'apparaît jamais**.
+
+Paramètres de requête (tous optionnels) :
+
+| Param | Type | Défaut | Rôle |
+| --- | --- | --- | --- |
+| `q` | string | — | recherche par nom (`ILIKE` sous-chaîne, métacaractères `LIKE` échappés) |
+| `city` | string | — | filtre par ville (insensible à la casse) |
+| `commune` | string | — | filtre par commune (insensible à la casse) |
+| `limit` | int (1..50) | `20` | taille de page (bornée ; hors bornes → `422`) |
+| `offset` | int (≥ 0) | `0` | décalage de page |
+
+```jsonc
+// Réponse 200
+{
+  "items": [
+    {
+      "id": "…uuid…",
+      "name": "Salon Élégance",
+      "description": "Coiffure afro et tresses.",
+      "address": "Rue des Jardins, Cocody",
+      "city": "Abidjan",
+      "commune": "Cocody",
+      "latitude": 5.359952,
+      "longitude": -3.996643,
+      "logo_url": "https://…signée…",   // ou null (stockage non configuré)
+      "is_bookable": false               // §8.3 : ACTIVE sans horaire ⇒ pas encore réservable
+    }
+  ],
+  "total": 1, "limit": 20, "offset": 0
+}
+```
+
+**Aucun** `owner_id`, `status`, `opening_hours`, `phone` ni timestamp dans la projection publique
+(pas d'oracle de compte, pas de divulgation d'état de modération). `logo_url` est **toujours** une URL
+signée (ADR-0005) ou `null` — jamais une clé d'objet brute. Le **détail salon** (#19) et la
+**réservation** (#21+) ne sont **pas** livrés ici.
 
 ## Configuration
 

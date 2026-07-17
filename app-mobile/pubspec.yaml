@@ -35,6 +35,10 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
+  # Client HTTP de la couche data (#18) : appelle GET /catalog/salons.
+  # Première dépendance réseau du paquet ; aucune donnée sensible n'y transite.
+  http: ^1.2.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
