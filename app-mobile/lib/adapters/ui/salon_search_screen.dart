@@ -10,17 +10,27 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../application/ports/salon_catalog_gateway.dart';
+import '../../application/use_cases/get_salon_detail.dart';
 import '../../application/use_cases/search_salons.dart';
 import '../../domain/salon/salon_summary.dart';
+import 'salon_detail_screen.dart';
 import 'widgets/salon_card.dart';
 
 /// Délai de temporisation entre la dernière frappe et la requête de recherche.
 const Duration kSearchDebounce = Duration(milliseconds: 300);
 
 class SalonSearchScreen extends StatefulWidget {
-  const SalonSearchScreen({super.key, required this.searchSalons});
+  const SalonSearchScreen({
+    super.key,
+    required this.searchSalons,
+    this.getSalonDetail,
+  });
 
   final SearchSalons searchSalons;
+
+  /// Cas d'usage de consultation de fiche (#19). `null` ⇒ cartes non cliquables
+  /// (les tests de la liste #18 n'ont pas besoin de la navigation).
+  final GetSalonDetail? getSalonDetail;
 
   @override
   State<SalonSearchScreen> createState() => _SalonSearchScreenState();
@@ -151,8 +161,26 @@ class _SalonSearchScreenState extends State<SalonSearchScreen> {
             child: Center(child: CircularProgressIndicator()),
           );
         }
-        return SalonCard(salon: _salons[index]);
+        final salon = _salons[index];
+        return SalonCard(
+          salon: salon,
+          onTap: widget.getSalonDetail == null
+              ? null
+              : () => _openDetail(salon),
+        );
       },
+    );
+  }
+
+  void _openDetail(SalonSummary salon) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SalonDetailScreen(
+          salonId: salon.id,
+          salonName: salon.name,
+          getSalonDetail: widget.getSalonDetail!,
+        ),
+      ),
     );
   }
 }

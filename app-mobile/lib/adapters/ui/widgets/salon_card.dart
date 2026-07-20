@@ -8,9 +8,13 @@ import 'package:flutter/material.dart';
 import '../../../domain/salon/salon_summary.dart';
 
 class SalonCard extends StatelessWidget {
-  const SalonCard({super.key, required this.salon});
+  const SalonCard({super.key, required this.salon, this.onTap});
 
   final SalonSummary salon;
+
+  /// Rappel déclenché au tap — ouvre la fiche de détail (#19). `null` ⇒ carte
+  /// non cliquable (rétrocompat).
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -23,6 +27,7 @@ class SalonCard extends StatelessWidget {
         title: Text(salon.name),
         subtitle: location.isEmpty ? null : Text(location),
         trailing: _BookableBadge(isBookable: salon.isBookable),
+        onTap: onTap,
       ),
     );
   }

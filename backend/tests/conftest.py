@@ -650,16 +650,28 @@ class FakeServiceRepository:
 
 
 class FakeSalonCatalogRepository:
-    """Dépôt de catalogue public en mémoire (lecture `ACTIVE`-only, §8.3, #18).
+    """Dépôt de catalogue public en mémoire (lecture `ACTIVE`-only, §8.3, #18/#19).
 
     Filtre en mémoire : sert à isoler la couche applicative de la base de données
     dans les tests unitaires et d'API. Le filtre `status == ACTIVE` est appliqué
     en premier (invariant du port). La recherche par nom est une sous-chaîne
     insensible à la casse (même sémantique que l'ILIKE SQL).
+
+    Fiche client (#19) : `services` associe un `salon_id` à ses prestations
+    (actives **et** inactives) et `photos` à ses photos. `list_active_services`
+    ne renvoie que les prestations `is_active=True` (filtre côté lecture, jamais en
+    post-filtrage applicatif), triées par nom — miroir de l'ILIKE/`ORDER BY` SQL.
     """
 
-    def __init__(self, salons: list | None = None) -> None:
+    def __init__(
+        self,
+        salons: list | None = None,
+        services: dict | None = None,
+        photos: dict | None = None,
+    ) -> None:
         self._salons: list = list(salons or [])
+        self._services: dict = dict(services or {})
+        self._photos: dict = dict(photos or {})
 
     def _active_matching(self, query) -> list:  # type: ignore[no-untyped-def]
         active = [s for s in self._salons if s.status == "ACTIVE"]
@@ -686,6 +698,15 @@ class FakeSalonCatalogRepository:
             if s.id == salon_id and s.status == "ACTIVE":
                 return s
         return None
+
+    def list_active_services(self, salon_id):  # type: ignore[no-untyped-def]
+        services = [
+            s for s in self._services.get(salon_id, []) if s.is_active
+        ]
+        return tuple(sorted(services, key=lambda s: s.name))
+
+    def list_photos(self, salon_id):  # type: ignore[no-untyped-def]
+        return tuple(self._photos.get(salon_id, []))
 
 
 class FakeAuditLog:

@@ -22,7 +22,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
-from coiflink_api.domain.salon import Salon
+from coiflink_api.domain.salon import Salon, SalonPhoto
+from coiflink_api.domain.service import Service
 
 # Bornes de pagination (déni de service par page géante → refus côté adapter).
 CATALOG_LIMIT_MIN = 1
@@ -70,10 +71,28 @@ class SalonCatalogRepository(Protocol):
         ...
 
     def get_active(self, salon_id: uuid.UUID) -> Salon | None:
-        """Un salon `ACTIVE` par identifiant, sinon `None` (préparé pour #19).
+        """Un salon `ACTIVE` par identifiant, sinon `None` (fiche client #19).
 
         Un salon non-`ACTIVE` renvoie `None` (→ `404` côté client) : « absent du
         catalogue » plutôt que « masqué » — pas d'oracle d'existence.
+        """
+        ...
+
+    def list_active_services(self, salon_id: uuid.UUID) -> tuple[Service, ...]:
+        """Prestations **`ACTIVE` seulement** d'un salon, triées par nom (fiche #19).
+
+        Le filtre `is_active = true` est appliqué **en SQL**, jamais en
+        post-filtrage applicatif : une prestation soft-deletée (#17) ne peut pas
+        fuir côté client. Méthode de **lecture publique dédiée** — le catalogue
+        n'hérite d'aucune capacité de gestion du `ServiceRepository` (ADR-0020 §2).
+        """
+        ...
+
+    def list_photos(self, salon_id: uuid.UUID) -> tuple[SalonPhoto, ...]:
+        """Photos du salon, ordonnées par `position` croissante (galerie fiche #19).
+
+        Chaque `SalonPhoto` porte une **clé d'objet** (jamais une URL) : le cas
+        d'usage la résout en URL signée à la lecture (ADR-0005).
         """
         ...
 

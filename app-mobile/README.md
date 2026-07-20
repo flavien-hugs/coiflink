@@ -59,7 +59,7 @@ Premier flux data du paquet (hexagonal, [ADR-0008](../docs/adr/0008-architecture
 
 - `domain/salon/salon_summary.dart` — entité de vitrine (`SalonSummary`, `isBookable` §8.3) ;
 - `application/ports/salon_catalog_gateway.dart` — port `SalonCatalogGateway` (+ `SalonSearchQuery`,
-  `SalonPage`, `SalonCatalogException`) ;
+  `SalonPage`, `SalonCatalogException`, `SalonNotFoundException`) ;
 - `application/use_cases/search_salons.dart` — cas d'usage `SearchSalons` (normalisation, bornes) ;
 - `adapters/data/api_config.dart` — `API_BASE_URL` via `--dart-define` ;
 - `adapters/data/http_salon_catalog_gateway.dart` — `GET /catalog/salons` (`http`), mapping JSON →
@@ -70,3 +70,26 @@ Premier flux data du paquet (hexagonal, [ADR-0008](../docs/adr/0008-architecture
 
 Le domaine et les cas d'usage ne dépendent **pas** de Flutter ; seuls `adapters/ui` et `adapters/data`
 importent `flutter`/`http`.
+
+## Fiche salon — consultation (#19, [ADR-0021](../docs/adr/0021-consultation-salon-cote-client.md))
+
+Extension hexagonale de la couche #18 : taper une carte de la liste ouvre la **fiche de détail** d'un
+salon.
+
+- `domain/salon/salon_detail.dart`, `salon_service.dart`, `opening_hours.dart` — entités de détail
+  (identité + `phone` + localisation + horaires + prestations + photos + `isBookable`), pures ;
+- `application/ports/salon_catalog_gateway.dart` — méthode `getSalon(String id)` ; un `404` remonte en
+  `SalonNotFoundException` (état « introuvable » distinct d'une erreur réseau) ;
+- `application/use_cases/get_salon_detail.dart` — cas d'usage `GetSalonDetail` ;
+- `adapters/data/http_salon_catalog_gateway.dart` — `GET /catalog/salons/{id}`, mapping JSON →
+  `SalonDetail` (services, `opening_hours`, photos) ;
+- `adapters/ui/salon_detail_screen.dart` + `widgets/opening_hours_view.dart`,
+  `widgets/service_list_tile.dart` — en-tête (logo, nom, localisation, badge `isBookable`), horaires
+  par jour, prestations + **prix**, téléphone, et le **point d'entrée réservation** : un bouton
+  « Réserver » **dérivé de `isBookable`** (désactivé « Bientôt disponible » si `false`) qui **ne
+  déclenche aucun flux** (réservation #21+ non livrée) ; états **chargement / introuvable / erreur** ;
+- **navigation** : `salon_card` devient cliquable → `Navigator.push` vers la fiche (l'app n'avait
+  jusqu'ici que l'écran de recherche).
+
+La « disponibilité » se limite au MVP à `isBookable` (§8.3) + affichage des horaires ; le **calcul de
+créneaux libres** dépend des RDV (#21+) et n'est **pas** implémenté.
