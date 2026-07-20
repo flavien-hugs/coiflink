@@ -232,8 +232,17 @@ sinon, sans oracle d'existence) agrégeant sa localisation complète (`phone` co
 (#16), ses **prestations actives** avec prix et durée (#17), ses médias signés et l'indicateur
 `is_bookable` — sans `owner_id`, `status` ni donnée de gestion ; côté application mobile, l'**écran de
 fiche** (horaires, prestations, badge de disponibilité et **point d'entrée** de la réservation) et la
-**navigation depuis la liste** accompagnent cette route. La **réservation** elle-même reste **#21+**
-(Épic 3) : la fiche en est le point d'entrée, le flux n'est pas encore construit.
+**navigation depuis la liste** accompagnent cette route. La **modification des informations du salon**
+est livrée (#20, voir [ADR-0022](./docs/adr/0022-modification-informations-salon.md)) : le gérant met à
+jour les informations générales de son salon (nom, description, téléphone, localisation) via
+`PUT /salons/{id}` depuis la section **Paramètres** — modification **journalisée** (§11.4,
+`SALON_UPDATED`, diff neutre) réutilisant le chemin d'écriture livré avec #15, `status`/`owner_id`/
+`opening_hours` restant non éditables par cette route. Ces changements sont **reflétés côté client**
+(catalogue #18 / fiche #19) **à la lecture suivante** — le catalogue relit les mêmes lignes `salons`,
+sans cache — garantie **verrouillée par un test e2e** (`backend/tests/test_salon_update_e2e.py`, dont
+la visibilité §8.3 : un salon désactivé reste absent du catalogue même après modification). La
+**réservation** elle-même reste **#21+** (Épic 3) : la fiche en est le point d'entrée, le flux n'est
+pas encore construit.
 
 ---
 
