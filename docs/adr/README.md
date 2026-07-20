@@ -34,6 +34,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0019](./0019-journalisation-audit-et-prestations.md) | Journalisation d'audit §11.4 (table persistée) & gestion des prestations (soft-delete) | Accepté | #17 |
 | [0020](./0020-catalogue-salons-cote-client.md) | Catalogue de salons côté client — ressource publique distincte, filtre `ACTIVE` & projection de vitrine | Accepté | #18 |
 | [0021](./0021-consultation-salon-cote-client.md) | Consultation d'un salon côté client — fiche publique de détail, agrégation `ACTIVE`-only & point d'entrée réservation | Accepté | #19 |
+| [0022](./0022-modification-informations-salon.md) | Modification des informations du salon — réutilisation du chemin d'écriture #15 & garantie de réflexion côté client sans cache | Accepté | #20 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 

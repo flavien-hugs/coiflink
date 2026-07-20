@@ -773,6 +773,140 @@ class TestUpdateSalon:
         assert set(entry.metadata.keys()) == {"changed"}
         assert "Salon Renommé" not in entry.metadata["changed"]
 
+    def test_status_in_body_ignored(
+        self,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        """Un `status` fourni dans le corps est ignoré (champ non éditable, §8.3)."""
+        client, salon_id = manager_client_with_salon
+        body = {**_UPDATE_BODY, "status": "INACTIVE"}
+        r = client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json=body,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 200
+        # Le salon reste ACTIVE : `status` n'est pas modifiable par cette route.
+        assert r.json()["status"] == "ACTIVE"
+
+    def test_request_schema_has_no_status_or_opening_hours_field(self) -> None:
+        """Le corps de modification n'expose ni `status`, ni `opening_hours`, ni `owner_id`."""
+        from coiflink_api.adapters.inbound.salons import UpdateSalonRequest
+
+        assert "owner_id" not in UpdateSalonRequest.model_fields
+        assert "status" not in UpdateSalonRequest.model_fields
+        assert "opening_hours" not in UpdateSalonRequest.model_fields
+
+    def test_validation_failure_leaves_no_audit_entry(
+        self,
+        audit_log: FakeAuditLog,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        """Validation échouée (nom vide) → aucune entrée d'audit (atomicité §11.4)."""
+        client, salon_id = manager_client_with_salon
+        r = client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json={**_UPDATE_BODY, "name": ""},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+        assert audit_log.recorded == []
+
+    def test_missing_name_returns_422(
+        self,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        """Corps sans clé `name` → 422 (champ requis, sémantique replace)."""
+        client, salon_id = manager_client_with_salon
+        body = {k: v for k, v in _UPDATE_BODY.items() if k != "name"}
+        r = client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json=body,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+
+    def test_admin_role_returns_403(
+        self,
+        salon_repo: FakeSalonRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """L'ADMIN ne dispose pas de `SALON_UPDATE` → 403 (symétrique avec POST, §4.1)."""
+        from coiflink_api.application.salons import CreateSalon, CreateSalonCommand
+
+        salon = CreateSalon(salon_repo).execute(
+            CreateSalonCommand(name="Salon"), owner_id=_MANAGER_ID
+        )
+        admin_id = _ADMIN_ID
+        creds = _creds(admin_id, Role.ADMIN.value)
+        user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
+        scope_repo = FakeSalonScopeRepository(scopes={admin_id: frozenset({salon.id})})
+        token = make_access_token(admin_id, Role.ADMIN.value)
+
+        app.dependency_overrides[get_salon_repository] = lambda: salon_repo
+        app.dependency_overrides[get_audit_log] = lambda: audit_log
+        app.dependency_overrides[get_user_repository] = lambda: user_repo
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+        try:
+            with TestClient(app) as c:
+                r = c.put(
+                    f"{_SALONS_URL}/{salon.id}",
+                    json=_UPDATE_BODY,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        finally:
+            app.dependency_overrides.pop(get_salon_repository, None)
+            app.dependency_overrides.pop(get_audit_log, None)
+            app.dependency_overrides.pop(get_user_repository, None)
+            app.dependency_overrides.pop(get_access_policy, None)
+        assert r.status_code == 403
+
+    def test_all_fields_reflected_in_response(
+        self,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        """Le corps de réponse du PUT reflète tous les champs mis à jour."""
+        client, salon_id = manager_client_with_salon
+        r = client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json=_UPDATE_BODY,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["name"] == "Salon Renommé"
+        assert body["description"] == "Nouvelle description."
+        assert body["city"] == "Abidjan"
+        assert body["commune"] == "Marcory"
+        assert body["address"] == "Nouvelle adresse"
+        assert body["latitude"] == pytest.approx(5.3)
+        assert body["longitude"] == pytest.approx(-4.0)
+        # phone est normalisé en E.164 par le domaine.
+        assert body["phone"] is not None
+        assert body["phone"].endswith("09080706")
+        assert "updated_at" in body
+
+    def test_get_after_update_reflects_new_values(
+        self,
+        manager_client_with_salon: tuple[TestClient, uuid.UUID],
+    ) -> None:
+        """GET /salons/{id} après PUT renvoie les nouvelles valeurs (lecture après écriture)."""
+        client, salon_id = manager_client_with_salon
+        client.put(
+            f"{_SALONS_URL}/{salon_id}",
+            json=_UPDATE_BODY,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        r = client.get(
+            f"{_SALONS_URL}/{salon_id}",
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["name"] == "Salon Renommé"
+        assert body["commune"] == "Marcory"
+        assert body["city"] == "Abidjan"
+
 
 # ---------------------------------------------------------------------------
 # GET /salons — liste
