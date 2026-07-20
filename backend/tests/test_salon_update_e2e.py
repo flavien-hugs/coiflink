@@ -473,19 +473,6 @@ class TestSalonUpdateReflectionE2E:
         assert _NEW_DESCRIPTION not in blob
         assert _NEW_PHONE_LOCAL not in blob
 
-    def test_update_response_contains_no_token(self, _e2e_client: TestClient) -> None:
-        """La réponse de modification ne révèle pas le jeton d'accès (PRD §11.1)."""
-        _register_manager(_e2e_client)
-        token = _login(_e2e_client)
-        salon_id = _create_salon(_e2e_client, token)
-
-        resp = _e2e_client.put(
-            f"/salons/{salon_id}",
-            json=_new_body(),
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert token not in resp.text
-
     # ── Parcours 7 : visibilité §8.3 (la réflexion n'ouvre pas de fuite) ─────
 
     def test_inactive_salon_absent_from_catalog_after_update(

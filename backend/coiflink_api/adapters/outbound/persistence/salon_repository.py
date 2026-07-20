@@ -75,10 +75,6 @@ class SqlSalonRepository:
         row.commune = changes.commune
         row.latitude = changes.latitude
         row.longitude = changes.longitude
-        # `updated_at` n'a pas d'`onupdate` au niveau ORM (server_default only) : on
-        # le rafraîchit explicitement ici pour que la modification soit observable
-        # (fraîcheur côté client, #20). `func.now()` est évalué côté serveur au flush.
-        row.updated_at = func.now()
         self._session.flush()
         self._session.refresh(row)
         return _to_domain(row)

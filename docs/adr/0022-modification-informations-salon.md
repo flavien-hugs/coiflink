@@ -51,10 +51,15 @@ table `salons`, sans couche de cache) mais **couverte par aucun test bout-en-bou
    **404** (§8.3, la réflexion n'ouvre pas de fuite de visibilité) ; l'isolation inter-gérants renvoie
    `403`.
 
-5. **Fraîcheur `updated_at`** : la colonne `salons.updated_at` n'a pas d'`onupdate` au niveau ORM
-   (seulement `server_default = now()`). `SqlSalonRepository.update` **bump désormais explicitement**
-   `updated_at = func.now()` au flush, pour que la modification soit observable. C'est **le seul
-   correctif de code produit** de #20 ; il n'implique **aucune migration** (comportement ORM au flush).
+5. **Fraîcheur `updated_at`** : la colonne `salons.updated_at` n'avait pas d'`onupdate` au niveau ORM
+   (seulement `server_default = now()`) — une modification n'était donc pas observable en fraîcheur.
+   Plutôt qu'un bump manuel propre à `SqlSalonRepository.update`, le correctif est posé sur l'helper
+   partagé `_updated_at()` (`models.py`) : `onupdate=func.now()`, évalué côté serveur à chaque flush.
+   Il couvre **uniformément** les 6 tables qui utilisent cet helper (`users`, `salons`, `salon_members`,
+   `services`, `appointments`, `customer_profiles`) et donc **tous** les chemins de mutation d'un salon
+   (`update`, mais aussi `set_logo`, `set_opening_hours`, …), pas seulement celui de #20. C'est **le
+   seul correctif de code produit** de #20 ; il n'implique **aucune migration** (comportement ORM au
+   flush, pas de DDL).
 
 **Aucune migration Alembic, aucune nouvelle surface d'API ni de schéma.** L'action `SALON_UPDATED` et
 la table `audit_logs` existaient déjà (#17/ADR-0019).

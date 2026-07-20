@@ -80,8 +80,19 @@ def _created_at() -> Mapped[datetime.datetime]:
 
 
 def _updated_at() -> Mapped[datetime.datetime]:
+    """`updated_at` à défaut serveur `now()`, rafraîchi par l'ORM à chaque flush.
+
+    `onupdate=func.now()` (évalué côté serveur, pas en Python) fait que **toute**
+    mutation flushée via SQLAlchemy sur une ligne portant cette colonne rafraîchit
+    `updated_at` automatiquement — un seul endroit à maintenir plutôt qu'un bump
+    manuel par méthode d'écriture (#20).
+    """
+
     return mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 

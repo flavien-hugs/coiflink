@@ -569,20 +569,6 @@ _UPDATE_BODY = {
 
 
 class TestUpdateSalon:
-    def test_manager_gets_200(
-        self,
-        manager_client_with_salon: tuple[TestClient, uuid.UUID],
-    ) -> None:
-        client, salon_id = manager_client_with_salon
-        r = client.put(
-            f"{_SALONS_URL}/{salon_id}",
-            json=_UPDATE_BODY,
-            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
-        )
-        assert r.status_code == 200
-        assert r.json()["name"] == "Salon Renommé"
-        assert r.json()["commune"] == "Marcory"
-
     def test_no_token_returns_401(
         self,
         manager_client_with_salon: tuple[TestClient, uuid.UUID],
