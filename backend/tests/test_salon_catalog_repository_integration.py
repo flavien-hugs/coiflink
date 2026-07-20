@@ -25,6 +25,7 @@ Chaque test nettoie ses données (owner réservé +2250709998xxx, salons préfix
 
 from __future__ import annotations
 
+import decimal
 import os
 import uuid
 
@@ -36,12 +37,14 @@ from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import 
     SqlSalonCatalogRepository,
 )
 from coiflink_api.adapters.outbound.persistence.salon_repository import SqlSalonRepository
+from coiflink_api.adapters.outbound.persistence.service_repository import SqlServiceRepository
 from coiflink_api.adapters.outbound.persistence.session import normalize_dsn
 from coiflink_api.adapters.outbound.persistence.user_repository import SqlUserRepository
 from coiflink_api.application.ports.salon_catalog_repository import SalonSearchQuery
 from coiflink_api.application.registration import RegisterCommand, RegisterUser
 from coiflink_api.domain.enums import Role, SalonStatus
 from coiflink_api.domain.salon import SalonToCreate
+from coiflink_api.domain.service import ServiceToCreate
 
 from .conftest import FakeHasher
 
@@ -82,6 +85,14 @@ def _wipe_test_data(pg_engine):
 
     def wipe() -> None:
         with pg_engine.connect() as conn:
+            # services (FK RESTRICT) → salons ; salon_photos est en CASCADE.
+            conn.execute(
+                text(
+                    "DELETE FROM services WHERE salon_id IN "
+                    "(SELECT id FROM salons WHERE name LIKE :prefix)"
+                ),
+                {"prefix": f"{_SALON_NAME_PREFIX}%"},
+            )
             conn.execute(
                 text("DELETE FROM salons WHERE name LIKE :prefix"),
                 {"prefix": f"{_SALON_NAME_PREFIX}%"},
@@ -161,6 +172,41 @@ def _search(pg_session_factory, **kwargs) -> tuple:
         return SqlSalonCatalogRepository(session).search_active(SalonSearchQuery(**kwargs))
     finally:
         session.close()
+
+
+def _create_service(
+    pg_session_factory,
+    salon_id: uuid.UUID,
+    *,
+    name: str,
+    active: bool = True,
+) -> uuid.UUID:
+    session = _new_session(pg_session_factory)
+    try:
+        service = SqlServiceRepository(session).create(
+            ServiceToCreate(
+                salon_id=salon_id,
+                name=name,
+                price=decimal.Decimal("5000.00"),
+                duration_minutes=30,
+            )
+        )
+        if not active:
+            SqlServiceRepository(session).set_active(salon_id, service.id, False)
+        session.commit()
+    finally:
+        session.close()
+    return service.id
+
+
+def _add_photo(pg_session_factory, salon_id: uuid.UUID, *, object_key: str) -> uuid.UUID:
+    session = _new_session(pg_session_factory)
+    try:
+        photo = SqlSalonRepository(session).add_photo(salon_id, object_key)
+        session.commit()
+    finally:
+        session.close()
+    return photo.id
 
 
 class TestActiveOnlyFilter:
@@ -283,3 +329,79 @@ class TestPagination:
             session.close()
 
         assert total == 2
+
+
+class TestListActiveServices:
+    """`list_active_services` : filtre `is_active = true` appliqué en SQL (#19)."""
+
+    def test_excludes_inactive_service(self, pg_session_factory, owner_id) -> None:
+        salon_id = _create_salon(pg_session_factory, owner_id, name="Avec Prestations")
+        active_id = _create_service(pg_session_factory, salon_id, name="Coupe", active=True)
+        inactive_id = _create_service(
+            pg_session_factory, salon_id, name="Ancienne Prestation", active=False
+        )
+
+        session = _new_session(pg_session_factory)
+        try:
+            services = SqlSalonCatalogRepository(session).list_active_services(salon_id)
+        finally:
+            session.close()
+
+        ids = {s.id for s in services}
+        assert active_id in ids
+        assert inactive_id not in ids
+
+    def test_returns_empty_tuple_when_no_active_service(
+        self, pg_session_factory, owner_id
+    ) -> None:
+        salon_id = _create_salon(pg_session_factory, owner_id, name="Sans Prestations")
+
+        session = _new_session(pg_session_factory)
+        try:
+            services = SqlSalonCatalogRepository(session).list_active_services(salon_id)
+        finally:
+            session.close()
+
+        assert services == ()
+
+    def test_ordered_by_name(self, pg_session_factory, owner_id) -> None:
+        salon_id = _create_salon(pg_session_factory, owner_id, name="Tri Prestations")
+        _create_service(pg_session_factory, salon_id, name="Z Dernière")
+        _create_service(pg_session_factory, salon_id, name="A Première")
+
+        session = _new_session(pg_session_factory)
+        try:
+            services = SqlSalonCatalogRepository(session).list_active_services(salon_id)
+        finally:
+            session.close()
+
+        assert [s.name for s in services] == ["A Première", "Z Dernière"]
+
+
+class TestListPhotos:
+    """`list_photos` : toutes les photos du salon, ordonnées par position (#19)."""
+
+    def test_returns_photos_ordered_by_position(self, pg_session_factory, owner_id) -> None:
+        salon_id = _create_salon(pg_session_factory, owner_id, name="Avec Photos")
+        second_id = _add_photo(pg_session_factory, salon_id, object_key="salons/x/photo-2.jpg")
+        first_id = _add_photo(pg_session_factory, salon_id, object_key="salons/x/photo-1.jpg")
+
+        session = _new_session(pg_session_factory)
+        try:
+            photos = SqlSalonCatalogRepository(session).list_photos(salon_id)
+        finally:
+            session.close()
+
+        # `add_photo` assigne `position` par ordre d'insertion (0, 1, ...).
+        assert [p.id for p in photos] == [second_id, first_id]
+
+    def test_returns_empty_tuple_when_no_photo(self, pg_session_factory, owner_id) -> None:
+        salon_id = _create_salon(pg_session_factory, owner_id, name="Sans Photos")
+
+        session = _new_session(pg_session_factory)
+        try:
+            photos = SqlSalonCatalogRepository(session).list_photos(salon_id)
+        finally:
+            session.close()
+
+        assert photos == ()

@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:coiflink_mobile/adapters/ui/salon_detail_screen.dart';
 import 'package:coiflink_mobile/adapters/ui/salon_search_screen.dart';
+import 'package:coiflink_mobile/adapters/ui/widgets/salon_photo_gallery.dart';
 import 'package:coiflink_mobile/application/ports/salon_catalog_gateway.dart';
 import 'package:coiflink_mobile/application/use_cases/get_salon_detail.dart';
 import 'package:coiflink_mobile/application/use_cases/search_salons.dart';
@@ -83,6 +84,7 @@ SalonDetail _detail({
   String name = 'Salon Élégance',
   bool isBookable = false,
   List<SalonService> services = const <SalonService>[],
+  List<SalonPhoto> photos = const <SalonPhoto>[],
   SalonOpeningHours? openingHours,
 }) {
   return SalonDetail(
@@ -93,6 +95,7 @@ SalonDetail _detail({
     commune: 'Cocody',
     phone: '+2250700000000',
     services: services,
+    photos: photos,
     openingHours: openingHours,
   );
 }
@@ -217,6 +220,33 @@ void main() {
 
       expect(find.byType(CircularProgressIndicator), findsNothing);
       expect(find.text('Salon Élégance'), findsWidgets);
+    });
+
+    testWidgets('affiche la galerie de photos quand des photos existent',
+        (tester) async {
+      final gateway = _StubGateway(
+        detail: _detail(
+          photos: const [
+            SalonPhoto(id: 'p1', url: 'https://cdn.example/p1.jpg'),
+            SalonPhoto(id: 'p2', url: 'https://cdn.example/p2.jpg'),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(_screen(gateway));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(SalonPhotoGallery), findsOneWidget);
+    });
+
+    testWidgets('n\'affiche aucune galerie quand la liste de photos est vide',
+        (tester) async {
+      final gateway = _StubGateway(detail: _detail(photos: const []));
+
+      await tester.pumpWidget(_screen(gateway));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(SalonPhotoGallery), findsNothing);
     });
 
     testWidgets('affiche le numéro de téléphone', (tester) async {

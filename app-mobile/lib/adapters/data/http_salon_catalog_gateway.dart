@@ -80,8 +80,7 @@ class HttpSalonCatalogGateway implements SalonCatalogGateway {
     try {
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       return _detailFromJson(body);
-    } catch (exc) {
-      if (exc is SalonCatalogException) rethrow;
+    } catch (_) {
       throw const SalonCatalogException('Réponse du serveur illisible.');
     }
   }

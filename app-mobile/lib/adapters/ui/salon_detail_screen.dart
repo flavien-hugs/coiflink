@@ -13,6 +13,7 @@ import '../../application/ports/salon_catalog_gateway.dart';
 import '../../application/use_cases/get_salon_detail.dart';
 import '../../domain/salon/salon_detail.dart';
 import 'widgets/opening_hours_view.dart';
+import 'widgets/salon_photo_gallery.dart';
 import 'widgets/service_list_tile.dart';
 
 class SalonDetailScreen extends StatefulWidget {
@@ -111,6 +112,10 @@ class _SalonDetailBody extends StatelessWidget {
       children: <Widget>[
         _Header(salon: salon),
         const SizedBox(height: 16),
+        if (salon.photos.isNotEmpty) ...[
+          SalonPhotoGallery(photos: salon.photos),
+          const SizedBox(height: 16),
+        ],
         if (salon.description != null && salon.description!.trim().isNotEmpty) ...[
           Text(salon.description!.trim(), style: theme.textTheme.bodyMedium),
           const SizedBox(height: 16),
