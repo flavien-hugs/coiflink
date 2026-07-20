@@ -478,8 +478,49 @@ Paramètres de requête (tous optionnels) :
 
 **Aucun** `owner_id`, `status`, `opening_hours`, `phone` ni timestamp dans la projection publique
 (pas d'oracle de compte, pas de divulgation d'état de modération). `logo_url` est **toujours** une URL
-signée (ADR-0005) ou `null` — jamais une clé d'objet brute. Le **détail salon** (#19) et la
-**réservation** (#21+) ne sont **pas** livrés ici.
+signée (ADR-0005) ou `null` — jamais une clé d'objet brute.
+
+## Fiche salon client — détail (US-2.4, #19 — [ADR-0021](../docs/adr/0021-consultation-salon-cote-client.md))
+
+`GET /catalog/salons/{salon_id}` renvoie la **fiche publique** d'un salon **`ACTIVE` uniquement**
+(§8.3). Même router `/catalog` (ressource distincte de gestion), **publique** (chemin littéral
+`"/catalog/salons/{salon_id}"` ajouté à `PUBLIC_ROUTE_PATHS`) : répond `200`/`404` **sans jeton**. La
+fiche s'appuie **exclusivement** sur `SalonCatalogRepository.get_active` (filtre `status = ACTIVE` en
+SQL) — un salon `INACTIVE`/`SUSPENDED` ou inexistant renvoie **404** (« absent du catalogue », pas
+d'oracle) ; un `salon_id` mal formé → **422**. Les prestations proviennent de `list_active_services`
+(**actives seulement**, filtre `is_active = true` en SQL) : une prestation désactivée (#17) n'apparaît
+jamais.
+
+```jsonc
+// Réponse 200 — GET /catalog/salons/{salon_id}
+{
+  "id": "…uuid…",
+  "name": "Salon Élégance",
+  "description": "Coiffure afro et tresses.",
+  "phone": "+2250700000000",            // donnée d'établissement (reportée de #18)
+  "address": "Rue des Jardins, Cocody",
+  "city": "Abidjan",
+  "commune": "Cocody",
+  "latitude": 5.359952,
+  "longitude": -3.996643,
+  "logo_url": "https://…signée…",        // ou null
+  "photos": [ { "id": "…uuid…", "url": "https://…signée…" } ],   // ou []
+  "opening_hours": {                      // ou null si non configuré (⇒ is_bookable=false)
+    "version": 1, "timezone": "Africa/Abidjan",
+    "weekly": { "mon": [ { "start": "08:00", "end": "18:00" } ] },
+    "exceptions": []
+  },
+  "services": [                           // prestations ACTIVE uniquement
+    { "id": "…uuid…", "name": "Coupe homme", "description": "…",
+      "price": "5000.00", "duration_minutes": 30, "category": "Coupe" }
+  ],
+  "is_bookable": false                    // §8.3 : ACTIVE mais sans horaire ⇒ pas encore réservable
+}
+```
+
+**Aucun** `owner_id`, `status` ni timestamp de salon ; **aucune** prestation `is_active`/`salon_id` ;
+jamais de clé d'objet brute. C'est le **point d'entrée** de la réservation, mais la **réservation**
+(#21+) et le **calcul de créneaux libres** ne sont **pas** livrés ici.
 
 ## Configuration
 
@@ -880,3 +921,45 @@ Issue #17 ajoute cinq suites dédiées à la gestion des prestations et au journ
   aucun secret/PII dans `metadata`, invariant §11.3/§11.4) ; isolation inter-salons → `403` générique ;
   validation bout-en-bout : prix ou durée manquants/invalides → `422`, aucune entrée d'audit créée
   (atomicité) ; deny-by-default : toutes les routes → `401` sans jeton.
+
+Issue #18 ajoute deux suites dédiées au catalogue client (recherche/liste) :
+
+- `test_search_salons_usecase.py` — cas d'usage `SearchSalons` (ports 100 % fakes, sans base) :
+  invariant §8.3 — seuls les salons `ACTIVE` remontent (`INACTIVE`/`SUSPENDED` exclus) ; recherche
+  par nom (`text`, `ILIKE` sous-chaîne), filtre par ville/commune ; résolution du logo en **URL
+  signée** (avec et sans `MediaStorage`) ; projection publique — `owner_id`, `status`,
+  `opening_hours`, `phone` **absents** de `PublicSalonView` (pas d'oracle de compte, pas de
+  divulgation d'état) ; `is_bookable` : `True` si `ACTIVE` + `opening_hours` non null (§8.3), `False`
+  sinon ; pagination (`limit`, `offset`, `total` cohérents) ; `escape_like` : métacaractères LIKE
+  (`%`, `_`, `\\`) correctement échappés.
+- `test_catalog_api.py` — adapter entrant (`TestClient`, ports fakes, sans base) :
+  `GET /catalog/salons` accessible **sans jeton** (`200`) — route publique-listée (`PUBLIC_ROUTE_PATHS`) ;
+  invariant §8.3 : `INACTIVE`/`SUSPENDED` **jamais** dans la réponse ; salons `ACTIVE` visibles ;
+  filtres `?q=`, `?city=`, `?commune=` ; pagination — `?limit=`/`?offset=` valides → `200`, hors
+  bornes → `422` ; projection : `owner_id`, `status`, `opening_hours`, `phone` absents du JSON ;
+  `logo_url` — URL **signée** si stockage configuré, `null` sinon (jamais la clé d'objet) ;
+  invariant deny-by-default (ADR-0015) : aucune route orpheline (`unprotected_routes` vide).
+
+Issue #19 ajoute deux suites dédiées à la fiche salon publique (détail) :
+
+- `test_get_public_salon_usecase.py` — cas d'usage `GetPublicSalon` (ports 100 % fakes, sans base) :
+  salon `ACTIVE` → `PublicSalonDetailView` complète ; salon `INACTIVE`/`SUSPENDED`/inconnu →
+  `SalonNotFound` ; `services` — **actives seulement** (filtre `is_active=True`, les désactivées
+  exclues) ; `PublicServiceView` expose `price` (`Decimal`) + `duration_minutes` + `category` + `id` +
+  `description` — **sans** `is_active`, `salon_id` ni timestamps ; salon sans prestation → tuple vide ;
+  `opening_hours` remontés tels quels, `None` si non configuré → `is_bookable=False` (§8.3) ;
+  logo et photos **signés** via `FakeMediaStorage`, `None`/liste de `None` si stockage absent ;
+  `logo_url=None` quand aucun `logo_object_key` même avec stockage configuré (invariant ADR-0005 :
+  jamais de clé brute) ; `PublicSalonDetailView` sans `owner_id`, `status`, `created_at`,
+  `updated_at` ni `logo_object_key`.
+- `test_catalog_detail_api.py` — adapter entrant (`TestClient`, ports fakes, sans base) :
+  `GET /catalog/salons/{salon_id}` accessible **sans jeton** (`200`) et même avec un en-tête
+  `Authorization` présent (route publique-listée, pas bloquée) ; critère §8.3 : `INACTIVE`/`SUSPENDED`
+  → **404**, UUID inconnu → **404**, `salon_id` mal formé → **422** ; salon `ACTIVE` → **200** avec
+  `services` (actives seulement — prestation désactivée absente), `opening_hours`, `price`,
+  `is_bookable` ; `opening_hours=null` si non configuré → `is_bookable=false` ; projection : ni
+  `owner_id`, ni `status`, ni timestamps dans la réponse salon ; prestation sans `is_active`,
+  `salon_id` ni `created_at` ; `logo_url` — URL **signée** (jamais la clé brute), `null` si stockage
+  absent ; photos — URLs signées, clé d'objet brute non exposée, `[]` si aucune photo ;
+  coordonnées sérialisées en **nombres flottants** JSON ; invariant deny-by-default : `unprotected_routes`
+  vide après ajout de la route de détail.

@@ -7,6 +7,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../application/use_cases/get_salon_detail.dart';
 import '../../application/use_cases/search_salons.dart';
 import '../data/api_config.dart';
 import '../data/http_salon_catalog_gateway.dart';
@@ -21,6 +22,7 @@ class CoifLinkApp extends StatelessWidget {
     // (`API_BASE_URL`), jamais codée en dur (spec §Security 7).
     final gateway = HttpSalonCatalogGateway(config: ApiConfig.fromEnvironment());
     final searchSalons = SearchSalons(gateway);
+    final getSalonDetail = GetSalonDetail(gateway);
 
     return MaterialApp(
       title: 'CoifLink',
@@ -28,15 +30,23 @@ class CoifLinkApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
-      home: AccueilEcran(searchSalons: searchSalons),
+      home: AccueilEcran(
+        searchSalons: searchSalons,
+        getSalonDetail: getSalonDetail,
+      ),
     );
   }
 }
 
 class AccueilEcran extends StatelessWidget {
-  const AccueilEcran({super.key, required this.searchSalons});
+  const AccueilEcran({
+    super.key,
+    required this.searchSalons,
+    required this.getSalonDetail,
+  });
 
   final SearchSalons searchSalons;
+  final GetSalonDetail getSalonDetail;
 
   @override
   Widget build(BuildContext context) {
@@ -54,8 +64,10 @@ class AccueilEcran extends StatelessWidget {
               onPressed: () {
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
-                    builder: (_) =>
-                        SalonSearchScreen(searchSalons: searchSalons),
+                    builder: (_) => SalonSearchScreen(
+                      searchSalons: searchSalons,
+                      getSalonDetail: getSalonDetail,
+                    ),
                   ),
                 );
               },

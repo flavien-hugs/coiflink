@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:coiflink_mobile/adapters/ui/salon_search_screen.dart';
 import 'package:coiflink_mobile/application/ports/salon_catalog_gateway.dart';
 import 'package:coiflink_mobile/application/use_cases/search_salons.dart';
+import 'package:coiflink_mobile/domain/salon/salon_detail.dart';
 import 'package:coiflink_mobile/domain/salon/salon_summary.dart';
 
 // ---------------------------------------------------------------------------
@@ -23,6 +24,9 @@ class _StubGateway implements SalonCatalogGateway {
 
   @override
   Future<SalonPage> searchSalons(SalonSearchQuery query) async => _page;
+
+  @override
+  Future<SalonDetail> getSalon(String id) => throw UnimplementedError();
 }
 
 class _FailingGateway implements SalonCatalogGateway {
@@ -30,6 +34,9 @@ class _FailingGateway implements SalonCatalogGateway {
   Future<SalonPage> searchSalons(SalonSearchQuery query) async {
     throw const SalonCatalogException('Serveur indisponible.');
   }
+
+  @override
+  Future<SalonDetail> getSalon(String id) => throw UnimplementedError();
 }
 
 // ---------------------------------------------------------------------------
@@ -178,4 +185,7 @@ class _TrackingGateway implements SalonCatalogGateway {
     onCall();
     throw const SalonCatalogException('Serveur indisponible.');
   }
+
+  @override
+  Future<SalonDetail> getSalon(String id) => throw UnimplementedError();
 }

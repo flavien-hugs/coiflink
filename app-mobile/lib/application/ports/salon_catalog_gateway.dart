@@ -4,6 +4,7 @@
 // (ADR-0008) : le cas d'usage `SearchSalons` en dépend, l'adapter
 // `HttpSalonCatalogGateway` l'implémente, et les tests le remplacent par un faux.
 
+import '../../domain/salon/salon_detail.dart';
 import '../../domain/salon/salon_summary.dart';
 
 /// Bornes de pagination du catalogue (miroir du backend, spec §A.3).
@@ -78,10 +79,27 @@ class SalonCatalogException implements Exception {
   String toString() => 'SalonCatalogException: $message';
 }
 
+/// Levée quand un salon est **introuvable** (`404`) : inexistant ou non `ACTIVE`
+/// (§8.3, « absent du catalogue »). Distincte de [SalonCatalogException] pour que
+/// l'écran affiche un état « introuvable » propre plutôt qu'une erreur réseau.
+class SalonNotFoundException extends SalonCatalogException {
+  const SalonNotFoundException([super.message = 'Salon introuvable.']);
+
+  @override
+  String toString() => 'SalonNotFoundException: $message';
+}
+
 /// Port de lecture du catalogue public de salons.
 abstract class SalonCatalogGateway {
   /// Retourne une page de salons `ACTIVE` correspondant à `query`.
   ///
   /// Lève [SalonCatalogException] en cas d'échec (réseau ou réponse invalide).
   Future<SalonPage> searchSalons(SalonSearchQuery query);
+
+  /// Retourne la fiche de détail d'un salon `ACTIVE` par identifiant (#19).
+  ///
+  /// Lève [SalonNotFoundException] si le salon est inexistant ou non `ACTIVE`
+  /// (`404`), [SalonCatalogException] pour toute autre erreur (réseau, réponse
+  /// invalide).
+  Future<SalonDetail> getSalon(String id);
 }

@@ -116,6 +116,14 @@ PUBLIC_ROUTE_PATHS: frozenset[str] = frozenset(
         # PII de gestion. Ouvre le parcours client §7.1/§5.1 (browse avant connexion)
         # alors que l'auth cliente n'existe pas encore côté mobile.
         "/catalog/salons",
+        # Fiche salon (#19, US-2.4) — même décision de sécurité (spec §A.2, ADR-0021) :
+        # détail **en lecture seule** d'un salon `ACTIVE` (§8.3) — prestations
+        # actives, horaires, médias signés, `is_bookable` — **sans** `owner_id`,
+        # `status` ni PII de gestion. `is_public_path` compare le `route.path` **à
+        # l'identique** : le chemin doit inclure le placeholder `{salon_id}` (un
+        # préfixe ne suffit pas), sinon la route serait orpheline
+        # (`unprotected_routes` échouerait).
+        "/catalog/salons/{salon_id}",
     }
 )
 

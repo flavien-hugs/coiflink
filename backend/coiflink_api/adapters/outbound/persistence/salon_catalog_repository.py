@@ -20,10 +20,17 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
-from coiflink_api.adapters.outbound.persistence.salon_repository import _to_domain
+from coiflink_api.adapters.outbound.persistence.salon_repository import (
+    _photo_to_domain,
+    _to_domain,
+)
+from coiflink_api.adapters.outbound.persistence.service_repository import (
+    _to_domain as _service_to_domain,
+)
 from coiflink_api.application.ports.salon_catalog_repository import SalonSearchQuery
 from coiflink_api.domain.enums import SalonStatus
-from coiflink_api.domain.salon import Salon
+from coiflink_api.domain.salon import Salon, SalonPhoto
+from coiflink_api.domain.service import Service
 
 # Caractère d'échappement des métacaractères `LIKE` (`%`, `_`). Il est déclaré à
 # SQLAlchemy via `escape=` afin que la recherche traite un `%` saisi comme un
@@ -75,6 +82,35 @@ class SqlSalonCatalogRepository:
         )
         row = self._session.scalar(stmt)
         return _to_domain(row) if row is not None else None
+
+    def list_active_services(self, salon_id: uuid.UUID) -> tuple[Service, ...]:
+        """Prestations `ACTIVE` du salon, triées par nom (filtre `is_active` en SQL)."""
+
+        stmt = (
+            select(models.Service)
+            .where(
+                models.Service.salon_id == salon_id,
+                models.Service.is_active.is_(True),
+            )
+            .order_by(models.Service.name.asc(), models.Service.id.asc())
+        )
+        return tuple(
+            _service_to_domain(row) for row in self._session.scalars(stmt).all()
+        )
+
+    def list_photos(self, salon_id: uuid.UUID) -> tuple[SalonPhoto, ...]:
+        """Photos du salon, ordonnées par `position` croissante (galerie fiche)."""
+
+        stmt = (
+            select(models.SalonPhoto)
+            .where(models.SalonPhoto.salon_id == salon_id)
+            .order_by(
+                models.SalonPhoto.position.asc(), models.SalonPhoto.created_at.asc()
+            )
+        )
+        return tuple(
+            _photo_to_domain(row) for row in self._session.scalars(stmt).all()
+        )
 
     def _active_filtered(self, query: SalonSearchQuery):
         """`select(Salon)` filtré `ACTIVE` + recherche/zone (sans tri ni pagination).

@@ -225,6 +225,15 @@ les salons **`ACTIVE` uniquement** (§8.3 — un salon désactivé n'apparaît *
 seule** et **sans authentification**, avec une projection de vitrine (nom, localisation, logo signé,
 `is_bookable`) **sans** `owner_id` ni donnée de gestion ; côté application mobile, l'écran de
 **recherche/liste** (§7.1) et la première couche réseau du paquet Flutter accompagnent cette route.
+La **consultation d'un salon** est livrée (#19, voir
+[ADR-0021](./docs/adr/0021-consultation-salon-cote-client.md)) :
+`GET /catalog/salons/{salon_id}` renvoie la **fiche publique** d'un salon **`ACTIVE`** (§8.3 — 404
+sinon, sans oracle d'existence) agrégeant sa localisation complète (`phone` compris), ses **horaires**
+(#16), ses **prestations actives** avec prix et durée (#17), ses médias signés et l'indicateur
+`is_bookable` — sans `owner_id`, `status` ni donnée de gestion ; côté application mobile, l'**écran de
+fiche** (horaires, prestations, badge de disponibilité et **point d'entrée** de la réservation) et la
+**navigation depuis la liste** accompagnent cette route. La **réservation** elle-même reste **#21+**
+(Épic 3) : la fiche en est le point d'entrée, le flux n'est pas encore construit.
 
 ---
 
