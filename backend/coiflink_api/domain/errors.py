@@ -129,6 +129,57 @@ class ServiceNotFound(DomainError):
     """
 
 
+class SlotAlreadyBooked(DomainError):
+    """Le créneau est déjà réservé pour ce coiffeur (anti double-réservation, §8.1, #21).
+
+    Levée quand la contrainte d'exclusion base `ex_appointments_hairdresser_slot`
+    rejette une insertion — **y compris le perdant d'une course concurrente** : deux
+    réservations simultanées sur le même créneau/coiffeur, une seule aboutit. Message
+    **neutre** (ni PII ni détail SQL). L'adapter entrant la traduit en `409 Conflict`.
+    """
+
+
+class SlotUnavailable(DomainError):
+    """Le créneau demandé n'est pas dans l'offre réservable (US-3.7, #21).
+
+    Hors horaires d'ouverture, mal aligné sur la grille de créneaux, d'une durée
+    incohérente, passé ou débordant de la journée. Contrôle applicatif de **défense
+    en profondeur** en amont de l'arbitrage base. Message neutre — traduite en `409`.
+    """
+
+
+class SalonNotBookable(DomainError):
+    """Le salon n'est pas réservable : inactif ou sans horaire (§8.3, #21).
+
+    Miroir du prédicat `domain/salon.py::is_bookable` : aucune réservation ni lecture
+    de disponibilité n'est possible sur un salon non `ACTIVE` ou sans horaires.
+    Message neutre — l'adapter entrant la traduit en `409`.
+    """
+
+
+class HairdresserNotInSalon(DomainError):
+    """Le coiffeur visé n'est pas membre `ACTIVE` du salon réservé (§11.2, #21).
+
+    La contrainte d'exclusion `ex_appointments_hairdresser_slot` porte sur
+    `(hairdresser_id, slot)` **sans** `salon_id` : elle est globale, inter-salons. Sans
+    ce contrôle, un client authentifié pourrait soumettre l'UUID d'un utilisateur
+    arbitraire et occuper l'agenda d'un coiffeur d'un autre salon (déni de réservation
+    + atteinte à l'isolation par salon). Le rattachement est donc vérifié **en base**
+    (`salon_members`, table d'autorité de la portée employé) **avant** l'écriture.
+
+    Message **neutre** et traduite en `404` : un coiffeur d'un autre salon est
+    indiscernable d'un identifiant inexistant (aucun oracle d'existence).
+    """
+
+
+class AppointmentServiceRequired(DomainError):
+    """Réservation sans prestation (§8.1, #21).
+
+    Un rendez-vous doit comporter **au moins une** prestation (rien à réaliser ni à
+    facturer sinon). Message neutre — l'adapter entrant la traduit en `422`.
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -208,6 +259,11 @@ __all__ = [
     "InvalidServiceDuration",
     "InvalidServiceCategory",
     "ServiceNotFound",
+    "SlotAlreadyBooked",
+    "SlotUnavailable",
+    "SalonNotBookable",
+    "HairdresserNotInSalon",
+    "AppointmentServiceRequired",
     "InvalidOtp",
     "OtpExpired",
     "InvalidCredentials",

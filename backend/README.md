@@ -519,8 +519,53 @@ jamais.
 ```
 
 **Aucun** `owner_id`, `status` ni timestamp de salon ; **aucune** prestation `is_active`/`salon_id` ;
-jamais de clé d'objet brute. C'est le **point d'entrée** de la réservation, mais la **réservation**
-(#21+) et le **calcul de créneaux libres** ne sont **pas** livrés ici.
+jamais de clé d'objet brute. C'est le **point d'entrée** de la réservation (livrée par #21, ci-dessous).
+
+## Rendez-vous : disponibilité & anti double-réservation (US-3.7, #21 — [ADR-0023](../docs/adr/0023-moteur-disponibilite-anti-double-reservation.md))
+
+Deux surfaces au-dessus du **moteur de disponibilité pur** (`domain/availability.py`) et du chemin
+d'écriture transactionnel (`application/appointments.py`) :
+
+| Méthode | Route | Accès | Réponse | Erreurs |
+| --- | --- | --- | --- | --- |
+| `GET` | `/catalog/salons/{salon_id}/availability?date=&service_id=&hairdresser_id=` | **public** | `200` créneaux libres `{slots:[{date,start,end}]}` | `404` salon/prestation · `409` non réservable |
+| `POST` | `/salons/{salon_id}/appointments` | `APPOINTMENT_BOOK` (client) | `201` RDV `PENDING` | `409` créneau pris/non réservable · `422` sans prestation · `404` salon/prestation |
+
+- **La garantie anti double-réservation vient de la base**, pas de l'application : la contrainte
+  d'exclusion `ex_appointments_hairdresser_slot` (schéma #3) tranche **deux réservations concurrentes**
+  sur le même créneau/coiffeur — **une seule** aboutit (SQLSTATE `23P01` → `SlotAlreadyBooked` → `409`).
+  Le contrôle applicatif `is_offered` n'est qu'une **défense en profondeur** ; il ne remplace jamais
+  l'arbitrage base (TOCTOU fermé par l'`EXCLUDE`).
+- **Créneau fermé-ouvert `[start, end)`** : deux créneaux dos-à-dos (`end == start`) ne sont pas en
+  conflit. Fuseau **Africa/Abidjan = UTC+0** (cohérent avec `slot tsrange`). Grille MVP **15 min**.
+- **Anti-élévation** : `client_id = principal.id`, `salon_id` du chemin — jamais du corps
+  (`extra="ignore"`). Un `CLIENT` n'ayant aucune portée salon, la réservation **n'utilise pas**
+  `require_salon_scope`. La disponibilité n'expose que les créneaux **libres** (§11.3), jamais qui
+  occupe les créneaux pris. Un RDV **sans coiffeur** (`hairdresser_id` absent) est autorisé mais **hors**
+  garantie (l'`EXCLUDE` ne s'applique qu'à `hairdresser_id NOT NULL`).
+- **`hairdresser_id` validé contre `salon_members`** (§11.2) : l'exclusion porte sur
+  `(hairdresser_id, slot)` **sans** `salon_id` — elle est donc globale, inter-salons. Un
+  `hairdresser_id` qui n'est pas membre **`ACTIVE`** du salon ciblé est refusé (`404` générique) **avant**
+  l'écriture, sans quoi un client pourrait occuper l'agenda d'un coiffeur d'un autre salon.
+
+```jsonc
+// POST /salons/{salon_id}/appointments — corps (jamais client_id/salon_id/status)
+{ "date": "2026-08-01", "start_time": "09:00",
+  "service_ids": ["…uuid…"], "hairdresser_id": "…uuid…", "client_note": "Je préfère court." }
+```
+
+### Tests de concurrence (critère d'acceptation dur — PostgreSQL requis)
+
+La règle est **spécifique PostgreSQL** (`btree_gist` + `EXCLUDE`) : les tests de concurrence ne
+s'exécutent **pas** sur SQLite et **skip proprement** sans `DATABASE_URL` (patron
+`test_service_e2e.py`). Deux transactions/HTTP concurrents sur le même créneau/coiffeur → **exactement
+une réussite** et un `409`.
+
+```bash
+cd backend
+DATABASE_URL=postgresql://user:pwd@host/db alembic upgrade head
+DATABASE_URL=postgresql://user:pwd@host/db pytest tests/test_appointment_concurrency.py -v
+```
 
 ## Configuration
 
@@ -963,3 +1008,48 @@ Issue #19 ajoute deux suites dédiées à la fiche salon publique (détail) :
   absent ; photos — URLs signées, clé d'objet brute non exposée, `[]` si aucune photo ;
   coordonnées sérialisées en **nombres flottants** JSON ; invariant deny-by-default : `unprotected_routes`
   vide après ajout de la route de détail.
+
+Issue #21 ajoute cinq suites dédiées au moteur de disponibilité et à l'anti double-réservation :
+
+- `test_domain_appointment.py` — domaine pur (aucune I/O) : `require_services` (tuple vide →
+  `AppointmentServiceRequired`, non-vide → OK) ; `validate_booking_window` (`end ≤ start` →
+  `SlotUnavailable`, `end > start` → OK) ; `compute_end_time` (calcul normal, somme
+  multi-prestations, franchissement minuit → `SlotUnavailable`) ; invariants des dataclasses
+  (`BookedService`, `AppointmentToCreate`, `Appointment`) — champs préservés, valeurs par défaut,
+  immutabilité garantie.
+- `test_domain_availability.py` — moteur pur (aucune I/O) : `overlaps` (chevauchement strict
+  fermé-ouvert, adjacence `end == start` tolérée, dates différentes non conflictuelles) ;
+  `intervals_for_date` (jour absent/fermé, exception datée fermée prime, exception datée ouverte
+  prime, programme hebdomadaire par défaut, pauses/multi-intervalles) ; `free_slots` (cas de base,
+  jour fermé, service trop long, pauses, créneaux dos-à-dos adjacents, exclusion des `booked`,
+  exclusion des créneaux passés via `now`, granularité, tri, déduplication, `duration=0` → `()`) ;
+  `is_offered` (créneau dans l'offre, hors horaires, mal aligné, durée ≠ `duration_minutes`, passé,
+  déjà occupé) ; `add_minutes` (calcul normal, résultat franchissant minuit → `None`).
+- `test_appointment_usecases.py` — cas d'usage (ports 100 % fakes, sans base) :
+  `CheckAvailability` : salon inconnu → `SalonNotFound` ; salon non réservable → `SalonNotBookable` ;
+  prestation inactive/hors salon → `ServiceNotFound` ; salon réservable → créneaux libres renvoyés
+  par le moteur. `BookAppointment` : `client_id`/`salon_id` jamais issus du corps (anti-élévation) ;
+  prestation inconnue → `ServiceNotFound` ; `hairdresser_id` hors salon → `HairdresserNotInSalon` ;
+  salon non réservable → `SalonNotBookable` ; créneau hors offre → `SlotUnavailable` ; course
+  concurrente simulée (`FakeAppointmentRepository(raise_conflict=True)`) → `SlotAlreadyBooked`
+  et **rien persisté** ; réservation valide → `Appointment` avec les bons champs.
+- `test_appointment_api.py` — adapter entrant (`TestClient`, ports fakes, sans base) :
+  `GET /catalog/salons/{salon_id}/availability` : accessible **sans jeton** (`200` avec créneaux) ;
+  `404` salon inconnu/non actif ; `409` salon non réservable (§8.3) ; `422` paramètres invalides ;
+  réponse sans PII (§11.3). `POST /salons/{salon_id}/appointments` : `401` sans jeton ; `403`
+  mauvais rôle (`MANAGER`/`HAIRDRESSER`/`ADMIN`) ; `201` RDV `PENDING` avec bons champs ; `409`
+  course concurrente (`SlotAlreadyBooked`), créneau indisponible (`SlotUnavailable`) et salon non
+  réservable (`SalonNotBookable`) ; `404` prestation inconnue ; `422` sans prestation (corps
+  invalide) ; anti-élévation : `client_id` et `salon_id` ignorés s'ils figurent dans le corps ;
+  invariant deny-by-default (`unprotected_routes` vide — la route de disponibilité **est** publique-listée,
+  la réservation **ne l'est pas**).
+- `test_appointment_concurrency.py` — critère d'acceptation dur (PostgreSQL requis, **skip propre
+  sans `DATABASE_URL`**) : deux niveaux à **parallélisme réel** (`ThreadPoolExecutor` +
+  `threading.Barrier`) — (1) **niveau SQL** : deux `Session` distinctes (deux connexions/transactions)
+  tentent le même créneau/coiffeur → sous `READ COMMITTED`, exactement **1** succès et **1**
+  `SlotAlreadyBooked` ; vérification en base qu'une seule ligne `appointments` subsiste (le perdant
+  n'a rien persisté, ni RDV ni jonction `appointment_services`) ; (2) **niveau HTTP** : deux
+  `POST /salons/{id}/appointments` simultanés, pile complète (JWT réel, sessions réelles) → exactement
+  **un 201** et **un 409** (refus garanti par la contrainte d'exclusion `ex_appointments_hairdresser_slot`
+  ou le garde `is_offered` — les deux sont corrects). Les données de test sont supprimées avant et
+  après chaque test (pas de dépendance entre tests).

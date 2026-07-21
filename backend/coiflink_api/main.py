@@ -17,6 +17,7 @@ import secrets
 
 from fastapi import Depends, FastAPI
 
+from coiflink_api.adapters.inbound.appointments import router as appointments_router
 from coiflink_api.adapters.inbound.auth import router as auth_router
 from coiflink_api.adapters.inbound.catalog import router as catalog_router
 from coiflink_api.adapters.inbound.employees import router as employees_router
@@ -127,3 +128,9 @@ app.include_router(services_router)
 # projection de vitrine sans owner_id/PII. La route est publique-listée dans
 # `security.PUBLIC_ROUTE_PATHS` (décision de sécurité revue, ADR-0015).
 app.include_router(catalog_router)
+# Disponibilité & réservation (#21, US-3.7) : GET /catalog/salons/{id}/availability
+# (créneaux libres — public, patron catalogue) et POST /salons/{id}/appointments
+# (réservation client APPOINTMENT_BOOK). L'anti double-réservation est garanti par
+# la contrainte d'exclusion base ex_appointments_hairdresser_slot (schéma #3) ; la
+# disponibilité est publique-listée dans `security.PUBLIC_ROUTE_PATHS` (ADR-0023).
+app.include_router(appointments_router)
