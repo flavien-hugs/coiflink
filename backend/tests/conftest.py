@@ -722,6 +722,55 @@ class FakeAuditLog:
         self.recorded.append(entry)
 
 
+class FakeAppointmentRepository:
+    """Dépôt de rendez-vous en mémoire (US-3.7, #21).
+
+    Implémente le port `AppointmentRepository` sans I/O réelle. `booked` associe une
+    clé `(salon_id, hairdresser_id, date)` à des `SlotRange` déjà réservés (alimente
+    le moteur de disponibilité). `raise_conflict=True` simule la **course
+    concurrente** : `create` lève `SlotAlreadyBooked` (comme la violation de la
+    contrainte d'exclusion base) — et **rien** n'est persisté (`created` reste vide),
+    sur le patron de `FakeSalonMemberRepository(raise_duplicate=True)`.
+    """
+
+    def __init__(
+        self,
+        booked: dict | None = None,
+        *,
+        raise_conflict: bool = False,
+    ) -> None:
+        self._booked: dict = dict(booked or {})
+        self._raise_conflict = raise_conflict
+        self.created: list = []
+
+    def booked_slots(self, salon_id, hairdresser_id, date):  # type: ignore[no-untyped-def]
+        return tuple(self._booked.get((salon_id, hairdresser_id, date), ()))
+
+    def create(self, appointment):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.appointment import Appointment
+        from coiflink_api.domain.errors import SlotAlreadyBooked
+
+        if self._raise_conflict:
+            raise SlotAlreadyBooked(
+                "Ce créneau vient d'être réservé pour ce coiffeur."
+            )
+        self.created.append(appointment)
+        entity = Appointment(
+            id=uuid.uuid4(),
+            salon_id=appointment.salon_id,
+            client_id=appointment.client_id,
+            hairdresser_id=appointment.hairdresser_id,
+            date=appointment.date,
+            start_time=appointment.start_time,
+            end_time=appointment.end_time,
+            status=appointment.status,
+            client_note=appointment.client_note,
+            created_at=_CREATED_AT,
+            services=appointment.services,
+        )
+        return entity
+
+
 @pytest.fixture()
 def fake_service_repository() -> "FakeServiceRepository":
     return FakeServiceRepository()
@@ -735,3 +784,8 @@ def fake_audit_log() -> "FakeAuditLog":
 @pytest.fixture()
 def fake_salon_catalog_repository() -> "FakeSalonCatalogRepository":
     return FakeSalonCatalogRepository()
+
+
+@pytest.fixture()
+def fake_appointment_repository() -> "FakeAppointmentRepository":
+    return FakeAppointmentRepository()

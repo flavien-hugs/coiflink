@@ -124,6 +124,13 @@ PUBLIC_ROUTE_PATHS: frozenset[str] = frozenset(
         # préfixe ne suffit pas), sinon la route serait orpheline
         # (`unprotected_routes` échouerait).
         "/catalog/salons/{salon_id}",
+        # Disponibilité (#21, US-3.7) — même décision de sécurité (ADR-0023) :
+        # lecture **seule** des créneaux **libres** d'un salon `ACTIVE` (§8.3), sans
+        # jamais exposer l'identité de qui occupe les créneaux pris (§11.3). Ouvre la
+        # comparaison des disponibilités avant connexion (parcours client §5.1/§7.1).
+        # La **réservation** (`POST /salons/{salon_id}/appointments`) reste, elle,
+        # protégée (`APPOINTMENT_BOOK`) — seule la lecture est publique-listée.
+        "/catalog/salons/{salon_id}/availability",
     }
 )
 
