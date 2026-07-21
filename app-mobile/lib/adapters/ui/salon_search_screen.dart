@@ -24,6 +24,7 @@ class SalonSearchScreen extends StatefulWidget {
     super.key,
     required this.searchSalons,
     this.getSalonDetail,
+    this.onBook,
   });
 
   final SearchSalons searchSalons;
@@ -31,6 +32,10 @@ class SalonSearchScreen extends StatefulWidget {
   /// Cas d'usage de consultation de fiche (#19). `null` ⇒ cartes non cliquables
   /// (les tests de la liste #18 n'ont pas besoin de la navigation).
   final GetSalonDetail? getSalonDetail;
+
+  /// Lanceur du tunnel de réservation (#22), transmis à la fiche. `null` ⇒ point
+  /// d'entrée réservation inerte.
+  final BookingLauncher? onBook;
 
   @override
   State<SalonSearchScreen> createState() => _SalonSearchScreenState();
@@ -179,6 +184,7 @@ class _SalonSearchScreenState extends State<SalonSearchScreen> {
           salonId: salon.id,
           salonName: salon.name,
           getSalonDetail: widget.getSalonDetail!,
+          onBook: widget.onBook,
         ),
       ),
     );
