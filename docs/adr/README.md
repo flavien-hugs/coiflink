@@ -36,6 +36,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0021](./0021-consultation-salon-cote-client.md) | Consultation d'un salon côté client — fiche publique de détail, agrégation `ACTIVE`-only & point d'entrée réservation | Accepté | #19 |
 | [0022](./0022-modification-informations-salon.md) | Modification des informations du salon — réutilisation du chemin d'écriture #15 & garantie de réflexion côté client sans cache | Accepté | #20 |
 | [0023](./0023-moteur-disponibilite-anti-double-reservation.md) | Moteur de disponibilité & anti double-réservation — garantie portée par la contrainte d'exclusion base, moteur pur au-dessus | Accepté | #21 |
+| [0024](./0024-reservation-cote-client.md) | Réservation côté client — tunnel mobile & session cliente au-dessus des endpoints #21 | Accepté | #22 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 

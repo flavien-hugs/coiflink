@@ -240,9 +240,20 @@ jour les informations générales de son salon (nom, description, téléphone, l
 `opening_hours` restant non éditables par cette route. Ces changements sont **reflétés côté client**
 (catalogue #18 / fiche #19) **à la lecture suivante** — le catalogue relit les mêmes lignes `salons`,
 sans cache — garantie **verrouillée par un test e2e** (`backend/tests/test_salon_update_e2e.py`, dont
-la visibilité §8.3 : un salon désactivé reste absent du catalogue même après modification). La
-**réservation** elle-même reste **#21+** (Épic 3) : la fiche en est le point d'entrée, le flux n'est
-pas encore construit.
+la visibilité §8.3 : un salon désactivé reste absent du catalogue même après modification). Le
+**moteur de disponibilité & l'anti double-réservation** sont livrés (#21, voir
+[ADR-0023](./docs/adr/0023-moteur-disponibilite-anti-double-reservation.md)) :
+`GET /catalog/salons/{salon_id}/availability` expose les créneaux **libres** (endpoint **public**,
+exclut les passés, fuseau Africa/Abidjan UTC+0) ; `POST /salons/{salon_id}/appointments` crée le RDV
+au statut **`PENDING`** (client `APPOINTMENT_BOOK`), lié à ≥ 1 prestation, avec une contrainte
+d'**exclusion PostgreSQL** comme seule garantie anti double-réservation. Le **tunnel de réservation
+client** est livré (#22, **M3 en cours**, voir [ADR-0024](./docs/adr/0024-reservation-cote-client.md))
+: le bouton « Réserver » de la fiche salon ouvre désormais le parcours guidé (prestation → date →
+créneau → commentaire → confirmation) consommant les endpoints #21 — sans modifier le backend. La
+couche d'authentification cliente minimale (`POST /auth/login`, `TokenStore` en mémoire au MVP) est
+livrée dans ce même périmètre ; statut initial **« En attente »** affiché depuis la réponse du `POST`.
+L'historique « Mes rendez-vous », la modification/annulation (#23/#24) et le planning salon/coiffeur
+(#25–#27) restent à venir.
 
 ---
 

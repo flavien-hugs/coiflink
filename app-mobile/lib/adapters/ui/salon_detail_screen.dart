@@ -3,9 +3,10 @@
 // Charge la fiche via le cas d'usage `GetSalonDetail` (injecté) et affiche :
 // en-tête (logo, nom, localisation, badge `isBookable`), horaires, prestations +
 // prix, téléphone, et le **point d'entrée réservation** — un bouton « Réserver »
-// dérivé de `isBookable`. Aucun flux de réservation n'existe (#21+) : le bouton
-// est honnête (désactivé « Bientôt disponible », ou informe « bientôt
-// disponible » sans rien déclencher). États : chargement / introuvable / erreur.
+// dérivé de `isBookable`. Quand un lanceur de réservation est câblé (#22), le
+// bouton ouvre réellement le tunnel ; sinon il reste une affordance honnête
+// (désactivé « Bientôt disponible », ou message « bientôt disponible »). États :
+// chargement / introuvable / erreur.
 
 import 'package:flutter/material.dart';
 
@@ -16,12 +17,19 @@ import 'widgets/opening_hours_view.dart';
 import 'widgets/salon_photo_gallery.dart';
 import 'widgets/service_list_tile.dart';
 
+/// Ouvre le tunnel de réservation pour un salon `ACTIVE` réservable (#22).
+///
+/// Câblé par le composition root (`app.dart`) ; `null` ⇒ le point d'entrée reste
+/// inerte (message honnête), ce qui préserve les écrans/tests sans réservation.
+typedef BookingLauncher = void Function(BuildContext context, SalonDetail salon);
+
 class SalonDetailScreen extends StatefulWidget {
   const SalonDetailScreen({
     super.key,
     required this.salonId,
     required this.getSalonDetail,
     this.salonName,
+    this.onBook,
   });
 
   final String salonId;
@@ -30,6 +38,9 @@ class SalonDetailScreen extends StatefulWidget {
   /// Nom déjà connu (depuis la liste) — affiché dans la barre pendant le
   /// chargement pour éviter un titre vide (facultatif).
   final String? salonName;
+
+  /// Lanceur du tunnel de réservation (#22). `null` ⇒ point d'entrée inerte.
+  final BookingLauncher? onBook;
 
   @override
   State<SalonDetailScreen> createState() => _SalonDetailScreenState();
@@ -93,14 +104,15 @@ class _SalonDetailScreenState extends State<SalonDetailScreen> {
     if (_error != null) {
       return _ErrorState(message: _error!, onRetry: _load);
     }
-    return _SalonDetailBody(salon: _salon!);
+    return _SalonDetailBody(salon: _salon!, onBook: widget.onBook);
   }
 }
 
 class _SalonDetailBody extends StatelessWidget {
-  const _SalonDetailBody({required this.salon});
+  const _SalonDetailBody({required this.salon, this.onBook});
 
   final SalonDetail salon;
+  final BookingLauncher? onBook;
 
   @override
   Widget build(BuildContext context) {
@@ -141,7 +153,7 @@ class _SalonDetailBody extends StatelessWidget {
           for (final service in salon.services)
             ServiceListTile(service: service),
         const SizedBox(height: 24),
-        _BookingCta(isBookable: salon.isBookable),
+        _BookingCta(salon: salon, onBook: onBook),
       ],
     );
   }
@@ -214,17 +226,21 @@ class _BookableBadge extends StatelessWidget {
   }
 }
 
-/// Point d'entrée de la réservation (#21+ non livré) : affordance **honnête**.
-/// Aucun flux de réservation n'est déclenché — le bouton informe que la
-/// réservation arrive bientôt (`isBookable=true`) ou reste désactivé sinon.
+/// Point d'entrée de la réservation (#22).
+///
+/// - `isBookable == false` (§8.3) → bouton désactivé « Bientôt disponible ».
+/// - `isBookable == true` **et** un lanceur câblé → ouvre le tunnel (#22).
+/// - `isBookable == true` sans lanceur → affordance honnête (message), pour les
+///   contextes/tests sans réservation.
 class _BookingCta extends StatelessWidget {
-  const _BookingCta({required this.isBookable});
+  const _BookingCta({required this.salon, this.onBook});
 
-  final bool isBookable;
+  final SalonDetail salon;
+  final BookingLauncher? onBook;
 
   @override
   Widget build(BuildContext context) {
-    if (!isBookable) {
+    if (!salon.isBookable) {
       return const SizedBox(
         width: double.infinity,
         child: FilledButton(
@@ -239,11 +255,16 @@ class _BookingCta extends StatelessWidget {
         icon: const Icon(Icons.event_available),
         label: const Text('Réserver'),
         onPressed: () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Réservation bientôt disponible.'),
-            ),
-          );
+          final launcher = onBook;
+          if (launcher == null) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Réservation bientôt disponible.'),
+              ),
+            );
+            return;
+          }
+          launcher(context, salon);
         },
       ),
     );
