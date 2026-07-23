@@ -917,6 +917,80 @@ class TestIsExclusionViolation:
 # ---------------------------------------------------------------------------
 
 _CANCEL_APPT_ID = uuid.UUID("cccccccc-0000-0000-0000-000000000001")
+_SET_STATUS_APPT_ID = uuid.UUID("dddddddd-0000-0000-0000-000000000001")
+_ASSIGN_APPT_ID = uuid.UUID("eeeeeeee-0000-0000-0000-000000000001")
+
+
+def _manager_client(
+    appts: FakeAppointmentRepository | None = None,
+    scope: FakeSalonScopeRepository | None = None,
+) -> TestClient:
+    """TestClient configuré pour MANAGER avec `_SALON_ID` dans sa portée (#25)."""
+    ap = appts if appts is not None else FakeAppointmentRepository()
+    manager_scope = FakeSalonScopeRepository({_MANAGER_ID: frozenset({_SALON_ID})})
+    hairdresser_scope = (
+        scope
+        if scope is not None
+        else FakeSalonScopeRepository({_HAIRDRESSER_ID: frozenset({_SALON_ID})})
+    )
+    app.dependency_overrides[get_appointment_repository] = lambda: ap
+    app.dependency_overrides[get_catalog_repository] = lambda: _catalog()
+    app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
+    app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
+    app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(manager_scope)
+    app.dependency_overrides[get_salon_scope_repository] = lambda: hairdresser_scope
+    return TestClient(app)
+
+
+def _make_status_entity(
+    *,
+    appt_id: uuid.UUID = _SET_STATUS_APPT_ID,
+    status: str = "PENDING",
+) -> AppointmentEntity:
+    return AppointmentEntity(
+        id=appt_id,
+        salon_id=_SALON_ID,
+        client_id=_CLIENT_ID,
+        hairdresser_id=_HAIRDRESSER_ID,
+        date=datetime.date(2026, 8, 3),
+        start_time=datetime.time(9, 0),
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT,
+        services=(
+            BookedServiceEntity(
+                service_id=_SERVICE_ID,
+                price_at_booking=decimal.Decimal("5000.00"),
+            ),
+        ),
+    )
+
+
+def _make_assign_entity(
+    *,
+    appt_id: uuid.UUID = _ASSIGN_APPT_ID,
+    status: str = "PENDING",
+    hairdresser_id: uuid.UUID | None = None,
+) -> AppointmentEntity:
+    return AppointmentEntity(
+        id=appt_id,
+        salon_id=_SALON_ID,
+        client_id=_CLIENT_ID,
+        hairdresser_id=hairdresser_id,
+        date=datetime.date(2026, 8, 3),
+        start_time=datetime.time(9, 0),
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT,
+        services=(
+            BookedServiceEntity(
+                service_id=_SERVICE_ID,
+                price_at_booking=decimal.Decimal("5000.00"),
+            ),
+        ),
+    )
 
 
 def _cancel_client(
@@ -1142,3 +1216,387 @@ class TestCancelAppointmentAPI:
         assert "client" not in detail.lower()
         assert "sql" not in detail.lower()
         assert "postgres" not in detail.lower()
+
+
+# ---------------------------------------------------------------------------
+# POST /salons/{salon_id}/appointments/{appointment_id}/status (US-3.4, #25)
+# ---------------------------------------------------------------------------
+
+
+class TestSetAppointmentStatusAPI:
+    """Cycle de statuts gérant via HTTP : portée → machine à états → HTTP (§11.4, #25)."""
+
+    def _url(self, appt_id: uuid.UUID = _SET_STATUS_APPT_ID) -> str:
+        return f"/salons/{_SALON_ID}/appointments/{appt_id}/status"
+
+    # --- Authentification / autorisation ------------------------------------
+
+    def test_no_token_returns_401(self) -> None:
+        resp = _manager_client().post(self._url(), json={"status": "CONFIRMED"})
+        assert resp.status_code == 401
+
+    def test_client_role_returns_403(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_status_entity()])
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="CLIENT")
+        )
+        assert resp.status_code == 403
+
+    def test_admin_role_returns_403(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_status_entity()])
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="ADMIN")
+        )
+        assert resp.status_code == 403
+
+    def test_manager_out_of_scope_returns_403(self) -> None:
+        # Gérant sans portée sur _SALON_ID → require_salon_scope → 403.
+        appts = FakeAppointmentRepository(appointments=[_make_status_entity()])
+        app.dependency_overrides[get_appointment_repository] = lambda: appts
+        app.dependency_overrides[get_catalog_repository] = lambda: _catalog()
+        app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
+        app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(
+            FakeSalonScopeRepository()
+        )
+        app.dependency_overrides[get_salon_scope_repository] = lambda: FakeSalonScopeRepository()
+        tc = TestClient(app)
+        resp = tc.post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 403
+
+    # --- Validation Pydantic (422) -----------------------------------------
+
+    def test_invalid_status_value_returns_422(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_status_entity()])
+        resp = _manager_client(appts=appts).post(
+            self._url(),
+            json={"status": "INVALID_STATUS"},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 422
+
+    def test_missing_status_field_returns_422(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_status_entity()])
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 422
+
+    # --- Cas valides ---------------------------------------------------------
+
+    def test_pending_to_confirmed_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 200
+
+    def test_pending_to_cancelled_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "CANCELLED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 200
+
+    def test_confirmed_to_completed_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="CONFIRMED")]
+        )
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "COMPLETED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 200
+
+    def test_response_status_updated(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.json()["status"] == "CONFIRMED"
+
+    def test_response_contains_appointment_fields(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
+        )
+        data = resp.json()
+        assert "id" in data
+        assert "salon_id" in data
+        assert "client_id" in data
+        assert "status" in data
+
+    # --- Transitions interdites (409) ----------------------------------------
+
+    def test_terminal_appointment_returns_409(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="CANCELLED")]
+        )
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 409
+
+    def test_forbidden_transition_returns_409(self) -> None:
+        # PENDING → COMPLETED est interdit par la machine à états (deny-by-default).
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "COMPLETED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 409
+
+    def test_toctou_guard_returns_409(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")],
+            raise_invalid_transition=True,
+        )
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 409
+
+    # --- RDV introuvable (404) -----------------------------------------------
+
+    def test_unknown_appointment_returns_404(self) -> None:
+        appts = FakeAppointmentRepository()
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 404
+
+    # --- Anti-élévation §11.2 -----------------------------------------------
+
+    def test_extra_body_fields_ignored(self) -> None:
+        # `extra="ignore"` : `client_id`/`salon_id` dans le corps doivent être ignorés.
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        injected_client = str(uuid.uuid4())
+        resp = _manager_client(appts=appts).post(
+            self._url(),
+            json={"status": "CONFIRMED", "client_id": injected_client},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["client_id"] == str(_CLIENT_ID)
+
+    # --- Motif (§11.3) -------------------------------------------------------
+
+    def test_reason_accepted_on_cancelled_transition(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        resp = _manager_client(appts=appts).post(
+            self._url(),
+            json={"status": "CANCELLED", "reason": "Salon fermé exceptionnellement."},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+
+    def test_409_response_is_neutral(self) -> None:
+        # §11.3 : la réponse 409 ne divulgue ni PII ni détail SQL.
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="CANCELLED")]
+        )
+        resp = _manager_client(appts=appts).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 409
+        detail = resp.json().get("detail", "")
+        assert "sql" not in detail.lower()
+        assert "postgres" not in detail.lower()
+
+
+# ---------------------------------------------------------------------------
+# PUT /salons/{salon_id}/appointments/{appointment_id}/hairdresser (US-3.4, #25)
+# ---------------------------------------------------------------------------
+
+
+class TestAssignHairdresserAPI:
+    """Assignation coiffeur via HTTP : portée → appartenance → conflit → HTTP (#25)."""
+
+    def _url(self, appt_id: uuid.UUID = _ASSIGN_APPT_ID) -> str:
+        return f"/salons/{_SALON_ID}/appointments/{appt_id}/hairdresser"
+
+    # --- Authentification / autorisation ------------------------------------
+
+    def test_no_token_returns_401(self) -> None:
+        resp = _manager_client().put(
+            self._url(), json={"hairdresser_id": str(_HAIRDRESSER_ID)}
+        )
+        assert resp.status_code == 401
+
+    def test_client_role_returns_403(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_assign_entity()])
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": str(_HAIRDRESSER_ID)},
+            headers=_auth_header(role="CLIENT"),
+        )
+        assert resp.status_code == 403
+
+    def test_hairdresser_role_returns_403(self) -> None:
+        # HAIRDRESSER n'a pas APPOINTMENT_MANAGE.
+        appts = FakeAppointmentRepository(appointments=[_make_assign_entity()])
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": str(_HAIRDRESSER_ID)},
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 403
+
+    def test_admin_role_returns_403(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_assign_entity()])
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": str(_HAIRDRESSER_ID)},
+            headers=_auth_header(role="ADMIN"),
+        )
+        assert resp.status_code == 403
+
+    # --- Cas valides ---------------------------------------------------------
+
+    def test_assign_hairdresser_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_assign_entity(status="PENDING")]
+        )
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": str(_HAIRDRESSER_ID)},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+
+    def test_deassign_hairdresser_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_assign_entity(status="PENDING", hairdresser_id=_HAIRDRESSER_ID)]
+        )
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": None},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+
+    def test_response_hairdresser_id_updated(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_assign_entity(status="PENDING")]
+        )
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": str(_HAIRDRESSER_ID)},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.json()["hairdresser_id"] == str(_HAIRDRESSER_ID)
+
+    def test_response_hairdresser_id_null_after_deassign(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_assign_entity(status="PENDING", hairdresser_id=_HAIRDRESSER_ID)]
+        )
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": None},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.json()["hairdresser_id"] is None
+
+    def test_confirmed_appointment_assign_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_assign_entity(status="CONFIRMED")]
+        )
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": str(_HAIRDRESSER_ID)},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+
+    # --- Erreurs métier -------------------------------------------------------
+
+    def test_unknown_appointment_returns_404(self) -> None:
+        appts = FakeAppointmentRepository()
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": str(_HAIRDRESSER_ID)},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 404
+
+    def test_hairdresser_not_in_salon_returns_404(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_assign_entity(status="PENDING")]
+        )
+        other_hairdresser = uuid.UUID("ffffffff-0000-0000-0000-000000000001")
+        # Portée vide → le coiffeur demandé n'est pas membre du salon.
+        scope = FakeSalonScopeRepository()
+        resp = _manager_client(appts=appts, scope=scope).put(
+            self._url(),
+            json={"hairdresser_id": str(other_hairdresser)},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 404
+
+    def test_terminal_appointment_returns_409(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_assign_entity(status="CANCELLED")]
+        )
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": None},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 409
+
+    def test_slot_conflict_returns_409(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_assign_entity(status="PENDING")],
+            raise_conflict=True,
+        )
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={"hairdresser_id": str(_HAIRDRESSER_ID)},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 409
+
+    # --- Corps invalide (422) ------------------------------------------------
+
+    def test_missing_hairdresser_field_returns_422(self) -> None:
+        # `hairdresser_id` est **requis** (null accepté mais absence rejetée).
+        appts = FakeAppointmentRepository(
+            appointments=[_make_assign_entity(status="PENDING")]
+        )
+        resp = _manager_client(appts=appts).put(
+            self._url(), json={}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 422
+
+    # --- Anti-élévation §11.2 ------------------------------------------------
+
+    def test_extra_body_fields_ignored(self) -> None:
+        # `extra="ignore"` : `status` et `salon_id` dans le corps doivent être ignorés.
+        appts = FakeAppointmentRepository(
+            appointments=[_make_assign_entity(status="PENDING")]
+        )
+        resp = _manager_client(appts=appts).put(
+            self._url(),
+            json={
+                "hairdresser_id": str(_HAIRDRESSER_ID),
+                "status": "CANCELLED",
+                "salon_id": str(uuid.uuid4()),
+            },
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "PENDING"

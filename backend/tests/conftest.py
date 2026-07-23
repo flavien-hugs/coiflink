@@ -741,15 +741,21 @@ class FakeAppointmentRepository:
         raise_conflict: bool = False,
         raise_not_modifiable: bool = False,
         raise_not_cancellable: bool = False,
+        raise_invalid_transition: bool = False,
         appointments: list | None = None,
     ) -> None:
         self._booked: dict = dict(booked or {})
         self._raise_conflict = raise_conflict
         self._raise_not_modifiable = raise_not_modifiable
         self._raise_not_cancellable = raise_not_cancellable
+        self._raise_invalid_transition = raise_invalid_transition
         self.created: list = []
         self.updated: list = []
         self.cancelled: list = []
+        # #25 — mémorise les transitions `(appointment_id, from, to, reason)` et les
+        # (dés)assignations `(appointment_id, hairdresser_id)` pour assertions.
+        self.status_changes: list = []
+        self.assignments: list = []
         self.booked_slots_calls: list = []
         self._appointments: dict = {}
         for appt in (appointments or []):
@@ -857,6 +863,86 @@ class FakeAppointmentRepository:
             appt,
             status=AppointmentStatus.CANCELLED.value,
         )
+        self._appointments[appointment_id] = updated
+        return updated
+
+    def get_in_salon(self, appointment_id, salon_id):  # type: ignore[no-untyped-def]
+        """Retourne le RDV si et seulement si `salon_id` correspond (§11.2, #25)."""
+        appt = self._appointments.get(appointment_id)
+        if appt is None or appt.salon_id != salon_id:
+            return None
+        return appt
+
+    def set_status(  # type: ignore[no-untyped-def]
+        self,
+        appointment_id,
+        salon_id,
+        *,
+        expected_current,
+        target,
+        reason=None,
+    ):
+        """Transition de statut gérant (UPDATE conditionnel salon + statut, #25).
+
+        `raise_invalid_transition=True` simule la garde TOCTOU/hors-portée : lève
+        `InvalidAppointmentTransition`. Sinon, refuse (même erreur) un RDV disparu,
+        hors salon, ou dont le statut ne correspond pas à `expected_current` — miroir
+        du `WHERE id AND salon_id AND status = :expected` du SQL. `status_changes`
+        enregistre `(appointment_id, from, to, reason)`.
+        """
+        import dataclasses as _dc
+        from coiflink_api.domain.errors import InvalidAppointmentTransition
+
+        if self._raise_invalid_transition:
+            raise InvalidAppointmentTransition(
+                "Cette transition de statut n'est pas autorisée."
+            )
+        appt = self._appointments.get(appointment_id)
+        if (
+            appt is None
+            or appt.salon_id != salon_id
+            or appt.status != expected_current
+        ):
+            raise InvalidAppointmentTransition(
+                "Cette transition de statut n'est pas autorisée."
+            )
+        self.status_changes.append(
+            (appointment_id, expected_current, target, reason)
+        )
+        updated = _dc.replace(appt, status=target)
+        self._appointments[appointment_id] = updated
+        return updated
+
+    def assign_hairdresser(self, appointment_id, salon_id, *, hairdresser_id):  # type: ignore[no-untyped-def]
+        """(Dés)assigne un coiffeur à un RDV actif du salon (#25).
+
+        `raise_conflict=True` simule le conflit d'agenda (exclusion base) : lève
+        `SlotAlreadyBooked`. Refuse (via `InvalidAppointmentTransition`) un RDV
+        disparu, hors salon ou terminal — miroir du `WHERE ... status IN (actifs)`.
+        `assignments` enregistre `(appointment_id, hairdresser_id)`.
+        """
+        import dataclasses as _dc
+        from coiflink_api.domain.appointment import CLIENT_MODIFIABLE_STATUSES
+        from coiflink_api.domain.errors import (
+            InvalidAppointmentTransition,
+            SlotAlreadyBooked,
+        )
+
+        if self._raise_conflict:
+            raise SlotAlreadyBooked(
+                "Ce créneau vient d'être réservé pour ce coiffeur."
+            )
+        appt = self._appointments.get(appointment_id)
+        if (
+            appt is None
+            or appt.salon_id != salon_id
+            or appt.status not in CLIENT_MODIFIABLE_STATUSES
+        ):
+            raise InvalidAppointmentTransition(
+                "Ce rendez-vous n'accepte plus d'assignation de coiffeur."
+            )
+        self.assignments.append((appointment_id, hairdresser_id))
+        updated = _dc.replace(appt, hairdresser_id=hairdresser_id)
         self._appointments[appointment_id] = updated
         return updated
 

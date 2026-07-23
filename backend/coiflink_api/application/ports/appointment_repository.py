@@ -107,6 +107,66 @@ class AppointmentRepository(Protocol):
         """
         ...
 
+    def get_in_salon(
+        self, appointment_id: uuid.UUID, salon_id: uuid.UUID
+    ) -> Appointment | None:
+        """Charge le RDV **et** ses `BookedService` ssi il appartient à `salon_id`
+        (isolation §11.2 imposée en SQL, US-3.4 #25 — analogue salon-scopé de
+        `get_owned`).
+
+        Le filtre porte sur `id` **et** `salon_id` : un RDV d'un autre salon est
+        indiscernable d'un identifiant inexistant. Retourne `None` dans les deux
+        cas — le cas d'usage lève alors un `404` générique **après** la portée
+        (aucun oracle d'existence). Jamais un RDV hors salon.
+        """
+        ...
+
+    def set_status(
+        self,
+        appointment_id: uuid.UUID,
+        salon_id: uuid.UUID,
+        *,
+        expected_current: str,
+        target: str,
+        reason: str | None = None,
+    ) -> Appointment:
+        """Fait passer le RDV vers `target` (transition de statut gérant, US-3.4 #25).
+
+        Écriture **conditionnée** au salon **et** au statut courant attendu
+        (`WHERE id = :id AND salon_id = :salon_id AND status = :expected_current`) :
+        si aucune ligne ne correspond (RDV disparu, hors salon, ou statut changé
+        entre la lecture et l'écriture — garde TOCTOU), lève
+        `domain.errors.InvalidAppointmentTransition`. Pose `status = :target` et,
+        **uniquement** si `target = 'CANCELLED'`, `cancellation_reason = :reason`
+        (déjà normalisé, `None` = pas de motif). `updated_at` (`onupdate`) se
+        rafraîchit automatiquement. Une transition de statut **ne peut pas** violer
+        l'exclusion base : elle retire le RDV de l'ensemble actif (→ terminal) ou le
+        maintient sur le **même** créneau/coiffeur (`PENDING → CONFIRMED`). Retourne
+        l'entité relue (avec ses `BookedService`, conservés).
+        """
+        ...
+
+    def assign_hairdresser(
+        self,
+        appointment_id: uuid.UUID,
+        salon_id: uuid.UUID,
+        *,
+        hairdresser_id: uuid.UUID | None,
+    ) -> Appointment:
+        """(Dés)assigne un coiffeur à un RDV **actif** du salon (US-3.4 #25).
+
+        Écriture **conditionnée** au salon **et** au statut **actif**
+        (`WHERE id = :id AND salon_id = :salon_id AND status IN (PENDING, CONFIRMED)`) :
+        si aucune ligne active ne correspond (RDV disparu, hors salon, ou terminal —
+        créneau libéré, assignation non pertinente), lève
+        `domain.errors.InvalidAppointmentTransition`. Pose `hairdresser_id`
+        (`None` = désassignation). Lève `domain.errors.SlotAlreadyBooked` si la
+        contrainte d'exclusion base rejette l'assignation (le coiffeur est déjà pris
+        sur ce créneau) — une désassignation ne peut jamais la violer. Retourne
+        l'entité relue.
+        """
+        ...
+
     def list_for_client(
         self,
         client_id: uuid.UUID,

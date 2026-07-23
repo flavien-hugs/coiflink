@@ -57,6 +57,11 @@ class AuditAction(_StrEnum):
     # Rendez-vous (§11.4 « Annulation rendez-vous ») — #24 (annulation client).
     APPOINTMENT_CANCELLED = "APPOINTMENT_CANCELLED"
 
+    # Rendez-vous (§11.4 « Cycle de statuts ») — #25 (gestion gérant) : changement
+    # de statut (confirmation/refus/réalisé/absent) et (dés)assignation d'un coiffeur.
+    APPOINTMENT_STATUS_CHANGED = "APPOINTMENT_STATUS_CHANGED"
+    APPOINTMENT_HAIRDRESSER_ASSIGNED = "APPOINTMENT_HAIRDRESSER_ASSIGNED"
+
 
 @dataclass(frozen=True)
 class AuditEntry:
