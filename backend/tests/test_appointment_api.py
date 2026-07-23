@@ -30,7 +30,12 @@ from fastapi.testclient import TestClient
 
 from coiflink_api.adapters.inbound.appointments import (
     get_appointment_repository,
+    get_audit_log,
     get_catalog_repository,
+)
+from coiflink_api.domain.appointment import (
+    Appointment as AppointmentEntity,
+    BookedService as BookedServiceEntity,
 )
 from coiflink_api.adapters.inbound.security import (
     get_access_policy,
@@ -49,6 +54,7 @@ from coiflink_api.main import app
 
 from .conftest import (
     FakeAppointmentRepository,
+    FakeAuditLog,
     FakeAuthUserRepository,
     FakeSalonCatalogRepository,
     FakeSalonScopeRepository,
@@ -83,6 +89,8 @@ _OPENING_HOURS_DICT = to_jsonb(
 _DATE = "2026-08-03"  # lundi
 _AVAIL_URL = f"/catalog/salons/{_SALON_ID}/availability"
 _BOOK_URL = f"/salons/{_SALON_ID}/appointments"
+_MODIFY_APPT_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")
+_OTHER_CLIENT_ID_API = uuid.UUID("99999999-0000-0000-0000-000000000099")
 
 
 def _make_salon(
@@ -153,6 +161,7 @@ def _teardown_overrides() -> Generator[None, None, None]:
     yield
     app.dependency_overrides.pop(get_appointment_repository, None)
     app.dependency_overrides.pop(get_catalog_repository, None)
+    app.dependency_overrides.pop(get_audit_log, None)
     app.dependency_overrides.pop(get_user_repository, None)
     app.dependency_overrides.pop(get_access_policy, None)
     app.dependency_overrides.pop(get_salon_scope_repository, None)
@@ -586,6 +595,279 @@ class _MockIntegrityError:
 
     def __init__(self, orig: object | None) -> None:
         self.orig = orig
+
+
+def _make_appointment_entity(
+    *,
+    appt_id: uuid.UUID = _MODIFY_APPT_ID,
+    client_id: uuid.UUID = _CLIENT_ID,
+    status: str = "PENDING",
+) -> AppointmentEntity:
+    return AppointmentEntity(
+        id=appt_id,
+        salon_id=_SALON_ID,
+        client_id=client_id,
+        hairdresser_id=_HAIRDRESSER_ID,
+        date=datetime.date(2026, 8, 3),
+        start_time=datetime.time(9, 0),
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT,
+        services=(
+            BookedServiceEntity(
+                service_id=_SERVICE_ID,
+                price_at_booking=decimal.Decimal("5000.00"),
+            ),
+        ),
+    )
+
+
+def _valid_modify_body(**extra) -> dict:  # type: ignore[no-untyped-def]
+    base = {
+        "date": _DATE,
+        "start_time": "09:00",
+        "service_ids": [str(_SERVICE_ID)],
+        "hairdresser_id": str(_HAIRDRESSER_ID),
+    }
+    base.update(extra)
+    return base
+
+
+def _modify_client(
+    catalog: FakeSalonCatalogRepository | None = None,
+    appts: FakeAppointmentRepository | None = None,
+    scope: FakeSalonScopeRepository | None = None,
+) -> TestClient:
+    """Comme `_client` mais installe aussi `get_audit_log` (requis par PATCH /appointments)."""
+    tc = _client(catalog=catalog, appts=appts, scope=scope)
+    app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
+    return tc
+
+
+# ---------------------------------------------------------------------------
+# GET /appointments — liste des rendez-vous actifs du client (US-3.2, #23)
+# ---------------------------------------------------------------------------
+
+
+class TestListMyAppointmentsAPI:
+    _URL = "/appointments"
+
+    def test_returns_200_with_active_appointments(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        resp = _client(appts=appts).get(self._URL, headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["id"] == str(_MODIFY_APPT_ID)
+
+    def test_returns_only_active_statuses(self) -> None:
+        pending = _make_appointment_entity(appt_id=_MODIFY_APPT_ID, status="PENDING")
+        completed = _make_appointment_entity(
+            appt_id=uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002"),
+            status="COMPLETED",
+        )
+        appts = FakeAppointmentRepository(appointments=[pending, completed])
+        resp = _client(appts=appts).get(self._URL, headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["status"] == "PENDING"
+
+    def test_no_token_returns_401(self) -> None:
+        resp = _client().get(self._URL)
+        assert resp.status_code == 401
+
+    def test_manager_role_returns_403(self) -> None:
+        resp = _client().get(self._URL, headers=_auth_header(role="MANAGER"))
+        assert resp.status_code == 403
+
+    def test_admin_role_returns_403(self) -> None:
+        resp = _client().get(self._URL, headers=_auth_header(role="ADMIN"))
+        assert resp.status_code == 403
+
+    def test_returns_only_own_appointments(self) -> None:
+        own = _make_appointment_entity(appt_id=_MODIFY_APPT_ID, client_id=_CLIENT_ID)
+        other = _make_appointment_entity(
+            appt_id=uuid.UUID("bbbbbbbb-0000-0000-0000-000000000099"),
+            client_id=_OTHER_CLIENT_ID_API,
+        )
+        appts = FakeAppointmentRepository(appointments=[own, other])
+        resp = _client(appts=appts).get(self._URL, headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["client_id"] == str(_CLIENT_ID)
+
+    def test_empty_repo_returns_empty_list(self) -> None:
+        appts = FakeAppointmentRepository()
+        resp = _client(appts=appts).get(self._URL, headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_response_contains_appointment_fields(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        resp = _client(appts=appts).get(self._URL, headers=_auth_header())
+        assert resp.status_code == 200
+        item = resp.json()[0]
+        assert "id" in item
+        assert "salon_id" in item
+        assert "client_id" in item
+        assert "status" in item
+        assert "services" in item
+
+
+# ---------------------------------------------------------------------------
+# PATCH /appointments/{appointment_id} — modification client (US-3.2, #23)
+# ---------------------------------------------------------------------------
+
+
+class TestModifyAppointmentAPI:
+    def _url(self, appt_id: uuid.UUID = _MODIFY_APPT_ID) -> str:
+        return f"/appointments/{appt_id}"
+
+    def test_pending_appointment_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        resp = _modify_client(appts=appts).patch(
+            self._url(), json=_valid_modify_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 200
+
+    def test_confirmed_appointment_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CONFIRMED")]
+        )
+        resp = _modify_client(appts=appts).patch(
+            self._url(), json=_valid_modify_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 200
+
+    def test_completed_appointment_returns_409(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        resp = _modify_client(appts=appts).patch(
+            self._url(), json=_valid_modify_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 409
+
+    def test_other_client_appointment_returns_404(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_id=_OTHER_CLIENT_ID_API)]
+        )
+        resp = _modify_client(appts=appts).patch(
+            self._url(), json=_valid_modify_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 404
+
+    def test_unknown_appointment_returns_404(self) -> None:
+        appts = FakeAppointmentRepository()
+        resp = _modify_client(appts=appts).patch(
+            self._url(), json=_valid_modify_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 404
+
+    def test_empty_service_ids_returns_422(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()]
+        )
+        resp = _modify_client(appts=appts).patch(
+            self._url(),
+            json=_valid_modify_body(**{"service_ids": []}),
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 422
+
+    def test_no_token_returns_401(self) -> None:
+        resp = _modify_client().patch(self._url(), json=_valid_modify_body())
+        assert resp.status_code == 401
+
+    def test_manager_role_returns_403(self) -> None:
+        resp = _modify_client().patch(
+            self._url(),
+            json=_valid_modify_body(),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 403
+
+    def test_admin_role_returns_403(self) -> None:
+        resp = _modify_client().patch(
+            self._url(),
+            json=_valid_modify_body(),
+            headers=_auth_header(role="ADMIN"),
+        )
+        assert resp.status_code == 403
+
+    def test_client_id_in_body_is_ignored(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        injected = str(uuid.uuid4())
+        resp = _modify_client(appts=appts).patch(
+            self._url(),
+            json=_valid_modify_body(**{"client_id": injected}),
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["client_id"] == str(_CLIENT_ID)
+
+    def test_salon_id_in_body_is_ignored(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        injected = str(uuid.uuid4())
+        resp = _modify_client(appts=appts).patch(
+            self._url(),
+            json=_valid_modify_body(**{"salon_id": injected}),
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["salon_id"] == str(_SALON_ID)
+
+    def test_status_in_body_is_ignored(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        resp = _modify_client(appts=appts).patch(
+            self._url(),
+            json=_valid_modify_body(**{"status": "CONFIRMED"}),
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "PENDING"
+
+    def test_race_condition_returns_409(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()],
+            raise_conflict=True,
+        )
+        resp = _modify_client(appts=appts).patch(
+            self._url(), json=_valid_modify_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 409
+
+    def test_response_contains_appointment_fields(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        resp = _modify_client(appts=appts).patch(
+            self._url(), json=_valid_modify_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "id" in data
+        assert "salon_id" in data
+        assert "client_id" in data
+        assert "status" in data
+        assert "services" in data
+
+
+# ---------------------------------------------------------------------------
+# _is_exclusion_violation — détection de la violation de contrainte d'exclusion
+# ---------------------------------------------------------------------------
 
 
 class TestIsExclusionViolation:

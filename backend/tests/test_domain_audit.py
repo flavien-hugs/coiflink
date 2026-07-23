@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 
 from coiflink_api.domain.audit import (
+    ENTITY_TYPE_APPOINTMENT,
     ENTITY_TYPE_SALON,
     ENTITY_TYPE_SERVICE,
     AuditAction,
@@ -42,8 +43,11 @@ class TestAuditAction:
     def test_salon_updated_value(self) -> None:
         assert AuditAction.SALON_UPDATED == "SALON_UPDATED"
 
-    def test_exactly_five_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 5
+    def test_appointment_updated_value(self) -> None:
+        assert AuditAction.APPOINTMENT_UPDATED == "APPOINTMENT_UPDATED"
+
+    def test_exactly_six_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 6
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -60,6 +64,7 @@ class TestAuditAction:
             "SERVICE_DEACTIVATED",
             "SERVICE_REACTIVATED",
             "SALON_UPDATED",
+            "APPOINTMENT_UPDATED",
         }
 
 
@@ -159,3 +164,16 @@ class TestEntityTypeSalon:
 
     def test_value_is_salon(self) -> None:
         assert ENTITY_TYPE_SALON == "salon"
+
+
+# ---------------------------------------------------------------------------
+# ENTITY_TYPE_APPOINTMENT (US-3.2, #23)
+# ---------------------------------------------------------------------------
+
+
+class TestEntityTypeAppointment:
+    def test_value_is_string(self) -> None:
+        assert isinstance(ENTITY_TYPE_APPOINTMENT, str)
+
+    def test_value_is_appointment(self) -> None:
+        assert ENTITY_TYPE_APPOINTMENT == "appointment"

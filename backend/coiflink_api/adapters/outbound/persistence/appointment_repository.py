@@ -19,15 +19,20 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
-from coiflink_api.domain.appointment import Appointment, AppointmentToCreate, BookedService
+from coiflink_api.domain.appointment import (
+    Appointment,
+    AppointmentToCreate,
+    AppointmentUpdate,
+    BookedService,
+)
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.enums import AppointmentStatus
-from coiflink_api.domain.errors import SlotAlreadyBooked
+from coiflink_api.domain.errors import AppointmentNotModifiable, SlotAlreadyBooked
 
 # Statuts « actifs » au sens de l'exclusion base (un RDV annulé/absent n'occupe
 # plus le créneau) — miroir de la clause `WHERE` de `ex_appointments_hairdresser_slot`.
@@ -53,8 +58,15 @@ class SqlAppointmentRepository:
         salon_id: uuid.UUID,
         hairdresser_id: uuid.UUID | None,
         date: datetime.date,
+        *,
+        exclude_appointment_id: uuid.UUID | None = None,
     ) -> tuple[SlotRange, ...]:
-        """Créneaux actifs (`PENDING`/`CONFIRMED`) du coiffeur pour la date donnée."""
+        """Créneaux actifs (`PENDING`/`CONFIRMED`) du coiffeur pour la date donnée.
+
+        `exclude_appointment_id` retire un RDV du calcul (modification #23) : sans
+        cette exclusion, le RDV en cours de re-planification verrait son **propre**
+        créneau comme occupé et un déplacement légitime serait faussement rejeté.
+        """
 
         stmt = select(models.Appointment).where(
             models.Appointment.salon_id == salon_id,
@@ -65,6 +77,8 @@ class SqlAppointmentRepository:
             stmt = stmt.where(models.Appointment.hairdresser_id.is_(None))
         else:
             stmt = stmt.where(models.Appointment.hairdresser_id == hairdresser_id)
+        if exclude_appointment_id is not None:
+            stmt = stmt.where(models.Appointment.id != exclude_appointment_id)
         return tuple(
             SlotRange(date=row.appointment_date, start=row.start_time, end=row.end_time)
             for row in self._session.scalars(stmt).all()
@@ -110,6 +124,117 @@ class SqlAppointmentRepository:
 
         self._session.refresh(row)
         return _to_domain(row, appointment.services)
+
+    def get_owned(
+        self, appointment_id: uuid.UUID, client_id: uuid.UUID
+    ) -> Appointment | None:
+        """Charge le RDV `(id, client_id)` et ses prestations, ou `None`.
+
+        Le filtre porte sur `id` **et** `client_id` : un RDV d'autrui est
+        indiscernable d'un identifiant inexistant (aucun oracle, §11.2).
+        """
+
+        row = self._session.scalar(
+            select(models.Appointment).where(
+                models.Appointment.id == appointment_id,
+                models.Appointment.client_id == client_id,
+            )
+        )
+        if row is None:
+            return None
+        return _to_domain(row, self._load_services(appointment_id))
+
+    def update(
+        self, appointment_id: uuid.UUID, changes: AppointmentUpdate
+    ) -> Appointment:
+        """Re-planifie le RDV (UPDATE conditionnel sur statut) + remplace ses jonctions.
+
+        Le `WHERE ... status IN (actifs)` ré-affirme le verrou d'état **au moment de
+        l'écriture** (garde TOCTOU) : si le RDV est passé terminal entre-temps,
+        aucune ligne n'est affectée → `AppointmentNotModifiable`. La colonne générée
+        `slot` se recalcule et l'exclusion base arbitre toute collision de créneau.
+        """
+
+        row = self._session.scalar(
+            select(models.Appointment).where(
+                models.Appointment.id == appointment_id,
+                models.Appointment.status.in_(_ACTIVE_STATUSES),
+            )
+        )
+        if row is None:
+            # RDV disparu ou statut passé terminal (course #25) : verrou ré-affirmé.
+            raise AppointmentNotModifiable("Ce rendez-vous n'est plus modifiable.")
+
+        try:
+            row.appointment_date = changes.date
+            row.start_time = changes.start_time
+            row.end_time = changes.end_time
+            row.hairdresser_id = changes.hairdresser_id
+            row.client_note = changes.client_note
+            # Remplacement des prestations (durée/prix figé recapturés) : on supprime
+            # les jonctions existantes puis on ré-insère celles de la cible, dans la
+            # même unité de travail. Le flush déclenche la contrainte d'exclusion.
+            self._session.execute(
+                delete(models.AppointmentService).where(
+                    models.AppointmentService.appointment_id == appointment_id
+                )
+            )
+            for service in changes.services:
+                self._session.add(
+                    models.AppointmentService(
+                        appointment_id=appointment_id,
+                        service_id=service.service_id,
+                        salon_id=row.salon_id,
+                        price_at_booking=service.price_at_booking,
+                    )
+                )
+            self._session.flush()
+        except IntegrityError as exc:
+            if _is_exclusion_violation(exc):
+                # Collision/course perdue : rollback puis erreur de domaine neutre
+                # (l'`IntegrityError` brute n'est jamais journalisée).
+                self._session.rollback()
+                raise SlotAlreadyBooked(
+                    "Ce créneau vient d'être réservé pour ce coiffeur."
+                ) from exc
+            raise
+
+        self._session.refresh(row)
+        return _to_domain(row, changes.services)
+
+    def list_for_client(
+        self,
+        client_id: uuid.UUID,
+        statuses: tuple[str, ...] | None = None,
+    ) -> tuple[Appointment, ...]:
+        """RDV du client (avec prestations), filtrés par statut, triés chronologiquement."""
+
+        stmt = select(models.Appointment).where(
+            models.Appointment.client_id == client_id
+        )
+        if statuses is not None:
+            stmt = stmt.where(models.Appointment.status.in_(statuses))
+        stmt = stmt.order_by(
+            models.Appointment.appointment_date.asc(),
+            models.Appointment.start_time.asc(),
+        )
+        rows = self._session.scalars(stmt).all()
+        return tuple(_to_domain(row, self._load_services(row.id)) for row in rows)
+
+    def _load_services(
+        self, appointment_id: uuid.UUID
+    ) -> tuple[BookedService, ...]:
+        """Prestations réservées d'un RDV (avec leur prix figé)."""
+
+        stmt = select(models.AppointmentService).where(
+            models.AppointmentService.appointment_id == appointment_id
+        )
+        return tuple(
+            BookedService(
+                service_id=row.service_id, price_at_booking=row.price_at_booking
+            )
+            for row in self._session.scalars(stmt).all()
+        )
 
 
 def _is_exclusion_violation(exc: IntegrityError) -> bool:

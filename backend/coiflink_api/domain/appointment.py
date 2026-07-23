@@ -83,6 +83,49 @@ class Appointment:
     services: tuple[BookedService, ...] = ()
 
 
+@dataclass(frozen=True)
+class AppointmentUpdate:
+    """Champs re-planifiés d'un rendez-vous existant (sémantique *replace*, US-3.2, #23).
+
+    Porte la **cible** d'une modification client : nouvelle date/créneau, coiffeur,
+    commentaire et **jeu complet** de prestations (durée/prix figé recapturés). Ne
+    porte **jamais** `salon_id`/`client_id`/`status` — le `salon_id` provient du RDV
+    chargé, `client_id`/`status` restent inchangés (anti-élévation §11.2). `end_time`
+    est calculé serveur (`compute_end_time`), jamais lu du corps.
+    """
+
+    date: datetime.date
+    start_time: datetime.time
+    end_time: datetime.time
+    hairdresser_id: uuid.UUID | None
+    client_note: str | None
+    services: tuple[BookedService, ...]
+
+
+# Statuts d'un rendez-vous que **le client** peut encore modifier (§8.1, #23). Un
+# RDV `COMPLETED` est explicitement verrouillé côté client par le PRD §8.1 (« ne
+# peut plus être modifié, sauf par le gérant ») ; par extension, un RDV `CANCELLED`
+# ou `NO_SHOW` est **terminal** et n'a pas de sens à modifier. Seuls les états
+# **actifs** (occupant un créneau) restent modifiables — miroir de la clause `WHERE`
+# de l'exclusion `ex_appointments_hairdresser_slot`. L'exception « gérant » d'un RDV
+# terminé relève de US-3.4 (#25), hors périmètre de #23.
+CLIENT_MODIFIABLE_STATUSES: tuple[str, ...] = (
+    AppointmentStatus.PENDING.value,
+    AppointmentStatus.CONFIRMED.value,
+)
+
+
+def is_client_modifiable(status: str) -> bool:
+    """Vrai si un RDV de ce `status` est encore modifiable **par le client** (§8.1).
+
+    Fonction **pure** (aucune I/O) : le verrou d'état est décidé ici et ré-affirmé à
+    l'écriture (UPDATE conditionnel du dépôt). Un statut inconnu est refusé par
+    construction (absent de `CLIENT_MODIFIABLE_STATUSES`) — jamais un accès par défaut.
+    """
+
+    return status in CLIENT_MODIFIABLE_STATUSES
+
+
 def require_services(services: tuple[BookedService, ...]) -> None:
     """Impose la règle §8.1 « ≥ 1 prestation » ; lève `AppointmentServiceRequired`.
 
@@ -129,6 +172,9 @@ __all__ = [
     "BookedService",
     "AppointmentToCreate",
     "Appointment",
+    "AppointmentUpdate",
+    "CLIENT_MODIFIABLE_STATUSES",
+    "is_client_modifiable",
     "require_services",
     "validate_booking_window",
     "compute_end_time",

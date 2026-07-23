@@ -25,16 +25,24 @@ import uuid
 from dataclasses import dataclass
 
 from coiflink_api.application.ports.appointment_repository import AppointmentRepository
+from coiflink_api.application.ports.audit_log import AuditLog
 from coiflink_api.application.ports.salon_catalog_repository import (
     SalonCatalogRepository,
 )
 from coiflink_api.domain.appointment import (
     Appointment,
     AppointmentToCreate,
+    AppointmentUpdate,
     BookedService,
     compute_end_time,
+    is_client_modifiable,
     require_services,
     validate_booking_window,
+)
+from coiflink_api.domain.audit import (
+    ENTITY_TYPE_APPOINTMENT,
+    AuditAction,
+    AuditEntry,
 )
 from coiflink_api.domain.availability import (
     DEFAULT_GRANULARITY_MINUTES,
@@ -45,6 +53,8 @@ from coiflink_api.domain.availability import (
 from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
 from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
+    AppointmentNotFound,
+    AppointmentNotModifiable,
     HairdresserNotInSalon,
     SalonNotBookable,
     SalonNotFound,
@@ -127,6 +137,35 @@ def _require_salon_hairdresser(
         raise HairdresserNotInSalon("Coiffeur introuvable pour ce salon.")
 
 
+def _resolve_booked_services(
+    repository: SalonCatalogRepository,
+    salon_id: uuid.UUID,
+    service_ids: tuple[uuid.UUID, ...],
+) -> tuple[tuple[BookedService, ...], int]:
+    """Résout les prestations **actives** du salon en `BookedService` + durée totale.
+
+    Le **prix figé** est (re)capturé au tarif courant de chaque prestation ; la durée
+    totale sert à calculer la fenêtre horaire. L'ordre suit `service_ids`
+    (déterminisme). Lève `ServiceNotFound` sur une prestation inactive/hors salon,
+    puis `AppointmentServiceRequired` (via `require_services`) si l'ensemble est vide.
+    Réutilisé par la réservation (#21) et la modification (#23).
+    """
+
+    active = {s.id: s for s in repository.list_active_services(salon_id)}
+    booked_services: list[BookedService] = []
+    total_minutes = 0
+    for service_id in service_ids:
+        service = active.get(service_id)
+        if service is None:
+            raise ServiceNotFound("Prestation introuvable.")
+        total_minutes += service.duration_minutes
+        booked_services.append(
+            BookedService(service_id=service.id, price_at_booking=service.price)
+        )
+    require_services(tuple(booked_services))
+    return tuple(booked_services), total_minutes
+
+
 class CheckAvailability:
     """Calcule les créneaux **libres** d'un salon/coiffeur pour une prestation (§8.3).
 
@@ -205,18 +244,9 @@ class BookAppointment:
 
         # Prestations actives du salon (durée pour la fenêtre, prix figé à la
         # réservation). L'ordre suit `command.service_ids` (déterminisme).
-        active = {s.id: s for s in self._catalog.list_active_services(salon_id)}
-        booked_services: list[BookedService] = []
-        total_minutes = 0
-        for service_id in command.service_ids:
-            service = active.get(service_id)
-            if service is None:
-                raise ServiceNotFound("Prestation introuvable.")
-            total_minutes += service.duration_minutes
-            booked_services.append(
-                BookedService(service_id=service.id, price_at_booking=service.price)
-            )
-        require_services(tuple(booked_services))
+        booked_services, total_minutes = _resolve_booked_services(
+            self._catalog, salon_id, command.service_ids
+        )
 
         end_time = compute_end_time(command.start_time, total_minutes)
         validate_booking_window(command.start_time, end_time)
@@ -244,10 +274,194 @@ class BookAppointment:
                 date=command.date,
                 start_time=command.start_time,
                 end_time=end_time,
-                services=tuple(booked_services),
+                services=booked_services,
                 client_note=command.client_note,
             )
         )
 
 
-__all__ = ["BookingCommand", "CheckAvailability", "BookAppointment"]
+# --------------------------------------------------------------------------- #
+# Modification d'un rendez-vous par le client (US-3.2, #23).
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class ModifyAppointmentCommand:
+    """Champs re-planifiables d'un RDV — mêmes saisies qu'une réservation.
+
+    Sémantique **replace** (comme le corps de réservation) : la modification remplace
+    intégralement date/créneau, prestation(s) et commentaire. Ne porte **jamais**
+    `salon_id`/`client_id`/`status` — le `salon_id` vient du RDV chargé, `client_id`
+    du `Principal`, `status` reste inchangé (anti-élévation §11.2). `service_ids`
+    porte **au moins une** prestation.
+    """
+
+    date: datetime.date
+    start_time: datetime.time
+    service_ids: tuple[uuid.UUID, ...]
+    hairdresser_id: uuid.UUID | None = None
+    client_note: str | None = None
+    granularity_minutes: int = DEFAULT_GRANULARITY_MINUTES
+
+
+# Champs comparés pour le diff **neutre** de la modification (ordre stable). Seuls
+# des **noms de champs** sont journalisés — jamais les valeurs (§11.4, patron #20).
+_APPOINTMENT_DIFF_FIELDS: tuple[str, ...] = (
+    "date",
+    "start_time",
+    "hairdresser_id",
+    "client_note",
+)
+
+
+def _changed_appointment_fields(
+    current: Appointment, changes: AppointmentUpdate
+) -> list[str]:
+    """Noms des champs re-planifiés dont la valeur change (diff neutre, §11.4).
+
+    Compare les seuls **noms** de champs (jamais les valeurs). L'ensemble des
+    prestations est comparé par identifiants (indépendamment de l'ordre) et signalé
+    sous le nom générique `"services"` — aucune valeur (prix/durée) ne fuit.
+    """
+
+    changed = [
+        field
+        for field in _APPOINTMENT_DIFF_FIELDS
+        if getattr(current, field) != getattr(changes, field)
+    ]
+    current_services = {s.service_id for s in current.services}
+    new_services = {s.service_id for s in changes.services}
+    if current_services != new_services:
+        changed.append("services")
+    return changed
+
+
+class ModifyAppointment:
+    """Re-planifie **le** RDV du client authentifié et journalise (§11.4, #23).
+
+    Séquence : charger le RDV **du client** (`AppointmentNotFound` si inexistant ou
+    d'autrui — indiscernables) → **verrou d'état** (`AppointmentNotModifiable` si
+    terminé/terminal) → re-valider la cible (salon réservable §8.3, coiffeur du
+    salon, prestations actives, fenêtre) → `is_offered` en **excluant le RDV
+    lui-même** du calcul → `update` transactionnel (l'exclusion base arbitre les
+    courses, l'UPDATE conditionnel ré-affirme le verrou) → audit `APPOINTMENT_UPDATED`
+    (métadonnées neutres). Le `salon_id` provient **du RDV chargé**, jamais du corps.
+    """
+
+    def __init__(
+        self,
+        catalog_repository: SalonCatalogRepository,
+        appointment_repository: AppointmentRepository,
+        scope_repository: SalonScopeRepository,
+        audit_log: AuditLog,
+    ) -> None:
+        self._catalog = catalog_repository
+        self._appointments = appointment_repository
+        self._scope = scope_repository
+        self._audit_log = audit_log
+
+    def execute(
+        self,
+        appointment_id: uuid.UUID,
+        client_id: uuid.UUID,
+        command: ModifyAppointmentCommand,
+        *,
+        now: datetime.datetime | None = None,
+    ) -> Appointment:
+        current = self._appointments.get_owned(appointment_id, client_id)
+        if current is None:
+            # RDV inexistant **ou** d'autrui : indiscernables (aucun oracle, §11.2).
+            raise AppointmentNotFound("Rendez-vous introuvable.")
+        if not is_client_modifiable(current.status):
+            raise AppointmentNotModifiable("Ce rendez-vous n'est plus modifiable.")
+
+        # Le `salon_id` vient du RDV chargé (route d'appartenance, jamais du corps).
+        salon = _load_bookable_salon(self._catalog, current.salon_id)
+
+        # Un coiffeur demandé doit appartenir au salon du RDV (§11.2) : l'exclusion
+        # base est globale (sans `salon_id`) et ne peut pas arbitrer ce cas.
+        if command.hairdresser_id is not None:
+            _require_salon_hairdresser(
+                self._scope, current.salon_id, command.hairdresser_id
+            )
+
+        booked_services, total_minutes = _resolve_booked_services(
+            self._catalog, current.salon_id, command.service_ids
+        )
+
+        end_time = compute_end_time(command.start_time, total_minutes)
+        validate_booking_window(command.start_time, end_time)
+
+        hours = parse_opening_hours(salon.opening_hours)
+        # Défense en profondeur `is_offered` en **excluant le RDV lui-même** : sinon
+        # son propre créneau actuel apparaîtrait occupé (faux rejet d'un déplacement
+        # légitime, y compris un simple changement de note à date/heure inchangées).
+        booked = self._appointments.booked_slots(
+            current.salon_id,
+            command.hairdresser_id,
+            command.date,
+            exclude_appointment_id=appointment_id,
+        )
+        slot = SlotRange(date=command.date, start=command.start_time, end=end_time)
+        if not is_offered(
+            hours,
+            slot,
+            total_minutes,
+            booked,
+            granularity_minutes=command.granularity_minutes,
+            now=now,
+        ):
+            raise SlotUnavailable("Le créneau demandé n'est pas disponible.")
+
+        changes = AppointmentUpdate(
+            date=command.date,
+            start_time=command.start_time,
+            end_time=end_time,
+            hairdresser_id=command.hairdresser_id,
+            client_note=command.client_note,
+            services=booked_services,
+        )
+        changed = _changed_appointment_fields(current, changes)
+        updated = self._appointments.update(appointment_id, changes)
+        # Audit §11.4 dans la **même** unité de travail que l'écriture (patron #20) :
+        # métadonnées **neutres** (noms de champs uniquement, jamais de valeur).
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.APPOINTMENT_UPDATED.value,
+                actor_user_id=client_id,
+                salon_id=current.salon_id,
+                entity_type=ENTITY_TYPE_APPOINTMENT,
+                entity_id=appointment_id,
+                metadata={"changed": changed},
+            )
+        )
+        return updated
+
+
+class ListMyAppointments:
+    """Liste les RDV **du client** authentifié (lecture « Mes rendez-vous », #23).
+
+    Prérequis du flux de modification : le client retrouve ses RDV pour en choisir
+    un à modifier. Ne renvoie **que** ses propres RDV (§11.2/§11.3) ; `statuses`
+    restreint aux états utiles (par défaut, l'adapter entrant filtre les états
+    actifs/modifiables `PENDING`/`CONFIRMED`).
+    """
+
+    def __init__(self, appointment_repository: AppointmentRepository) -> None:
+        self._appointments = appointment_repository
+
+    def execute(
+        self,
+        client_id: uuid.UUID,
+        *,
+        statuses: tuple[str, ...] | None = None,
+    ) -> tuple[Appointment, ...]:
+        return self._appointments.list_for_client(client_id, statuses)
+
+
+__all__ = [
+    "BookingCommand",
+    "CheckAvailability",
+    "BookAppointment",
+    "ModifyAppointmentCommand",
+    "ModifyAppointment",
+    "ListMyAppointments",
+]

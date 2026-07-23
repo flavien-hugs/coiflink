@@ -30,6 +30,9 @@ ENTITY_TYPE_SERVICE = "service"
 # Type d'entité journalisée pour les salons (extensible aux futures §11.4).
 ENTITY_TYPE_SALON = "salon"
 
+# Type d'entité journalisée pour les rendez-vous (§11.4 « Modification rendez-vous »).
+ENTITY_TYPE_APPOINTMENT = "appointment"
+
 
 @unique
 class AuditAction(_StrEnum):
@@ -47,6 +50,9 @@ class AuditAction(_StrEnum):
 
     # Salon (§11.4 « Modification salon »).
     SALON_UPDATED = "SALON_UPDATED"
+
+    # Rendez-vous (§11.4 « Modification rendez-vous ») — #23 (modification client).
+    APPOINTMENT_UPDATED = "APPOINTMENT_UPDATED"
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,7 @@ class AuditEntry:
 __all__ = [
     "ENTITY_TYPE_SERVICE",
     "ENTITY_TYPE_SALON",
+    "ENTITY_TYPE_APPOINTMENT",
     "AuditAction",
     "AuditEntry",
 ]

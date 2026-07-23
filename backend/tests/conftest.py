@@ -723,14 +723,15 @@ class FakeAuditLog:
 
 
 class FakeAppointmentRepository:
-    """Dépôt de rendez-vous en mémoire (US-3.7, #21).
+    """Dépôt de rendez-vous en mémoire (US-3.7, #21 / US-3.2, #23).
 
     Implémente le port `AppointmentRepository` sans I/O réelle. `booked` associe une
     clé `(salon_id, hairdresser_id, date)` à des `SlotRange` déjà réservés (alimente
     le moteur de disponibilité). `raise_conflict=True` simule la **course
-    concurrente** : `create` lève `SlotAlreadyBooked` (comme la violation de la
-    contrainte d'exclusion base) — et **rien** n'est persisté (`created` reste vide),
-    sur le patron de `FakeSalonMemberRepository(raise_duplicate=True)`.
+    concurrente** : `create`/`update` lèvent `SlotAlreadyBooked`. `raise_not_modifiable=True`
+    simule la garde TOCTOU : `update` lève `AppointmentNotModifiable`. `appointments`
+    pré-charge des `Appointment` (entités de lecture) pour `get_owned`/`update`/`list_for_client`.
+    `booked_slots_calls` enregistre chaque appel pour vérifier l'`exclude_appointment_id` (#23).
     """
 
     def __init__(
@@ -738,12 +739,33 @@ class FakeAppointmentRepository:
         booked: dict | None = None,
         *,
         raise_conflict: bool = False,
+        raise_not_modifiable: bool = False,
+        appointments: list | None = None,
     ) -> None:
         self._booked: dict = dict(booked or {})
         self._raise_conflict = raise_conflict
+        self._raise_not_modifiable = raise_not_modifiable
         self.created: list = []
+        self.updated: list = []
+        self.booked_slots_calls: list = []
+        self._appointments: dict = {}
+        for appt in (appointments or []):
+            self._appointments[appt.id] = appt
 
-    def booked_slots(self, salon_id, hairdresser_id, date):  # type: ignore[no-untyped-def]
+    def booked_slots(  # type: ignore[no-untyped-def]
+        self,
+        salon_id,
+        hairdresser_id,
+        date,
+        *,
+        exclude_appointment_id=None,
+    ):
+        self.booked_slots_calls.append({
+            "salon_id": salon_id,
+            "hairdresser_id": hairdresser_id,
+            "date": date,
+            "exclude_appointment_id": exclude_appointment_id,
+        })
         return tuple(self._booked.get((salon_id, hairdresser_id, date), ()))
 
     def create(self, appointment):  # type: ignore[no-untyped-def]
@@ -768,7 +790,49 @@ class FakeAppointmentRepository:
             created_at=_CREATED_AT,
             services=appointment.services,
         )
+        self._appointments[entity.id] = entity
         return entity
+
+    def get_owned(self, appointment_id, client_id):  # type: ignore[no-untyped-def]
+        """Retourne le RDV si et seulement si `client_id` correspond (§11.2)."""
+        appt = self._appointments.get(appointment_id)
+        if appt is None or appt.client_id != client_id:
+            return None
+        return appt
+
+    def update(self, appointment_id, changes):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+        from coiflink_api.domain.errors import AppointmentNotModifiable, SlotAlreadyBooked
+
+        if self._raise_not_modifiable:
+            raise AppointmentNotModifiable("Ce rendez-vous n'est plus modifiable.")
+        if self._raise_conflict:
+            raise SlotAlreadyBooked(
+                "Ce créneau vient d'être réservé pour ce coiffeur."
+            )
+        appt = self._appointments.get(appointment_id)
+        if appt is None:
+            raise AppointmentNotModifiable("Ce rendez-vous n'est plus modifiable.")
+        self.updated.append((appointment_id, changes))
+        updated = _dc.replace(
+            appt,
+            date=changes.date,
+            start_time=changes.start_time,
+            end_time=changes.end_time,
+            hairdresser_id=changes.hairdresser_id,
+            client_note=changes.client_note,
+            services=changes.services,
+        )
+        self._appointments[appointment_id] = updated
+        return updated
+
+    def list_for_client(self, client_id, statuses=None):  # type: ignore[no-untyped-def]
+        """Liste les RDV du `client_id`, filtrés par `statuses` si fourni."""
+        return tuple(
+            a for a in self._appointments.values()
+            if a.client_id == client_id
+            and (statuses is None or a.status in statuses)
+        )
 
 
 @pytest.fixture()
