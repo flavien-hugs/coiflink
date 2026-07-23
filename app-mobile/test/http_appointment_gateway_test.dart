@@ -1111,6 +1111,266 @@ void main() {
     });
 
     // -----------------------------------------------------------------------
+    // cancel
+    // -----------------------------------------------------------------------
+    group('cancel', () {
+      group('URL, méthode et en-tête', () {
+        test('envoie POST /appointments/{id}/cancellation avec Authorization: Bearer',
+            () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull(status: 'CANCELLED')),
+          );
+
+          await _gateway(capturing).cancel(
+            appointmentId: 'rdv-99',
+            accessToken: 'tok-cancel-xyz',
+          );
+
+          final url = capturing.lastRequest!.url;
+          expect(url.path, endsWith('/appointments/rdv-99/cancellation'));
+          expect(capturing.lastRequest!.method, 'POST');
+          final auth = capturing.lastHeaders?['authorization'];
+          expect(auth, 'Bearer tok-cancel-xyz');
+        });
+      });
+
+      group('corps de requête (anti-élévation §11.2)', () {
+        test('corps n\'inclut JAMAIS client_id, salon_id ni status', () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull(status: 'CANCELLED')),
+          );
+
+          await _gateway(capturing).cancel(
+            appointmentId: 'rdv-1',
+            accessToken: 'tok',
+          );
+
+          final body = jsonDecode(capturing.lastBody!) as Map<String, dynamic>;
+          expect(body.containsKey('client_id'), isFalse);
+          expect(body.containsKey('salon_id'), isFalse);
+          expect(body.containsKey('status'), isFalse);
+        });
+
+        test('reason non vide → inclus dans le corps', () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull(status: 'CANCELLED')),
+          );
+
+          await _gateway(capturing).cancel(
+            appointmentId: 'rdv-1',
+            reason: 'Empêchement.',
+            accessToken: 'tok',
+          );
+
+          final body = jsonDecode(capturing.lastBody!) as Map<String, dynamic>;
+          expect(body['reason'], 'Empêchement.');
+        });
+
+        test('reason null → absent du corps', () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull(status: 'CANCELLED')),
+          );
+
+          await _gateway(capturing).cancel(
+            appointmentId: 'rdv-1',
+            accessToken: 'tok',
+          );
+
+          final body = jsonDecode(capturing.lastBody!) as Map<String, dynamic>;
+          expect(body.containsKey('reason'), isFalse);
+        });
+
+        test('reason vide après trim → absent du corps', () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull(status: 'CANCELLED')),
+          );
+
+          await _gateway(capturing).cancel(
+            appointmentId: 'rdv-1',
+            reason: '   ',
+            accessToken: 'tok',
+          );
+
+          final body = jsonDecode(capturing.lastBody!) as Map<String, dynamic>;
+          expect(body.containsKey('reason'), isFalse);
+        });
+      });
+
+      group('mapping 200 → Appointment (statut CANCELLED)', () {
+        test('mappe la réponse complète avec statut cancelled', () async {
+          final client = _FakeHttpClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull(
+              id: 'rdv-77',
+              status: 'CANCELLED',
+            )),
+          );
+
+          final appt = await _gateway(client).cancel(
+            appointmentId: 'rdv-77',
+            accessToken: 'tok',
+          );
+
+          expect(appt.id, 'rdv-77');
+          expect(appt.status, AppointmentStatus.cancelled);
+          expect(appt.status.label, 'Annulé');
+        });
+      });
+
+      group('gestion des erreurs HTTP', () {
+        test('401 → UnauthorizedException (§11.1)', () async {
+          final client = _FakeHttpClient(statusCode: 401, body: '{}');
+
+          await expectLater(
+            _gateway(client).cancel(
+              appointmentId: 'rdv-1',
+              accessToken: 'expired-tok',
+            ),
+            throwsA(isA<UnauthorizedException>()),
+          );
+        });
+
+        test('409 → NotCancellableException (RDV terminé/terminal, §8.1)',
+            () async {
+          final client = _FakeHttpClient(
+            statusCode: 409,
+            body: '{"detail": "Ce rendez-vous ne peut plus être annulé."}',
+          );
+
+          await expectLater(
+            _gateway(client).cancel(
+              appointmentId: 'rdv-1',
+              accessToken: 'tok',
+            ),
+            throwsA(isA<NotCancellableException>()),
+          );
+        });
+
+        test('404 → AppointmentNotFoundException (inexistant ou hors appartenance)',
+            () async {
+          final client = _FakeHttpClient(
+            statusCode: 404,
+            body: '{"detail": "Rendez-vous introuvable."}',
+          );
+
+          await expectLater(
+            _gateway(client).cancel(
+              appointmentId: 'rdv-inconnu',
+              accessToken: 'tok',
+            ),
+            throwsA(isA<AppointmentNotFoundException>()),
+          );
+        });
+
+        test('500 → AppointmentGatewayException (message neutre)', () async {
+          final client = _FakeHttpClient(statusCode: 500, body: '');
+
+          await expectLater(
+            _gateway(client).cancel(
+              appointmentId: 'rdv-1',
+              accessToken: 'tok',
+            ),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('panne réseau → AppointmentGatewayException', () async {
+          await expectLater(
+            _gateway(_NetworkFailClient()).cancel(
+              appointmentId: 'rdv-1',
+              accessToken: 'tok',
+            ),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('corps JSON illisible sur 200 → AppointmentGatewayException',
+            () async {
+          final client =
+              _FakeHttpClient(statusCode: 200, body: 'not-valid-json');
+
+          await expectLater(
+            _gateway(client).cancel(
+              appointmentId: 'rdv-1',
+              accessToken: 'tok',
+            ),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+      });
+
+      group('confidentialité des messages d\'erreur (§11)', () {
+        test('UnauthorizedException ne contient pas le jeton', () async {
+          final client = _FakeHttpClient(statusCode: 401, body: '{}');
+
+          Object? caught;
+          try {
+            await _gateway(client).cancel(
+              appointmentId: 'rdv-1',
+              accessToken: 'super-secret-cancel-token',
+            );
+          } catch (e) {
+            caught = e;
+          }
+
+          expect(caught, isA<UnauthorizedException>());
+          final msg = (caught as UnauthorizedException).message;
+          expect(msg.contains('super-secret-cancel-token'), isFalse);
+        });
+
+        test(
+            'AppointmentGatewayException ne contient pas l\'URL ni l\'appointmentId',
+            () async {
+          final client = _FakeHttpClient(statusCode: 500, body: '');
+
+          Object? caught;
+          try {
+            await _gateway(client).cancel(
+              appointmentId: 'rdv-confidentiel',
+              accessToken: 'tok',
+            );
+          } catch (e) {
+            caught = e;
+          }
+
+          expect(caught, isA<AppointmentGatewayException>());
+          final msg = (caught as AppointmentGatewayException).message;
+          expect(msg.contains('test.local'), isFalse);
+          expect(msg.contains('rdv-confidentiel'), isFalse);
+        });
+
+        test('NotCancellableException ne contient pas le motif ni le jeton',
+            () async {
+          final client = _FakeHttpClient(
+            statusCode: 409,
+            body: '{"detail": "terminé"}',
+          );
+
+          Object? caught;
+          try {
+            await _gateway(client).cancel(
+              appointmentId: 'rdv-1',
+              reason: 'raison-secrete',
+              accessToken: 'tok-secret',
+            );
+          } catch (e) {
+            caught = e;
+          }
+
+          expect(caught, isA<NotCancellableException>());
+          final msg = (caught as NotCancellableException).message;
+          expect(msg.contains('raison-secrete'), isFalse);
+          expect(msg.contains('tok-secret'), isFalse);
+        });
+      });
+    });
+
+    // -----------------------------------------------------------------------
     // modify
     // -----------------------------------------------------------------------
     group('modify', () {

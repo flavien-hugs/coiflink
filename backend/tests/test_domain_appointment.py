@@ -24,9 +24,15 @@ from coiflink_api.domain.appointment import (
     AppointmentToCreate,
     AppointmentUpdate,
     BookedService,
+    CLIENT_CANCELLABLE_STATUSES,
     CLIENT_MODIFIABLE_STATUSES,
+    MAX_CANCELLATION_REASON_LENGTH,
+    REVENUE_STATUSES,
     compute_end_time,
+    counts_towards_revenue,
+    is_client_cancellable,
     is_client_modifiable,
+    normalize_cancellation_reason,
     require_services,
     validate_booking_window,
 )
@@ -378,3 +384,170 @@ class TestAppointmentUpdate:
         # Le statut reste inchangé lors de la modification (client ne le fixe pas).
         update = self._make()
         assert not hasattr(update, "status")
+
+
+# ---------------------------------------------------------------------------
+# is_client_cancellable (US-3.3, #24)
+# ---------------------------------------------------------------------------
+
+
+class TestIsClientCancellable:
+    """Règle de domaine §8.1 : un RDV terminé/terminal est verrouillé pour l'annulation."""
+
+    def test_pending_is_cancellable(self) -> None:
+        assert is_client_cancellable("PENDING") is True
+
+    def test_confirmed_is_cancellable(self) -> None:
+        assert is_client_cancellable("CONFIRMED") is True
+
+    def test_completed_is_not_cancellable(self) -> None:
+        assert is_client_cancellable("COMPLETED") is False
+
+    def test_cancelled_is_not_cancellable(self) -> None:
+        # Un RDV déjà annulé est terminal : idempotence refusée (→ 409).
+        assert is_client_cancellable("CANCELLED") is False
+
+    def test_no_show_is_not_cancellable(self) -> None:
+        assert is_client_cancellable("NO_SHOW") is False
+
+    def test_unknown_status_is_not_cancellable(self) -> None:
+        assert is_client_cancellable("FUTURE_STATUS") is False
+
+    def test_empty_string_is_not_cancellable(self) -> None:
+        assert is_client_cancellable("") is False
+
+    def test_lowercase_pending_not_cancellable(self) -> None:
+        # Les valeurs enum sont stockées en MAJUSCULES : comparaison stricte.
+        assert is_client_cancellable("pending") is False
+
+    def test_deny_by_default_on_arbitrary_value(self) -> None:
+        assert is_client_cancellable("WHATEVER") is False
+
+
+# ---------------------------------------------------------------------------
+# CLIENT_CANCELLABLE_STATUSES (US-3.3, #24)
+# ---------------------------------------------------------------------------
+
+
+class TestClientCancellableStatuses:
+    def test_contains_pending(self) -> None:
+        assert "PENDING" in CLIENT_CANCELLABLE_STATUSES
+
+    def test_contains_confirmed(self) -> None:
+        assert "CONFIRMED" in CLIENT_CANCELLABLE_STATUSES
+
+    def test_does_not_contain_completed(self) -> None:
+        assert "COMPLETED" not in CLIENT_CANCELLABLE_STATUSES
+
+    def test_does_not_contain_cancelled(self) -> None:
+        assert "CANCELLED" not in CLIENT_CANCELLABLE_STATUSES
+
+    def test_does_not_contain_no_show(self) -> None:
+        assert "NO_SHOW" not in CLIENT_CANCELLABLE_STATUSES
+
+    def test_is_tuple_type(self) -> None:
+        assert isinstance(CLIENT_CANCELLABLE_STATUSES, tuple)
+
+    def test_exactly_two_statuses(self) -> None:
+        assert len(CLIENT_CANCELLABLE_STATUSES) == 2
+
+
+# ---------------------------------------------------------------------------
+# normalize_cancellation_reason (US-3.3, #24)
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeCancellationReason:
+    def test_none_returns_none(self) -> None:
+        assert normalize_cancellation_reason(None) is None
+
+    def test_empty_string_returns_none(self) -> None:
+        assert normalize_cancellation_reason("") is None
+
+    def test_whitespace_only_returns_none(self) -> None:
+        assert normalize_cancellation_reason("   ") is None
+
+    def test_newline_only_returns_none(self) -> None:
+        assert normalize_cancellation_reason("\n\t") is None
+
+    def test_trims_leading_and_trailing_spaces(self) -> None:
+        result = normalize_cancellation_reason("  empêchement  ")
+        assert result == "empêchement"
+
+    def test_non_empty_reason_returned_as_is(self) -> None:
+        assert normalize_cancellation_reason("Changement de plan.") == "Changement de plan."
+
+    def test_truncates_at_max_length(self) -> None:
+        long = "x" * (MAX_CANCELLATION_REASON_LENGTH + 100)
+        result = normalize_cancellation_reason(long)
+        assert result is not None
+        assert len(result) == MAX_CANCELLATION_REASON_LENGTH
+
+    def test_exactly_max_length_not_truncated(self) -> None:
+        exact = "x" * MAX_CANCELLATION_REASON_LENGTH
+        result = normalize_cancellation_reason(exact)
+        assert result == exact
+
+    def test_one_below_max_length_not_truncated(self) -> None:
+        almost = "x" * (MAX_CANCELLATION_REASON_LENGTH - 1)
+        result = normalize_cancellation_reason(almost)
+        assert result == almost
+
+    def test_motif_with_spaces_truncation_still_trims(self) -> None:
+        # Même un motif long est d'abord trimmé puis tronqué.
+        padded = "  " + "y" * (MAX_CANCELLATION_REASON_LENGTH + 50) + "  "
+        result = normalize_cancellation_reason(padded)
+        assert result is not None
+        assert not result.startswith(" ")
+        assert not result.endswith(" ")
+        assert len(result) == MAX_CANCELLATION_REASON_LENGTH
+
+
+# ---------------------------------------------------------------------------
+# counts_towards_revenue / REVENUE_STATUSES (US-3.3, #24)
+# ---------------------------------------------------------------------------
+
+
+class TestCountsTowardsRevenue:
+    """Invariant §8.1 : CANCELLED n'est jamais comptabilisé dans le CA."""
+
+    def test_completed_counts_towards_revenue(self) -> None:
+        assert counts_towards_revenue("COMPLETED") is True
+
+    def test_cancelled_does_not_count(self) -> None:
+        assert counts_towards_revenue("CANCELLED") is False
+
+    def test_pending_does_not_count(self) -> None:
+        assert counts_towards_revenue("PENDING") is False
+
+    def test_confirmed_does_not_count(self) -> None:
+        assert counts_towards_revenue("CONFIRMED") is False
+
+    def test_no_show_does_not_count(self) -> None:
+        assert counts_towards_revenue("NO_SHOW") is False
+
+    def test_unknown_status_does_not_count(self) -> None:
+        assert counts_towards_revenue("FUTURE_STATUS") is False
+
+    def test_empty_string_does_not_count(self) -> None:
+        assert counts_towards_revenue("") is False
+
+
+class TestRevenueStatuses:
+    def test_contains_completed(self) -> None:
+        assert "COMPLETED" in REVENUE_STATUSES
+
+    def test_does_not_contain_cancelled(self) -> None:
+        assert "CANCELLED" not in REVENUE_STATUSES
+
+    def test_does_not_contain_pending(self) -> None:
+        assert "PENDING" not in REVENUE_STATUSES
+
+    def test_does_not_contain_confirmed(self) -> None:
+        assert "CONFIRMED" not in REVENUE_STATUSES
+
+    def test_does_not_contain_no_show(self) -> None:
+        assert "NO_SHOW" not in REVENUE_STATUSES
+
+    def test_is_tuple_type(self) -> None:
+        assert isinstance(REVENUE_STATUSES, tuple)

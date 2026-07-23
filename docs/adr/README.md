@@ -37,6 +37,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0022](./0022-modification-informations-salon.md) | Modification des informations du salon — réutilisation du chemin d'écriture #15 & garantie de réflexion côté client sans cache | Accepté | #20 |
 | [0023](./0023-moteur-disponibilite-anti-double-reservation.md) | Moteur de disponibilité & anti double-réservation — garantie portée par la contrainte d'exclusion base, moteur pur au-dessus | Accepté | #21 |
 | [0024](./0024-reservation-cote-client.md) | Réservation côté client — tunnel mobile & session cliente au-dessus des endpoints #21 | Accepté | #22 |
+| [0025](./0025-annulation-rendez-vous-client.md) | Annulation d'un rendez-vous côté client — transition d'état soft, motif optionnel & invariant CA | Accepté | #24 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 

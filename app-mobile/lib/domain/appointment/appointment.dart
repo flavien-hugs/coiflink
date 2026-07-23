@@ -67,4 +67,14 @@ class Appointment {
   bool get isClientModifiable =>
       status == AppointmentStatus.pending ||
       status == AppointmentStatus.confirmed;
+
+  /// Vrai si le RDV est encore annulable **par le client** (US-3.3, #24).
+  ///
+  /// Miroir **d'affichage** de la règle serveur `is_client_cancellable` : seuls les
+  /// états actifs (`pending`/`confirmed`) sont annulables ; un RDV terminé
+  /// (`completed`) ou terminal (déjà `cancelled`/`noShow`) est verrouillé côté client
+  /// (§8.1). Aide UX uniquement — le serveur reste juge (un refus revient en `409`).
+  bool get isClientCancellable =>
+      status == AppointmentStatus.pending ||
+      status == AppointmentStatus.confirmed;
 }

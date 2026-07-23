@@ -96,6 +96,19 @@ class NotModifiableException extends AppointmentGatewayException {
   String toString() => 'NotModifiableException: $message';
 }
 
+/// Levée quand le RDV n'est **plus annulable** (`409`, terminé/terminal/déjà
+/// annulé, §8.1, #24) : le verrou serveur est final — rien à re-choisir, l'UI
+/// rafraîchit la liste. Distincte de [NotModifiableException] (deux règles métier
+/// séparées, même si le jeu d'états coïncide au MVP).
+class NotCancellableException extends AppointmentGatewayException {
+  const NotCancellableException([
+    super.message = 'Ce rendez-vous ne peut plus être annulé.',
+  ]);
+
+  @override
+  String toString() => 'NotCancellableException: $message';
+}
+
 /// Levée quand le RDV visé est **introuvable** ou **hors appartenance** (`404`) :
 /// indiscernables (aucun oracle §11.2) — l'UI rafraîchit la liste « Mes RDV ».
 class AppointmentNotFoundException extends AppointmentGatewayException {
@@ -152,6 +165,21 @@ abstract class AppointmentGateway {
   Future<Appointment> modify({
     required String appointmentId,
     required BookingDraft draft,
+    required String accessToken,
+  });
+
+  /// Annule **son** rendez-vous via `POST /appointments/{appointmentId}/cancellation`
+  /// avec l'en-tête `Authorization: Bearer <accessToken>`. Le corps ne porte qu'un
+  /// **motif optionnel** (`reason`) — jamais `client_id`/`salon_id`/`status`
+  /// (anti-élévation §11.2) ; le `status = CANCELLED` est forcé serveur. Le motif est
+  /// une donnée cliente : **jamais** journalisé. Retourne le RDV au statut `cancelled`.
+  ///
+  /// Lève [UnauthorizedException] (`401`), [NotCancellableException] (`409`, RDV
+  /// terminé/terminal), [AppointmentNotFoundException] (`404`),
+  /// [AppointmentGatewayException] (réseau / réponse invalide).
+  Future<Appointment> cancel({
+    required String appointmentId,
+    String? reason,
     required String accessToken,
   });
 }

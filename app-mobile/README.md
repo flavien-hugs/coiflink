@@ -5,8 +5,9 @@ Application mobile **client** de CoifLink, conformément à
 iOS conservé). Initialisé en squelette (#2), le paquet porte depuis #18 sa **première brique
 réseau** et l'écran de **recherche/liste des salons** (§7.1). Depuis #22, le paquet porte aussi le
 **tunnel de réservation client** (choix prestation → date → créneau → commentaire → confirmation) et
-une **connexion cliente minimale** ; l'historique « Mes rendez-vous », la modification/annulation et
-les rappels restent à venir (issues M3→).
+une **connexion cliente minimale**. Depuis #23/#24, l'écran **« Mes rendez-vous »** liste les RDV
+actifs et permet leur **modification** et leur **annulation** (motif facultatif) ; les rappels restent
+à venir (issues M3→).
 
 ## Architecture (hexagonale — [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
 
@@ -128,3 +129,28 @@ repère **Africa/Abidjan (UTC+0)**. Statut initial **« En attente »** affiché
 (imposés serveur) ; aucun jeton, URL, corps ni PII n'est **journalisé** ; les exceptions portent des
 messages **génériques**. Un `409` créneau pris → retour à l'étape créneaux rafraîchie ; un `401` →
 reconnexion.
+
+## Mes rendez-vous — modification & annulation (#23/#24, [ADR-0025](../docs/adr/0025-annulation-rendez-vous-client.md))
+
+L'écran **« Mes rendez-vous »** (`adapters/ui/appointments/my_appointments_screen.dart`) liste les RDV
+**actifs** du client (`GET /appointments`) et porte deux actions par carte, **désactivées** pour un RDV
+terminé/terminal (miroir d'affichage — le serveur reste juge, §8.1) :
+
+- **Modifier** (#23) — rouvre le tunnel pré-rempli (`PATCH /appointments/{id}`) ;
+- **Annuler** (#24) — ouvre une **confirmation** avec un champ **motif facultatif** puis appelle
+  `POST /appointments/{id}/cancellation`.
+
+Découpage pour l'annulation :
+
+- `domain/appointment/appointment.dart` — `isClientCancellable` (états `pending`/`confirmed`) ;
+- `application/ports/appointment_gateway.dart` — `AppointmentGateway.cancel(...)` + exception **neutre**
+  `NotCancellableException` (`409`) ;
+- `application/use_cases/cancel_appointment.dart` — refus **en amont** d'un RDV non annulable, puis
+  délégation au port ;
+- `adapters/data/http_appointment_gateway.dart` — `POST .../cancellation` (mapping `200 → Appointment`
+  « Annulé », `401 → Unauthorized`, `409 → NotCancellable`, `404 → AppointmentNotFound`).
+
+**Garde-fous (§11)** : le corps d'annulation n'envoie **jamais** `client_id`/`salon_id`/`status` — seul
+un **motif facultatif** (`reason`), **omis s'il est vide** et **jamais journalisé** (donnée cliente).
+Au succès, la liste se rafraîchit (le RDV annulé la quitte). `409` → message + rafraîchissement ; `401`
+→ session invalidée → reconnexion. Le jeton n'apparaît dans **aucun** log.

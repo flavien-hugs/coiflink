@@ -567,6 +567,43 @@ DATABASE_URL=postgresql://user:pwd@host/db alembic upgrade head
 DATABASE_URL=postgresql://user:pwd@host/db pytest tests/test_appointment_concurrency.py -v
 ```
 
+## Annulation d'un rendez-vous (client, US-3.3, #24 — [ADR-0025](../docs/adr/0025-annulation-rendez-vous-client.md))
+
+Le client annule **son** RDV **actif** (`PENDING`/`CONFIRMED`) via une sous-ressource d'**action**,
+au-dessus du **schéma inchangé** (transition d'état + motif optionnel + audit). C'est **la route** qui
+décide de la transition vers `CANCELLED` — jamais un `status` soumis (anti-élévation §11.2).
+
+| Méthode | Route | Accès | Réponse | Erreurs |
+| --- | --- | --- | --- | --- |
+| `POST` | `/appointments/{appointment_id}/cancellation` | `APPOINTMENT_BOOK` (client) | `200` RDV `CANCELLED` | `409` non annulable (terminé/déjà annulé) · `404` inexistant/hors appartenance · `401` · `403` |
+
+- **Verrou d'état (§8.1)** : un RDV `COMPLETED`/`CANCELLED`/`NO_SHOW` est **non annulable** →
+  `AppointmentNotCancellable` (**409**). La règle est **pure** (`is_client_cancellable`) **et**
+  ré-affirmée par un **UPDATE conditionnel** `WHERE status IN ('PENDING','CONFIRMED')` (garde TOCTOU) ;
+  une double annulation est un `409`. L'annulation **reste possible même si le salon est devenu non
+  réservable/inactif** (on n'empêche jamais un client d'annuler).
+- **Créneau libéré (mécanique)** : un RDV `CANCELLED` sort de l'ensemble actif de l'`EXCLUDE` **et** de
+  `booked_slots` — son créneau **redevient disponible**, sans code dédié. L'annulation ne peut pas
+  violer l'exclusion (elle **libère** un créneau).
+- **Motif optionnel (§11.3)** : `reason` normalisé (trim, vide → `NULL`, borné à 500, tronqué) et écrit
+  dans `cancellation_reason` — **jamais** journalisé (ni `logging`, ni métadonnées d'audit). Le contrat
+  `AppointmentResponse` **n'expose pas** `cancellation_reason`.
+- **Anti-élévation** : corps **sans** `client_id`/`salon_id`/`status` (`extra="ignore"`) ; appartenance
+  imposée serveur (`get_owned`, §11.2) ; un RDV inexistant **ou** d'autrui est un `404` **indiscernable**.
+- **Audit §11.4** : `APPOINTMENT_CANCELLED` **neutre** (`metadata={"reason_provided": bool}`) dans la
+  **même** unité de travail que l'écriture (patron #17/#20/#23). **Aucune** notification (§8.4 → Épic 7).
+- **Exclusion du CA = invariant, pas un calcul** : aucun agrégat de CA n'existe encore (M4/M5). Le
+  prédicat de domaine pur `counts_towards_revenue(status)` (`False` pour `CANCELLED`) **documente et
+  verrouille** l'invariant que M4/M5 réutiliseront — un RDV annulé est exclu du CA **par construction**.
+
+```jsonc
+// POST /appointments/{appointment_id}/cancellation — corps (jamais client_id/salon_id/status)
+{ "reason": "Empêchement de dernière minute." }   // reason est facultatif
+```
+
+Les tests e2e (transition réelle, **créneau libéré**, verrou terminé, audit neutre) **skip proprement**
+sans `DATABASE_URL` (patron `test_appointment_concurrency.py`).
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

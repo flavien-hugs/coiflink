@@ -61,6 +61,7 @@ from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.application.appointments import (
     BookAppointment,
     BookingCommand,
+    CancelAppointment,
     CheckAvailability,
     ListMyAppointments,
     ModifyAppointment,
@@ -78,6 +79,7 @@ from coiflink_api.domain.appointment import (
 )
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.errors import (
+    AppointmentNotCancellable,
     AppointmentNotFound,
     AppointmentNotModifiable,
     AppointmentServiceRequired,
@@ -148,6 +150,24 @@ class ModifyAppointmentRequest(BaseModel):
     service_ids: list[uuid.UUID] = Field(min_length=1)
     hairdresser_id: uuid.UUID | None = Field(default=None)
     client_note: str | None = Field(default=None, examples=["Je préfère court."])
+
+
+class CancelAppointmentRequest(BaseModel):
+    """Corps de `POST /appointments/{appointment_id}/cancellation` (US-3.3, #24).
+
+    Porte **uniquement** un `reason` optionnel : le `status = CANCELLED` est **forcé
+    serveur** (c'est *la route* qui décide de la transition, jamais un champ soumis) ;
+    le `client_id` vient du `Principal`, le `salon_id` du RDV chargé. Un champ
+    privilégié présent (`salon_id`/`client_id`/`status`) est **ignoré**
+    (`extra="ignore"`) — anti-élévation §11.2. Le motif est **persisté** sur la ligne
+    du RDV mais **jamais** journalisé (§11.3).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    reason: str | None = Field(
+        default=None, examples=["Empêchement de dernière minute."]
+    )
 
 
 class BookedServiceResponse(BaseModel):
@@ -448,6 +468,56 @@ def modify_appointment(
         ServiceNotFound,
         HairdresserNotInSalon,
     ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _appointment_response(appointment)
+
+
+@router.post(
+    "/appointments/{appointment_id}/cancellation",
+    response_model=AppointmentResponse,
+    summary="Annuler son rendez-vous (verrou si terminé, journalisé §11.4)",
+    responses={
+        200: {"description": "Rendez-vous annulé (statut CANCELLED)"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant (annulation réservée au client)"},
+        404: {"description": "RDV inexistant ou hors appartenance"},
+        409: {"description": "RDV non annulable (terminé, déjà annulé, absent)"},
+    },
+)
+def cancel_appointment(
+    appointment_id: uuid.UUID,
+    payload: CancelAppointmentRequest,
+    appointments: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    principal: Annotated[
+        Principal, Depends(require_permission(Permission.APPOINTMENT_BOOK))
+    ],
+) -> AppointmentResponse:
+    """Annule **le** RDV du **client authentifié** (`client_id = principal.id`).
+
+    Sous-ressource d'**action** : c'est la route qui décide de la transition vers
+    `CANCELLED` — le corps ne porte **jamais** `status`/`client_id`/`salon_id` (§11.2),
+    seul un **motif optionnel** est saisissable (persisté, jamais journalisé). Route
+    d'appartenance : le `salon_id` vient du RDV chargé. Un RDV inexistant ou d'autrui
+    est un `404` **indiscernable** (aucun oracle). Un RDV terminé/terminal (déjà annulé,
+    `COMPLETED`, `NO_SHOW`) est **verrouillé côté client** (`409`). L'annulation
+    **libère** le créneau (le RDV quitte l'ensemble actif) et est journalisée
+    `APPOINTMENT_CANCELLED` (§11.4). Aucune notification n'est émise (§8.4 → Épic 7).
+    """
+
+    try:
+        appointment = CancelAppointment(appointments, audit_log).execute(
+            appointment_id, principal.id, payload.reason, now=_now()
+        )
+    except AppointmentNotCancellable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except AppointmentNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc

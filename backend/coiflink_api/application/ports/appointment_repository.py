@@ -89,6 +89,24 @@ class AppointmentRepository(Protocol):
         """
         ...
 
+    def cancel(
+        self, appointment_id: uuid.UUID, *, reason: str | None
+    ) -> Appointment:
+        """Annule le RDV (transition vers `CANCELLED`) et pose son motif (#24).
+
+        Écriture **conditionnée au statut actif** (`PENDING`/`CONFIRMED`) via un
+        UPDATE conditionnel : si aucune ligne active ne correspond (RDV inexistant
+        ou statut passé terminal entre la lecture et l'écriture — garde TOCTOU), lève
+        `domain.errors.AppointmentNotCancellable`. Pose `status = 'CANCELLED'` et
+        `cancellation_reason = reason` (`reason` déjà normalisé, `None` = pas de
+        motif) ; `updated_at` se rafraîchit automatiquement. Les jonctions
+        `appointment_services` (prestations + prix figé) sont **conservées** (utiles
+        à l'historique/CA futur). L'annulation **libère** le créneau (le RDV quitte
+        l'ensemble actif de l'exclusion base et de `booked_slots`) : elle ne peut pas
+        violer la contrainte d'exclusion. Retourne l'entité relue.
+        """
+        ...
+
     def list_for_client(
         self,
         client_id: uuid.UUID,

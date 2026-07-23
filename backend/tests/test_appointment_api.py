@@ -910,3 +910,235 @@ class TestIsExclusionViolation:
     def test_unrelated_constraint_in_diag_returns_false(self) -> None:
         orig = _MockOrig(sqlstate="23000", constraint_name="uq_some_other_constraint")
         assert not self._fn(_MockIntegrityError(orig))
+
+
+# ---------------------------------------------------------------------------
+# POST /appointments/{appointment_id}/cancellation — annulation client (US-3.3, #24)
+# ---------------------------------------------------------------------------
+
+_CANCEL_APPT_ID = uuid.UUID("cccccccc-0000-0000-0000-000000000001")
+
+
+def _cancel_client(
+    appts: FakeAppointmentRepository | None = None,
+) -> TestClient:
+    """Comme `_client` mais installe aussi `get_audit_log` (requis par l'annulation)."""
+    tc = _client(appts=appts)
+    app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
+    return tc
+
+
+def _make_cancel_entity(
+    *,
+    appt_id: uuid.UUID = _CANCEL_APPT_ID,
+    client_id: uuid.UUID = _CLIENT_ID,
+    status: str = "PENDING",
+) -> AppointmentEntity:
+    return AppointmentEntity(
+        id=appt_id,
+        salon_id=_SALON_ID,
+        client_id=client_id,
+        hairdresser_id=None,
+        date=datetime.date(2026, 8, 3),
+        start_time=datetime.time(9, 0),
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT,
+        services=(
+            BookedServiceEntity(
+                service_id=_SERVICE_ID,
+                price_at_booking=decimal.Decimal("5000.00"),
+            ),
+        ),
+    )
+
+
+class TestCancelAppointmentAPI:
+    def _url(self, appt_id: uuid.UUID = _CANCEL_APPT_ID) -> str:
+        return f"/appointments/{appt_id}/cancellation"
+
+    # --- Authentification / autorisation ----------------------------------
+
+    def test_no_token_returns_401(self) -> None:
+        resp = _cancel_client().post(self._url(), json={})
+        assert resp.status_code == 401
+
+    def test_manager_role_returns_403(self) -> None:
+        resp = _cancel_client().post(
+            self._url(), json={}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 403
+
+    def test_admin_role_returns_403(self) -> None:
+        resp = _cancel_client().post(
+            self._url(), json={}, headers=_auth_header(role="ADMIN")
+        )
+        assert resp.status_code == 403
+
+    # --- Appartenance (§11.2) ----------------------------------------
+
+    def test_other_client_appointment_returns_404(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(client_id=_OTHER_CLIENT_ID_API)]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 404
+
+    def test_unknown_appointment_returns_404(self) -> None:
+        appts = FakeAppointmentRepository()
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 404
+
+    # --- Verrou d'état (§8.1) ----------------------------------------
+
+    def test_completed_appointment_returns_409(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="COMPLETED")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 409
+
+    def test_already_cancelled_appointment_returns_409(self) -> None:
+        # Double annulation = 409 (idempotence refusée).
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="CANCELLED")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 409
+
+    def test_no_show_appointment_returns_409(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="NO_SHOW")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 409
+
+    # --- Cas valides ------------------------------------------------
+
+    def test_pending_appointment_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 200
+
+    def test_confirmed_appointment_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="CONFIRMED")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 200
+
+    def test_response_status_is_cancelled(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.json()["status"] == "CANCELLED"
+
+    def test_cancel_with_reason_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(),
+            json={"reason": "Empêchement de dernière minute."},
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 200
+
+    def test_cancel_without_reason_returns_200(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 200
+
+    # --- Anti-élévation §11.2 : champs privilégiés ignorés ---------------
+
+    def test_client_id_in_body_is_ignored(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        injected = str(uuid.uuid4())
+        resp = _cancel_client(appts=appts).post(
+            self._url(),
+            json={"client_id": injected},
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["client_id"] == str(_CLIENT_ID)
+
+    def test_salon_id_in_body_is_ignored(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        injected = str(uuid.uuid4())
+        resp = _cancel_client(appts=appts).post(
+            self._url(),
+            json={"salon_id": injected},
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["salon_id"] == str(_SALON_ID)
+
+    def test_status_in_body_is_ignored(self) -> None:
+        # Le body peut tenter de fixer `status` — doit être ignoré (`extra="ignore"`).
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(),
+            json={"status": "PENDING"},
+            headers=_auth_header(),
+        )
+        # La route décide : le statut résultant est CANCELLED (pas PENDING du corps).
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "CANCELLED"
+
+    def test_response_contains_expected_fields(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        data = resp.json()
+        assert "id" in data
+        assert "salon_id" in data
+        assert "client_id" in data
+        assert "status" in data
+        assert "services" in data
+
+    def test_409_response_body_is_neutral(self) -> None:
+        # §11.3 : la réponse 409 ne divulgue ni PII ni détail SQL.
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="COMPLETED")]
+        )
+        resp = _cancel_client(appts=appts).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 409
+        detail = resp.json().get("detail", "")
+        assert "client" not in detail.lower()
+        assert "sql" not in detail.lower()
+        assert "postgres" not in detail.lower()

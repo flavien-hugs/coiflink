@@ -740,13 +740,16 @@ class FakeAppointmentRepository:
         *,
         raise_conflict: bool = False,
         raise_not_modifiable: bool = False,
+        raise_not_cancellable: bool = False,
         appointments: list | None = None,
     ) -> None:
         self._booked: dict = dict(booked or {})
         self._raise_conflict = raise_conflict
         self._raise_not_modifiable = raise_not_modifiable
+        self._raise_not_cancellable = raise_not_cancellable
         self.created: list = []
         self.updated: list = []
+        self.cancelled: list = []
         self.booked_slots_calls: list = []
         self._appointments: dict = {}
         for appt in (appointments or []):
@@ -822,6 +825,37 @@ class FakeAppointmentRepository:
             hairdresser_id=changes.hairdresser_id,
             client_note=changes.client_note,
             services=changes.services,
+        )
+        self._appointments[appointment_id] = updated
+        return updated
+
+    def cancel(self, appointment_id, *, reason):  # type: ignore[no-untyped-def]
+        """Annule le RDV (transition `CANCELLED`) et mémorise le motif transmis (#24).
+
+        `raise_not_cancellable=True` simule la garde TOCTOU (statut passé terminal
+        entre la lecture et l'écriture) : lève `AppointmentNotCancellable`. Un RDV
+        déjà terminal (hors `PENDING`/`CONFIRMED`) ou absent est refusé de la même
+        façon (miroir de l'UPDATE conditionnel base). `cancelled` enregistre chaque
+        `(appointment_id, reason)` reçu pour vérifier que le motif normalisé transite.
+        """
+        import dataclasses as _dc
+        from coiflink_api.domain.appointment import CLIENT_CANCELLABLE_STATUSES
+        from coiflink_api.domain.enums import AppointmentStatus
+        from coiflink_api.domain.errors import AppointmentNotCancellable
+
+        if self._raise_not_cancellable:
+            raise AppointmentNotCancellable(
+                "Ce rendez-vous ne peut plus être annulé."
+            )
+        appt = self._appointments.get(appointment_id)
+        if appt is None or appt.status not in CLIENT_CANCELLABLE_STATUSES:
+            raise AppointmentNotCancellable(
+                "Ce rendez-vous ne peut plus être annulé."
+            )
+        self.cancelled.append((appointment_id, reason))
+        updated = _dc.replace(
+            appt,
+            status=AppointmentStatus.CANCELLED.value,
         )
         self._appointments[appointment_id] = updated
         return updated

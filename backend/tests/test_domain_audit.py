@@ -46,8 +46,11 @@ class TestAuditAction:
     def test_appointment_updated_value(self) -> None:
         assert AuditAction.APPOINTMENT_UPDATED == "APPOINTMENT_UPDATED"
 
-    def test_exactly_six_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 6
+    def test_appointment_cancelled_value(self) -> None:
+        assert AuditAction.APPOINTMENT_CANCELLED == "APPOINTMENT_CANCELLED"
+
+    def test_exactly_seven_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 7
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -65,6 +68,7 @@ class TestAuditAction:
             "SERVICE_REACTIVATED",
             "SALON_UPDATED",
             "APPOINTMENT_UPDATED",
+            "APPOINTMENT_CANCELLED",
         }
 
 

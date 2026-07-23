@@ -62,6 +62,14 @@ class _StubGateway implements AppointmentGateway {
     required String accessToken,
   }) =>
       throw UnimplementedError();
+
+  @override
+  Future<Appointment> cancel({
+    required String appointmentId,
+    String? reason,
+    required String accessToken,
+  }) =>
+      throw UnimplementedError();
 }
 
 // ---------------------------------------------------------------------------

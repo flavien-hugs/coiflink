@@ -35,7 +35,9 @@ from coiflink_api.domain.appointment import (
     AppointmentUpdate,
     BookedService,
     compute_end_time,
+    is_client_cancellable,
     is_client_modifiable,
+    normalize_cancellation_reason,
     require_services,
     validate_booking_window,
 )
@@ -53,6 +55,7 @@ from coiflink_api.domain.availability import (
 from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
 from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
+    AppointmentNotCancellable,
     AppointmentNotFound,
     AppointmentNotModifiable,
     HairdresserNotInSalon,
@@ -436,6 +439,77 @@ class ModifyAppointment:
         return updated
 
 
+# --------------------------------------------------------------------------- #
+# Annulation d'un rendez-vous par le client (US-3.3, #24).
+# --------------------------------------------------------------------------- #
+class CancelAppointment:
+    """Annule **le** RDV du client authentifié et journalise (§11.4, #24).
+
+    Séquence (patron ownership→verrou→écriture conditionnelle→audit, #23) : charger
+    le RDV **du client** (`AppointmentNotFound` si inexistant ou d'autrui —
+    indiscernables, aucun oracle §11.2) → **verrou d'état** (`AppointmentNotCancellable`
+    si terminé/terminal/déjà annulé) → `cancel` transactionnel (UPDATE conditionnel sur
+    statut actif, ré-affirme le verrou — garde TOCTOU) → audit `APPOINTMENT_CANCELLED`
+    **neutre** dans la **même** unité de travail.
+
+    N'exige **ni** catalogue **ni** portée : l'annulation ne re-valide **pas** la
+    disponibilité et **reste possible même si le salon est devenu non réservable/
+    inactif** (§8.3) — on n'empêche jamais un client d'annuler son RDV. Par
+    construction, l'annulation **libère** le créneau (le RDV quitte l'ensemble actif).
+
+    Le **motif** est optionnel : normalisé (`normalize_cancellation_reason`), il est
+    **persisté** sur la ligne du RDV mais **jamais** journalisé — les métadonnées
+    d'audit ne portent qu'un booléen neutre `reason_provided` (le *fait* qu'un motif
+    ait été fourni n'est pas une PII ; son **contenu**, si — donc jamais tracé).
+    """
+
+    def __init__(
+        self,
+        appointment_repository: AppointmentRepository,
+        audit_log: AuditLog,
+    ) -> None:
+        self._appointments = appointment_repository
+        self._audit_log = audit_log
+
+    def execute(
+        self,
+        appointment_id: uuid.UUID,
+        client_id: uuid.UUID,
+        reason: str | None = None,
+        *,
+        now: datetime.datetime | None = None,  # noqa: ARG002 (parité de signature)
+    ) -> Appointment:
+        current = self._appointments.get_owned(appointment_id, client_id)
+        if current is None:
+            # RDV inexistant **ou** d'autrui : indiscernables (aucun oracle, §11.2).
+            raise AppointmentNotFound("Rendez-vous introuvable.")
+        if not is_client_cancellable(current.status):
+            raise AppointmentNotCancellable(
+                "Ce rendez-vous ne peut plus être annulé."
+            )
+
+        normalized_reason = normalize_cancellation_reason(reason)
+        # UPDATE conditionnel (`WHERE status IN (actifs)`) : ré-affirme le verrou au
+        # moment de l'écriture. Le motif normalisé est persisté ; le RDV quitte
+        # l'ensemble actif → le créneau se libère (exclusion base + `booked_slots`).
+        updated = self._appointments.cancel(
+            appointment_id, reason=normalized_reason
+        )
+        # Audit §11.4 dans la **même** unité de travail que l'écriture (patron #20/#23) :
+        # métadonnées **neutres** — jamais le texte du motif ni de PII.
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.APPOINTMENT_CANCELLED.value,
+                actor_user_id=client_id,
+                salon_id=current.salon_id,
+                entity_type=ENTITY_TYPE_APPOINTMENT,
+                entity_id=appointment_id,
+                metadata={"reason_provided": normalized_reason is not None},
+            )
+        )
+        return updated
+
+
 class ListMyAppointments:
     """Liste les RDV **du client** authentifié (lecture « Mes rendez-vous », #23).
 
@@ -463,5 +537,6 @@ __all__ = [
     "BookAppointment",
     "ModifyAppointmentCommand",
     "ModifyAppointment",
+    "CancelAppointment",
     "ListMyAppointments",
 ]
