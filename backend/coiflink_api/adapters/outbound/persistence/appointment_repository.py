@@ -373,6 +373,35 @@ class SqlAppointmentRepository:
         rows = self._session.scalars(stmt).all()
         return tuple(_to_domain(row, self._load_services(row.id)) for row in rows)
 
+    def list_for_salon(
+        self,
+        salon_id: uuid.UUID,
+        date_from: datetime.date,
+        date_to: datetime.date,
+        statuses: tuple[str, ...] | None = None,
+    ) -> tuple[Appointment, ...]:
+        """RDV du salon dans `[date_from, date_to]`, filtrés par statut, triés (#26).
+
+        L'isolation §11.2 est ré-affirmée **en SQL** (`salon_id = :salon_id`) : la
+        lecture ne peut jamais renvoyer un RDV d'un autre salon, quelle que soit la
+        garde HTTP. La plage est **inclusive** aux deux bornes. L'index
+        `ix_appointments_salon_id (salon_id, appointment_date)` couvre le filtre.
+        """
+
+        stmt = select(models.Appointment).where(
+            models.Appointment.salon_id == salon_id,
+            models.Appointment.appointment_date >= date_from,
+            models.Appointment.appointment_date <= date_to,
+        )
+        if statuses is not None:
+            stmt = stmt.where(models.Appointment.status.in_(statuses))
+        stmt = stmt.order_by(
+            models.Appointment.appointment_date.asc(),
+            models.Appointment.start_time.asc(),
+        )
+        rows = self._session.scalars(stmt).all()
+        return tuple(_to_domain(row, self._load_services(row.id)) for row in rows)
+
     def _load_services(
         self, appointment_id: uuid.UUID
     ) -> tuple[BookedService, ...]:

@@ -1600,3 +1600,284 @@ class TestAssignHairdresserAPI:
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "PENDING"
+
+
+# ---------------------------------------------------------------------------
+# GET /salons/{salon_id}/appointments — planning vue calendrier (US-3.5, #26)
+# ---------------------------------------------------------------------------
+
+_PLANNING_APPT_ID = uuid.UUID("cccccccc-0000-0000-0000-000000000001")
+_PLANNING_APPT_ID_2 = uuid.UUID("cccccccc-0000-0000-0000-000000000002")
+
+
+def _make_planning_entity(
+    *,
+    appt_id: uuid.UUID = _PLANNING_APPT_ID,
+    status: str = "PENDING",
+    date: datetime.date = datetime.date(2026, 8, 3),
+    start_time: datetime.time = datetime.time(9, 0),
+) -> AppointmentEntity:
+    return AppointmentEntity(
+        id=appt_id,
+        salon_id=_SALON_ID,
+        client_id=_CLIENT_ID,
+        hairdresser_id=None,
+        date=date,
+        start_time=start_time,
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT,
+        services=(
+            BookedServiceEntity(
+                service_id=_SERVICE_ID,
+                price_at_booking=decimal.Decimal("5000.00"),
+            ),
+        ),
+    )
+
+
+class TestListSalonAppointmentsAPI:
+    """Tests HTTP pour GET /salons/{salon_id}/appointments (US-3.5, #26).
+
+    Couvre : 200 liste vide et peuplée ; filtre statut simple et multiple ;
+    401 sans jeton ; 403 mauvais rôle et gérant hors périmètre ;
+    422 param manquant, plage inversée, plage > 42 jours ;
+    200 à exactement 42 jours (borne incluse) ; tri chronologique.
+    """
+
+    def _url(self) -> str:
+        return _BOOK_URL  # GET sur la même URL de base
+
+    def _params(
+        self, *, date_from: str = "2026-08-01", date_to: str = "2026-08-07"
+    ) -> dict:
+        return {"date_from": date_from, "date_to": date_to}
+
+    # --- Résultats 200 -------------------------------------------------------
+
+    def test_empty_returns_200_empty_list(self) -> None:
+        resp = _manager_client().get(
+            self._url(),
+            params=self._params(),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_returns_list_with_appointment(self) -> None:
+        appt = _make_planning_entity()
+        appts = FakeAppointmentRepository(appointments=[appt])
+        resp = _manager_client(appts=appts).get(
+            self._url(),
+            params=self._params(),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["id"] == str(_PLANNING_APPT_ID)
+
+    def test_response_fields_match_schema(self) -> None:
+        appt = _make_planning_entity()
+        appts = FakeAppointmentRepository(appointments=[appt])
+        resp = _manager_client(appts=appts).get(
+            self._url(),
+            params=self._params(),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        item = resp.json()[0]
+        for field in ("id", "salon_id", "client_id", "status", "date", "start_time", "end_time", "services"):
+            assert field in item, f"Champ manquant : {field}"
+
+    def test_salon_id_in_response_matches_requested_salon(self) -> None:
+        appt = _make_planning_entity()
+        appts = FakeAppointmentRepository(appointments=[appt])
+        resp = _manager_client(appts=appts).get(
+            self._url(),
+            params=self._params(),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        assert resp.json()[0]["salon_id"] == str(_SALON_ID)
+
+    def test_single_day_range_returns_200(self) -> None:
+        appt = _make_planning_entity(date=datetime.date(2026, 8, 3))
+        appts = FakeAppointmentRepository(appointments=[appt])
+        resp = _manager_client(appts=appts).get(
+            self._url(),
+            params=self._params(date_from="2026-08-03", date_to="2026-08-03"),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+    # --- Filtre par statut ---------------------------------------------------
+
+    def test_status_filter_single_returns_only_matching(self) -> None:
+        pending = _make_planning_entity(appt_id=_PLANNING_APPT_ID, status="PENDING")
+        confirmed = _make_planning_entity(appt_id=_PLANNING_APPT_ID_2, status="CONFIRMED")
+        appts = FakeAppointmentRepository(appointments=[pending, confirmed])
+        resp = _manager_client(appts=appts).get(
+            self._url(),
+            params={**self._params(), "status": "CONFIRMED"},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["status"] == "CONFIRMED"
+
+    def test_status_filter_multi_repeatable_param(self) -> None:
+        pending = _make_planning_entity(appt_id=_PLANNING_APPT_ID, status="PENDING")
+        confirmed = _make_planning_entity(appt_id=_PLANNING_APPT_ID_2, status="CONFIRMED")
+        appts = FakeAppointmentRepository(appointments=[pending, confirmed])
+        resp = _manager_client(appts=appts).get(
+            self._url(),
+            params=[
+                ("date_from", "2026-08-01"),
+                ("date_to", "2026-08-07"),
+                ("status", "PENDING"),
+                ("status", "CONFIRMED"),
+            ],
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
+
+    def test_no_status_filter_returns_all_statuses(self) -> None:
+        pending = _make_planning_entity(appt_id=_PLANNING_APPT_ID, status="PENDING")
+        confirmed = _make_planning_entity(appt_id=_PLANNING_APPT_ID_2, status="CONFIRMED")
+        appts = FakeAppointmentRepository(appointments=[pending, confirmed])
+        resp = _manager_client(appts=appts).get(
+            self._url(),
+            params=self._params(),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
+
+    # --- Sécurité / RBAC deny-by-default (ADR-0015) -------------------------
+
+    def test_no_token_returns_401(self) -> None:
+        resp = _manager_client().get(self._url(), params=self._params())
+        assert resp.status_code == 401
+
+    def test_client_role_returns_403(self) -> None:
+        resp = _manager_client().get(
+            self._url(),
+            params=self._params(),
+            headers=_auth_header(role="CLIENT"),
+        )
+        assert resp.status_code == 403
+
+    def test_admin_role_returns_403(self) -> None:
+        resp = _manager_client().get(
+            self._url(),
+            params=self._params(),
+            headers=_auth_header(role="ADMIN"),
+        )
+        assert resp.status_code == 403
+
+    def test_hairdresser_role_returns_403(self) -> None:
+        resp = _manager_client().get(
+            self._url(),
+            params=self._params(),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 403
+
+    def test_manager_out_of_scope_returns_403(self) -> None:
+        # Gérant sans portée sur _SALON_ID → require_salon_scope → 403 (§11.2).
+        app.dependency_overrides[get_appointment_repository] = lambda: FakeAppointmentRepository()
+        app.dependency_overrides[get_catalog_repository] = lambda: _catalog()
+        app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
+        app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(
+            FakeSalonScopeRepository()
+        )
+        app.dependency_overrides[get_salon_scope_repository] = lambda: FakeSalonScopeRepository()
+        tc = TestClient(app)
+        resp = tc.get(
+            self._url(),
+            params=self._params(),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 403
+
+    # --- Validation 422 (plage, params) -------------------------------------
+
+    def test_missing_date_from_returns_422(self) -> None:
+        resp = _manager_client().get(
+            self._url(),
+            params={"date_to": "2026-08-07"},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 422
+
+    def test_missing_date_to_returns_422(self) -> None:
+        resp = _manager_client().get(
+            self._url(),
+            params={"date_from": "2026-08-01"},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 422
+
+    def test_date_to_before_date_from_returns_422(self) -> None:
+        resp = _manager_client().get(
+            self._url(),
+            params=self._params(date_from="2026-08-07", date_to="2026-08-01"),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 422
+
+    def test_range_exactly_42_days_allowed(self) -> None:
+        # (2026-02-12 - 2026-01-01).days == 42 → égal à la limite → 200.
+        resp = _manager_client().get(
+            self._url(),
+            params=self._params(date_from="2026-01-01", date_to="2026-02-12"),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+
+    def test_range_over_42_days_returns_422(self) -> None:
+        # (2026-02-13 - 2026-01-01).days == 43 → dépasse la limite → 422.
+        resp = _manager_client().get(
+            self._url(),
+            params=self._params(date_from="2026-01-01", date_to="2026-02-13"),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 422
+
+    def test_invalid_date_format_returns_422(self) -> None:
+        resp = _manager_client().get(
+            self._url(),
+            params=self._params(date_from="not-a-date"),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 422
+
+    # --- Tri chronologique --------------------------------------------------
+
+    def test_results_sorted_by_start_time(self) -> None:
+        later = _make_planning_entity(
+            appt_id=_PLANNING_APPT_ID,
+            date=datetime.date(2026, 8, 3),
+            start_time=datetime.time(11, 0),
+        )
+        earlier = _make_planning_entity(
+            appt_id=_PLANNING_APPT_ID_2,
+            date=datetime.date(2026, 8, 3),
+            start_time=datetime.time(9, 0),
+        )
+        appts = FakeAppointmentRepository(appointments=[later, earlier])
+        resp = _manager_client(appts=appts).get(
+            self._url(),
+            params=self._params(),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert data[0]["start_time"] <= data[1]["start_time"]

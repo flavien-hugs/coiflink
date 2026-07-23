@@ -36,6 +36,7 @@ from coiflink_api.application.appointments import (
     CancelAppointment,
     CheckAvailability,
     ListMyAppointments,
+    ListSalonAppointments,
     ModifyAppointment,
     ModifyAppointmentCommand,
     SetAppointmentStatus,
@@ -1647,3 +1648,165 @@ class TestAssignHairdresser:
         metadata = audit.recorded[0].metadata
         for value in metadata.values():
             assert str(_HAIRDRESSER_ID) not in str(value)
+
+
+# ---------------------------------------------------------------------------
+# ListSalonAppointments (US-3.5, #26)
+# ---------------------------------------------------------------------------
+
+_APPT_ID_3 = uuid.UUID("aaaaaa00-0000-0000-0000-000000000003")
+_OTHER_SALON_ID = uuid.UUID("88888888-0000-0000-0000-000000000088")
+_DATE_BEFORE = datetime.date(2026, 8, 1)
+_DATE_AFTER = datetime.date(2026, 8, 10)
+
+
+def _make_salon_appointment(
+    *,
+    appt_id: uuid.UUID = _APPT_ID,
+    salon_id: uuid.UUID = _SALON_ID,
+    status: str = "PENDING",
+    date: datetime.date = _DATE,
+    start_time: datetime.time = datetime.time(9, 0),
+) -> Appointment:
+    return Appointment(
+        id=appt_id,
+        salon_id=salon_id,
+        client_id=_CLIENT_ID,
+        hairdresser_id=None,
+        date=date,
+        start_time=start_time,
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT_DT,
+        services=(
+            BookedService(service_id=_SERVICE_ID, price_at_booking=decimal.Decimal("5000.00")),
+        ),
+    )
+
+
+class TestListSalonAppointments:
+    """Cas d'usage de lecture planning salon : plage, filtre statut, isolation (§11.2, #26)."""
+
+    def _uc(self, appts: FakeAppointmentRepository) -> ListSalonAppointments:
+        return ListSalonAppointments(appts)
+
+    # --- Résultats de base ---------------------------------------------------
+
+    def test_returns_appointment_in_range(self) -> None:
+        appt = _make_salon_appointment()
+        appts = FakeAppointmentRepository(appointments=[appt])
+        result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE)
+        assert len(result) == 1
+        assert result[0].id == _APPT_ID
+
+    def test_empty_repo_returns_empty_tuple(self) -> None:
+        appts = FakeAppointmentRepository()
+        result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE)
+        assert result == ()
+
+    def test_appointment_before_range_excluded(self) -> None:
+        before = _make_salon_appointment(appt_id=_APPT_ID, date=_DATE_BEFORE)
+        appts = FakeAppointmentRepository(appointments=[before])
+        result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE)
+        assert result == ()
+
+    def test_appointment_after_range_excluded(self) -> None:
+        after = _make_salon_appointment(appt_id=_APPT_ID, date=_DATE_AFTER)
+        appts = FakeAppointmentRepository(appointments=[after])
+        result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE)
+        assert result == ()
+
+    def test_range_is_inclusive_on_first_day(self) -> None:
+        first = _make_salon_appointment(appt_id=_APPT_ID, date=_DATE_BEFORE)
+        appts = FakeAppointmentRepository(appointments=[first])
+        result = self._uc(appts).execute(_SALON_ID, _DATE_BEFORE, _DATE_AFTER)
+        assert len(result) == 1
+
+    def test_range_is_inclusive_on_last_day(self) -> None:
+        last = _make_salon_appointment(appt_id=_APPT_ID, date=_DATE_AFTER)
+        appts = FakeAppointmentRepository(appointments=[last])
+        result = self._uc(appts).execute(_SALON_ID, _DATE_BEFORE, _DATE_AFTER)
+        assert len(result) == 1
+
+    # --- Isolation salon (§11.2) -------------------------------------------
+
+    def test_never_returns_appointment_of_other_salon(self) -> None:
+        other = _make_salon_appointment(appt_id=_APPT_ID, salon_id=_OTHER_SALON_ID)
+        appts = FakeAppointmentRepository(appointments=[other])
+        result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE)
+        assert result == ()
+
+    def test_returns_only_own_salon_when_both_salons_present(self) -> None:
+        own = _make_salon_appointment(appt_id=_APPT_ID, salon_id=_SALON_ID)
+        other = _make_salon_appointment(appt_id=_APPT_ID_2, salon_id=_OTHER_SALON_ID)
+        appts = FakeAppointmentRepository(appointments=[own, other])
+        result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE)
+        assert len(result) == 1
+        assert result[0].salon_id == _SALON_ID
+
+    # --- Filtre par statut --------------------------------------------------
+
+    def test_status_filter_returns_only_matching(self) -> None:
+        pending = _make_salon_appointment(appt_id=_APPT_ID, status="PENDING")
+        confirmed = _make_salon_appointment(appt_id=_APPT_ID_2, status="CONFIRMED")
+        appts = FakeAppointmentRepository(appointments=[pending, confirmed])
+        result = self._uc(appts).execute(
+            _SALON_ID, _DATE, _DATE, statuses=("CONFIRMED",)
+        )
+        assert len(result) == 1
+        assert result[0].status == "CONFIRMED"
+
+    def test_no_status_filter_returns_all_statuses(self) -> None:
+        pending = _make_salon_appointment(appt_id=_APPT_ID, status="PENDING")
+        completed = _make_salon_appointment(appt_id=_APPT_ID_2, status="COMPLETED")
+        appts = FakeAppointmentRepository(appointments=[pending, completed])
+        result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE, statuses=None)
+        assert len(result) == 2
+
+    def test_multi_status_filter(self) -> None:
+        pending = _make_salon_appointment(appt_id=_APPT_ID, status="PENDING")
+        confirmed = _make_salon_appointment(appt_id=_APPT_ID_2, status="CONFIRMED")
+        cancelled = _make_salon_appointment(appt_id=_APPT_ID_3, status="CANCELLED")
+        appts = FakeAppointmentRepository(appointments=[pending, confirmed, cancelled])
+        result = self._uc(appts).execute(
+            _SALON_ID, _DATE, _DATE, statuses=("PENDING", "CONFIRMED")
+        )
+        assert len(result) == 2
+        returned_statuses = {r.status for r in result}
+        assert "PENDING" in returned_statuses
+        assert "CONFIRMED" in returned_statuses
+        assert "CANCELLED" not in returned_statuses
+
+    def test_terminal_statuses_included_when_no_filter(self) -> None:
+        cancelled = _make_salon_appointment(appt_id=_APPT_ID, status="CANCELLED")
+        completed = _make_salon_appointment(appt_id=_APPT_ID_2, status="COMPLETED")
+        no_show = _make_salon_appointment(appt_id=_APPT_ID_3, status="NO_SHOW")
+        appts = FakeAppointmentRepository(appointments=[cancelled, completed, no_show])
+        result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE, statuses=None)
+        assert len(result) == 3
+
+    # --- Tri chronologique --------------------------------------------------
+
+    def test_sorted_by_start_time_within_same_day(self) -> None:
+        later = _make_salon_appointment(
+            appt_id=_APPT_ID, date=_DATE, start_time=datetime.time(11, 0)
+        )
+        earlier = _make_salon_appointment(
+            appt_id=_APPT_ID_2, date=_DATE, start_time=datetime.time(9, 0)
+        )
+        appts = FakeAppointmentRepository(appointments=[later, earlier])
+        result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE)
+        assert result[0].start_time <= result[1].start_time
+
+    def test_sorted_by_date_across_days(self) -> None:
+        day2 = _make_salon_appointment(appt_id=_APPT_ID, date=_DATE_AFTER)
+        day1 = _make_salon_appointment(appt_id=_APPT_ID_2, date=_DATE_BEFORE)
+        appts = FakeAppointmentRepository(appointments=[day2, day1])
+        result = self._uc(appts).execute(_SALON_ID, _DATE_BEFORE, _DATE_AFTER)
+        assert result[0].date < result[1].date
+
+    def test_result_is_a_tuple(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_salon_appointment()])
+        result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE)
+        assert isinstance(result, tuple)

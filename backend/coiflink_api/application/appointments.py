@@ -680,6 +680,36 @@ class ListMyAppointments:
         return self._appointments.list_for_client(client_id, statuses)
 
 
+class ListSalonAppointments:
+    """Liste les RDV **du salon** sur une plage (lecture planning gérant, US-3.5 #26).
+
+    Miroir salon-scopé de `ListMyAppointments` : **lecture pure** (aucune écriture,
+    aucun audit). La **portée salon** est assurée par la garde HTTP
+    `require_salon_scope` (comme `GET /salons/{salon_id}/services`), et **ré-affirmée
+    en SQL** par le dépôt (`list_for_salon` filtre `salon_id`, défense en profondeur
+    §11.2) : un gérant ne lit **que** les RDV de son salon. Le **groupement par
+    statut** et la **découpe jour/semaine/mois** sont un concern d'affichage porté par
+    le web — la route renvoie une liste plate triée chronologiquement (tous statuts
+    sauf filtre), générique et réutilisable (#27 pourra en dériver une variante
+    « assignés »).
+    """
+
+    def __init__(self, appointment_repository: AppointmentRepository) -> None:
+        self._appointments = appointment_repository
+
+    def execute(
+        self,
+        salon_id: uuid.UUID,
+        date_from: datetime.date,
+        date_to: datetime.date,
+        *,
+        statuses: tuple[str, ...] | None = None,
+    ) -> tuple[Appointment, ...]:
+        return self._appointments.list_for_salon(
+            salon_id, date_from, date_to, statuses
+        )
+
+
 __all__ = [
     "BookingCommand",
     "CheckAvailability",
@@ -690,4 +720,5 @@ __all__ = [
     "SetAppointmentStatus",
     "AssignHairdresser",
     "ListMyAppointments",
+    "ListSalonAppointments",
 ]

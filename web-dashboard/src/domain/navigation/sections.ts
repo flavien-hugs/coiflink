@@ -43,7 +43,7 @@ export const DASHBOARD_SECTIONS: readonly DashboardSection[] = [
     key: "planning",
     label: "Planning",
     href: "/gerant/planning",
-    status: "coming-soon",
+    status: "available",
     category: "operations",
   },
   {

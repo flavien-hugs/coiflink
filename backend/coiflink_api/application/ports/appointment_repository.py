@@ -181,5 +181,25 @@ class AppointmentRepository(Protocol):
         """
         ...
 
+    def list_for_salon(
+        self,
+        salon_id: uuid.UUID,
+        date_from: datetime.date,
+        date_to: datetime.date,
+        statuses: tuple[str, ...] | None = None,
+    ) -> tuple[Appointment, ...]:
+        """Liste les RDV **du salon** sur une plage de dates (planning gérant, #26).
+
+        Miroir salon-scopé de `list_for_client` : renvoie les RDV dont
+        `appointment_date` est dans `[date_from, date_to]` (**inclusif**), avec leurs
+        `BookedService`, triés `(appointment_date, start_time)`. `statuses=None` ne
+        filtre pas sur le statut (**tous** statuts, y compris terminaux) ; une liste
+        restreint. **Ne renvoie jamais** un RDV d'un autre salon : l'isolation §11.2
+        est imposée **en SQL** (`WHERE salon_id = :salon_id`), en défense en profondeur
+        de la garde HTTP `require_salon_scope`. L'index `ix_appointments_salon_id
+        (salon_id, appointment_date)` couvre ce filtre.
+        """
+        ...
+
 
 __all__ = ["AppointmentRepository"]
