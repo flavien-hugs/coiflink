@@ -201,6 +201,18 @@ class AppointmentNotModifiable(DomainError):
     """
 
 
+class AppointmentNotCancellable(DomainError):
+    """Le rendez-vous n'est plus annulable **par le client** (§8.1, #24).
+
+    Levée quand le RDV est dans un état terminal/terminé (`COMPLETED`, déjà
+    `CANCELLED`, `NO_SHOW`) : un client ne peut annuler qu'un RDV **actif**
+    (`PENDING`/`CONFIRMED`) ; l'exception gérant relève de US-3.4/#25 (hors
+    périmètre). Ré-affirmée à l'écriture par un UPDATE conditionnel sur le statut
+    actif (garde TOCTOU). Message **neutre** — l'adapter entrant la traduit en
+    `409 Conflict` (état de la ressource, cohérent avec `AppointmentNotModifiable`).
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -287,6 +299,7 @@ __all__ = [
     "AppointmentServiceRequired",
     "AppointmentNotFound",
     "AppointmentNotModifiable",
+    "AppointmentNotCancellable",
     "InvalidOtp",
     "OtpExpired",
     "InvalidCredentials",

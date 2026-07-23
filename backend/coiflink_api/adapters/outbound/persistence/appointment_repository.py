@@ -32,7 +32,11 @@ from coiflink_api.domain.appointment import (
 )
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.enums import AppointmentStatus
-from coiflink_api.domain.errors import AppointmentNotModifiable, SlotAlreadyBooked
+from coiflink_api.domain.errors import (
+    AppointmentNotCancellable,
+    AppointmentNotModifiable,
+    SlotAlreadyBooked,
+)
 
 # Statuts « actifs » au sens de l'exclusion base (un RDV annulé/absent n'occupe
 # plus le créneau) — miroir de la clause `WHERE` de `ex_appointments_hairdresser_slot`.
@@ -201,6 +205,41 @@ class SqlAppointmentRepository:
 
         self._session.refresh(row)
         return _to_domain(row, changes.services)
+
+    def cancel(
+        self, appointment_id: uuid.UUID, *, reason: str | None
+    ) -> Appointment:
+        """Annule le RDV (UPDATE conditionnel sur statut) et pose son motif (#24).
+
+        Le `WHERE ... status IN (actifs)` ré-affirme le verrou d'état **au moment de
+        l'écriture** (garde TOCTOU) : si le RDV est inexistant ou passé terminal
+        entre-temps, aucune ligne active ne correspond → `AppointmentNotCancellable`.
+        Pose `status = 'CANCELLED'` et `cancellation_reason = reason`. Les jonctions
+        `appointment_services` sont **conservées** (historique/CA futur). Le RDV quitte
+        l'ensemble actif : le créneau **se libère** (exclusion base + `booked_slots`).
+        `updated_at` (`onupdate`) se rafraîchit automatiquement.
+        """
+
+        row = self._session.scalar(
+            select(models.Appointment).where(
+                models.Appointment.id == appointment_id,
+                models.Appointment.status.in_(_ACTIVE_STATUSES),
+            )
+        )
+        if row is None:
+            # RDV disparu ou statut déjà terminal (déjà annulé, terminé, absent, ou
+            # course #25) : le verrou est ré-affirmé, aucune annulation possible.
+            raise AppointmentNotCancellable(
+                "Ce rendez-vous ne peut plus être annulé."
+            )
+
+        row.status = AppointmentStatus.CANCELLED.value
+        row.cancellation_reason = reason
+        # `flush` matérialise l'UPDATE (commit piloté par `get_session`). L'annulation
+        # **libère** un créneau : elle ne peut pas violer l'exclusion anti-doublon.
+        self._session.flush()
+        self._session.refresh(row)
+        return _to_domain(row, self._load_services(appointment_id))
 
     def list_for_client(
         self,

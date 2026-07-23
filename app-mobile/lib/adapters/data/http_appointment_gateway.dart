@@ -217,6 +217,57 @@ class HttpAppointmentGateway implements AppointmentGateway {
     }
   }
 
+  @override
+  Future<Appointment> cancel({
+    required String appointmentId,
+    String? reason,
+    required String accessToken,
+  }) async {
+    final uri = config.resolve('/appointments/$appointmentId/cancellation');
+    // Corps **sans** client_id/salon_id/status : imposés serveur (§11.2). Le
+    // `status = CANCELLED` est forcé par la route (sous-ressource d'action). Le
+    // motif n'est inclus que s'il est non vide ; jamais journalisé (donnée cliente).
+    final payload = <String, dynamic>{
+      if (reason != null && reason.trim().isNotEmpty) 'reason': reason.trim(),
+    };
+
+    final http.Response response;
+    try {
+      response = await _client.post(
+        uri,
+        headers: <String, String>{
+          'content-type': 'application/json; charset=utf-8',
+          'authorization': 'Bearer $accessToken',
+        },
+        body: jsonEncode(payload),
+      );
+    } catch (_) {
+      throw const AppointmentGatewayException('Impossible de joindre le serveur.');
+    }
+
+    switch (response.statusCode) {
+      case 200:
+        break;
+      case 401:
+        throw const UnauthorizedException();
+      case 409:
+        throw const NotCancellableException();
+      case 404:
+        throw const AppointmentNotFoundException();
+      default:
+        throw const AppointmentGatewayException(
+          'L\'annulation a échoué, veuillez réessayer.',
+        );
+    }
+
+    try {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      return _appointmentFromJson(body);
+    } catch (_) {
+      throw const AppointmentGatewayException('Réponse du serveur illisible.');
+    }
+  }
+
   /// Distingue les trois causes de `409` sur une **modification** : RDV verrouillé
   /// (terminé) vs salon non réservable vs créneau déjà pris. On lit le `detail`
   /// **uniquement** pour router vers la bonne exception neutre — jamais pour

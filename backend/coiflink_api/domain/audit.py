@@ -54,6 +54,9 @@ class AuditAction(_StrEnum):
     # Rendez-vous (§11.4 « Modification rendez-vous ») — #23 (modification client).
     APPOINTMENT_UPDATED = "APPOINTMENT_UPDATED"
 
+    # Rendez-vous (§11.4 « Annulation rendez-vous ») — #24 (annulation client).
+    APPOINTMENT_CANCELLED = "APPOINTMENT_CANCELLED"
+
 
 @dataclass(frozen=True)
 class AuditEntry:

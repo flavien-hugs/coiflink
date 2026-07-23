@@ -12,6 +12,7 @@ import '../../application/auth_session.dart';
 import '../../application/ports/salon_catalog_gateway.dart';
 import '../../application/ports/token_store.dart';
 import '../../application/use_cases/book_appointment.dart';
+import '../../application/use_cases/cancel_appointment.dart';
 import '../../application/use_cases/check_availability.dart';
 import '../../application/use_cases/get_salon_detail.dart';
 import '../../application/use_cases/list_my_appointments.dart';
@@ -53,6 +54,7 @@ class CoifLinkApp extends StatelessWidget {
     final bookAppointment = BookAppointment(appointmentGateway);
     final listMyAppointments = ListMyAppointments(appointmentGateway);
     final modifyAppointment = ModifyAppointment(appointmentGateway);
+    final cancelAppointment = CancelAppointment(appointmentGateway);
     final signIn = SignIn(authGateway, session);
 
     // Lanceur du tunnel de réservation (#22) : pousse le tunnel, qui redirige
@@ -116,6 +118,7 @@ class CoifLinkApp extends StatelessWidget {
             session: session,
             onRequireLogin: (ctx) => _requireLogin(ctx, signIn),
             onModify: openModification,
+            onCancel: cancelAppointment.call,
           ),
         ),
       );

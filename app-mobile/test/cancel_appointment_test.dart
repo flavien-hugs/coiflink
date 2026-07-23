@@ -1,17 +1,14 @@
-// Tests unitaires — cas d'usage ModifyAppointment (#23).
+// Tests unitaires — cas d'usage CancelAppointment (US-3.3, #24).
 //
-// Couverture : RDV non modifiable → NotModifiableException (gateway non appelé) ;
-// brouillon sans prestation → NoServiceSelectedException (gateway non appelé) ;
-// délégation au gateway avec appointmentId, draft et accessToken corrects ;
-// retourne le rendez-vous modifié par le gateway ; propage les exceptions du port.
+// Couverture : RDV non annulable → NotCancellableException (gateway non appelé) ;
+// délégation au gateway avec appointmentId, reason et accessToken corrects ;
+// retourne le rendez-vous annulé par le gateway ; propage les exceptions du port.
 // Aucune dépendance Flutter ni réseau : pure Dart avec un faux gateway.
 
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:coiflink_mobile/application/ports/appointment_gateway.dart';
-import 'package:coiflink_mobile/application/use_cases/book_appointment.dart'
-    show NoServiceSelectedException;
-import 'package:coiflink_mobile/application/use_cases/modify_appointment.dart';
+import 'package:coiflink_mobile/application/use_cases/cancel_appointment.dart';
 import 'package:coiflink_mobile/domain/appointment/appointment.dart';
 import 'package:coiflink_mobile/domain/appointment/appointment_status.dart';
 import 'package:coiflink_mobile/domain/appointment/availability_slot.dart';
@@ -27,9 +24,9 @@ class _StubGateway implements AppointmentGateway {
   final Object? error;
 
   String? lastAppointmentId;
-  BookingDraft? lastDraft;
+  String? lastReason;
   String? lastToken;
-  int modifyCallCount = 0;
+  int cancelCallCount = 0;
 
   @override
   Future<List<AvailabilitySlot>> availableSlots({
@@ -57,22 +54,22 @@ class _StubGateway implements AppointmentGateway {
     required String appointmentId,
     required BookingDraft draft,
     required String accessToken,
-  }) async {
-    modifyCallCount++;
-    lastAppointmentId = appointmentId;
-    lastDraft = draft;
-    lastToken = accessToken;
-    if (error != null) throw error!;
-    return result!;
-  }
+  }) =>
+      throw UnimplementedError();
 
   @override
   Future<Appointment> cancel({
     required String appointmentId,
     String? reason,
     required String accessToken,
-  }) =>
-      throw UnimplementedError();
+  }) async {
+    cancelCallCount++;
+    lastAppointmentId = appointmentId;
+    lastReason = reason;
+    lastToken = accessToken;
+    if (error != null) throw error!;
+    return result!;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -96,145 +93,134 @@ Appointment _appointment({
   );
 }
 
-BookingDraft _draft({List<String> serviceIds = const ['svc-1']}) {
-  return BookingDraft(
-    date: DateTime(2026, 7, 21),
-    startTime: '09:00',
-    serviceIds: serviceIds,
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 void main() {
-  group('ModifyAppointment', () {
-    group('validation en amont — RDV non modifiable (§8.1)', () {
-      test('completed → NotModifiableException, gateway non appelé', () async {
+  group('CancelAppointment', () {
+    group('validation en amont — RDV non annulable (§8.1)', () {
+      test('completed → NotCancellableException, gateway non appelé', () async {
         final gateway = _StubGateway(result: _appointment());
-        final useCase = ModifyAppointment(gateway);
+        final useCase = CancelAppointment(gateway);
 
         await expectLater(
           useCase.call(
             appointment: _appointment(status: AppointmentStatus.completed),
-            draft: _draft(),
             accessToken: 'tok',
           ),
-          throwsA(isA<NotModifiableException>()),
+          throwsA(isA<NotCancellableException>()),
         );
 
-        expect(gateway.modifyCallCount, 0);
+        expect(gateway.cancelCallCount, 0);
       });
 
-      test('cancelled → NotModifiableException, gateway non appelé', () async {
+      test('cancelled → NotCancellableException, gateway non appelé', () async {
         final gateway = _StubGateway(result: _appointment());
-        final useCase = ModifyAppointment(gateway);
+        final useCase = CancelAppointment(gateway);
 
         await expectLater(
           useCase.call(
             appointment: _appointment(status: AppointmentStatus.cancelled),
-            draft: _draft(),
             accessToken: 'tok',
           ),
-          throwsA(isA<NotModifiableException>()),
+          throwsA(isA<NotCancellableException>()),
         );
 
-        expect(gateway.modifyCallCount, 0);
+        expect(gateway.cancelCallCount, 0);
       });
 
-      test('noShow → NotModifiableException, gateway non appelé', () async {
+      test('noShow → NotCancellableException, gateway non appelé', () async {
         final gateway = _StubGateway(result: _appointment());
-        final useCase = ModifyAppointment(gateway);
+        final useCase = CancelAppointment(gateway);
 
         await expectLater(
           useCase.call(
             appointment: _appointment(status: AppointmentStatus.noShow),
-            draft: _draft(),
             accessToken: 'tok',
           ),
-          throwsA(isA<NotModifiableException>()),
+          throwsA(isA<NotCancellableException>()),
         );
 
-        expect(gateway.modifyCallCount, 0);
+        expect(gateway.cancelCallCount, 0);
       });
 
-      test('unknown → NotModifiableException, gateway non appelé', () async {
+      test('unknown → NotCancellableException, gateway non appelé', () async {
         final gateway = _StubGateway(result: _appointment());
-        final useCase = ModifyAppointment(gateway);
+        final useCase = CancelAppointment(gateway);
 
         await expectLater(
           useCase.call(
             appointment: _appointment(status: AppointmentStatus.unknown),
-            draft: _draft(),
             accessToken: 'tok',
           ),
-          throwsA(isA<NotModifiableException>()),
+          throwsA(isA<NotCancellableException>()),
         );
 
-        expect(gateway.modifyCallCount, 0);
-      });
-    });
-
-    group('validation en amont — brouillon vide (≥ 1 prestation)', () {
-      test('serviceIds vide → NoServiceSelectedException, gateway non appelé',
-          () async {
-        final gateway = _StubGateway(result: _appointment());
-        final useCase = ModifyAppointment(gateway);
-
-        await expectLater(
-          useCase.call(
-            appointment: _appointment(),
-            draft: _draft(serviceIds: const []),
-            accessToken: 'tok',
-          ),
-          throwsA(isA<NoServiceSelectedException>()),
-        );
-
-        expect(gateway.modifyCallCount, 0);
+        expect(gateway.cancelCallCount, 0);
       });
     });
 
     group('délégation au gateway', () {
-      test('pending → délègue avec appointmentId, draft et accessToken',
-          () async {
-        final expected = _appointment(id: 'rdv-modified');
+      test('pending → délègue avec appointmentId et accessToken', () async {
+        final expected = _appointment(id: 'rdv-cancelled');
         final gateway = _StubGateway(result: expected);
-        final useCase = ModifyAppointment(gateway);
+        final useCase = CancelAppointment(gateway);
 
         await useCase.call(
           appointment: _appointment(id: 'rdv-42'),
-          draft: _draft(),
-          accessToken: 'test-token-xyz',
+          accessToken: 'test-cancel-token',
         );
 
-        expect(gateway.modifyCallCount, 1);
+        expect(gateway.cancelCallCount, 1);
         expect(gateway.lastAppointmentId, 'rdv-42');
-        expect(gateway.lastToken, 'test-token-xyz');
-        expect(gateway.lastDraft, isNotNull);
+        expect(gateway.lastToken, 'test-cancel-token');
       });
 
       test('confirmed → délègue normalement', () async {
         final gateway = _StubGateway(result: _appointment());
-        final useCase = ModifyAppointment(gateway);
+        final useCase = CancelAppointment(gateway);
 
         await useCase.call(
           appointment: _appointment(status: AppointmentStatus.confirmed),
-          draft: _draft(),
           accessToken: 'tok',
         );
 
-        expect(gateway.modifyCallCount, 1);
+        expect(gateway.cancelCallCount, 1);
+      });
+
+      test('reason transmis au gateway', () async {
+        final gateway = _StubGateway(result: _appointment());
+        final useCase = CancelAppointment(gateway);
+
+        await useCase.call(
+          appointment: _appointment(),
+          reason: 'Empêchement.',
+          accessToken: 'tok',
+        );
+
+        expect(gateway.lastReason, 'Empêchement.');
+      });
+
+      test('reason null transmis au gateway comme null', () async {
+        final gateway = _StubGateway(result: _appointment());
+        final useCase = CancelAppointment(gateway);
+
+        await useCase.call(
+          appointment: _appointment(),
+          accessToken: 'tok',
+        );
+
+        expect(gateway.lastReason, isNull);
       });
 
       test('retourne le rendez-vous renvoyé par le gateway', () async {
-        final expected = _appointment(id: 'rdv-retourné');
+        final expected = _appointment(id: 'rdv-returned');
         final gateway = _StubGateway(result: expected);
-        final useCase = ModifyAppointment(gateway);
+        final useCase = CancelAppointment(gateway);
 
         final result = await useCase.call(
           appointment: _appointment(),
-          draft: _draft(),
           accessToken: 'tok',
         );
 
@@ -243,43 +229,27 @@ void main() {
     });
 
     group('propagation des erreurs du gateway', () {
-      test('propage SlotTakenException (course perdue, §8.1)', () async {
-        final gateway = _StubGateway(error: const SlotTakenException());
-        final useCase = ModifyAppointment(gateway);
+      test('propage NotCancellableException du gateway (TOCTOU §8.1)', () async {
+        final gateway = _StubGateway(error: const NotCancellableException());
+        final useCase = CancelAppointment(gateway);
 
         await expectLater(
           useCase.call(
             appointment: _appointment(),
-            draft: _draft(),
             accessToken: 'tok',
           ),
-          throwsA(isA<SlotTakenException>()),
-        );
-      });
-
-      test('propage NotModifiableException du gateway (TOCTOU §8.1)', () async {
-        final gateway = _StubGateway(error: const NotModifiableException());
-        final useCase = ModifyAppointment(gateway);
-
-        await expectLater(
-          useCase.call(
-            appointment: _appointment(),
-            draft: _draft(),
-            accessToken: 'tok',
-          ),
-          throwsA(isA<NotModifiableException>()),
+          throwsA(isA<NotCancellableException>()),
         );
       });
 
       test('propage AppointmentNotFoundException (404 — autre client)', () async {
         final gateway =
             _StubGateway(error: const AppointmentNotFoundException());
-        final useCase = ModifyAppointment(gateway);
+        final useCase = CancelAppointment(gateway);
 
         await expectLater(
           useCase.call(
             appointment: _appointment(),
-            draft: _draft(),
             accessToken: 'tok',
           ),
           throwsA(isA<AppointmentNotFoundException>()),
@@ -288,30 +258,14 @@ void main() {
 
       test('propage UnauthorizedException (jeton expiré, §11.1)', () async {
         final gateway = _StubGateway(error: const UnauthorizedException());
-        final useCase = ModifyAppointment(gateway);
+        final useCase = CancelAppointment(gateway);
 
         await expectLater(
           useCase.call(
             appointment: _appointment(),
-            draft: _draft(),
             accessToken: 'tok',
           ),
           throwsA(isA<UnauthorizedException>()),
-        );
-      });
-
-      test('propage NotBookableException (salon non réservable, §8.3)',
-          () async {
-        final gateway = _StubGateway(error: const NotBookableException());
-        final useCase = ModifyAppointment(gateway);
-
-        await expectLater(
-          useCase.call(
-            appointment: _appointment(),
-            draft: _draft(),
-            accessToken: 'tok',
-          ),
-          throwsA(isA<NotBookableException>()),
         );
       });
 
@@ -319,12 +273,11 @@ void main() {
         final gateway = _StubGateway(
           error: const AppointmentGatewayException('Erreur réseau.'),
         );
-        final useCase = ModifyAppointment(gateway);
+        final useCase = CancelAppointment(gateway);
 
         await expectLater(
           useCase.call(
             appointment: _appointment(),
-            draft: _draft(),
             accessToken: 'tok',
           ),
           throwsA(isA<AppointmentGatewayException>()),

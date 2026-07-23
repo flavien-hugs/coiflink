@@ -126,6 +126,77 @@ def is_client_modifiable(status: str) -> bool:
     return status in CLIENT_MODIFIABLE_STATUSES
 
 
+# Statuts d'un rendez-vous que **le client** peut encore **annuler** (§8.1, #24). Le
+# jeu coïncide aujourd'hui avec `CLIENT_MODIFIABLE_STATUSES` (états actifs occupant un
+# créneau), mais on le **nomme distinctement** : la règle d'annulation et la règle de
+# modification sont deux décisions métier séparées, susceptibles de diverger (un salon
+# pourrait un jour autoriser l'annulation dans des états où la modification est fermée,
+# ou l'inverse). Un RDV `COMPLETED`/`CANCELLED`/`NO_SHOW` est terminal et **non
+# annulable par le client** (l'exception gérant relève de US-3.4/#25, hors périmètre).
+CLIENT_CANCELLABLE_STATUSES: tuple[str, ...] = (
+    AppointmentStatus.PENDING.value,
+    AppointmentStatus.CONFIRMED.value,
+)
+
+
+def is_client_cancellable(status: str) -> bool:
+    """Vrai si un RDV de ce `status` est encore annulable **par le client** (§8.1, #24).
+
+    Fonction **pure** (aucune I/O) : le verrou d'état est décidé ici et ré-affirmé à
+    l'écriture (UPDATE conditionnel du dépôt, garde TOCTOU). Un statut inconnu est
+    refusé par construction (absent de `CLIENT_CANCELLABLE_STATUSES`).
+    """
+
+    return status in CLIENT_CANCELLABLE_STATUSES
+
+
+# Longueur maximale de robustesse d'un motif d'annulation (texte de confort, jamais
+# journalisé). Au-delà, le motif est **tronqué** silencieusement (le motif est un
+# confort ; on ne bloque jamais une annulation légitime pour un motif trop long).
+MAX_CANCELLATION_REASON_LENGTH = 500
+
+
+def normalize_cancellation_reason(raw: str | None) -> str | None:
+    """Normalise le motif d'annulation optionnel (fonction **pure**, §11.3, #24).
+
+    Retire les espaces de bordure ; `None` ou chaîne vide/blanche devient `None`
+    (« pas de motif »). Un motif au-delà de `MAX_CANCELLATION_REASON_LENGTH` est
+    **tronqué** (robustesse anti-abus, sans erreur bloquante). Le motif est une
+    donnée cliente : il est **persisté** sur la ligne du RDV mais **jamais**
+    journalisé (ni `logging`, ni métadonnées d'audit).
+    """
+
+    if raw is None:
+        return None
+    trimmed = raw.strip()
+    if not trimmed:
+        return None
+    return trimmed[:MAX_CANCELLATION_REASON_LENGTH]
+
+
+# Statuts d'un rendez-vous **comptabilisés dans le chiffre d'affaires** (§8.1, #24).
+# ⚠️ Aucun calcul de CA n'est livré au MVP courant (encaissement M4 #28–#38, KPI
+# gérant M5 US-6.2). Ce prédicat **ne calcule pas** de CA : il **matérialise
+# l'invariant** que les futures agrégations (M4/M5) devront honorer — le CA ne compte
+# que les RDV **réalisés** (`COMPLETED`, ou plus tard les paiements validés) et
+# **jamais** un RDV `CANCELLED`/`NO_SHOW` ni un RDV encore actif non réalisé
+# (`PENDING`/`CONFIRMED`). L'annulation (#24) rend donc le RDV mécaniquement exclu du CA.
+REVENUE_STATUSES: tuple[str, ...] = (AppointmentStatus.COMPLETED.value,)
+
+
+def counts_towards_revenue(status: str) -> bool:
+    """Vrai si un RDV de ce `status` compte dans le chiffre d'affaires (§8.1, #24).
+
+    **N'implémente aucun calcul de CA** (non livré au MVP) : prédicat de domaine
+    **pur** qui documente et verrouille l'invariant « un RDV `CANCELLED` n'est jamais
+    comptabilisé » — à réutiliser par les issues d'encaissement/KPI (M4/M5). Retourne
+    `False` pour `CANCELLED` (et tout état non réalisé), garantissant par construction
+    l'exclusion des RDV annulés dès que le CA sera calculé.
+    """
+
+    return status in REVENUE_STATUSES
+
+
 def require_services(services: tuple[BookedService, ...]) -> None:
     """Impose la règle §8.1 « ≥ 1 prestation » ; lève `AppointmentServiceRequired`.
 
@@ -175,6 +246,12 @@ __all__ = [
     "AppointmentUpdate",
     "CLIENT_MODIFIABLE_STATUSES",
     "is_client_modifiable",
+    "CLIENT_CANCELLABLE_STATUSES",
+    "is_client_cancellable",
+    "MAX_CANCELLATION_REASON_LENGTH",
+    "normalize_cancellation_reason",
+    "REVENUE_STATUSES",
+    "counts_towards_revenue",
     "require_services",
     "validate_booking_window",
     "compute_end_time",

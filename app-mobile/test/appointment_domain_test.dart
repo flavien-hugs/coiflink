@@ -286,5 +286,40 @@ void main() {
         expect(appt(AppointmentStatus.unknown).isClientModifiable, isFalse);
       });
     });
+
+    group('isClientCancellable (US-3.3, #24)', () {
+      Appointment appt(AppointmentStatus status) => Appointment(
+            id: 'rdv-1',
+            salonId: 'salon-1',
+            date: DateTime(2026, 7, 21),
+            startTime: '09:00',
+            endTime: '09:30',
+            status: status,
+          );
+
+      test('pending → annulable', () {
+        expect(appt(AppointmentStatus.pending).isClientCancellable, isTrue);
+      });
+
+      test('confirmed → annulable', () {
+        expect(appt(AppointmentStatus.confirmed).isClientCancellable, isTrue);
+      });
+
+      test('completed → non annulable (terminé, §8.1)', () {
+        expect(appt(AppointmentStatus.completed).isClientCancellable, isFalse);
+      });
+
+      test('cancelled → non annulable (déjà annulé, idempotence refusée, §8.1)', () {
+        expect(appt(AppointmentStatus.cancelled).isClientCancellable, isFalse);
+      });
+
+      test('noShow → non annulable (terminal, §8.1)', () {
+        expect(appt(AppointmentStatus.noShow).isClientCancellable, isFalse);
+      });
+
+      test('unknown → non annulable (statut inconnu, conservatif, §8.1)', () {
+        expect(appt(AppointmentStatus.unknown).isClientCancellable, isFalse);
+      });
+    });
   });
 }

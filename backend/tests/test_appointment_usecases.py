@@ -32,6 +32,7 @@ import pytest
 from coiflink_api.application.appointments import (
     BookAppointment,
     BookingCommand,
+    CancelAppointment,
     CheckAvailability,
     ListMyAppointments,
     ModifyAppointment,
@@ -42,6 +43,7 @@ from coiflink_api.domain.audit import AuditAction, ENTITY_TYPE_APPOINTMENT
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
+    AppointmentNotCancellable,
     AppointmentNotFound,
     AppointmentNotModifiable,
     HairdresserNotInSalon,
@@ -917,3 +919,222 @@ class TestListMyAppointments:
         appts = FakeAppointmentRepository(appointments=[other])
         result = self._uc(appts).execute(_CLIENT_ID)
         assert result == ()
+
+
+# ---------------------------------------------------------------------------
+# CancelAppointment (US-3.3, #24)
+# ---------------------------------------------------------------------------
+
+
+class TestCancelAppointment:
+    """Cas d'usage d'annulation : ownership → verrou d'état → cancel → audit."""
+
+    def _uc(
+        self,
+        appts: FakeAppointmentRepository | None = None,
+        audit_log: FakeAuditLog | None = None,
+    ) -> CancelAppointment:
+        return CancelAppointment(
+            appts if appts is not None else FakeAppointmentRepository(),
+            audit_log if audit_log is not None else FakeAuditLog(),
+        )
+
+    # --- Propriété / appartenance ------------------------------------------
+
+    def test_not_owned_raises_appointment_not_found(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_id=_CLIENT_ID)]
+        )
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts).execute(_APPT_ID, _OTHER_CLIENT_ID)
+
+    def test_unknown_appointment_id_raises_appointment_not_found(self) -> None:
+        appts = FakeAppointmentRepository()
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID)
+
+    def test_not_owned_nothing_cancelled(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_id=_CLIENT_ID)]
+        )
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts).execute(_APPT_ID, _OTHER_CLIENT_ID)
+        assert appts.cancelled == []
+
+    def test_not_owned_nothing_audited(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_id=_CLIENT_ID)]
+        )
+        audit = FakeAuditLog()
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts, audit_log=audit).execute(_APPT_ID, _OTHER_CLIENT_ID)
+        assert audit.recorded == []
+
+    # --- Verrou d'état (§8.1) ---------------------------------------------
+
+    def test_completed_appointment_raises_not_cancellable(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        with pytest.raises(AppointmentNotCancellable):
+            self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID)
+
+    def test_cancelled_appointment_raises_not_cancellable(self) -> None:
+        # Double annulation → 409 : une annulation est terminale (pas d'idempotence).
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CANCELLED")]
+        )
+        with pytest.raises(AppointmentNotCancellable):
+            self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID)
+
+    def test_no_show_appointment_raises_not_cancellable(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="NO_SHOW")]
+        )
+        with pytest.raises(AppointmentNotCancellable):
+            self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID)
+
+    def test_terminated_nothing_cancelled(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        with pytest.raises(AppointmentNotCancellable):
+            self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID)
+        assert appts.cancelled == []
+
+    def test_terminated_nothing_audited(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        audit = FakeAuditLog()
+        with pytest.raises(AppointmentNotCancellable):
+            self._uc(appts=appts, audit_log=audit).execute(_APPT_ID, _CLIENT_ID)
+        assert audit.recorded == []
+
+    # --- Annulation valide ------------------------------------------------
+
+    def test_pending_appointment_cancelled_successfully(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        result = self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID)
+        assert result.status == "CANCELLED"
+
+    def test_confirmed_appointment_cancelled_successfully(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CONFIRMED")]
+        )
+        result = self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID)
+        assert result.status == "CANCELLED"
+
+    def test_cancel_recorded_in_repository(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()]
+        )
+        self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID)
+        assert len(appts.cancelled) == 1
+        assert appts.cancelled[0][0] == _APPT_ID
+
+    def test_reason_transmitted_to_repository(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()]
+        )
+        self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID, reason="Empêchement.")
+        assert appts.cancelled[0][1] == "Empêchement."
+
+    def test_reason_none_transmitted_as_none(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()]
+        )
+        self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID, reason=None)
+        assert appts.cancelled[0][1] is None
+
+    def test_whitespace_reason_normalized_to_none(self) -> None:
+        # `normalize_cancellation_reason` trime + vide → None avant d'appeler cancel.
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()]
+        )
+        self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID, reason="   ")
+        assert appts.cancelled[0][1] is None
+
+    def test_reason_trimmed_before_transmission(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()]
+        )
+        self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID, reason="  motif  ")
+        assert appts.cancelled[0][1] == "motif"
+
+    # --- Journal d'audit §11.4 -------------------------------------------
+
+    def test_audit_log_recorded_once(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(appts=appts, audit_log=audit).execute(_APPT_ID, _CLIENT_ID)
+        assert len(audit.recorded) == 1
+
+    def test_audit_action_is_appointment_cancelled(self) -> None:
+        from coiflink_api.domain.audit import AuditAction
+
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(appts=appts, audit_log=audit).execute(_APPT_ID, _CLIENT_ID)
+        assert audit.recorded[0].action == AuditAction.APPOINTMENT_CANCELLED.value
+
+    def test_audit_actor_is_client_id(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(appts=appts, audit_log=audit).execute(_APPT_ID, _CLIENT_ID)
+        assert audit.recorded[0].actor_user_id == _CLIENT_ID
+
+    def test_audit_entity_type_is_appointment(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(appts=appts, audit_log=audit).execute(_APPT_ID, _CLIENT_ID)
+        assert audit.recorded[0].entity_type == ENTITY_TYPE_APPOINTMENT
+
+    def test_audit_entity_id_is_appointment_id(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(appts=appts, audit_log=audit).execute(_APPT_ID, _CLIENT_ID)
+        assert audit.recorded[0].entity_id == _APPT_ID
+
+    def test_audit_salon_id_from_appointment(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(appts=appts, audit_log=audit).execute(_APPT_ID, _CLIENT_ID)
+        assert audit.recorded[0].salon_id == _SALON_ID
+
+    def test_audit_metadata_reason_not_present(self) -> None:
+        # §11.3 : le texte du motif ne doit jamais figurer dans les métadonnées d'audit.
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, reason="Motif confidentiel"
+        )
+        metadata = audit.recorded[0].metadata
+        for value in metadata.values():
+            assert "Motif confidentiel" not in str(value)
+
+    def test_audit_metadata_reason_provided_true_when_reason_given(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, reason="motif"
+        )
+        assert audit.recorded[0].metadata.get("reason_provided") is True
+
+    def test_audit_metadata_reason_provided_false_when_no_reason(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(appts=appts, audit_log=audit).execute(_APPT_ID, _CLIENT_ID)
+        assert audit.recorded[0].metadata.get("reason_provided") is False
+
+    # --- Garde TOCTOU : UPDATE conditionnel sur statut ---------------------
+
+    def test_toctou_guard_raises_not_cancellable(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()],
+            raise_not_cancellable=True,
+        )
+        with pytest.raises(AppointmentNotCancellable):
+            self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID)
