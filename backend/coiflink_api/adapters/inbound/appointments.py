@@ -77,6 +77,7 @@ from coiflink_api.application.appointments import (
     CancelAppointment,
     CheckAvailability,
     ListMyAppointments,
+    ListSalonAppointments,
     ModifyAppointment,
     ModifyAppointmentCommand,
     SetAppointmentStatus,
@@ -115,6 +116,11 @@ router = APIRouter(tags=["appointments"])
 # Chemin **public** de la disponibilité (ajouté à `security.PUBLIC_ROUTE_PATHS`).
 # Exposé ici pour rester la source unique du littéral (router + composition root).
 AVAILABILITY_PATH = "/catalog/salons/{salon_id}/availability"
+
+# Amplitude maximale de la plage de lecture du planning (garde de coût §12) : la
+# grille mensuelle du web fait au plus 6×7 = 42 cellules. Une plage plus large est
+# refusée (`422`), l'index `ix_appointments_salon_id` couvrant les lectures bornées.
+MAX_PLANNING_RANGE_DAYS = 42
 
 
 # --------------------------------------------------------------------------- #
@@ -577,6 +583,77 @@ def cancel_appointment(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
     return _appointment_response(appointment)
+
+
+@router.get(
+    "/salons/{salon_id}/appointments",
+    response_model=list[AppointmentResponse],
+    summary="Lister les RDV d'un salon sur une plage (planning gérant, §5.2)",
+    responses={
+        200: {"description": "RDV du salon dans la plage (triés par date puis heure)"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {
+            "description": (
+                "Dates absentes/mal formées, plage trop large (> 42 j) ou statut hors "
+                "énumération"
+            )
+        },
+    },
+)
+def list_salon_appointments(
+    salon_id: uuid.UUID,
+    appointments: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.APPOINTMENT_READ_SALON))
+    ],
+    date_from: Annotated[
+        datetime.date, Query(description="Premier jour inclus (AAAA-MM-JJ)")
+    ],
+    date_to: Annotated[
+        datetime.date, Query(description="Dernier jour inclus (AAAA-MM-JJ)")
+    ],
+    status_filter: Annotated[
+        list[AppointmentStatus] | None,
+        Query(
+            alias="status",
+            description="Filtrer par statut (répétable) ; absent = tous statuts",
+        ),
+    ] = None,
+) -> list[AppointmentResponse]:
+    """Liste les RDV **du salon** sur `[date_from, date_to]` (planning gérant, #26).
+
+    Route **salon-scopée** (`require_salon_scope` + `APPOINTMENT_READ_SALON`, câblée
+    ici pour la première fois) : le `salon_id` vient du chemin, et le dépôt refiltre
+    `salon_id` en SQL (défense en profondeur §11.2). Un salon hors périmètre est un
+    `403` **indiscernable** (aucun oracle). La plage est **inclusive** et **bornée**
+    (≤ 42 j, garde de coût §12) — au-delà, `422`, comme une date mal formée ou un
+    `status` hors énumération. La réponse est une **liste plate triée**
+    chronologiquement (tous statuts sauf filtre) ; le **groupement par statut** et la
+    découpe jour/semaine/mois sont portés par le web.
+    """
+
+    if date_to < date_from:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La date de fin précède la date de début.",
+        )
+    if (date_to - date_from).days > MAX_PLANNING_RANGE_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La plage de dates demandée est trop large.",
+        )
+
+    statuses = (
+        tuple(item.value for item in status_filter) if status_filter else None
+    )
+    result = ListSalonAppointments(appointments).execute(
+        salon_id, date_from, date_to, statuses=statuses
+    )
+    return [_appointment_response(appointment) for appointment in result]
 
 
 @router.post(

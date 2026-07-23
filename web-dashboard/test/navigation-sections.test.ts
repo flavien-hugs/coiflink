@@ -58,8 +58,14 @@ describe("DASHBOARD_SECTIONS", () => {
     expect(prestations?.status).toBe("available");
   });
 
+  it("marque 'planning' comme 'available' (vue calendrier, #26)", () => {
+    const planning = DASHBOARD_SECTIONS.find((s) => s.key === "planning");
+    expect(planning).toBeDefined();
+    expect(planning?.status).toBe("available");
+  });
+
   it("marque les sections M2–M5 restantes 'coming-soon'", () => {
-    const comingSoon = ["planning", "clients", "encaissements", "employes"];
+    const comingSoon = ["clients", "encaissements", "employes"];
     for (const key of comingSoon) {
       const section = DASHBOARD_SECTIONS.find((s) => s.key === key);
       expect(section?.status).toBe("coming-soon");
