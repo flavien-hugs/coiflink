@@ -197,6 +197,69 @@ def counts_towards_revenue(status: str) -> bool:
     return status in REVENUE_STATUSES
 
 
+# --------------------------------------------------------------------------- #
+# Machine à états **gérant** d'un rendez-vous (§8.1, §6 Épic 3, US-3.4, #25).
+# --------------------------------------------------------------------------- #
+# Statuts **terminaux** : aucune transition sortante. Un RDV terminé/annulé/absent
+# est verrouillé (« un rendez-vous terminé ne peut plus être modifié », §8.1) — y
+# compris pour le gérant au MVP (les retours arrière relèvent d'une décision métier
+# ultérieure, hors #25). Utile aux lectures/tests ; c'est `ALLOWED_STATUS_TRANSITIONS`
+# qui fait foi (un terminal y porte un ensemble sortant **vide**).
+TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {
+        AppointmentStatus.CANCELLED.value,
+        AppointmentStatus.COMPLETED.value,
+        AppointmentStatus.NO_SHOW.value,
+    }
+)
+
+
+# Table des transitions de statut **autorisées au gérant** (contrepartie du cycle
+# de vie client #21/#23/#24). Sémantique métier :
+#   PENDING   → CONFIRMED : confirmer une demande ;
+#   PENDING   → CANCELLED : refuser une demande ;
+#   PENDING   → NO_SHOW   : client absent alors que le RDV n'a pas été confirmé ;
+#   CONFIRMED → COMPLETED : prestation réalisée ;
+#   CONFIRMED → CANCELLED : annulation gérant ;
+#   CONFIRMED → NO_SHOW   : client absent.
+# Les états terminaux n'ont **aucune** transition sortante (frozenset vide). Ni
+# l'identité (`X → X`, pas de no-op silencieux) ni un retour arrière ne sont
+# autorisés : deny-by-default — tout ce qui n'est pas listé est refusé.
+ALLOWED_STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
+    AppointmentStatus.PENDING.value: frozenset(
+        {
+            AppointmentStatus.CONFIRMED.value,
+            AppointmentStatus.CANCELLED.value,
+            AppointmentStatus.NO_SHOW.value,
+        }
+    ),
+    AppointmentStatus.CONFIRMED.value: frozenset(
+        {
+            AppointmentStatus.COMPLETED.value,
+            AppointmentStatus.CANCELLED.value,
+            AppointmentStatus.NO_SHOW.value,
+        }
+    ),
+    AppointmentStatus.CANCELLED.value: frozenset(),
+    AppointmentStatus.COMPLETED.value: frozenset(),
+    AppointmentStatus.NO_SHOW.value: frozenset(),
+}
+
+
+def is_valid_transition(current: str, target: str) -> bool:
+    """Vrai si le gérant peut faire passer un RDV de `current` à `target` (§8.1, #25).
+
+    Fonction **pure** (aucune I/O) : le juge de la transition est le domaine, jamais
+    un champ soumis (deny-by-default). Un `current` **ou** un `target` inconnu
+    retourne `False` (jamais un accès par défaut) ; l'identité (`X → X`) et toute
+    transition non listée dans `ALLOWED_STATUS_TRANSITIONS` sont refusées. Le verrou
+    est **ré-affirmé** à l'écriture par un UPDATE conditionnel sur le statut courant
+    attendu (garde TOCTOU), comme la modification/annulation client (#23/#24).
+    """
+
+    return target in ALLOWED_STATUS_TRANSITIONS.get(current, frozenset())
+
+
 def require_services(services: tuple[BookedService, ...]) -> None:
     """Impose la règle §8.1 « ≥ 1 prestation » ; lève `AppointmentServiceRequired`.
 
@@ -252,6 +315,9 @@ __all__ = [
     "normalize_cancellation_reason",
     "REVENUE_STATUSES",
     "counts_towards_revenue",
+    "TERMINAL_STATUSES",
+    "ALLOWED_STATUS_TRANSITIONS",
+    "is_valid_transition",
     "require_services",
     "validate_booking_window",
     "compute_end_time",

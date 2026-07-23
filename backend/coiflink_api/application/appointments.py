@@ -37,6 +37,7 @@ from coiflink_api.domain.appointment import (
     compute_end_time,
     is_client_cancellable,
     is_client_modifiable,
+    is_valid_transition,
     normalize_cancellation_reason,
     require_services,
     validate_booking_window,
@@ -53,12 +54,13 @@ from coiflink_api.domain.availability import (
     is_offered,
 )
 from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
-from coiflink_api.domain.enums import Role
+from coiflink_api.domain.enums import AppointmentStatus, Role
 from coiflink_api.domain.errors import (
     AppointmentNotCancellable,
     AppointmentNotFound,
     AppointmentNotModifiable,
     HairdresserNotInSalon,
+    InvalidAppointmentTransition,
     SalonNotBookable,
     SalonNotFound,
     ServiceNotFound,
@@ -510,6 +512,153 @@ class CancelAppointment:
         return updated
 
 
+# --------------------------------------------------------------------------- #
+# Cycle de statuts & assignation par le gérant (US-3.4, #25).
+# --------------------------------------------------------------------------- #
+class SetAppointmentStatus:
+    """Pilote le statut d'un RDV **du salon** et journalise (§11.4, #25).
+
+    Contrepartie **gérant** du cycle de vie : confirmer (`PENDING → CONFIRMED`),
+    refuser (`PENDING → CANCELLED`), marquer réalisé (`CONFIRMED → COMPLETED`) ou
+    absent (`… → NO_SHOW`). Séquence (patron portée→verrou→écriture conditionnelle→
+    audit, #23/#24) : charger le RDV **du salon** (`AppointmentNotFound` si inexistant
+    **ou** hors salon — indiscernables, aucun oracle §11.2) → **valider la transition**
+    via la machine à états pure (`InvalidAppointmentTransition` si terminale/interdite/
+    identité) → `set_status` transactionnel (UPDATE conditionnel sur le statut courant
+    attendu — ré-affirme le verrou, garde TOCTOU) → audit `APPOINTMENT_STATUS_CHANGED`
+    **neutre** dans la **même** unité de travail.
+
+    Le `salon_id` provient **du chemin** (portée validée), jamais du corps ; le
+    `status` cible est **doublement contraint** (énumération Pydantic + machine à
+    états). Un **motif** optionnel n'est **persisté** que sur `→ CANCELLED`
+    (normalisé) et **jamais** journalisé — les métadonnées ne portent que les
+    **valeurs d'énumération** `from`/`to` (non-PII, patron #24).
+    """
+
+    def __init__(
+        self,
+        appointment_repository: AppointmentRepository,
+        audit_log: AuditLog,
+    ) -> None:
+        self._appointments = appointment_repository
+        self._audit_log = audit_log
+
+    def execute(
+        self,
+        appointment_id: uuid.UUID,
+        salon_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        target_status: str,
+        *,
+        reason: str | None = None,
+    ) -> Appointment:
+        current = self._appointments.get_in_salon(appointment_id, salon_id)
+        if current is None:
+            # RDV inexistant **ou** hors salon : indiscernables (aucun oracle, §11.2).
+            raise AppointmentNotFound("Rendez-vous introuvable.")
+        if not is_valid_transition(current.status, target_status):
+            # Transition terminale/interdite/identité : le domaine est le juge.
+            raise InvalidAppointmentTransition(
+                "Cette transition de statut n'est pas autorisée."
+            )
+
+        # Le motif n'a de sens que sur un refus/annulation gérant (`→ CANCELLED`) ;
+        # normalisé et persisté, il n'est **jamais** journalisé (§11.3, patron #24).
+        normalized_reason = (
+            normalize_cancellation_reason(reason)
+            if target_status == AppointmentStatus.CANCELLED.value
+            else None
+        )
+        updated = self._appointments.set_status(
+            appointment_id,
+            salon_id,
+            expected_current=current.status,
+            target=target_status,
+            reason=normalized_reason,
+        )
+        # Audit §11.4 dans la **même** unité de travail que l'écriture (patron #20) :
+        # métadonnées **neutres** — valeurs d'énumération de statut, jamais de PII.
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.APPOINTMENT_STATUS_CHANGED.value,
+                actor_user_id=actor_id,
+                salon_id=salon_id,
+                entity_type=ENTITY_TYPE_APPOINTMENT,
+                entity_id=appointment_id,
+                metadata={"from": current.status, "to": target_status},
+            )
+        )
+        return updated
+
+
+class AssignHairdresser:
+    """(Dés)assigne un coiffeur à un RDV **actif du salon** et journalise (§11.4, #25).
+
+    Séquence : charger le RDV **du salon** (`AppointmentNotFound` si inexistant/hors
+    salon) → si un coiffeur est demandé, vérifier qu'il est **membre `ACTIVE` du
+    salon** (`_require_salon_hairdresser` → `HairdresserNotInSalon` si non : l'exclusion
+    base ne porte pas `salon_id`, sans ce contrôle un gérant occuperait l'agenda d'un
+    coiffeur d'un autre salon) → `assign_hairdresser` transactionnel (UPDATE
+    conditionnel sur le statut actif ; l'exclusion base arbitre les conflits d'agenda
+    → `SlotAlreadyBooked`) → audit `APPOINTMENT_HAIRDRESSER_ASSIGNED` **neutre** dans
+    la **même** unité de travail.
+
+    Le `salon_id` vient **du chemin** (portée validée). On ne re-valide **pas**
+    l'offre (le gérant pilote un RDV existant) : l'assignation ne dépend que de
+    l'appartenance salon du coiffeur et de l'exclusion base. Une **désassignation**
+    (`hairdresser_id = None`) ne peut jamais violer l'exclusion. Métadonnées
+    **neutres** : nom de champ + booléen d'assignation (l'UUID du coiffeur, opaque,
+    est **omis**).
+    """
+
+    def __init__(
+        self,
+        appointment_repository: AppointmentRepository,
+        scope_repository: SalonScopeRepository,
+        audit_log: AuditLog,
+    ) -> None:
+        self._appointments = appointment_repository
+        self._scope = scope_repository
+        self._audit_log = audit_log
+
+    def execute(
+        self,
+        appointment_id: uuid.UUID,
+        salon_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        hairdresser_id: uuid.UUID | None,
+    ) -> Appointment:
+        current = self._appointments.get_in_salon(appointment_id, salon_id)
+        if current is None:
+            # RDV inexistant **ou** hors salon : indiscernables (aucun oracle, §11.2).
+            raise AppointmentNotFound("Rendez-vous introuvable.")
+
+        # Un coiffeur demandé doit appartenir au salon du RDV (§11.2) : l'exclusion
+        # base est globale (sans `salon_id`) et ne peut pas arbitrer ce cas.
+        if hairdresser_id is not None:
+            _require_salon_hairdresser(self._scope, salon_id, hairdresser_id)
+
+        updated = self._appointments.assign_hairdresser(
+            appointment_id, salon_id, hairdresser_id=hairdresser_id
+        )
+        # Audit §11.4 (même unité de travail) : **neutre** — nom du champ modifié et
+        # booléen d'assignation ; jamais l'UUID (opaque) du coiffeur ni de PII.
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.APPOINTMENT_HAIRDRESSER_ASSIGNED.value,
+                actor_user_id=actor_id,
+                salon_id=salon_id,
+                entity_type=ENTITY_TYPE_APPOINTMENT,
+                entity_id=appointment_id,
+                metadata={
+                    "changed": ["hairdresser_id"],
+                    "assigned": hairdresser_id is not None,
+                },
+            )
+        )
+        return updated
+
+
 class ListMyAppointments:
     """Liste les RDV **du client** authentifié (lecture « Mes rendez-vous », #23).
 
@@ -538,5 +687,7 @@ __all__ = [
     "ModifyAppointmentCommand",
     "ModifyAppointment",
     "CancelAppointment",
+    "SetAppointmentStatus",
+    "AssignHairdresser",
     "ListMyAppointments",
 ]

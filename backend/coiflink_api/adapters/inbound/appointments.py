@@ -23,12 +23,23 @@ d'exclusion base) :
   Route d'**appartenance** (pas de portée salon, pas de `salon_id` dans le chemin) :
   le `salon_id` vient du RDV chargé. Un RDV terminé (`COMPLETED`/terminal) est
   **verrouillé côté client** (`409`). La modification est journalisée (§11.4).
+- **Cycle de statuts (gérant)** — `POST /salons/{salon_id}/appointments/{id}/status` :
+  confirme/refuse/termine/marque-absent un RDV **du salon** (`APPOINTMENT_UPDATE_STATUS`
+  **+** `require_salon_scope`, US-3.4 #25). Le `status` cible est **doublement
+  contraint** (énumération Pydantic → `422` ; machine à états du domaine → `409`) — le
+  juge est le domaine, pas un champ soumis. Journalisé `APPOINTMENT_STATUS_CHANGED`.
+- **Assignation (gérant)** — `PUT /salons/{salon_id}/appointments/{id}/hairdresser` :
+  (dés)assigne un coiffeur à un RDV **actif du salon** (`APPOINTMENT_MANAGE` **+**
+  `require_salon_scope`). Le coiffeur est validé contre l'appartenance salon ; le
+  conflit d'agenda est arbitré par l'exclusion base (`SlotAlreadyBooked`). Journalisé
+  `APPOINTMENT_HAIRDRESSER_ASSIGNED`.
 
 Traductions d'erreurs de domaine → HTTP : `SlotAlreadyBooked` (course perdue) /
-`SlotUnavailable` / `SalonNotBookable` / `AppointmentNotModifiable` (verrou terminé)
-→ **409** ; `AppointmentServiceRequired` → **422** ; `ServiceNotFound` /
-`SalonNotFound` / `HairdresserNotInSalon` / `AppointmentNotFound` (inexistant ou hors
-appartenance) → **404** *(après portée/appartenance)*.
+`SlotUnavailable` / `SalonNotBookable` / `AppointmentNotModifiable` (verrou terminé) /
+`InvalidAppointmentTransition` (transition interdite/terminale, gérant) → **409** ;
+`AppointmentServiceRequired` → **422** ; `ServiceNotFound` / `SalonNotFound` /
+`HairdresserNotInSalon` / `AppointmentNotFound` (inexistant ou hors
+appartenance/salon) → **404** *(après portée/appartenance)*.
 
 Un `hairdresser_id` soumis dans le corps est **validé contre `salon_members`** avant
 écriture (§11.2) : l'exclusion base ne porte pas `salon_id`, sans ce contrôle un
@@ -49,6 +60,7 @@ from sqlalchemy.orm import Session
 from coiflink_api.adapters.inbound.security import (
     get_salon_scope_repository,
     require_permission,
+    require_salon_scope,
 )
 from coiflink_api.adapters.outbound.persistence.appointment_repository import (
     SqlAppointmentRepository,
@@ -59,6 +71,7 @@ from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import 
 )
 from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.application.appointments import (
+    AssignHairdresser,
     BookAppointment,
     BookingCommand,
     CancelAppointment,
@@ -66,6 +79,7 @@ from coiflink_api.application.appointments import (
     ListMyAppointments,
     ModifyAppointment,
     ModifyAppointmentCommand,
+    SetAppointmentStatus,
 )
 from coiflink_api.application.ports.appointment_repository import AppointmentRepository
 from coiflink_api.application.ports.audit_log import AuditLog
@@ -73,17 +87,20 @@ from coiflink_api.application.ports.salon_catalog_repository import (
     SalonCatalogRepository,
 )
 from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
+from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.appointment import (
     Appointment,
     CLIENT_MODIFIABLE_STATUSES,
 )
 from coiflink_api.domain.availability import SlotRange
+from coiflink_api.domain.enums import AppointmentStatus
 from coiflink_api.domain.errors import (
     AppointmentNotCancellable,
     AppointmentNotFound,
     AppointmentNotModifiable,
     AppointmentServiceRequired,
     HairdresserNotInSalon,
+    InvalidAppointmentTransition,
     SalonNotBookable,
     SalonNotFound,
     ServiceNotFound,
@@ -167,6 +184,44 @@ class CancelAppointmentRequest(BaseModel):
 
     reason: str | None = Field(
         default=None, examples=["Empêchement de dernière minute."]
+    )
+
+
+class SetStatusRequest(BaseModel):
+    """Corps de `POST /salons/{salon_id}/appointments/{appointment_id}/status` (#25).
+
+    Le gérant **choisit légitimement la cible** : `status` est une **valeur
+    d'énumération** (`AppointmentStatus`) — une valeur hors énumération est un `422`
+    Pydantic — puis la **machine à états du domaine** (deny-by-default) arbitre la
+    transition (`409` si interdite). C'est le domaine, jamais un champ soumis, qui
+    est le juge. Un `reason` optionnel n'est **persisté** que sur un refus/annulation
+    (`→ CANCELLED`) et **jamais** journalisé. **Aucun** `salon_id`/`client_id` : le
+    `salon_id` vient du chemin (portée). Champ privilégié présent → **ignoré**
+    (`extra="ignore"`, anti-élévation §11.2).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: AppointmentStatus = Field(examples=["CONFIRMED"])
+    reason: str | None = Field(
+        default=None, examples=["Créneau non honoré par le client."]
+    )
+
+
+class AssignHairdresserRequest(BaseModel):
+    """Corps de `PUT /salons/{salon_id}/appointments/{appointment_id}/hairdresser` (#25).
+
+    Porte **uniquement** `hairdresser_id` : un UUID pour **assigner/réassigner**, ou
+    `null` pour **désassigner** (présence **requise** — intention explicite). Le
+    coiffeur est validé contre l'appartenance salon (`salon_members`) avant écriture
+    (§11.2). **Aucun** `salon_id`/`client_id`/`status` : le `salon_id` vient du chemin.
+    Champ privilégié présent → **ignoré** (`extra="ignore"`).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    hairdresser_id: uuid.UUID | None = Field(
+        description="Coiffeur à assigner (UUID) ou null pour désassigner."
     )
 
 
@@ -518,6 +573,125 @@ def cancel_appointment(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
     except AppointmentNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _appointment_response(appointment)
+
+
+@router.post(
+    "/salons/{salon_id}/appointments/{appointment_id}/status",
+    response_model=AppointmentResponse,
+    summary="Piloter le statut d'un RDV du salon (gérant, verrou terminal, §11.4)",
+    responses={
+        200: {"description": "Statut mis à jour (transition validée)"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "RDV inexistant ou hors salon (après portée)"},
+        409: {
+            "description": (
+                "Transition interdite/terminale (ou statut changé sous garde TOCTOU)"
+            )
+        },
+        422: {"description": "Valeur de statut hors énumération"},
+    },
+)
+def set_appointment_status(
+    salon_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    payload: SetStatusRequest,
+    appointments: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    principal: Annotated[
+        Principal,
+        Depends(require_permission(Permission.APPOINTMENT_UPDATE_STATUS)),
+    ],
+) -> AppointmentResponse:
+    """Fait passer un RDV **du salon** vers un statut cible (confirmer/refuser/…).
+
+    Route **salon-scopée** (`require_salon_scope` + `APPOINTMENT_UPDATE_STATUS`) : le
+    `salon_id` vient du chemin, l'acteur du `Principal`. Le `status` soumis est
+    **doublement contraint** (énumération Pydantic → `422` ; machine à états du
+    domaine → `409`) — le juge est le domaine, jamais un champ soumis (§11.2). Un RDV
+    hors salon/inexistant est un `404` **indiscernable** (aucun oracle). Un RDV
+    terminal (`COMPLETED`/`CANCELLED`/`NO_SHOW`) est **verrouillé** (`409`). Chaque
+    changement est journalisé `APPOINTMENT_STATUS_CHANGED` (§11.4). Aucune
+    notification n'est émise (§8.4 → Épic 7).
+    """
+
+    try:
+        appointment = SetAppointmentStatus(appointments, audit_log).execute(
+            appointment_id,
+            salon_id,
+            principal.id,
+            payload.status.value,
+            reason=payload.reason,
+        )
+    except InvalidAppointmentTransition as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except AppointmentNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _appointment_response(appointment)
+
+
+@router.put(
+    "/salons/{salon_id}/appointments/{appointment_id}/hairdresser",
+    response_model=AppointmentResponse,
+    summary="Assigner/désassigner un coiffeur à un RDV du salon (gérant, §11.4)",
+    responses={
+        200: {"description": "Coiffeur (dés)assigné"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {
+            "description": "RDV hors salon **ou** coiffeur hors salon (indiscernables)"
+        },
+        409: {"description": "Conflit d'agenda (créneau pris) ou RDV terminal"},
+        422: {"description": "Corps invalide"},
+    },
+)
+def assign_appointment_hairdresser(
+    salon_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    payload: AssignHairdresserRequest,
+    appointments: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    scope_repository: Annotated[
+        SalonScopeRepository, Depends(get_salon_scope_repository)
+    ],
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    principal: Annotated[
+        Principal, Depends(require_permission(Permission.APPOINTMENT_MANAGE))
+    ],
+) -> AppointmentResponse:
+    """(Dés)assigne un coiffeur à un RDV **actif du salon** (gérant, `APPOINTMENT_MANAGE`).
+
+    Route **salon-scopée** : le `salon_id` vient du chemin. Le `hairdresser_id` soumis
+    est **validé contre `salon_members`** (§11.2) — sans quoi un gérant occuperait
+    l'agenda d'un coiffeur d'un autre salon (l'exclusion base ne porte pas `salon_id`).
+    Un RDV hors salon ou un coiffeur hors salon sont des `404` **indiscernables**. Un
+    conflit d'agenda (coiffeur déjà pris) est un `409` (`SlotAlreadyBooked`, arbitré
+    par l'exclusion base) ; un RDV terminal (créneau libéré) est un `409`. L'action
+    est journalisée `APPOINTMENT_HAIRDRESSER_ASSIGNED` (§11.4).
+    """
+
+    try:
+        appointment = AssignHairdresser(
+            appointments, scope_repository, audit_log
+        ).execute(appointment_id, salon_id, principal.id, payload.hairdresser_id)
+    except (SlotAlreadyBooked, InvalidAppointmentTransition) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except (AppointmentNotFound, HairdresserNotInSalon) as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc

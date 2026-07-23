@@ -35,6 +35,7 @@ from coiflink_api.domain.enums import AppointmentStatus
 from coiflink_api.domain.errors import (
     AppointmentNotCancellable,
     AppointmentNotModifiable,
+    InvalidAppointmentTransition,
     SlotAlreadyBooked,
 )
 
@@ -238,6 +239,118 @@ class SqlAppointmentRepository:
         # `flush` matérialise l'UPDATE (commit piloté par `get_session`). L'annulation
         # **libère** un créneau : elle ne peut pas violer l'exclusion anti-doublon.
         self._session.flush()
+        self._session.refresh(row)
+        return _to_domain(row, self._load_services(appointment_id))
+
+    def get_in_salon(
+        self, appointment_id: uuid.UUID, salon_id: uuid.UUID
+    ) -> Appointment | None:
+        """Charge le RDV `(id, salon_id)` et ses prestations, ou `None` (US-3.4 #25).
+
+        Le filtre porte sur `id` **et** `salon_id` : un RDV d'un autre salon est
+        indiscernable d'un identifiant inexistant (aucun oracle, §11.2). Analogue
+        salon-scopé de `get_owned` (qui filtre `client_id`).
+        """
+
+        row = self._session.scalar(
+            select(models.Appointment).where(
+                models.Appointment.id == appointment_id,
+                models.Appointment.salon_id == salon_id,
+            )
+        )
+        if row is None:
+            return None
+        return _to_domain(row, self._load_services(appointment_id))
+
+    def set_status(
+        self,
+        appointment_id: uuid.UUID,
+        salon_id: uuid.UUID,
+        *,
+        expected_current: str,
+        target: str,
+        reason: str | None = None,
+    ) -> Appointment:
+        """Transition de statut gérant (UPDATE conditionnel salon + statut, #25).
+
+        Le `WHERE ... salon_id = :salon_id AND status = :expected_current`
+        ré-affirme la portée **et** le verrou d'état **au moment de l'écriture**
+        (garde TOCTOU) : si le RDV a disparu, sort du salon ou change de statut
+        entre la lecture et l'écriture, aucune ligne ne correspond →
+        `InvalidAppointmentTransition`. Pose `status = :target` (et
+        `cancellation_reason` **uniquement** sur `→ CANCELLED`) ; `updated_at`
+        (`onupdate`) se rafraîchit automatiquement. Une transition ne peut pas
+        violer l'exclusion base (elle libère le créneau ou conserve le même).
+        """
+
+        row = self._session.scalar(
+            select(models.Appointment).where(
+                models.Appointment.id == appointment_id,
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.status == expected_current,
+            )
+        )
+        if row is None:
+            # RDV disparu, hors salon, ou statut changé (course avec #24) : le verrou
+            # et la portée sont ré-affirmés — aucune transition « fantôme ».
+            raise InvalidAppointmentTransition(
+                "Cette transition de statut n'est pas autorisée."
+            )
+
+        row.status = target
+        # Le motif n'est posé que sur un refus/annulation gérant (`→ CANCELLED`) :
+        # les autres cibles ne touchent pas `cancellation_reason` (patron #24).
+        if target == AppointmentStatus.CANCELLED.value:
+            row.cancellation_reason = reason
+        # `flush` matérialise l'UPDATE (commit piloté par `get_session`).
+        self._session.flush()
+        self._session.refresh(row)
+        return _to_domain(row, self._load_services(appointment_id))
+
+    def assign_hairdresser(
+        self,
+        appointment_id: uuid.UUID,
+        salon_id: uuid.UUID,
+        *,
+        hairdresser_id: uuid.UUID | None,
+    ) -> Appointment:
+        """(Dés)assigne un coiffeur à un RDV actif du salon (#25).
+
+        UPDATE conditionnel sur le salon **et** le statut **actif**
+        (`PENDING`/`CONFIRMED`) : un RDV disparu, hors salon ou terminal n'affecte
+        aucune ligne → `InvalidAppointmentTransition` (créneau libéré, assignation
+        non pertinente). L'assignation d'un coiffeur déjà pris sur le créneau viole
+        l'exclusion base (`23P01`) → `SlotAlreadyBooked` (rollback + message neutre,
+        l'`IntegrityError` brute n'est jamais journalisée). Une désassignation
+        (`hairdresser_id = None`) retire le RDV de la portée de l'exclusion.
+        """
+
+        row = self._session.scalar(
+            select(models.Appointment).where(
+                models.Appointment.id == appointment_id,
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.status.in_(_ACTIVE_STATUSES),
+            )
+        )
+        if row is None:
+            # RDV disparu, hors salon, ou terminal : l'assignation n'a plus de sens.
+            raise InvalidAppointmentTransition(
+                "Ce rendez-vous n'accepte plus d'assignation de coiffeur."
+            )
+
+        row.hairdresser_id = hairdresser_id
+        try:
+            self._session.flush()
+        except IntegrityError as exc:
+            if _is_exclusion_violation(exc):
+                # Coiffeur déjà pris sur ce créneau : rollback puis erreur neutre
+                # (l'`IntegrityError` brute n'est jamais journalisée).
+                self._session.rollback()
+                raise SlotAlreadyBooked(
+                    "Ce créneau vient d'être réservé pour ce coiffeur."
+                ) from exc
+            raise
+
         self._session.refresh(row)
         return _to_domain(row, self._load_services(appointment_id))
 

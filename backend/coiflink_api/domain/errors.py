@@ -213,6 +213,21 @@ class AppointmentNotCancellable(DomainError):
     """
 
 
+class InvalidAppointmentTransition(DomainError):
+    """La transition de statut demandée par le gérant n'est pas autorisée (§8.1, #25).
+
+    Levée quand la cible n'est pas atteignable depuis le statut courant selon la
+    machine à états `domain/appointment.py::ALLOWED_STATUS_TRANSITIONS` — état
+    terminal verrouillé (`COMPLETED`/`CANCELLED`/`NO_SHOW`), transition interdite ou
+    identité (`X → X`) — **ou** quand le statut a changé entre la lecture et
+    l'écriture (garde TOCTOU : l'UPDATE conditionnel n'affecte aucune ligne). Couvre
+    aussi l'assignation d'un coiffeur à un RDV **non actif** (créneau libéré :
+    l'assignation n'a plus de sens). Message **neutre** — l'adapter entrant la
+    traduit en `409 Conflict` (état de la ressource, cohérent avec
+    `AppointmentNotModifiable`/`AppointmentNotCancellable`).
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -300,6 +315,7 @@ __all__ = [
     "AppointmentNotFound",
     "AppointmentNotModifiable",
     "AppointmentNotCancellable",
+    "InvalidAppointmentTransition",
     "InvalidOtp",
     "OtpExpired",
     "InvalidCredentials",

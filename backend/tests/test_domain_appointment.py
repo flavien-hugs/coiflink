@@ -20,6 +20,7 @@ import uuid
 import pytest
 
 from coiflink_api.domain.appointment import (
+    ALLOWED_STATUS_TRANSITIONS,
     Appointment,
     AppointmentToCreate,
     AppointmentUpdate,
@@ -28,10 +29,12 @@ from coiflink_api.domain.appointment import (
     CLIENT_MODIFIABLE_STATUSES,
     MAX_CANCELLATION_REASON_LENGTH,
     REVENUE_STATUSES,
+    TERMINAL_STATUSES,
     compute_end_time,
     counts_towards_revenue,
     is_client_cancellable,
     is_client_modifiable,
+    is_valid_transition,
     normalize_cancellation_reason,
     require_services,
     validate_booking_window,
@@ -551,3 +554,193 @@ class TestRevenueStatuses:
 
     def test_is_tuple_type(self) -> None:
         assert isinstance(REVENUE_STATUSES, tuple)
+
+
+# ---------------------------------------------------------------------------
+# TERMINAL_STATUSES (US-3.4, #25)
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalStatuses:
+    """Statuts sans aucune transition sortante — verrouillés (§8.1, #25)."""
+
+    def test_is_frozenset(self) -> None:
+        assert isinstance(TERMINAL_STATUSES, frozenset)
+
+    def test_contains_cancelled(self) -> None:
+        assert "CANCELLED" in TERMINAL_STATUSES
+
+    def test_contains_completed(self) -> None:
+        assert "COMPLETED" in TERMINAL_STATUSES
+
+    def test_contains_no_show(self) -> None:
+        assert "NO_SHOW" in TERMINAL_STATUSES
+
+    def test_exactly_three_statuses(self) -> None:
+        assert len(TERMINAL_STATUSES) == 3
+
+    def test_pending_not_terminal(self) -> None:
+        assert "PENDING" not in TERMINAL_STATUSES
+
+    def test_confirmed_not_terminal(self) -> None:
+        assert "CONFIRMED" not in TERMINAL_STATUSES
+
+    def test_terminal_statuses_match_empty_transitions(self) -> None:
+        # Invariant : TERMINAL_STATUSES doit coïncider avec les clés de
+        # ALLOWED_STATUS_TRANSITIONS dont la valeur est un frozenset vide.
+        from_table = frozenset(
+            k for k, v in ALLOWED_STATUS_TRANSITIONS.items() if not v
+        )
+        assert TERMINAL_STATUSES == from_table
+
+
+# ---------------------------------------------------------------------------
+# ALLOWED_STATUS_TRANSITIONS (US-3.4, #25)
+# ---------------------------------------------------------------------------
+
+
+class TestAllowedStatusTransitions:
+    """Structure de la table des transitions gérant (§8.1, #25)."""
+
+    def test_is_dict(self) -> None:
+        assert isinstance(ALLOWED_STATUS_TRANSITIONS, dict)
+
+    def test_all_five_statuses_have_entry(self) -> None:
+        expected = {"PENDING", "CONFIRMED", "CANCELLED", "COMPLETED", "NO_SHOW"}
+        assert set(ALLOWED_STATUS_TRANSITIONS.keys()) == expected
+
+    def test_values_are_frozensets(self) -> None:
+        for v in ALLOWED_STATUS_TRANSITIONS.values():
+            assert isinstance(v, frozenset)
+
+    def test_pending_transitions(self) -> None:
+        assert ALLOWED_STATUS_TRANSITIONS["PENDING"] == frozenset(
+            {"CONFIRMED", "CANCELLED", "NO_SHOW"}
+        )
+
+    def test_confirmed_transitions(self) -> None:
+        assert ALLOWED_STATUS_TRANSITIONS["CONFIRMED"] == frozenset(
+            {"COMPLETED", "CANCELLED", "NO_SHOW"}
+        )
+
+    def test_cancelled_is_terminal(self) -> None:
+        assert ALLOWED_STATUS_TRANSITIONS["CANCELLED"] == frozenset()
+
+    def test_completed_is_terminal(self) -> None:
+        assert ALLOWED_STATUS_TRANSITIONS["COMPLETED"] == frozenset()
+
+    def test_no_show_is_terminal(self) -> None:
+        assert ALLOWED_STATUS_TRANSITIONS["NO_SHOW"] == frozenset()
+
+    def test_pending_cannot_reach_completed_directly(self) -> None:
+        assert "COMPLETED" not in ALLOWED_STATUS_TRANSITIONS["PENDING"]
+
+    def test_confirmed_cannot_reach_pending(self) -> None:
+        assert "PENDING" not in ALLOWED_STATUS_TRANSITIONS["CONFIRMED"]
+
+
+# ---------------------------------------------------------------------------
+# is_valid_transition (US-3.4, #25)
+# ---------------------------------------------------------------------------
+
+
+class TestIsValidTransition:
+    """Machine à états gérant : deny-by-default (§8.1, #25).
+
+    Chaque transition **autorisée** renvoie `True` ; toute autre combinaison
+    (terminale, identité, interdite, statut inconnu) renvoie `False`.
+    """
+
+    # --- Transitions autorisées -------------------------------------------
+
+    def test_pending_to_confirmed(self) -> None:
+        assert is_valid_transition("PENDING", "CONFIRMED") is True
+
+    def test_pending_to_cancelled(self) -> None:
+        assert is_valid_transition("PENDING", "CANCELLED") is True
+
+    def test_pending_to_no_show(self) -> None:
+        assert is_valid_transition("PENDING", "NO_SHOW") is True
+
+    def test_confirmed_to_completed(self) -> None:
+        assert is_valid_transition("CONFIRMED", "COMPLETED") is True
+
+    def test_confirmed_to_cancelled(self) -> None:
+        assert is_valid_transition("CONFIRMED", "CANCELLED") is True
+
+    def test_confirmed_to_no_show(self) -> None:
+        assert is_valid_transition("CONFIRMED", "NO_SHOW") is True
+
+    # --- États terminaux verrouillés (§8.1) --------------------------------
+
+    def test_cancelled_to_pending_is_forbidden(self) -> None:
+        assert is_valid_transition("CANCELLED", "PENDING") is False
+
+    def test_cancelled_to_confirmed_is_forbidden(self) -> None:
+        assert is_valid_transition("CANCELLED", "CONFIRMED") is False
+
+    def test_cancelled_to_completed_is_forbidden(self) -> None:
+        assert is_valid_transition("CANCELLED", "COMPLETED") is False
+
+    def test_cancelled_to_no_show_is_forbidden(self) -> None:
+        assert is_valid_transition("CANCELLED", "NO_SHOW") is False
+
+    def test_completed_to_pending_is_forbidden(self) -> None:
+        assert is_valid_transition("COMPLETED", "PENDING") is False
+
+    def test_completed_to_confirmed_is_forbidden(self) -> None:
+        assert is_valid_transition("COMPLETED", "CONFIRMED") is False
+
+    def test_no_show_to_pending_is_forbidden(self) -> None:
+        assert is_valid_transition("NO_SHOW", "PENDING") is False
+
+    def test_no_show_to_confirmed_is_forbidden(self) -> None:
+        assert is_valid_transition("NO_SHOW", "CONFIRMED") is False
+
+    # --- Identité refusée (pas de no-op silencieux, deny-by-default) ------
+
+    def test_pending_to_pending_is_identity(self) -> None:
+        assert is_valid_transition("PENDING", "PENDING") is False
+
+    def test_confirmed_to_confirmed_is_identity(self) -> None:
+        assert is_valid_transition("CONFIRMED", "CONFIRMED") is False
+
+    def test_cancelled_to_cancelled_is_identity(self) -> None:
+        assert is_valid_transition("CANCELLED", "CANCELLED") is False
+
+    def test_completed_to_completed_is_identity(self) -> None:
+        assert is_valid_transition("COMPLETED", "COMPLETED") is False
+
+    def test_no_show_to_no_show_is_identity(self) -> None:
+        assert is_valid_transition("NO_SHOW", "NO_SHOW") is False
+
+    # --- Transitions interdites (non listées dans la table) ---------------
+
+    def test_pending_to_completed_is_forbidden(self) -> None:
+        # Il faut d'abord confirmer (PENDING → CONFIRMED → COMPLETED).
+        assert is_valid_transition("PENDING", "COMPLETED") is False
+
+    def test_confirmed_to_pending_is_forbidden(self) -> None:
+        # Pas de retour arrière au MVP (deny-by-default).
+        assert is_valid_transition("CONFIRMED", "PENDING") is False
+
+    # --- Statuts inconnus : refus systématique (deny-by-default) ----------
+
+    def test_unknown_current_returns_false(self) -> None:
+        assert is_valid_transition("UNKNOWN", "CONFIRMED") is False
+
+    def test_unknown_target_returns_false(self) -> None:
+        assert is_valid_transition("PENDING", "UNKNOWN") is False
+
+    def test_empty_string_current_returns_false(self) -> None:
+        assert is_valid_transition("", "CONFIRMED") is False
+
+    def test_empty_string_target_returns_false(self) -> None:
+        assert is_valid_transition("PENDING", "") is False
+
+    def test_lowercase_values_return_false(self) -> None:
+        # Valeurs stockées en MAJUSCULES (source de vérité du CHECK SQL).
+        assert is_valid_transition("pending", "confirmed") is False
+
+    def test_both_unknown_returns_false(self) -> None:
+        assert is_valid_transition("FUTURE_FROM", "FUTURE_TO") is False
