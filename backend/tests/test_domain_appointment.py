@@ -22,8 +22,11 @@ import pytest
 from coiflink_api.domain.appointment import (
     Appointment,
     AppointmentToCreate,
+    AppointmentUpdate,
     BookedService,
+    CLIENT_MODIFIABLE_STATUSES,
     compute_end_time,
+    is_client_modifiable,
     require_services,
     validate_booking_window,
 )
@@ -247,4 +250,131 @@ class TestAppointment:
         )
         assert len(appt.services) == 1
         assert appt.services[0].service_id == _SERVICE_ID
-        assert appt.client_note == "Note."
+
+
+# ---------------------------------------------------------------------------
+# is_client_modifiable (US-3.2, #23)
+# ---------------------------------------------------------------------------
+
+
+class TestIsClientModifiable:
+    """Règle de domaine §8.1 : un RDV terminé/terminal est verrouillé côté client."""
+
+    def test_pending_is_modifiable(self) -> None:
+        assert is_client_modifiable("PENDING") is True
+
+    def test_confirmed_is_modifiable(self) -> None:
+        assert is_client_modifiable("CONFIRMED") is True
+
+    def test_completed_is_not_modifiable(self) -> None:
+        assert is_client_modifiable("COMPLETED") is False
+
+    def test_cancelled_is_not_modifiable(self) -> None:
+        assert is_client_modifiable("CANCELLED") is False
+
+    def test_no_show_is_not_modifiable(self) -> None:
+        assert is_client_modifiable("NO_SHOW") is False
+
+    def test_unknown_status_is_not_modifiable(self) -> None:
+        # Un statut inconnu (évolution serveur) est refusé par construction.
+        assert is_client_modifiable("FUTURE_STATUS") is False
+
+    def test_empty_string_is_not_modifiable(self) -> None:
+        assert is_client_modifiable("") is False
+
+    def test_lowercase_pending_not_modifiable(self) -> None:
+        # Les valeurs enum sont stockées en MAJUSCULES : la comparaison est stricte.
+        assert is_client_modifiable("pending") is False
+
+    def test_deny_by_default_on_arbitrary_value(self) -> None:
+        assert is_client_modifiable("WHATEVER") is False
+
+
+# ---------------------------------------------------------------------------
+# CLIENT_MODIFIABLE_STATUSES (US-3.2, #23)
+# ---------------------------------------------------------------------------
+
+
+class TestClientModifiableStatuses:
+    def test_contains_pending(self) -> None:
+        assert "PENDING" in CLIENT_MODIFIABLE_STATUSES
+
+    def test_contains_confirmed(self) -> None:
+        assert "CONFIRMED" in CLIENT_MODIFIABLE_STATUSES
+
+    def test_does_not_contain_completed(self) -> None:
+        assert "COMPLETED" not in CLIENT_MODIFIABLE_STATUSES
+
+    def test_does_not_contain_cancelled(self) -> None:
+        assert "CANCELLED" not in CLIENT_MODIFIABLE_STATUSES
+
+    def test_does_not_contain_no_show(self) -> None:
+        assert "NO_SHOW" not in CLIENT_MODIFIABLE_STATUSES
+
+    def test_is_tuple_type(self) -> None:
+        assert isinstance(CLIENT_MODIFIABLE_STATUSES, tuple)
+
+    def test_exactly_two_statuses(self) -> None:
+        assert len(CLIENT_MODIFIABLE_STATUSES) == 2
+
+
+# ---------------------------------------------------------------------------
+# AppointmentUpdate — VO re-planification (US-3.2, #23)
+# ---------------------------------------------------------------------------
+
+
+class TestAppointmentUpdate:
+    """Valeur objet portant la cible d'une modification (sémantique *replace*)."""
+
+    def _make(self) -> AppointmentUpdate:
+        return AppointmentUpdate(
+            date=_DATE,
+            start_time=_START,
+            end_time=_END,
+            hairdresser_id=_HAIRDRESSER_ID,
+            client_note="Note.",
+            services=(BookedService(service_id=_SERVICE_ID, price_at_booking=_PRICE),),
+        )
+
+    def test_fields_preserved(self) -> None:
+        update = self._make()
+        assert update.date == _DATE
+        assert update.start_time == _START
+        assert update.end_time == _END
+        assert update.hairdresser_id == _HAIRDRESSER_ID
+        assert update.client_note == "Note."
+        assert len(update.services) == 1
+        assert update.services[0].service_id == _SERVICE_ID
+
+    def test_hairdresser_id_optional(self) -> None:
+        update = AppointmentUpdate(
+            date=_DATE,
+            start_time=_START,
+            end_time=_END,
+            hairdresser_id=None,
+            client_note=None,
+            services=(),
+        )
+        assert update.hairdresser_id is None
+        assert update.client_note is None
+        assert update.services == ()
+
+    def test_immutable(self) -> None:
+        update = self._make()
+        with pytest.raises((AttributeError, TypeError)):
+            update.date = datetime.date(2099, 1, 1)  # type: ignore[misc]
+
+    def test_no_salon_id_field(self) -> None:
+        # anti-élévation §11.2 : `AppointmentUpdate` ne porte jamais `salon_id`.
+        update = self._make()
+        assert not hasattr(update, "salon_id")
+
+    def test_no_client_id_field(self) -> None:
+        # anti-élévation §11.2 : `AppointmentUpdate` ne porte jamais `client_id`.
+        update = self._make()
+        assert not hasattr(update, "client_id")
+
+    def test_no_status_field(self) -> None:
+        # Le statut reste inchangé lors de la modification (client ne le fixe pas).
+        update = self._make()
+        assert not hasattr(update, "status")

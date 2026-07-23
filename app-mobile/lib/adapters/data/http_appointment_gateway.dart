@@ -127,6 +127,119 @@ class HttpAppointmentGateway implements AppointmentGateway {
     }
   }
 
+  @override
+  Future<List<Appointment>> myAppointments({required String accessToken}) async {
+    final uri = config.resolve('/appointments');
+
+    final http.Response response;
+    try {
+      response = await _client.get(
+        uri,
+        headers: <String, String>{'authorization': 'Bearer $accessToken'},
+      );
+    } catch (_) {
+      throw const AppointmentGatewayException('Impossible de joindre le serveur.');
+    }
+
+    switch (response.statusCode) {
+      case 200:
+        break;
+      case 401:
+        throw const UnauthorizedException();
+      default:
+        throw const AppointmentGatewayException(
+          'Impossible de charger vos rendez-vous.',
+        );
+    }
+
+    try {
+      final body = jsonDecode(response.body) as List<dynamic>;
+      return body
+          .map((a) => _appointmentFromJson(a as Map<String, dynamic>))
+          .toList(growable: false);
+    } catch (_) {
+      throw const AppointmentGatewayException('Réponse du serveur illisible.');
+    }
+  }
+
+  @override
+  Future<Appointment> modify({
+    required String appointmentId,
+    required BookingDraft draft,
+    required String accessToken,
+  }) async {
+    final uri = config.resolve('/appointments/$appointmentId');
+    // Corps **sans** client_id/salon_id/status : imposés serveur (§11.2). Le
+    // salon_id vient du RDV chargé côté serveur (route d'appartenance).
+    final payload = <String, dynamic>{
+      'date': _formatDate(draft.date),
+      'start_time': draft.startTime,
+      'service_ids': draft.serviceIds,
+      if (draft.hairdresserId != null) 'hairdresser_id': draft.hairdresserId,
+      if (draft.clientNote != null && draft.clientNote!.trim().isNotEmpty)
+        'client_note': draft.clientNote!.trim(),
+    };
+
+    final http.Response response;
+    try {
+      response = await _client.patch(
+        uri,
+        headers: <String, String>{
+          'content-type': 'application/json; charset=utf-8',
+          'authorization': 'Bearer $accessToken',
+        },
+        body: jsonEncode(payload),
+      );
+    } catch (_) {
+      throw const AppointmentGatewayException('Impossible de joindre le serveur.');
+    }
+
+    switch (response.statusCode) {
+      case 200:
+        break;
+      case 401:
+        throw const UnauthorizedException();
+      case 409:
+        throw _modifyConflictFromBody(response.body);
+      case 404:
+        throw const AppointmentNotFoundException();
+      default:
+        throw const AppointmentGatewayException(
+          'La modification a échoué, veuillez réessayer.',
+        );
+    }
+
+    try {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      return _appointmentFromJson(body);
+    } catch (_) {
+      throw const AppointmentGatewayException('Réponse du serveur illisible.');
+    }
+  }
+
+  /// Distingue les trois causes de `409` sur une **modification** : RDV verrouillé
+  /// (terminé) vs salon non réservable vs créneau déjà pris. On lit le `detail`
+  /// **uniquement** pour router vers la bonne exception neutre — jamais pour
+  /// l'exposer tel quel (pas de fuite).
+  static AppointmentGatewayException _modifyConflictFromBody(String body) {
+    String detail = '';
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        detail = (decoded['detail']?.toString() ?? '').toLowerCase();
+      }
+    } catch (_) {
+      // Corps illisible : on retombe sur la distinction créneau/salon ci-dessous.
+    }
+    // `AppointmentNotModifiable` (§8.1) est le **seul** message parlant de RDV
+    // « modifiable » : verrou terminal, rien à re-choisir.
+    if (detail.contains('modifiable')) {
+      return const NotModifiableException();
+    }
+    // Sinon, même distinction salon non réservable vs créneau pris que pour `book`.
+    return _conflictFromBody(body);
+  }
+
   /// Distingue les deux causes de `409` : créneau déjà pris (course perdue) vs
   /// salon non réservable. On lit le `detail` **uniquement** pour router vers la
   /// bonne exception neutre — jamais pour l'exposer tel quel (pas de fuite).

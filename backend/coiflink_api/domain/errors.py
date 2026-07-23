@@ -180,6 +180,27 @@ class AppointmentServiceRequired(DomainError):
     """
 
 
+class AppointmentNotFound(DomainError):
+    """Le rendez-vous visé n'existe pas **ou** n'appartient pas au client (§11.2, #23).
+
+    Volontairement **indiscernable** : un RDV inexistant et un RDV d'autrui lèvent la
+    *même* erreur (la lecture `get_owned` filtre `client_id` en SQL) — aucun oracle
+    d'existence n'est offert au client. Message **neutre** — l'adapter entrant la
+    traduit en `404`.
+    """
+
+
+class AppointmentNotModifiable(DomainError):
+    """Le rendez-vous n'est plus modifiable **par le client** (§8.1, #23).
+
+    Levée quand le RDV est dans un état terminal/terminé (`COMPLETED`, `CANCELLED`,
+    `NO_SHOW`) : le PRD §8.1 verrouille explicitement un RDV terminé côté client
+    (« sauf par le gérant » → US-3.4/#25, hors périmètre). Ré-affirmée à l'écriture
+    par un UPDATE conditionnel (garde TOCTOU). Message **neutre** — l'adapter entrant
+    la traduit en `409 Conflict` (état de la ressource, cohérent avec `SlotAlreadyBooked`).
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -264,6 +285,8 @@ __all__ = [
     "SalonNotBookable",
     "HairdresserNotInSalon",
     "AppointmentServiceRequired",
+    "AppointmentNotFound",
+    "AppointmentNotModifiable",
     "InvalidOtp",
     "OtpExpired",
     "InvalidCredentials",

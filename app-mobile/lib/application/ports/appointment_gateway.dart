@@ -85,6 +85,28 @@ class UnauthorizedException extends AppointmentGatewayException {
   String toString() => 'UnauthorizedException: $message';
 }
 
+/// Levée quand le RDV n'est **plus modifiable** (`409`, terminé/terminal, §8.1) :
+/// le verrou serveur est final — rien à re-choisir, l'UI rafraîchit la liste.
+class NotModifiableException extends AppointmentGatewayException {
+  const NotModifiableException([
+    super.message = 'Ce rendez-vous n\'est plus modifiable.',
+  ]);
+
+  @override
+  String toString() => 'NotModifiableException: $message';
+}
+
+/// Levée quand le RDV visé est **introuvable** ou **hors appartenance** (`404`) :
+/// indiscernables (aucun oracle §11.2) — l'UI rafraîchit la liste « Mes RDV ».
+class AppointmentNotFoundException extends AppointmentGatewayException {
+  const AppointmentNotFoundException([
+    super.message = 'Rendez-vous introuvable.',
+  ]);
+
+  @override
+  String toString() => 'AppointmentNotFoundException: $message';
+}
+
 /// Port de disponibilité & réservation consommé par le tunnel client.
 abstract class AppointmentGateway {
   /// Retourne les créneaux **libres** d'un salon `ACTIVE` pour une prestation
@@ -108,6 +130,27 @@ abstract class AppointmentGateway {
   /// réseau / réponse invalide).
   Future<Appointment> book({
     required String salonId,
+    required BookingDraft draft,
+    required String accessToken,
+  });
+
+  /// Liste les rendez-vous **du client** authentifié via `GET /appointments`
+  /// (en-tête `Authorization: Bearer <accessToken>`). Ne renvoie que ses RDV actifs.
+  ///
+  /// Lève [UnauthorizedException] (`401`), [AppointmentGatewayException] (réseau /
+  /// réponse invalide).
+  Future<List<Appointment>> myAppointments({required String accessToken});
+
+  /// Re-planifie **son** rendez-vous via `PATCH /appointments/{appointmentId}` avec
+  /// l'en-tête `Authorization: Bearer <accessToken>` (corps sans `client_id`/
+  /// `salon_id`/`status`, §11.2). Sémantique *replace* (miroir de [book]).
+  ///
+  /// Lève [UnauthorizedException] (`401`), [NotModifiableException] (`409`, RDV
+  /// terminé) / [SlotTakenException] (`409`, créneau pris) / [NotBookableException]
+  /// (`409`, salon non réservable), [AppointmentNotFoundException] (`404`),
+  /// [AppointmentGatewayException] (réseau / réponse invalide).
+  Future<Appointment> modify({
+    required String appointmentId,
     required BookingDraft draft,
     required String accessToken,
   });

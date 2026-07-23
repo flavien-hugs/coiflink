@@ -1,4 +1,5 @@
-"""Tests unitaires — cas d'usage `CheckAvailability` et `BookAppointment` (US-3.7, #21).
+"""Tests unitaires — cas d'usage `CheckAvailability`, `BookAppointment`,
+`ModifyAppointment` et `ListMyAppointments` (US-3.7, #21 / US-3.2, #23).
 
 Tous les ports sont remplacés par des fakes (conftest.py) : aucune base ni réseau.
 
@@ -11,6 +12,13 @@ Couvre :
   hors offre → `SlotUnavailable` ; course concurrente simulée (FakeAppointmentRepository
   `raise_conflict=True`) → `SlotAlreadyBooked` et rien persisté ;
   réservation valide → `Appointment` créé avec les bons champs.
+- `ModifyAppointment` (#23) : RDV non possédé → `AppointmentNotFound` ; RDV terminé →
+  `AppointmentNotModifiable` ; salon non réservable → `SalonNotBookable` ; prestation
+  inactive → `ServiceNotFound` ; créneau hors offre → `SlotUnavailable` ; course
+  perdue → `SlotAlreadyBooked` (rien persisté) ; modification valide → `Appointment`
+  retourné ; `exclude_appointment_id` passé à `booked_slots` ; entrée d'audit neutre
+  (`APPOINTMENT_UPDATED`, noms de champs uniquement) dans la même unité de travail.
+- `ListMyAppointments` (#23) : liste filtrée par `client_id` et `statuses`.
 """
 
 from __future__ import annotations
@@ -21,10 +29,21 @@ import uuid
 
 import pytest
 
-from coiflink_api.application.appointments import BookAppointment, BookingCommand, CheckAvailability
+from coiflink_api.application.appointments import (
+    BookAppointment,
+    BookingCommand,
+    CheckAvailability,
+    ListMyAppointments,
+    ModifyAppointment,
+    ModifyAppointmentCommand,
+)
+from coiflink_api.domain.appointment import Appointment, BookedService
+from coiflink_api.domain.audit import AuditAction, ENTITY_TYPE_APPOINTMENT
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
+    AppointmentNotFound,
+    AppointmentNotModifiable,
     HairdresserNotInSalon,
     SalonNotBookable,
     SalonNotFound,
@@ -38,6 +57,7 @@ from coiflink_api.domain.service import Service
 
 from .conftest import (
     FakeAppointmentRepository,
+    FakeAuditLog,
     FakeSalonCatalogRepository,
     FakeSalonScopeRepository,
 )
@@ -455,3 +475,445 @@ class TestCheckAvailabilityExtra:
 
         for slot in result:
             assert not overlaps(slot, booked_slot)
+
+
+# ---------------------------------------------------------------------------
+# ModifyAppointment (US-3.2, #23)
+# ---------------------------------------------------------------------------
+
+_APPT_ID = uuid.UUID("aaaaaa00-0000-0000-0000-000000000001")
+_APPT_ID_2 = uuid.UUID("aaaaaa00-0000-0000-0000-000000000002")
+_OTHER_CLIENT_ID = uuid.UUID("99999999-0000-0000-0000-000000000099")
+_CREATED_AT_DT = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+
+
+def _make_appointment_entity(
+    *,
+    appt_id: uuid.UUID = _APPT_ID,
+    client_id: uuid.UUID = _CLIENT_ID,
+    status: str = "PENDING",
+    date: datetime.date = _DATE,
+    start_time: datetime.time = datetime.time(9, 0),
+    end_time: datetime.time = datetime.time(10, 0),
+    hairdresser_id: uuid.UUID | None = _HAIRDRESSER_ID,
+    client_note: str | None = None,
+) -> Appointment:
+    """Crée une entité `Appointment` pré-chargée pour les tests de modification."""
+    return Appointment(
+        id=appt_id,
+        salon_id=_SALON_ID,
+        client_id=client_id,
+        hairdresser_id=hairdresser_id,
+        date=date,
+        start_time=start_time,
+        end_time=end_time,
+        status=status,
+        client_note=client_note,
+        created_at=_CREATED_AT_DT,
+        services=(
+            BookedService(service_id=_SERVICE_ID, price_at_booking=decimal.Decimal("5000.00")),
+        ),
+    )
+
+
+def _valid_modify_command(
+    *,
+    service_ids: tuple[uuid.UUID, ...] = (_SERVICE_ID,),
+    start_time: datetime.time = datetime.time(9, 0),
+    client_note: str | None = None,
+) -> ModifyAppointmentCommand:
+    return ModifyAppointmentCommand(
+        date=_DATE,
+        start_time=start_time,
+        service_ids=service_ids,
+        hairdresser_id=_HAIRDRESSER_ID,
+        client_note=client_note,
+        granularity_minutes=15,
+    )
+
+
+class TestModifyAppointment:
+    def _uc(
+        self,
+        catalog: FakeSalonCatalogRepository | None = None,
+        appts: FakeAppointmentRepository | None = None,
+        scope: FakeSalonScopeRepository | None = None,
+        audit_log: FakeAuditLog | None = None,
+    ) -> ModifyAppointment:
+        return ModifyAppointment(
+            catalog if catalog is not None else _bookable_catalog(),
+            appts if appts is not None else FakeAppointmentRepository(),
+            scope if scope is not None else _scope(),
+            audit_log if audit_log is not None else FakeAuditLog(),
+        )
+
+    # --- Propriété / appartenance ----------------------------------------
+
+    def test_not_owned_raises_appointment_not_found(self) -> None:
+        # RDV existe mais appartient à un autre client : indiscernable d'un RDV inexistant.
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_id=_CLIENT_ID)]
+        )
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts).execute(
+                _APPT_ID, _OTHER_CLIENT_ID, _valid_modify_command()
+            )
+
+    def test_unknown_appointment_id_raises_appointment_not_found(self) -> None:
+        appts = FakeAppointmentRepository()  # aucun RDV pré-chargé
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts).execute(
+                _APPT_ID, _CLIENT_ID, _valid_modify_command()
+            )
+
+    def test_not_owned_nothing_updated(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_id=_CLIENT_ID)]
+        )
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts).execute(
+                _APPT_ID, _OTHER_CLIENT_ID, _valid_modify_command()
+            )
+        assert appts.updated == []
+
+    def test_not_owned_nothing_audited(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_id=_CLIENT_ID)]
+        )
+        audit = FakeAuditLog()
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts, audit_log=audit).execute(
+                _APPT_ID, _OTHER_CLIENT_ID, _valid_modify_command()
+            )
+        assert audit.recorded == []
+
+    # --- Verrou d'état (§8.1) --------------------------------------------
+
+    def test_completed_appointment_raises_not_modifiable(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        with pytest.raises(AppointmentNotModifiable):
+            self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID, _valid_modify_command())
+
+    def test_cancelled_appointment_raises_not_modifiable(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CANCELLED")]
+        )
+        with pytest.raises(AppointmentNotModifiable):
+            self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID, _valid_modify_command())
+
+    def test_no_show_appointment_raises_not_modifiable(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="NO_SHOW")]
+        )
+        with pytest.raises(AppointmentNotModifiable):
+            self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID, _valid_modify_command())
+
+    def test_terminated_nothing_updated(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        with pytest.raises(AppointmentNotModifiable):
+            self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID, _valid_modify_command())
+        assert appts.updated == []
+
+    def test_terminated_nothing_audited(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        audit = FakeAuditLog()
+        with pytest.raises(AppointmentNotModifiable):
+            self._uc(appts=appts, audit_log=audit).execute(
+                _APPT_ID, _CLIENT_ID, _valid_modify_command()
+            )
+        assert audit.recorded == []
+
+    # --- Validation du salon / prestation / coiffeur ----------------------
+
+    def test_salon_not_bookable_raises_error(self) -> None:
+        catalog = _bookable_catalog(salon=_make_salon(opening_hours=None))
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        with pytest.raises(SalonNotBookable):
+            self._uc(catalog=catalog, appts=appts).execute(
+                _APPT_ID, _CLIENT_ID, _valid_modify_command()
+            )
+
+    def test_service_not_found_raises_error(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        cmd = _valid_modify_command(service_ids=(_OTHER_SERVICE_ID,))
+        with pytest.raises(ServiceNotFound):
+            self._uc(catalog=catalog, appts=appts).execute(_APPT_ID, _CLIENT_ID, cmd)
+
+    def test_slot_outside_hours_raises_slot_unavailable(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        cmd = _valid_modify_command(start_time=datetime.time(23, 0))
+        with pytest.raises(SlotUnavailable):
+            self._uc(catalog=catalog, appts=appts).execute(_APPT_ID, _CLIENT_ID, cmd)
+
+    def test_hairdresser_not_in_salon_raises_error(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        other_salon = uuid.UUID("99999999-0000-0000-0000-000000000099")
+        scope = _scope({_HAIRDRESSER_ID: frozenset({other_salon})})
+        with pytest.raises(HairdresserNotInSalon):
+            self._uc(catalog=catalog, appts=appts, scope=scope).execute(
+                _APPT_ID, _CLIENT_ID, _valid_modify_command()
+            )
+
+    # --- Course concurrente (contrainte d'exclusion base sur UPDATE) --------
+
+    def test_race_condition_raises_slot_already_booked(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()],
+            raise_conflict=True,
+        )
+        with pytest.raises(SlotAlreadyBooked):
+            self._uc(catalog=catalog, appts=appts).execute(
+                _APPT_ID, _CLIENT_ID, _valid_modify_command()
+            )
+
+    def test_race_condition_nothing_persisted(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()],
+            raise_conflict=True,
+        )
+        with pytest.raises(SlotAlreadyBooked):
+            self._uc(catalog=catalog, appts=appts).execute(
+                _APPT_ID, _CLIENT_ID, _valid_modify_command()
+            )
+        assert appts.updated == []
+
+    # --- Cas valide : re-planification réussie ----------------------------
+
+    def test_valid_modification_returns_appointment(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        result = self._uc(catalog=catalog, appts=appts).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert isinstance(result, Appointment)
+
+    def test_valid_modification_updates_repository(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        self._uc(catalog=catalog, appts=appts).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert len(appts.updated) == 1
+        assert appts.updated[0][0] == _APPT_ID
+
+    def test_client_id_from_argument_not_command(self) -> None:
+        # `client_id` vient de l'argument `execute`, jamais d'une propriété du command.
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        result = self._uc(catalog=catalog, appts=appts).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert result.client_id == _CLIENT_ID
+
+    def test_salon_id_from_loaded_appointment(self) -> None:
+        # `salon_id` vient du RDV chargé, jamais du command (route d'appartenance).
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        result = self._uc(catalog=catalog, appts=appts).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert result.salon_id == _SALON_ID
+
+    # --- Exclusion du RDV lui-même du calcul de disponibilité (#23) ------
+
+    def test_booked_slots_called_with_exclude_appointment_id(self) -> None:
+        # L'appel à `booked_slots` doit passer `exclude_appointment_id=appointment_id` :
+        # sans cela, le propre créneau du RDV apparaîtrait occupé (faux rejet).
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        self._uc(catalog=catalog, appts=appts).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert any(
+            call.get("exclude_appointment_id") == _APPT_ID
+            for call in appts.booked_slots_calls
+        )
+
+    # --- Journal d'audit §11.4 -------------------------------------------
+
+    def test_audit_log_recorded_once(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(catalog=catalog, appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert len(audit.recorded) == 1
+
+    def test_audit_action_is_appointment_updated(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(catalog=catalog, appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert audit.recorded[0].action == AuditAction.APPOINTMENT_UPDATED.value
+
+    def test_audit_actor_is_client_id(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(catalog=catalog, appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert audit.recorded[0].actor_user_id == _CLIENT_ID
+
+    def test_audit_entity_type_is_appointment(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(catalog=catalog, appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert audit.recorded[0].entity_type == ENTITY_TYPE_APPOINTMENT
+
+    def test_audit_entity_id_is_appointment_id(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(catalog=catalog, appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert audit.recorded[0].entity_id == _APPT_ID
+
+    def test_audit_salon_id_from_appointment(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(catalog=catalog, appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert audit.recorded[0].salon_id == _SALON_ID
+
+    def test_audit_metadata_changed_contains_field_names_only(self) -> None:
+        # §11.4 diff neutre : `metadata.changed` porte des **noms** de champs, jamais des valeurs.
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_note="Ancienne note")]
+        )
+        audit = FakeAuditLog()
+        cmd = _valid_modify_command(client_note="Nouvelle note")
+        self._uc(catalog=catalog, appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, cmd
+        )
+        changed = audit.recorded[0].metadata["changed"]
+        assert "client_note" in changed
+        # Les valeurs (texte de la note) ne doivent pas apparaître dans les noms.
+        for field_name in changed:
+            assert isinstance(field_name, str)
+            assert "Ancienne" not in field_name
+            assert "Nouvelle" not in field_name
+
+    def test_audit_metadata_no_change_if_nothing_changed(self) -> None:
+        # Si aucune valeur ne change, `metadata.changed` est vide.
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_note=None)]
+        )
+        audit = FakeAuditLog()
+        # Même date/start_time/hairdresser_id/client_note, même prestation.
+        cmd = _valid_modify_command(client_note=None)
+        self._uc(catalog=catalog, appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, cmd
+        )
+        changed = audit.recorded[0].metadata["changed"]
+        assert "date" not in changed
+        assert "start_time" not in changed
+        assert "hairdresser_id" not in changed
+        assert "client_note" not in changed
+
+    def test_audit_metadata_services_listed_when_changed(self) -> None:
+        catalog = _bookable_catalog(
+            services=[_make_service(), _make_service(service_id=_OTHER_SERVICE_ID)]
+        )
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        # Changer les service_ids → "services" doit apparaître dans changed.
+        cmd = _valid_modify_command(service_ids=(_OTHER_SERVICE_ID,))
+        self._uc(catalog=catalog, appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, cmd
+        )
+        changed = audit.recorded[0].metadata["changed"]
+        assert "services" in changed
+
+    def test_audit_metadata_values_never_include_prices(self) -> None:
+        # Les valeurs de prix ne doivent jamais figurer dans le diff d'audit.
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        audit = FakeAuditLog()
+        self._uc(catalog=catalog, appts=appts, audit_log=audit).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        changed = audit.recorded[0].metadata["changed"]
+        for name in changed:
+            assert "5000" not in name
+            assert "price" not in name.lower()
+
+    # --- TOCTOU guard : update conditionnel sur statut --------------------
+
+    def test_toctou_guard_raises_not_modifiable(self) -> None:
+        # Simule un changement de statut concurrent entre la lecture et l'écriture.
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()],
+            raise_not_modifiable=True,
+        )
+        with pytest.raises(AppointmentNotModifiable):
+            self._uc(catalog=catalog, appts=appts).execute(
+                _APPT_ID, _CLIENT_ID, _valid_modify_command()
+            )
+
+
+# ---------------------------------------------------------------------------
+# ListMyAppointments (US-3.2, #23)
+# ---------------------------------------------------------------------------
+
+
+class TestListMyAppointments:
+    def _uc(self, appts: FakeAppointmentRepository) -> ListMyAppointments:
+        return ListMyAppointments(appts)
+
+    def test_returns_only_client_appointments(self) -> None:
+        own = _make_appointment_entity(appt_id=_APPT_ID, client_id=_CLIENT_ID)
+        other = _make_appointment_entity(appt_id=_APPT_ID_2, client_id=_OTHER_CLIENT_ID)
+        appts = FakeAppointmentRepository(appointments=[own, other])
+        result = self._uc(appts).execute(_CLIENT_ID)
+        assert len(result) == 1
+        assert result[0].client_id == _CLIENT_ID
+
+    def test_empty_repo_returns_empty_tuple(self) -> None:
+        appts = FakeAppointmentRepository()
+        result = self._uc(appts).execute(_CLIENT_ID)
+        assert result == ()
+
+    def test_filters_by_statuses_pending_only(self) -> None:
+        pending = _make_appointment_entity(appt_id=_APPT_ID, status="PENDING")
+        completed = _make_appointment_entity(appt_id=_APPT_ID_2, status="COMPLETED")
+        appts = FakeAppointmentRepository(appointments=[pending, completed])
+        result = self._uc(appts).execute(_CLIENT_ID, statuses=("PENDING",))
+        assert len(result) == 1
+        assert result[0].status == "PENDING"
+
+    def test_no_statuses_filter_returns_all_own(self) -> None:
+        pending = _make_appointment_entity(appt_id=_APPT_ID, status="PENDING")
+        completed = _make_appointment_entity(appt_id=_APPT_ID_2, status="COMPLETED")
+        appts = FakeAppointmentRepository(appointments=[pending, completed])
+        result = self._uc(appts).execute(_CLIENT_ID, statuses=None)
+        assert len(result) == 2
+
+    def test_no_own_appointments_returns_empty(self) -> None:
+        other = _make_appointment_entity(appt_id=_APPT_ID, client_id=_OTHER_CLIENT_ID)
+        appts = FakeAppointmentRepository(appointments=[other])
+        result = self._uc(appts).execute(_CLIENT_ID)
+        assert result == ()

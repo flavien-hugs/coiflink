@@ -9,17 +9,22 @@
 import 'package:flutter/material.dart';
 
 import '../../application/auth_session.dart';
+import '../../application/ports/salon_catalog_gateway.dart';
 import '../../application/ports/token_store.dart';
 import '../../application/use_cases/book_appointment.dart';
 import '../../application/use_cases/check_availability.dart';
 import '../../application/use_cases/get_salon_detail.dart';
+import '../../application/use_cases/list_my_appointments.dart';
+import '../../application/use_cases/modify_appointment.dart';
 import '../../application/use_cases/search_salons.dart';
 import '../../application/use_cases/sign_in.dart';
+import '../../domain/appointment/appointment.dart';
 import '../../domain/salon/salon_detail.dart';
 import '../data/api_config.dart';
 import '../data/http_appointment_gateway.dart';
 import '../data/http_auth_gateway.dart';
 import '../data/http_salon_catalog_gateway.dart';
+import 'appointments/my_appointments_screen.dart';
 import 'auth/login_screen.dart';
 import 'booking/booking_flow_screen.dart';
 import 'salon_detail_screen.dart';
@@ -46,6 +51,8 @@ class CoifLinkApp extends StatelessWidget {
     final getSalonDetail = GetSalonDetail(catalogGateway);
     final checkAvailability = CheckAvailability(appointmentGateway);
     final bookAppointment = BookAppointment(appointmentGateway);
+    final listMyAppointments = ListMyAppointments(appointmentGateway);
+    final modifyAppointment = ModifyAppointment(appointmentGateway);
     final signIn = SignIn(authGateway, session);
 
     // Lanceur du tunnel de réservation (#22) : pousse le tunnel, qui redirige
@@ -64,6 +71,56 @@ class CoifLinkApp extends StatelessWidget {
       );
     }
 
+    // Lanceur de **modification** (#23) : recharge la fiche salon du RDV (pour la
+    // liste de prestations à pré-remplir) puis pousse le tunnel en mode
+    // modification. Retourne `true` si le RDV a été modifié (la liste rafraîchit).
+    Future<bool?> openModification(
+      BuildContext context,
+      Appointment appointment,
+    ) async {
+      final SalonDetail salon;
+      try {
+        salon = await getSalonDetail.call(appointment.salonId);
+      } on SalonCatalogException catch (exc) {
+        if (!context.mounted) return null;
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(exc.message)));
+        return null;
+      }
+      if (!context.mounted) return null;
+      return Navigator.of(context).push<bool>(
+        MaterialPageRoute<bool>(
+          builder: (_) => BookingFlowScreen(
+            salon: salon,
+            checkAvailability: checkAvailability,
+            bookAppointment: bookAppointment,
+            session: session,
+            onRequireLogin: (ctx) => _requireLogin(ctx, signIn),
+            modification: AppointmentModification(
+              appointment: appointment,
+              modifyAppointment: modifyAppointment,
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Point d'entrée « Mes rendez-vous » (#23) : liste les RDV actifs du client
+    // et ouvre le tunnel de modification pour un RDV modifiable.
+    void openMyAppointments(BuildContext context) {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => MyAppointmentsScreen(
+            listMyAppointments: listMyAppointments,
+            session: session,
+            onRequireLogin: (ctx) => _requireLogin(ctx, signIn),
+            onModify: openModification,
+          ),
+        ),
+      );
+    }
+
     return MaterialApp(
       title: 'CoifLink',
       theme: ThemeData(
@@ -74,6 +131,7 @@ class CoifLinkApp extends StatelessWidget {
         searchSalons: searchSalons,
         getSalonDetail: getSalonDetail,
         onBook: openBooking,
+        onOpenMyAppointments: openMyAppointments,
       ),
     );
   }
@@ -95,14 +153,19 @@ class AccueilEcran extends StatelessWidget {
     required this.searchSalons,
     required this.getSalonDetail,
     this.onBook,
+    this.onOpenMyAppointments,
   });
 
   final SearchSalons searchSalons;
   final GetSalonDetail getSalonDetail;
   final BookingLauncher? onBook;
 
+  /// Ouvre l'écran « Mes rendez-vous » (#23), ou `null` pour le masquer.
+  final void Function(BuildContext context)? onOpenMyAppointments;
+
   @override
   Widget build(BuildContext context) {
+    final openMyAppointments = onOpenMyAppointments;
     return Scaffold(
       appBar: AppBar(title: const Text('CoifLink')),
       body: Center(
@@ -126,6 +189,14 @@ class AccueilEcran extends StatelessWidget {
                 );
               },
             ),
+            if (openMyAppointments != null) ...<Widget>[
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.event_note),
+                label: const Text('Mes rendez-vous'),
+                onPressed: () => openMyAppointments(context),
+              ),
+            ],
           ],
         ),
       ),

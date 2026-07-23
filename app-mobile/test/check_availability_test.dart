@@ -51,6 +51,18 @@ class _StubGateway implements AppointmentGateway {
     required String accessToken,
   }) =>
       throw UnimplementedError();
+
+  @override
+  Future<List<Appointment>> myAppointments({required String accessToken}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Appointment> modify({
+    required String appointmentId,
+    required BookingDraft draft,
+    required String accessToken,
+  }) =>
+      throw UnimplementedError();
 }
 
 // ---------------------------------------------------------------------------

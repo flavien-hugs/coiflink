@@ -21,6 +21,8 @@ import '../../../application/auth_session.dart';
 import '../../../application/ports/appointment_gateway.dart';
 import '../../../application/use_cases/book_appointment.dart';
 import '../../../application/use_cases/check_availability.dart';
+import '../../../application/use_cases/modify_appointment.dart';
+import '../../../domain/appointment/appointment.dart';
 import '../../../domain/appointment/availability_slot.dart';
 import '../../../domain/salon/salon_detail.dart';
 import '../../../domain/salon/salon_service.dart';
@@ -36,6 +38,22 @@ const int kBookingHorizonDays = 30;
 /// tests. Le tunnel appelle ce rappel quand la réservation exige une session.
 typedef LoginRequester = Future<bool> Function(BuildContext context);
 
+/// Contexte de **modification** d'un RDV existant (US-3.2, #23) : réutilise le
+/// tunnel de réservation en mode *modification* (pré-rempli, confirmation via
+/// `modify` au lieu de `book`). Absent (`null`) → mode réservation (#22).
+class AppointmentModification {
+  const AppointmentModification({
+    required this.appointment,
+    required this.modifyAppointment,
+  });
+
+  /// Le RDV à re-planifier (id, date/créneau/note actuels, statut).
+  final Appointment appointment;
+
+  /// Cas d'usage de modification (validation amont + délégation au port).
+  final ModifyAppointment modifyAppointment;
+}
+
 class BookingFlowScreen extends StatefulWidget {
   const BookingFlowScreen({
     super.key,
@@ -44,6 +62,7 @@ class BookingFlowScreen extends StatefulWidget {
     required this.bookAppointment,
     required this.session,
     required this.onRequireLogin,
+    this.modification,
   });
 
   final SalonDetail salon;
@@ -51,6 +70,9 @@ class BookingFlowScreen extends StatefulWidget {
   final BookAppointment bookAppointment;
   final AuthSession session;
   final LoginRequester onRequireLogin;
+
+  /// Contexte de modification, ou `null` pour une réservation (#22).
+  final AppointmentModification? modification;
 
   @override
   State<BookingFlowScreen> createState() => _BookingFlowScreenState();
@@ -76,6 +98,33 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   List<AvailabilitySlot> _slots = const <AvailabilitySlot>[];
 
   bool _confirming = false;
+
+  bool get _isModification => widget.modification != null;
+
+  @override
+  void initState() {
+    super.initState();
+    // Mode modification (#23) : pré-remplir prestation/date/note du RDV existant.
+    // Le créneau est re-choisi à l'étape « Créneau » (le serveur exclut le RDV
+    // lui-même du calcul, l'ancien créneau reste donc proposé s'il est libre).
+    final modification = widget.modification;
+    if (modification != null) {
+      final appointment = modification.appointment;
+      _date = appointment.date;
+      _note.text = appointment.clientNote ?? '';
+      final serviceId = appointment.services.isNotEmpty
+          ? appointment.services.first.serviceId
+          : null;
+      if (serviceId != null) {
+        for (final service in widget.salon.services) {
+          if (service.id == serviceId) {
+            _service = service;
+            break;
+          }
+        }
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -193,7 +242,19 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       clientNote: _note.text,
     );
 
+    final modification = widget.modification;
     try {
+      if (modification != null) {
+        // Mode modification (#23) : re-planifie le RDV puis revient à la liste.
+        await modification.modifyAppointment.call(
+          appointment: modification.appointment,
+          draft: draft,
+          accessToken: token,
+        );
+        if (!mounted) return;
+        Navigator.of(context).pop(true);
+        return;
+      }
       final appointment = await widget.bookAppointment.call(
         salonId: widget.salon.id,
         draft: draft,
@@ -217,6 +278,15 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       _stopConfirming();
       await _requestLogin();
       _showMessage('Session expirée. Reconnectez-vous puis confirmez à nouveau.');
+    } on NotModifiableException {
+      // Verrou serveur (§8.1) : le RDV est devenu non modifiable (p. ex. terminé).
+      // Rien à re-choisir : revenir à la liste (qui se rafraîchit).
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on AppointmentNotFoundException {
+      // RDV disparu/hors appartenance : revenir à la liste (qui se rafraîchit).
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
     } on SlotTakenException {
       // Course perdue (§8.1) : retour à l'étape créneaux avec rafraîchissement.
       if (!mounted) return;
@@ -259,8 +329,11 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   // ------------------------------------------------------------------------- //
   @override
   Widget build(BuildContext context) {
+    final title = _isModification
+        ? 'Modifier — ${widget.salon.name}'
+        : 'Réserver — ${widget.salon.name}';
     return Scaffold(
-      appBar: AppBar(title: Text('Réserver — ${widget.salon.name}')),
+      appBar: AppBar(title: Text(title)),
       body: SafeArea(
         child: Column(
           children: <Widget>[
@@ -307,6 +380,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           date: _date!,
           slot: _slot!,
           note: _note.text,
+          isModification: _isModification,
         );
     }
   }
@@ -578,6 +652,7 @@ class _ConfirmStep extends StatelessWidget {
     required this.date,
     required this.slot,
     required this.note,
+    this.isModification = false,
   });
 
   final String salonName;
@@ -585,10 +660,14 @@ class _ConfirmStep extends StatelessWidget {
   final DateTime date;
   final AvailabilitySlot slot;
   final String note;
+  final bool isModification;
 
   @override
   Widget build(BuildContext context) {
     final trimmedNote = note.trim();
+    final footer = isModification
+        ? 'En confirmant, votre rendez-vous est mis à jour.'
+        : 'En confirmant, votre rendez-vous est enregistré au statut « En attente ».';
     return ListView(
       padding: const EdgeInsets.all(16),
       children: <Widget>[
@@ -600,10 +679,7 @@ class _ConfirmStep extends StatelessWidget {
         _Line(label: 'Créneau', value: '${slot.start} – ${slot.end}'),
         if (trimmedNote.isNotEmpty) _Line(label: 'Commentaire', value: trimmedNote),
         const SizedBox(height: 24),
-        Text(
-          'En confirmant, votre rendez-vous est enregistré au statut « En attente ».',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
+        Text(footer, style: Theme.of(context).textTheme.bodySmall),
       ],
     );
   }

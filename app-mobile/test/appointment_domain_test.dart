@@ -251,5 +251,40 @@ void main() {
       expect(appointment.clientNote, 'Coupe courte svp');
       expect(appointment.status, AppointmentStatus.confirmed);
     });
+
+    group('isClientModifiable (US-3.2, #23)', () {
+      Appointment _appt(AppointmentStatus status) => Appointment(
+            id: 'rdv-1',
+            salonId: 'salon-1',
+            date: DateTime(2026, 7, 21),
+            startTime: '09:00',
+            endTime: '09:30',
+            status: status,
+          );
+
+      test('pending → modifiable', () {
+        expect(_appt(AppointmentStatus.pending).isClientModifiable, isTrue);
+      });
+
+      test('confirmed → modifiable', () {
+        expect(_appt(AppointmentStatus.confirmed).isClientModifiable, isTrue);
+      });
+
+      test('completed → non modifiable', () {
+        expect(_appt(AppointmentStatus.completed).isClientModifiable, isFalse);
+      });
+
+      test('cancelled → non modifiable', () {
+        expect(_appt(AppointmentStatus.cancelled).isClientModifiable, isFalse);
+      });
+
+      test('noShow → non modifiable', () {
+        expect(_appt(AppointmentStatus.noShow).isClientModifiable, isFalse);
+      });
+
+      test('unknown → non modifiable (statut inconnu conservatif, §8.1)', () {
+        expect(_appt(AppointmentStatus.unknown).isClientModifiable, isFalse);
+      });
+    });
   });
 }

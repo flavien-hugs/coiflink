@@ -982,5 +982,395 @@ void main() {
         });
       });
     });
+
+    // -----------------------------------------------------------------------
+    // myAppointments
+    // -----------------------------------------------------------------------
+    group('myAppointments', () {
+      group('URL et en-tête', () {
+        test('envoie GET /appointments avec Authorization: Bearer', () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(<dynamic>[_appointmentJsonFull()]),
+          );
+
+          await _gateway(capturing).myAppointments(
+            accessToken: 'test-token-abc',
+          );
+
+          final url = capturing.lastRequest!.url;
+          expect(url.path, endsWith('/appointments'));
+          expect(capturing.lastRequest!.method, 'GET');
+          final auth = capturing.lastHeaders?['authorization'];
+          expect(auth, 'Bearer test-token-abc');
+        });
+      });
+
+      group('mapping 200 → List<Appointment>', () {
+        test('liste vide → liste vide', () async {
+          final client = _FakeHttpClient(
+            statusCode: 200,
+            body: jsonEncode(<dynamic>[]),
+          );
+
+          final result = await _gateway(client).myAppointments(
+            accessToken: 'tok',
+          );
+
+          expect(result, isEmpty);
+        });
+
+        test('un rendez-vous → liste à un élément', () async {
+          final client = _FakeHttpClient(
+            statusCode: 200,
+            body: jsonEncode(<dynamic>[
+              _appointmentJsonFull(id: 'rdv-10', status: 'PENDING'),
+            ]),
+          );
+
+          final result = await _gateway(client).myAppointments(
+            accessToken: 'tok',
+          );
+
+          expect(result, hasLength(1));
+          expect(result.first.id, 'rdv-10');
+        });
+
+        test('plusieurs rendez-vous → liste complète dans l\'ordre', () async {
+          final client = _FakeHttpClient(
+            statusCode: 200,
+            body: jsonEncode(<dynamic>[
+              _appointmentJsonFull(id: 'rdv-1'),
+              _appointmentJsonFull(id: 'rdv-2'),
+            ]),
+          );
+
+          final result = await _gateway(client).myAppointments(
+            accessToken: 'tok',
+          );
+
+          expect(result, hasLength(2));
+          expect(result[0].id, 'rdv-1');
+          expect(result[1].id, 'rdv-2');
+        });
+      });
+
+      group('gestion des erreurs', () {
+        test('401 → UnauthorizedException', () async {
+          final client = _FakeHttpClient(statusCode: 401, body: '{}');
+
+          await expectLater(
+            _gateway(client).myAppointments(accessToken: 'expired'),
+            throwsA(isA<UnauthorizedException>()),
+          );
+        });
+
+        test('500 → AppointmentGatewayException', () async {
+          final client = _FakeHttpClient(statusCode: 500, body: '');
+
+          await expectLater(
+            _gateway(client).myAppointments(accessToken: 'tok'),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('panne réseau → AppointmentGatewayException', () async {
+          await expectLater(
+            _gateway(_NetworkFailClient()).myAppointments(accessToken: 'tok'),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('corps JSON illisible → AppointmentGatewayException', () async {
+          final client =
+              _FakeHttpClient(statusCode: 200, body: 'not-valid-json');
+
+          await expectLater(
+            _gateway(client).myAppointments(accessToken: 'tok'),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('UnauthorizedException ne contient pas le jeton', () async {
+          final client = _FakeHttpClient(statusCode: 401, body: '{}');
+
+          Object? caught;
+          try {
+            await _gateway(client).myAppointments(
+              accessToken: 'secret-refresh-xyz',
+            );
+          } catch (e) {
+            caught = e;
+          }
+
+          expect(caught, isA<UnauthorizedException>());
+          final msg = (caught as UnauthorizedException).message;
+          expect(msg.contains('secret-refresh-xyz'), isFalse);
+        });
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // modify
+    // -----------------------------------------------------------------------
+    group('modify', () {
+      group('URL, méthode et en-tête', () {
+        test('envoie PATCH /appointments/{id} avec Authorization: Bearer',
+            () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull()),
+          );
+
+          await _gateway(capturing).modify(
+            appointmentId: 'rdv-42',
+            draft: _draft(),
+            accessToken: 'test-tok-xyz',
+          );
+
+          final url = capturing.lastRequest!.url;
+          expect(url.path, endsWith('/appointments/rdv-42'));
+          expect(capturing.lastRequest!.method, 'PATCH');
+          final auth = capturing.lastHeaders?['authorization'];
+          expect(auth, 'Bearer test-tok-xyz');
+        });
+      });
+
+      group('corps de requête (anti-élévation §11.2)', () {
+        test('corps contient date, start_time et service_ids', () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull()),
+          );
+
+          await _gateway(capturing).modify(
+            appointmentId: 'rdv-1',
+            draft: _draft(serviceIds: const ['svc-a', 'svc-b']),
+            accessToken: 'tok',
+          );
+
+          final body =
+              jsonDecode(capturing.lastBody!) as Map<String, dynamic>;
+          expect(body['date'], '2026-07-21');
+          expect(body['start_time'], '09:00');
+          expect(body['service_ids'], ['svc-a', 'svc-b']);
+        });
+
+        test('corps n\'inclut JAMAIS client_id, salon_id ni status', () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull()),
+          );
+
+          await _gateway(capturing).modify(
+            appointmentId: 'rdv-1',
+            draft: _draft(),
+            accessToken: 'tok',
+          );
+
+          final body =
+              jsonDecode(capturing.lastBody!) as Map<String, dynamic>;
+          expect(body.containsKey('client_id'), isFalse);
+          expect(body.containsKey('salon_id'), isFalse);
+          expect(body.containsKey('status'), isFalse);
+        });
+
+        test('hairdresserId fourni → inclus dans le corps', () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull()),
+          );
+
+          await _gateway(capturing).modify(
+            appointmentId: 'rdv-1',
+            draft: _draft(hairdresserId: 'hair-9'),
+            accessToken: 'tok',
+          );
+
+          final body =
+              jsonDecode(capturing.lastBody!) as Map<String, dynamic>;
+          expect(body['hairdresser_id'], 'hair-9');
+        });
+
+        test('hairdresserId null → absent du corps', () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull()),
+          );
+
+          await _gateway(capturing).modify(
+            appointmentId: 'rdv-1',
+            draft: _draft(),
+            accessToken: 'tok',
+          );
+
+          final body =
+              jsonDecode(capturing.lastBody!) as Map<String, dynamic>;
+          expect(body.containsKey('hairdresser_id'), isFalse);
+        });
+      });
+
+      group('mapping 200 → Appointment', () {
+        test('mappe tous les champs d\'une réponse complète', () async {
+          final client = _FakeHttpClient(
+            statusCode: 200,
+            body: jsonEncode(_appointmentJsonFull(
+              id: 'rdv-99',
+              status: 'CONFIRMED',
+              hairdresserId: 'hair-5',
+            )),
+          );
+
+          final appt = await _gateway(client).modify(
+            appointmentId: 'rdv-99',
+            draft: _draft(),
+            accessToken: 'tok',
+          );
+
+          expect(appt.id, 'rdv-99');
+          expect(appt.hairdresserId, 'hair-5');
+          expect(appt.status, AppointmentStatus.confirmed);
+        });
+      });
+
+      group('gestion des erreurs HTTP', () {
+        test('401 → UnauthorizedException', () async {
+          final client = _FakeHttpClient(statusCode: 401, body: '{}');
+
+          await expectLater(
+            _gateway(client).modify(
+              appointmentId: 'rdv-1',
+              draft: _draft(),
+              accessToken: 'expired',
+            ),
+            throwsA(isA<UnauthorizedException>()),
+          );
+        });
+
+        test('404 → AppointmentNotFoundException', () async {
+          final client = _FakeHttpClient(
+            statusCode: 404,
+            body: '{"detail": "Introuvable."}',
+          );
+
+          await expectLater(
+            _gateway(client).modify(
+              appointmentId: 'rdv-inconnu',
+              draft: _draft(),
+              accessToken: 'tok',
+            ),
+            throwsA(isA<AppointmentNotFoundException>()),
+          );
+        });
+
+        test(
+            '409 "modifiable" → NotModifiableException (RDV terminé, §8.1)',
+            () async {
+          final client = _FakeHttpClient(
+            statusCode: 409,
+            body: '{"detail": "Ce rendez-vous n\'est plus modifiable."}',
+          );
+
+          await expectLater(
+            _gateway(client).modify(
+              appointmentId: 'rdv-1',
+              draft: _draft(),
+              accessToken: 'tok',
+            ),
+            throwsA(isA<NotModifiableException>()),
+          );
+        });
+
+        test('409 créneau pris → SlotTakenException', () async {
+          final client = _FakeHttpClient(
+            statusCode: 409,
+            body: '{"detail": "slot already taken"}',
+          );
+
+          await expectLater(
+            _gateway(client).modify(
+              appointmentId: 'rdv-1',
+              draft: _draft(),
+              accessToken: 'tok',
+            ),
+            throwsA(isA<SlotTakenException>()),
+          );
+        });
+
+        test('409 salon non réservable → NotBookableException', () async {
+          final client = _FakeHttpClient(
+            statusCode: 409,
+            body: '{"detail": "Ce salon n\'accepte pas encore de réservation."}',
+          );
+
+          await expectLater(
+            _gateway(client).modify(
+              appointmentId: 'rdv-1',
+              draft: _draft(),
+              accessToken: 'tok',
+            ),
+            throwsA(isA<NotBookableException>()),
+          );
+        });
+
+        test('500 → AppointmentGatewayException', () async {
+          final client = _FakeHttpClient(statusCode: 500, body: '');
+
+          await expectLater(
+            _gateway(client).modify(
+              appointmentId: 'rdv-1',
+              draft: _draft(),
+              accessToken: 'tok',
+            ),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('panne réseau → AppointmentGatewayException', () async {
+          await expectLater(
+            _gateway(_NetworkFailClient()).modify(
+              appointmentId: 'rdv-1',
+              draft: _draft(),
+              accessToken: 'tok',
+            ),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('corps JSON illisible sur 200 → AppointmentGatewayException',
+            () async {
+          final client =
+              _FakeHttpClient(statusCode: 200, body: 'not-valid-json');
+
+          await expectLater(
+            _gateway(client).modify(
+              appointmentId: 'rdv-1',
+              draft: _draft(),
+              accessToken: 'tok',
+            ),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('UnauthorizedException ne contient pas le jeton', () async {
+          final client = _FakeHttpClient(statusCode: 401, body: '{}');
+
+          Object? caught;
+          try {
+            await _gateway(client).modify(
+              appointmentId: 'rdv-1',
+              draft: _draft(),
+              accessToken: 'secret-tok-modify',
+            );
+          } catch (e) {
+            caught = e;
+          }
+
+          expect(caught, isA<UnauthorizedException>());
+          final msg = (caught as UnauthorizedException).message;
+          expect(msg.contains('secret-tok-modify'), isFalse);
+        });
+      });
+    });
   });
 }

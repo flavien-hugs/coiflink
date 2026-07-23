@@ -57,4 +57,14 @@ class Appointment {
 
   /// Prestations réservées (≥ 1) — un RDV est lié à ≥ 1 prestation (#22).
   final List<BookedService> services;
+
+  /// Vrai si le RDV est encore modifiable **par le client** (US-3.2, #23).
+  ///
+  /// Miroir **d'affichage** de la règle serveur `is_client_modifiable` : seuls les
+  /// états actifs (`pending`/`confirmed`) sont modifiables ; un RDV terminé
+  /// (`completed`) ou terminal (`cancelled`/`noShow`) est verrouillé côté client
+  /// (§8.1). Aide UX uniquement — le serveur reste juge (un refus revient en `409`).
+  bool get isClientModifiable =>
+      status == AppointmentStatus.pending ||
+      status == AppointmentStatus.confirmed;
 }
