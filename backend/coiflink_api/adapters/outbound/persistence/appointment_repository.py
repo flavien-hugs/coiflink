@@ -402,6 +402,37 @@ class SqlAppointmentRepository:
         rows = self._session.scalars(stmt).all()
         return tuple(_to_domain(row, self._load_services(row.id)) for row in rows)
 
+    def list_for_hairdresser(
+        self,
+        hairdresser_id: uuid.UUID,
+        date_from: datetime.date,
+        date_to: datetime.date,
+        statuses: tuple[str, ...] | None = None,
+    ) -> tuple[Appointment, ...]:
+        """RDV assignés au coiffeur dans `[date_from, date_to]`, filtrés, triés (#27).
+
+        L'isolation « son planning » (§11.2) est imposée **en SQL**
+        (`hairdresser_id = :hairdresser_id`) : la lecture ne peut jamais renvoyer un
+        RDV d'un autre coiffeur, un RDV **non assigné** (`hairdresser_id IS NULL`, exclu
+        par l'égalité) ni un RDV d'un autre salon, quelle que soit la garde HTTP — le
+        `hairdresser_id` provenant du `Principal`. La plage est **inclusive** aux deux
+        bornes ; la lecture est bornée (≤ 42 j, un seul coiffeur → volume faible au MVP).
+        """
+
+        stmt = select(models.Appointment).where(
+            models.Appointment.hairdresser_id == hairdresser_id,
+            models.Appointment.appointment_date >= date_from,
+            models.Appointment.appointment_date <= date_to,
+        )
+        if statuses is not None:
+            stmt = stmt.where(models.Appointment.status.in_(statuses))
+        stmt = stmt.order_by(
+            models.Appointment.appointment_date.asc(),
+            models.Appointment.start_time.asc(),
+        )
+        rows = self._session.scalars(stmt).all()
+        return tuple(_to_domain(row, self._load_services(row.id)) for row in rows)
+
     def _load_services(
         self, appointment_id: uuid.UUID
     ) -> tuple[BookedService, ...]:

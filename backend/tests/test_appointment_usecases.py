@@ -35,6 +35,7 @@ from coiflink_api.application.appointments import (
     BookingCommand,
     CancelAppointment,
     CheckAvailability,
+    ListAssignedAppointments,
     ListMyAppointments,
     ListSalonAppointments,
     ModifyAppointment,
@@ -1809,4 +1810,163 @@ class TestListSalonAppointments:
     def test_result_is_a_tuple(self) -> None:
         appts = FakeAppointmentRepository(appointments=[_make_salon_appointment()])
         result = self._uc(appts).execute(_SALON_ID, _DATE, _DATE)
+        assert isinstance(result, tuple)
+
+
+# ---------------------------------------------------------------------------
+# ListAssignedAppointments (US-3.6, #27)
+# ---------------------------------------------------------------------------
+
+_OTHER_HAIRDRESSER_ID = uuid.UUID("99999999-0000-0000-0000-000000000099")
+
+
+def _make_assigned_appointment(
+    *,
+    appt_id: uuid.UUID = _APPT_ID,
+    hairdresser_id: uuid.UUID | None = _HAIRDRESSER_ID,
+    status: str = "PENDING",
+    date: datetime.date = _DATE,
+    start_time: datetime.time = datetime.time(9, 0),
+) -> Appointment:
+    return Appointment(
+        id=appt_id,
+        salon_id=_SALON_ID,
+        client_id=_CLIENT_ID,
+        hairdresser_id=hairdresser_id,
+        date=date,
+        start_time=start_time,
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT_DT,
+        services=(
+            BookedService(service_id=_SERVICE_ID, price_at_booking=decimal.Decimal("5000.00")),
+        ),
+    )
+
+
+class TestListAssignedAppointments:
+    """Planning coiffeur : isolation assignment-scopée, plage, filtre statut (§11.2, #27)."""
+
+    def _uc(self, appts: FakeAppointmentRepository) -> ListAssignedAppointments:
+        return ListAssignedAppointments(appts)
+
+    # --- Résultats de base ---------------------------------------------------
+
+    def test_returns_assigned_appointment_in_range(self) -> None:
+        appt = _make_assigned_appointment()
+        appts = FakeAppointmentRepository(appointments=[appt])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE)
+        assert len(result) == 1
+        assert result[0].id == _APPT_ID
+
+    def test_empty_repo_returns_empty_tuple(self) -> None:
+        result = self._uc(FakeAppointmentRepository()).execute(_HAIRDRESSER_ID, _DATE, _DATE)
+        assert result == ()
+
+    # --- Isolation §11.2 : un coiffeur ne voit jamais un RDV d'un collègue ---
+
+    def test_other_hairdresser_appointments_excluded(self) -> None:
+        other_appt = _make_assigned_appointment(
+            appt_id=_APPT_ID, hairdresser_id=_OTHER_HAIRDRESSER_ID
+        )
+        appts = FakeAppointmentRepository(appointments=[other_appt])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE)
+        assert result == ()
+
+    def test_unassigned_appointments_excluded(self) -> None:
+        unassigned = _make_assigned_appointment(appt_id=_APPT_ID, hairdresser_id=None)
+        appts = FakeAppointmentRepository(appointments=[unassigned])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE)
+        assert result == ()
+
+    def test_own_and_other_hairdresser_mixed_only_own_returned(self) -> None:
+        own = _make_assigned_appointment(appt_id=_APPT_ID, hairdresser_id=_HAIRDRESSER_ID)
+        other = _make_assigned_appointment(
+            appt_id=_APPT_ID_2, hairdresser_id=_OTHER_HAIRDRESSER_ID
+        )
+        appts = FakeAppointmentRepository(appointments=[own, other])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE)
+        assert len(result) == 1
+        assert result[0].id == _APPT_ID
+
+    # --- Plage de dates -------------------------------------------------------
+
+    def test_appointment_before_range_excluded(self) -> None:
+        before = _make_assigned_appointment(appt_id=_APPT_ID, date=_DATE_BEFORE)
+        appts = FakeAppointmentRepository(appointments=[before])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE)
+        assert result == ()
+
+    def test_appointment_after_range_excluded(self) -> None:
+        after = _make_assigned_appointment(appt_id=_APPT_ID, date=_DATE_AFTER)
+        appts = FakeAppointmentRepository(appointments=[after])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE)
+        assert result == ()
+
+    def test_range_inclusive_first_day(self) -> None:
+        on_start = _make_assigned_appointment(appt_id=_APPT_ID, date=_DATE_BEFORE)
+        appts = FakeAppointmentRepository(appointments=[on_start])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE_BEFORE, _DATE_AFTER)
+        assert len(result) == 1
+
+    def test_range_inclusive_last_day(self) -> None:
+        on_end = _make_assigned_appointment(appt_id=_APPT_ID, date=_DATE_AFTER)
+        appts = FakeAppointmentRepository(appointments=[on_end])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE_BEFORE, _DATE_AFTER)
+        assert len(result) == 1
+
+    # --- Filtre statut --------------------------------------------------------
+
+    def test_status_filter_single(self) -> None:
+        pending = _make_assigned_appointment(appt_id=_APPT_ID, status="PENDING")
+        confirmed = _make_assigned_appointment(appt_id=_APPT_ID_2, status="CONFIRMED")
+        appts = FakeAppointmentRepository(appointments=[pending, confirmed])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE, statuses=("CONFIRMED",))
+        assert len(result) == 1
+        assert result[0].status == "CONFIRMED"
+
+    def test_status_filter_multi(self) -> None:
+        pending = _make_assigned_appointment(appt_id=_APPT_ID, status="PENDING")
+        confirmed = _make_assigned_appointment(appt_id=_APPT_ID_2, status="CONFIRMED")
+        cancelled = _make_assigned_appointment(appt_id=_APPT_ID_3, status="CANCELLED")
+        appts = FakeAppointmentRepository(appointments=[pending, confirmed, cancelled])
+        result = self._uc(appts).execute(
+            _HAIRDRESSER_ID, _DATE, _DATE, statuses=("PENDING", "CONFIRMED")
+        )
+        assert len(result) == 2
+        returned = {r.status for r in result}
+        assert "PENDING" in returned
+        assert "CONFIRMED" in returned
+
+    def test_no_status_filter_returns_all_statuses(self) -> None:
+        pending = _make_assigned_appointment(appt_id=_APPT_ID, status="PENDING")
+        completed = _make_assigned_appointment(appt_id=_APPT_ID_2, status="COMPLETED")
+        appts = FakeAppointmentRepository(appointments=[pending, completed])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE, statuses=None)
+        assert len(result) == 2
+
+    # --- Tri chronologique ---------------------------------------------------
+
+    def test_sorted_by_start_time_within_same_day(self) -> None:
+        later = _make_assigned_appointment(
+            appt_id=_APPT_ID, date=_DATE, start_time=datetime.time(11, 0)
+        )
+        earlier = _make_assigned_appointment(
+            appt_id=_APPT_ID_2, date=_DATE, start_time=datetime.time(9, 0)
+        )
+        appts = FakeAppointmentRepository(appointments=[later, earlier])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE)
+        assert result[0].start_time <= result[1].start_time
+
+    def test_sorted_by_date_across_days(self) -> None:
+        day2 = _make_assigned_appointment(appt_id=_APPT_ID, date=_DATE_AFTER)
+        day1 = _make_assigned_appointment(appt_id=_APPT_ID_2, date=_DATE_BEFORE)
+        appts = FakeAppointmentRepository(appointments=[day2, day1])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE_BEFORE, _DATE_AFTER)
+        assert result[0].date < result[1].date
+
+    def test_result_is_a_tuple(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_assigned_appointment()])
+        result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE)
         assert isinstance(result, tuple)

@@ -972,6 +972,26 @@ class FakeAppointmentRepository:
         result.sort(key=lambda a: (a.date, a.start_time))
         return tuple(result)
 
+    def list_for_hairdresser(  # type: ignore[no-untyped-def]
+        self, hairdresser_id, date_from, date_to, statuses=None
+    ):
+        """RDV assignés au coiffeur dans `[date_from, date_to]`, filtrés, triés (#27).
+
+        Refiltre `hairdresser_id` (isolation « son planning » §11.2) : un RDV d'un autre
+        coiffeur ou **non assigné** (`hairdresser_id is None`) est exclu par l'égalité.
+        Applique la plage **inclusive** + le filtre optionnel `statuses` ; tri
+        `(date, start_time)` — miroir du SQL.
+        """
+        result = [
+            a
+            for a in self._appointments.values()
+            if a.hairdresser_id == hairdresser_id
+            and date_from <= a.date <= date_to
+            and (statuses is None or a.status in statuses)
+        ]
+        result.sort(key=lambda a: (a.date, a.start_time))
+        return tuple(result)
+
 
 @pytest.fixture()
 def fake_service_repository() -> "FakeServiceRepository":

@@ -38,11 +38,13 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 
 | Route | Accès | Rôle |
 | --- | --- | --- |
-| `/` | publique | — (accueil neutre + lien vers `/gerant`) |
+| `/` | publique | accueil neutre ; **aiguillage par rôle** si session valide (`MANAGER` → `/gerant`, `HAIRDRESSER` → `/coiffeur/planning`, #27) |
 | `/login` | publique | point d'entrée de session (formulaire minimal) |
 | `/gerant` | **protégée** | `MANAGER` actif uniquement (dashboard vide) |
 | `/gerant/parametres` | **protégée** | `MANAGER` — création/consultation du salon (#15) |
 | `/gerant/prestations` | **protégée** | `MANAGER` — catalogue et gestion des prestations (#17) |
+| `/gerant/planning` | **protégée** | `MANAGER` — planning du salon, jour/semaine/mois (#26) |
+| `/coiffeur/planning` | **protégée** | `HAIRDRESSER` actif — **son** planning assigné, lecture seule (#27) |
 | `POST /api/auth/login` | interne (BFF) | proxifie `POST /auth/login`, pose les cookies httpOnly |
 | `POST /api/auth/logout` | interne (BFF) | efface les cookies de session |
 | `POST /api/salons` | interne (BFF) | proxifie `POST /salons` (jeton lu du cookie httpOnly) |
@@ -115,6 +117,25 @@ plus 2 décimales, durée entière `> 0` ≤ 24 h, nom non vide) avant d'être p
 `POST/PUT /api/salons/[id]/services[/serviceId]` et `DELETE …` (désactivation). Le **backend reste
 l'autorité** ; la modification et la désactivation y sont **journalisées §11.4**. Le catalogue **client
 public** (#18/#19) et la **réservation** (#21+) restent hors périmètre.
+
+### Zone coiffeur — Mon planning (#27)
+
+La zone **coiffeur** (`/coiffeur`) est une zone protégée **dédiée au rôle `HAIRDRESSER`**, distincte de
+la zone gérant. Sa garde miroir de `/gerant` : présence de cookie au niveau edge (`proxy.ts`, matcher
+`/coiffeur*`), puis vérification **réelle** côté serveur dans `app/(coiffeur)/layout.tsx` via
+`GET /auth/me` (source de vérité) et le cas d'usage `require-hairdresser-session`
+(`canAccessCoiffeur` = `HAIRDRESSER` **et** `ACTIVE`). Décision : `allow` → shell coiffeur
+(navigation réduite « Mon planning ») ; `401`/`403` ou rôle non coiffeur → `redirect(/login)` ;
+`503`/panne → état d'erreur maîtrisé. Aucun « flash » de contenu privé.
+
+La page **`/coiffeur/planning`** (Server Component) charge **côté serveur** (jeton du cookie httpOnly,
+jamais exposé au navigateur, invariant #14) les RDV **assignés au coiffeur** via
+`appointmentGateway.listAssigned({ from, to, statuses })` → `GET /appointments/assigned` (#27) —
+`hairdresser_id` **imposé serveur**, aucune notion de salon à choisir. Elle **réutilise le domaine de
+planning #26** (`rangeForView`/`todayIso`) et le composant `PlanningBoard` en **variante lecture**
+(`readOnly`, `basePath="/coiffeur/planning"`) : vues jour/semaine/mois, groupement par statut, **sans
+aucune action de statut** (le coiffeur **consulte** ; la frontière écriture #25 n'est pas franchie —
+voir la spec). L'aiguillage par rôle après connexion se fait **à la racine** (`/`), côté serveur.
 
 ### Ajouter une section
 

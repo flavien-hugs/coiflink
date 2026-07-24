@@ -417,3 +417,144 @@ describe("createHttpAppointmentGateway().setStatus() — corps de la requête", 
     expect(url).toContain(`/salons/${SALON_ID}/appointments/${APPT_ID}/status`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// listAssigned — sans jeton (US-3.6, #27)
+// ---------------------------------------------------------------------------
+
+describe("createHttpAppointmentGateway().listAssigned() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpAppointmentGateway({ accessToken: null }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accessToken undefined → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpAppointmentGateway({}).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listAssigned — codes HTTP → résultats de domaine
+// ---------------------------------------------------------------------------
+
+describe("createHttpAppointmentGateway().listAssigned() — codes HTTP", () => {
+  it("200 → ok:true avec les rendez-vous mappés", async () => {
+    stubFetch(200, [FAKE_APPT_PAYLOAD]);
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.appointments).toHaveLength(1);
+      expect(result.appointments[0].id).toBe(APPT_ID);
+    }
+  });
+
+  it("200 liste vide → ok:true appointments vide", async () => {
+    stubFetch(200, []);
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+    expect(result).toEqual({ ok: true, appointments: [] });
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+    expect(result).toEqual({ ok: false, reason: "forbidden" });
+  });
+
+  it("422 → invalid", async () => {
+    stubFetch(422, {});
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+    expect(result).toEqual({ ok: false, reason: "invalid" });
+  });
+
+  it("503 → unavailable", async () => {
+    stubFetch(503, {});
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+    expect(result).toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("erreur réseau → unavailable", async () => {
+    stubFetchNetworkError();
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+    expect(result).toEqual({ ok: false, reason: "unavailable" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listAssigned — URL et paramètres (§11.2 / §11.3)
+// ---------------------------------------------------------------------------
+
+describe("createHttpAppointmentGateway().listAssigned() — URL et paramètres", () => {
+  it("URL contient /appointments/assigned (pas de salonId)", async () => {
+    stubFetch(200, []);
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, unknown];
+    expect(url).toContain("/appointments/assigned");
+    expect(url).not.toContain("/salons/");
+  });
+
+  it("URL contient date_from et date_to", async () => {
+    stubFetch(200, []);
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, unknown];
+    expect(url).toContain("date_from=2026-08-01");
+    expect(url).toContain("date_to=2026-08-07");
+  });
+
+  it("URL contient le paramètre status répété pour chaque filtre", async () => {
+    stubFetch(200, []);
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07", statuses: ["PENDING", "CONFIRMED"] },
+    );
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, unknown];
+    expect(url).toContain("status=PENDING");
+    expect(url).toContain("status=CONFIRMED");
+  });
+
+  it("le jeton n'apparaît pas dans l'URL (§11.3)", async () => {
+    stubFetch(200, []);
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).listAssigned(
+      { from: "2026-08-01", to: "2026-08-07" },
+    );
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, unknown];
+    expect(url).not.toContain(TOKEN);
+  });
+});

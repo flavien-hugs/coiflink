@@ -8,6 +8,7 @@ export const ROLES = ["CLIENT", "HAIRDRESSER", "MANAGER", "ADMIN"] as const;
 export type Role = (typeof ROLES)[number];
 
 export const MANAGER_ROLE: Role = "MANAGER";
+export const HAIRDRESSER_ROLE: Role = "HAIRDRESSER";
 
 export const ROLE_DISPLAY_LABELS: Record<Role, string> = {
   CLIENT: "Client",
@@ -21,6 +22,20 @@ export function isManager(role: Role): boolean {
   return role === MANAGER_ROLE;
 }
 
+// Vrai si le rôle est celui du coiffeur/employé (seul rôle habilité pour /coiffeur).
+export function isHairdresser(role: Role): boolean {
+  return role === HAIRDRESSER_ROLE;
+}
+
 export function displayRoleLabel(role: Role): string {
   return ROLE_DISPLAY_LABELS[role];
+}
+
+// Zone web d'atterrissage d'un rôle authentifié, ou `null` si le rôle n'a pas de
+// surface web dédiée (CLIENT = mobile, ADMIN = zone à venir). Sert au routage
+// **côté serveur** après connexion (`app/page.tsx`), sans divulguer de contenu privé.
+export function landingPathForRole(role: Role): string | null {
+  if (role === MANAGER_ROLE) return "/gerant";
+  if (role === HAIRDRESSER_ROLE) return "/coiffeur/planning";
+  return null;
 }

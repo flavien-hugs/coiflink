@@ -201,5 +201,27 @@ class AppointmentRepository(Protocol):
         """
         ...
 
+    def list_for_hairdresser(
+        self,
+        hairdresser_id: uuid.UUID,
+        date_from: datetime.date,
+        date_to: datetime.date,
+        statuses: tuple[str, ...] | None = None,
+    ) -> tuple[Appointment, ...]:
+        """Liste les RDV **assignés au coiffeur** sur une plage (planning coiffeur, #27).
+
+        Miroir assignment-scopé de `list_for_salon` : renvoie les RDV dont
+        `hairdresser_id == :hairdresser_id` et dont `appointment_date` est dans
+        `[date_from, date_to]` (**inclusif**), avec leurs `BookedService`, triés
+        `(appointment_date, start_time)`. `statuses=None` ne filtre pas sur le statut
+        (**tous** statuts, y compris terminaux) ; une liste restreint. **Ne renvoie
+        jamais** un RDV assigné à un autre coiffeur, un RDV **non assigné**
+        (`hairdresser_id IS NULL`), ni un RDV d'un autre salon : l'isolation « son
+        planning » (§11.2) est imposée **en SQL** (`WHERE hairdresser_id =
+        :hairdresser_id`), en défense en profondeur du filtre serveur (le
+        `hairdresser_id` vient du `Principal`, jamais d'un champ soumis).
+        """
+        ...
+
 
 __all__ = ["AppointmentRepository"]
