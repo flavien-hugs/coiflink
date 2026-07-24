@@ -1,13 +1,18 @@
 "use client";
 
-// Tableau du planning gérant — adapter UI (hexagonal, ADR-0008). Trois échelles
-// (jour / semaine / mois), RDV **groupés/colorés par statut** avec légende + filtre.
-// La navigation (vue, période, filtre) pilote les `searchParams` via `<Link>` → un
-// nouveau rendu serveur relit la source de vérité backend (#26). Le **pilotage de
-// statut** (confirmer/refuser/terminer/absent) passe par le Route Handler BFF puis
-// `router.refresh()` ; le backend reste l'arbitre (une transition interdite → `409`
-// traduit en message **neutre**). L'UI ne propose que les actions autorisées par
-// l'état courant (prédicats miroir de la machine à états #25) — sans en inventer.
+// Tableau du planning — adapter UI (hexagonal, ADR-0008), **réutilisable**. Trois
+// échelles (jour / semaine / mois), RDV **groupés/colorés par statut** avec légende
+// + filtre. La navigation (vue, période, filtre) pilote les `searchParams` via
+// `<Link>` (base `basePath`) → un nouveau rendu serveur relit la source de vérité
+// backend. Deux variantes :
+//   - **gérant** (#26, défaut) : le **pilotage de statut** (confirmer/refuser/
+//     terminer/absent) passe par le Route Handler BFF puis `router.refresh()` ; le
+//     backend reste l'arbitre (transition interdite → `409` en message **neutre**).
+//     L'UI ne propose que les actions autorisées par l'état courant (prédicats
+//     miroir de la machine à états #25) — sans en inventer.
+//   - **coiffeur** (#27, `readOnly`) : **consultation seule** de son planning
+//     assigné ; aucune action de statut n'est exposée (frontière écriture #25 non
+//     franchie — voir Non-Goals de la spec). Aucun `salonId` n'est requis.
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -99,21 +104,30 @@ function serviceLabel(count: number): string {
 }
 
 export interface PlanningBoardProps {
-  salonId: string;
   view: PlanningView;
   date: string;
   statuses: AppointmentStatus[];
   appointments: Appointment[];
   today: string;
+  // Base des liens de navigation (vue/période/filtre). Défaut : zone gérant (#26).
+  basePath?: string;
+  // Salon ciblé — requis pour le **pilotage de statut** (gérant). Absent en lecture
+  // seule (coiffeur #27, route d'appartenance sans `salon_id`).
+  salonId?: string;
+  // Variante **lecture seule** (coiffeur #27) : aucune action de statut n'est exposée
+  // (frontière écriture #25 non franchie — voir Non-Goals). Défaut : false (gérant).
+  readOnly?: boolean;
 }
 
 export function PlanningBoard({
-  salonId,
   view,
   date,
   statuses,
   appointments,
   today,
+  basePath = "/gerant/planning",
+  salonId,
+  readOnly = false,
 }: PlanningBoardProps) {
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -133,7 +147,7 @@ export function PlanningBoard({
     params.set("view", next.view ?? view);
     params.set("date", next.date ?? date);
     for (const status of next.statuses ?? statuses) params.append("status", status);
-    return `/gerant/planning?${params.toString()}`;
+    return `${basePath}?${params.toString()}`;
   }
 
   function toggleStatusHref(status: AppointmentStatus): string {
@@ -147,6 +161,9 @@ export function PlanningBoard({
   }
 
   async function onAction(appointmentId: string, status: AppointmentStatus) {
+    // Variante lecture seule (coiffeur #27) ou salon absent : aucune écriture de
+    // statut n'est exposée (frontière écriture #25 non franchie).
+    if (readOnly || !salonId) return;
     setError(null);
     setPendingId(appointmentId);
     try {
@@ -213,6 +230,7 @@ export function PlanningBoard({
           appointments={appointments}
           pendingId={pendingId}
           onAction={onAction}
+          readOnly={readOnly}
         />
       ) : null}
       {view === "week" ? (
@@ -354,10 +372,12 @@ function DayView({
   appointments,
   pendingId,
   onAction,
+  readOnly,
 }: {
   appointments: Appointment[];
   pendingId: string | null;
   onAction: (appointmentId: string, status: AppointmentStatus) => void;
+  readOnly: boolean;
 }) {
   if (appointments.length === 0) {
     return <EmptyState />;
@@ -386,6 +406,7 @@ function DayView({
                 appointment={appointment}
                 pending={pendingId === appointment.id}
                 onAction={onAction}
+                readOnly={readOnly}
               />
             ))}
           </ul>
@@ -399,12 +420,15 @@ function AppointmentCard({
   appointment,
   pending,
   onAction,
+  readOnly,
 }: {
   appointment: Appointment;
   pending: boolean;
   onAction: (appointmentId: string, status: AppointmentStatus) => void;
+  readOnly: boolean;
 }) {
-  const actions = availableActions(appointment.status);
+  // Lecture seule (coiffeur #27) : aucune action de statut n'est proposée.
+  const actions = readOnly ? [] : availableActions(appointment.status);
   return (
     <li className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-4 shadow-soft sm:flex-row sm:items-center sm:justify-between">
       <div className="flex items-start gap-3">

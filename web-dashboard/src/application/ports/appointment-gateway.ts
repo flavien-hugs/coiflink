@@ -48,6 +48,10 @@ export interface AppointmentGateway {
     salonId: string,
     query: ListAppointmentsQuery,
   ): Promise<ListAppointmentsResult>;
+  // Proxifie `GET /appointments/assigned?date_from&date_to&status` (#27) : les RDV
+  // **assignés au coiffeur authentifié** (`hairdresser_id` imposé serveur depuis le
+  // `Principal`, jamais un paramètre). Route d'appartenance : aucun `salonId`.
+  listAssigned(query: ListAppointmentsQuery): Promise<ListAppointmentsResult>;
   // Proxifie `POST /salons/{id}/appointments/{appointmentId}/status` (#25) ; renvoie
   // le RDV mis à jour. Le corps ne porte que `{ status, reason? }`.
   setStatus(

@@ -604,6 +604,37 @@ décide de la transition vers `CANCELLED` — jamais un `status` soumis (anti-é
 Les tests e2e (transition réelle, **créneau libéré**, verrou terminé, audit neutre) **skip proprement**
 sans `DATABASE_URL` (patron `test_appointment_concurrency.py`).
 
+## Planning personnel du coiffeur — lecture assignée (US-3.6, #27)
+
+Le coiffeur **consulte** son planning : les RDV **qui lui sont assignés**, jamais ceux d'un collègue,
+jamais un RDV non assigné, jamais ceux d'un autre salon (§11.2, cœur de l'AC). C'est **avant tout une
+garantie d'autorisation** — la permission `APPOINTMENT_READ_ASSIGNED` (que seul le `HAIRDRESSER` détient)
+est **câblée ici pour la première fois**.
+
+| Méthode | Route | Accès | Réponse | Erreurs |
+| --- | --- | --- | --- | --- |
+| `GET` | `/appointments/assigned?date_from=&date_to=&status=` | `APPOINTMENT_READ_ASSIGNED` (coiffeur) | `200` `list[AppointmentResponse]` (triée par date puis heure) | `401` · `403` (rôle sans la permission) · `422` (dates absentes/mal formées, plage > 42 j, statut hors énumération) |
+
+- **Route d'appartenance** (patron `GET /appointments` client) : **pas** de `salon_id` dans le chemin,
+  **pas** de `require_salon_scope`. Le `hairdresser_id` est **imposé serveur** (`principal.id`), jamais
+  un paramètre (anti-élévation §11.2) ; le dépôt refiltre `hairdresser_id` **en SQL**
+  (`list_for_hairdresser`) — défense en profondeur. Un `CLIENT`/`MANAGER`/`ADMIN` reçoit un `403`
+  générique (deny-by-default) ; **rien** n'est ajouté à `PUBLIC_ROUTE_PATHS`.
+- **Plage bornée** : `date_from`/`date_to` **inclusifs**, amplitude ≤ `MAX_PLANNING_RANGE_DAYS` (42 j,
+  garde de coût §12 réutilisée de #26) ; `date_to < date_from` ou plage trop large → `422`. Filtre
+  `status` **répétable** (absent = tous statuts). Liste **plate triée** — le groupement par statut et la
+  découpe jour/semaine/mois sont un concern d'affichage porté par le web (domaine de planning #26).
+- **Séparation gérant / coiffeur** : la route gérant `GET /salons/{salon_id}/appointments` (#26) reste
+  `APPOINTMENT_READ_SALON` et **n'est pas élargie**. #27 ajoute un **chemin de lecture parallèle**, propre
+  au coiffeur ; aucune règle de portée ni permission n'est modifiée.
+- **Frontière lecture/écriture (⚠ non franchie)** : la route de statut #25 est **salon-scopée**, or un
+  `HAIRDRESSER` détient `APPOINTMENT_UPDATE_STATUS` **et** une portée salon. #27 se limite strictement à
+  la **lecture assignment-scopée** — **aucune** action de statut coiffeur n'est exposée tant que #25
+  n'impose pas `hairdresser_id == principal.id` côté écriture (suivi).
+- **Aucun nouveau schéma** : la lecture s'appuie sur `hairdresser_id`/`appointment_date`/`start_time`/
+  `status` (schéma #3). Les tests e2e Postgres (isolation inter-coiffeurs/inter-salons, RDV non assignés
+  exclus) **skip proprement** sans `DATABASE_URL`.
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

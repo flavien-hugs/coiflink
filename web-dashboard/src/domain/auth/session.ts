@@ -3,7 +3,7 @@
 // contient que les champs de `UserResponse` (#12) utiles à la décision d'accès
 // et à l'affichage (jamais journalisés — PRD §11.3).
 
-import { isManager, type Role } from "./role";
+import { isHairdresser, isManager, type Role } from "./role";
 
 // Statut de compte (désactivation logique — aligné backend `domain/enums.UserStatus`).
 export const USER_STATUSES = ["ACTIVE", "INACTIVE", "SUSPENDED"] as const;
@@ -32,4 +32,12 @@ export type SessionState =
 // réponse de `/auth/me` (source de vérité), qui autorise l'affichage.
 export function canAccessGerant(user: AuthenticatedUser): boolean {
   return isManager(user.role) && user.status === ACTIVE_STATUS;
+}
+
+// Règle d'accès à la zone coiffeur : rôle HAIRDRESSER **et** compte ACTIVE (miroir
+// de `canAccessGerant`, US-3.6 #27). Le coiffeur n'y consulte que **son** planning ;
+// c'est cette règle, appliquée sur la réponse de `/auth/me` (source de vérité), qui
+// autorise l'affichage — la présence d'un jeton ne suffit pas (deny-by-default).
+export function canAccessCoiffeur(user: AuthenticatedUser): boolean {
+  return isHairdresser(user.role) && user.status === ACTIVE_STATUS;
 }

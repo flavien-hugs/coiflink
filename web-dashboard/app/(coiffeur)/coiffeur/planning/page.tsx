@@ -1,21 +1,16 @@
-// Planning du salon (vue calendrier) — adapter entrant + composition root (Server
-// Component, US-3.5 #26). Charge **côté serveur** (jeton du cookie httpOnly, jamais
-// exposé au navigateur, invariant #14) le salon du gérant puis ses RDV sur la
-// période visible :
-//   - aucun salon → invite à créer d'abord le salon (Paramètres, #15) ;
-//   - un salon    → tableau planning (jour/semaine/mois) groupé par statut.
+// Planning personnel du coiffeur (vue calendrier) — adapter entrant + composition
+// root (Server Component, US-3.6 #27). Charge **côté serveur** (jeton du cookie
+// httpOnly, jamais exposé au navigateur, invariant #14) les RDV **assignés au
+// coiffeur authentifié** sur la période visible — `hairdresser_id` imposé serveur
+// (route d'appartenance `GET /appointments/assigned`), **sans** étape « charger le
+// salon » (le coiffeur n'a pas de salon à choisir ; il ne voit que les siens, §11.2).
 // La période et la vue sont pilotées par les `searchParams` (`view`/`date`/`status`)
 // → chaque navigation relit la **source de vérité** backend (nouveau rendu serveur).
-// Le changement de statut passe par un Route Handler BFF puis `router.refresh()`.
-//
-// PRD §7.2 range « Planning » dans **Opérations** : cette page occupe la section
-// déjà déclarée dans `navigation/sections.ts`.
-
-import Link from "next/link";
+// Réutilise le domaine de planning #26 (`rangeForView`, `todayIso`) et le
+// `PlanningBoard` en **variante lecture** (aucune action de statut — Non-Goals #27).
 
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
 import { createHttpAppointmentGateway } from "@/src/adapters/api/http-appointment-gateway";
-import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { PlanningBoard } from "@/src/adapters/ui/planning-board";
 import {
   isAppointmentStatus,
@@ -30,6 +25,8 @@ import {
 } from "@/src/domain/appointment/planning-view";
 
 type SearchParams = Record<string, string | string[] | undefined>;
+
+const BASE_PATH = "/coiffeur/planning";
 
 function parseView(raw: string | string[] | undefined): PlanningView {
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -50,7 +47,7 @@ function parseStatuses(raw: string | string[] | undefined): AppointmentStatus[] 
   return [...seen];
 }
 
-export default async function PlanningPage({
+export default async function CoiffeurPlanningPage({
   searchParams,
 }: {
   searchParams: Promise<SearchParams>;
@@ -61,32 +58,12 @@ export default async function PlanningPage({
   const statuses = parseStatuses(params.status);
 
   const { accessToken } = await createCookieSessionStore().read();
-  const salonsResult = await createHttpSalonGateway({ accessToken }).list();
-
-  if (!salonsResult.ok) {
-    return (
-      <section className="flex flex-col gap-6">
-        <Header />
-        <ErrorPanel />
-      </section>
-    );
-  }
-
-  const salon = salonsResult.salons[0];
-  if (!salon) {
-    return (
-      <section className="flex flex-col gap-6">
-        <Header />
-        <NoSalonPanel />
-      </section>
-    );
-  }
-
   const range = rangeForView(view, date);
-  const result = await createHttpAppointmentGateway({ accessToken }).listForSalon(
-    salon.id,
-    { from: range.from, to: range.to, statuses },
-  );
+  const result = await createHttpAppointmentGateway({ accessToken }).listAssigned({
+    from: range.from,
+    to: range.to,
+    statuses,
+  });
 
   if (!result.ok) {
     return (
@@ -101,8 +78,8 @@ export default async function PlanningPage({
     <section className="flex flex-col gap-6">
       <Header />
       <PlanningBoard
-        basePath="/gerant/planning"
-        salonId={salon.id}
+        basePath={BASE_PATH}
+        readOnly
         view={view}
         date={date}
         statuses={statuses}
@@ -116,9 +93,9 @@ export default async function PlanningPage({
 function Header() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Planning</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">Mon planning</h1>
       <p className="mt-1 text-sm text-muted">
-        Les rendez-vous de votre salon, par jour, semaine ou mois — groupés par statut.
+        Les rendez-vous qui vous sont assignés, par jour, semaine ou mois — groupés par statut.
       </p>
     </div>
   );
@@ -130,25 +107,7 @@ function ErrorPanel() {
       className="rounded-2xl border border-danger/25 bg-danger/10 p-6 text-sm text-danger"
       role="alert"
     >
-      Impossible de charger le planning pour le moment. Veuillez réessayer plus tard.
-    </div>
-  );
-}
-
-function NoSalonPanel() {
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
-      <h2 className="text-lg font-semibold">Créez d&apos;abord votre salon</h2>
-      <p className="mt-1 mb-4 max-w-prose text-sm text-muted">
-        Le planning affiche les rendez-vous d&apos;un salon. Créez votre salon dans les
-        paramètres pour commencer à recevoir des réservations.
-      </p>
-      <Link
-        href="/gerant/parametres"
-        className="inline-flex items-center justify-center rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated"
-      >
-        Aller aux paramètres
-      </Link>
+      Impossible de charger votre planning pour le moment. Veuillez réessayer plus tard.
     </div>
   );
 }

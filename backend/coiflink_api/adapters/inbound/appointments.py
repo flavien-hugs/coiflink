@@ -76,6 +76,7 @@ from coiflink_api.application.appointments import (
     BookingCommand,
     CancelAppointment,
     CheckAvailability,
+    ListAssignedAppointments,
     ListMyAppointments,
     ListSalonAppointments,
     ModifyAppointment,
@@ -456,6 +457,85 @@ def list_my_appointments(
 
     result = ListMyAppointments(appointments).execute(
         principal.id, statuses=CLIENT_MODIFIABLE_STATUSES
+    )
+    return [_appointment_response(appointment) for appointment in result]
+
+
+@router.get(
+    "/appointments/assigned",
+    response_model=list[AppointmentResponse],
+    summary="Lister ses RDV assignés sur une plage (planning coiffeur, §11.2)",
+    responses={
+        200: {
+            "description": (
+                "RDV assignés au coiffeur dans la plage (triés par date puis heure)"
+            )
+        },
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant (lecture réservée au coiffeur assigné)"},
+        422: {
+            "description": (
+                "Dates absentes/mal formées, plage trop large (> 42 j) ou statut hors "
+                "énumération"
+            )
+        },
+    },
+)
+def list_assigned_appointments(
+    appointments: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    principal: Annotated[
+        Principal,
+        Depends(require_permission(Permission.APPOINTMENT_READ_ASSIGNED)),
+    ],
+    date_from: Annotated[
+        datetime.date, Query(description="Premier jour inclus (AAAA-MM-JJ)")
+    ],
+    date_to: Annotated[
+        datetime.date, Query(description="Dernier jour inclus (AAAA-MM-JJ)")
+    ],
+    status_filter: Annotated[
+        list[AppointmentStatus] | None,
+        Query(
+            alias="status",
+            description="Filtrer par statut (répétable) ; absent = tous statuts",
+        ),
+    ] = None,
+) -> list[AppointmentResponse]:
+    """Liste les RDV **assignés au coiffeur authentifié** sur `[date_from, date_to]`.
+
+    Route d'**appartenance** (`require_permission(APPOINTMENT_READ_ASSIGNED)`, câblée
+    ici pour la première fois) : **pas** de `salon_id` dans le chemin, **pas** de
+    `require_salon_scope` — le `hairdresser_id` est **imposé serveur** (`principal.id`),
+    jamais un champ soumis (anti-élévation §11.2), et le dépôt refiltre `hairdresser_id`
+    en SQL (défense en profondeur). Un coiffeur ne lit **jamais** un RDV d'un collègue,
+    un RDV non assigné (`hairdresser_id IS NULL`) ni un RDV d'un autre salon — c'est le
+    cœur de l'AC « il ne voit que les siens ». Aucun oracle d'existence : la réponse est
+    simplement la liste de **ses** RDV (vide si aucun). La plage est **inclusive** et
+    **bornée** (≤ 42 j, garde de coût §12 réutilisant `MAX_PLANNING_RANGE_DAYS`) — au-delà,
+    `422`, comme une date mal formée ou un `status` hors énumération. La réponse est une
+    **liste plate triée** chronologiquement (tous statuts sauf filtre) ; le groupement
+    par statut et la découpe jour/semaine/mois sont portés par le web (domaine #26).
+    Un `CLIENT`/`MANAGER`/`ADMIN` (sans `APPOINTMENT_READ_ASSIGNED`) reçoit un `403`.
+    """
+
+    if date_to < date_from:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La date de fin précède la date de début.",
+        )
+    if (date_to - date_from).days > MAX_PLANNING_RANGE_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La plage de dates demandée est trop large.",
+        )
+
+    statuses = (
+        tuple(item.value for item in status_filter) if status_filter else None
+    )
+    result = ListAssignedAppointments(appointments).execute(
+        principal.id, date_from, date_to, statuses=statuses
     )
     return [_appointment_response(appointment) for appointment in result]
 

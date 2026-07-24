@@ -710,6 +710,37 @@ class ListSalonAppointments:
         )
 
 
+class ListAssignedAppointments:
+    """Liste les RDV **assignés au coiffeur** sur une plage (planning coiffeur, US-3.6 #27).
+
+    Miroir assignment-scopé de `ListSalonAppointments` : **lecture pure** (aucune
+    écriture, aucun audit). L'isolation « il ne voit que les siens » (§11.2) est le
+    cœur de l'AC : le `hairdresser_id` est **imposé par l'adapter entrant** depuis le
+    `Principal` (jamais lu du corps ni du chemin — comme `client_id` pour
+    `ListMyAppointments`), et le dépôt le **ré-affirme en SQL** (`list_for_hairdresser`
+    filtre `hairdresser_id`, défense en profondeur). Un coiffeur ne lit **jamais** un
+    RDV d'un collègue, un RDV non assigné (`hairdresser_id IS NULL`) ni un RDV d'un
+    autre salon. Le **groupement par statut** et la **découpe jour/semaine/mois** sont
+    un concern d'affichage porté par le web (domaine de planning #26 réutilisé) — la
+    route renvoie une liste plate triée chronologiquement (tous statuts sauf filtre).
+    """
+
+    def __init__(self, appointment_repository: AppointmentRepository) -> None:
+        self._appointments = appointment_repository
+
+    def execute(
+        self,
+        hairdresser_id: uuid.UUID,
+        date_from: datetime.date,
+        date_to: datetime.date,
+        *,
+        statuses: tuple[str, ...] | None = None,
+    ) -> tuple[Appointment, ...]:
+        return self._appointments.list_for_hairdresser(
+            hairdresser_id, date_from, date_to, statuses
+        )
+
+
 __all__ = [
     "BookingCommand",
     "CheckAvailability",
@@ -721,4 +752,5 @@ __all__ = [
     "AssignHairdresser",
     "ListMyAppointments",
     "ListSalonAppointments",
+    "ListAssignedAppointments",
 ]

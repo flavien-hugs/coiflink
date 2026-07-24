@@ -74,6 +74,30 @@ export function createHttpAppointmentGateway(
   const salonBase = (salonId: string): string =>
     `${resolveApiBaseUrl()}/salons/${encodeURIComponent(salonId)}/appointments`;
 
+  // Mappe une réponse de lecture (`GET .../appointments`) en résultat de domaine.
+  // Motifs **génériques** (aucune divulgation), identiques pour la lecture gérant
+  // (#26) et coiffeur (#27) — le backend reste autoritatif.
+  const mapListResponse = async (
+    response: Response,
+  ): Promise<ListAppointmentsResult> => {
+    if (response.status === 200) {
+      const payload = (await response.json()) as AppointmentResponsePayload[];
+      return { ok: true, appointments: payload.map(toAppointment) };
+    }
+    if (response.status === 401) return { ok: false, reason: "unauthenticated" };
+    if (response.status === 403) return { ok: false, reason: "forbidden" };
+    if (response.status === 422) return { ok: false, reason: "invalid" };
+    return { ok: false, reason: "unavailable" };
+  };
+
+  const listParams = (query: ListAppointmentsQuery): URLSearchParams => {
+    const params = new URLSearchParams();
+    params.set("date_from", query.from);
+    params.set("date_to", query.to);
+    for (const status of query.statuses ?? []) params.append("status", status);
+    return params;
+  };
+
   return {
     async listForSalon(
       salonId: string,
@@ -83,35 +107,40 @@ export function createHttpAppointmentGateway(
         return { ok: false, reason: "unauthenticated" };
       }
 
-      const params = new URLSearchParams();
-      params.set("date_from", query.from);
-      params.set("date_to", query.to);
-      for (const status of query.statuses ?? []) params.append("status", status);
-
       let response: Response;
       try {
-        response = await fetch(`${salonBase(salonId)}?${params.toString()}`, {
-          headers: { ...authHeader() },
-          cache: "no-store",
-        });
+        response = await fetch(
+          `${salonBase(salonId)}?${listParams(query).toString()}`,
+          { headers: { ...authHeader() }, cache: "no-store" },
+        );
       } catch {
         return { ok: false, reason: "unavailable" };
       }
 
-      if (response.status === 200) {
-        const payload = (await response.json()) as AppointmentResponsePayload[];
-        return { ok: true, appointments: payload.map(toAppointment) };
-      }
-      if (response.status === 401) {
+      return mapListResponse(response);
+    },
+
+    async listAssigned(
+      query: ListAppointmentsQuery,
+    ): Promise<ListAppointmentsResult> {
+      if (!deps.accessToken) {
         return { ok: false, reason: "unauthenticated" };
       }
-      if (response.status === 403) {
-        return { ok: false, reason: "forbidden" };
+
+      // Route d'**appartenance** (#27) : pas de `salonId` — le `hairdresser_id` est
+      // imposé serveur (`principal.id`). Lecture **côté serveur Next**, jeton du
+      // cookie httpOnly (jamais exposé au navigateur ni journalisé, invariant #14).
+      let response: Response;
+      try {
+        response = await fetch(
+          `${resolveApiBaseUrl()}/appointments/assigned?${listParams(query).toString()}`,
+          { headers: { ...authHeader() }, cache: "no-store" },
+        );
+      } catch {
+        return { ok: false, reason: "unavailable" };
       }
-      if (response.status === 422) {
-        return { ok: false, reason: "invalid" };
-      }
-      return { ok: false, reason: "unavailable" };
+
+      return mapListResponse(response);
     },
 
     async setStatus(

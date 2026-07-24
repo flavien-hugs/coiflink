@@ -1,13 +1,30 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
+import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
+import { createHttpAuthGateway } from "@/src/adapters/api/http-auth-gateway";
+import { landingPathForRole } from "@/src/domain/auth/role";
 import { SITE_NAME } from "@/src/domain/site";
 import { SalonIllustrationPanel } from "@/src/adapters/ui/salon-illustration-panel";
 
-// Page d'accueil neutre (publique). Point d'entrée simple vers l'espace gérant :
-// le lien mène à `/gerant`, dont la garde (middleware + layout serveur) redirige
-// vers /login si aucune session valide n'existe. Les zones admin (`/admin`)
-// seront ajoutées ultérieurement (une seule application, zones par rôle).
-export default function Home() {
+// Page d'accueil (publique) **et** aiguillage par rôle après connexion. Si une
+// session valide existe (cookie httpOnly + `/auth/me`, source de vérité), la racine
+// redirige **côté serveur** vers la zone du rôle — `/gerant` pour un gérant,
+// `/coiffeur/planning` pour un coiffeur (#27) — sans « flash » de contenu privé. Un
+// rôle sans surface web dédiée (CLIENT = mobile, ADMIN = zone à venir) ou un visiteur
+// anonyme voit la page marketing. Le backend reste autoritatif : aucun JWT n'est
+// décodé côté front, aucun jeton n'est exposé au navigateur ni journalisé (#14).
+export default async function Home() {
+  const { accessToken } = await createCookieSessionStore().read();
+  if (accessToken) {
+    const result = await createHttpAuthGateway({ accessToken }).getCurrentUser();
+    if (result.status === "authenticated") {
+      const target = landingPathForRole(result.user.role);
+      if (target) redirect(target);
+    }
+    // unauthenticated / unavailable / rôle sans zone → page marketing ci-dessous.
+  }
+
   return (
     <main className="flex min-h-screen flex-1">
       <div className="flex flex-1 items-center justify-center px-6 py-16">

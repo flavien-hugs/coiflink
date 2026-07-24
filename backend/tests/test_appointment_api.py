@@ -1881,3 +1881,292 @@ class TestListSalonAppointmentsAPI:
         data = resp.json()
         assert len(data) == 2
         assert data[0]["start_time"] <= data[1]["start_time"]
+
+
+# ---------------------------------------------------------------------------
+# GET /appointments/assigned — planning coiffeur (US-3.6, #27)
+# ---------------------------------------------------------------------------
+
+_ASSIGNED_APPT_ID = uuid.UUID("ffffffff-0000-0000-0000-000000000001")
+_ASSIGNED_APPT_ID_2 = uuid.UUID("ffffffff-0000-0000-0000-000000000002")
+_OTHER_HAIRDRESSER_USER_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
+
+
+def _make_assigned_entity(
+    *,
+    appt_id: uuid.UUID = _ASSIGNED_APPT_ID,
+    hairdresser_id: uuid.UUID | None = _HAIRDRESSER_USER_ID,
+    status: str = "PENDING",
+    date: datetime.date = datetime.date(2026, 8, 3),
+    start_time: datetime.time = datetime.time(9, 0),
+) -> AppointmentEntity:
+    return AppointmentEntity(
+        id=appt_id,
+        salon_id=_SALON_ID,
+        client_id=_CLIENT_ID,
+        hairdresser_id=hairdresser_id,
+        date=date,
+        start_time=start_time,
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT,
+        services=(
+            BookedServiceEntity(
+                service_id=_SERVICE_ID,
+                price_at_booking=decimal.Decimal("5000.00"),
+            ),
+        ),
+    )
+
+
+class TestListAssignedAppointmentsAPI:
+    """Tests HTTP pour GET /appointments/assigned (US-3.6, #27).
+
+    Couvre : 200 liste vide et peuplée ; isolation (hairdresser_id depuis principal, §11.2) ;
+    filtre statut simple et multiple ; 401 sans jeton ; 403 CLIENT/MANAGER/ADMIN ;
+    422 param manquant, plage inversée, plage > 42 jours, statut invalide ;
+    200 à exactement 42 jours (borne incluse) ; tri chronologique ;
+    invariant deny-by-default (route absente de PUBLIC_ROUTE_PATHS).
+    """
+
+    _URL = "/appointments/assigned"
+
+    def _params(
+        self, *, date_from: str = "2026-08-01", date_to: str = "2026-08-07"
+    ) -> dict:
+        return {"date_from": date_from, "date_to": date_to}
+
+    # --- Résultats 200 -------------------------------------------------------
+
+    def test_empty_returns_200_empty_list(self) -> None:
+        resp = _client().get(
+            self._URL,
+            params=self._params(),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_returns_assigned_appointments(self) -> None:
+        appt = _make_assigned_entity()
+        appts = FakeAppointmentRepository(appointments=[appt])
+        resp = _client(appts=appts).get(
+            self._URL,
+            params=self._params(),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["id"] == str(_ASSIGNED_APPT_ID)
+
+    # --- Isolation §11.2 : hairdresser_id imposé par principal.id -----------
+
+    def test_other_hairdresser_appointments_excluded(self) -> None:
+        other_appt = _make_assigned_entity(
+            appt_id=_ASSIGNED_APPT_ID,
+            hairdresser_id=_OTHER_HAIRDRESSER_USER_ID,
+        )
+        appts = FakeAppointmentRepository(appointments=[other_appt])
+        resp = _client(appts=appts).get(
+            self._URL,
+            params=self._params(),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_unassigned_appointments_excluded(self) -> None:
+        unassigned = _make_assigned_entity(
+            appt_id=_ASSIGNED_APPT_ID, hairdresser_id=None
+        )
+        appts = FakeAppointmentRepository(appointments=[unassigned])
+        resp = _client(appts=appts).get(
+            self._URL,
+            params=self._params(),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    # --- Filtre statut -------------------------------------------------------
+
+    def test_status_filter_single_returns_only_matching(self) -> None:
+        pending = _make_assigned_entity(appt_id=_ASSIGNED_APPT_ID, status="PENDING")
+        confirmed = _make_assigned_entity(appt_id=_ASSIGNED_APPT_ID_2, status="CONFIRMED")
+        appts = FakeAppointmentRepository(appointments=[pending, confirmed])
+        resp = _client(appts=appts).get(
+            self._URL,
+            params={**self._params(), "status": "CONFIRMED"},
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["status"] == "CONFIRMED"
+
+    def test_status_filter_multi_repeatable_param(self) -> None:
+        pending = _make_assigned_entity(appt_id=_ASSIGNED_APPT_ID, status="PENDING")
+        confirmed = _make_assigned_entity(appt_id=_ASSIGNED_APPT_ID_2, status="CONFIRMED")
+        appts = FakeAppointmentRepository(appointments=[pending, confirmed])
+        resp = _client(appts=appts).get(
+            self._URL,
+            params=[
+                ("date_from", "2026-08-01"),
+                ("date_to", "2026-08-07"),
+                ("status", "PENDING"),
+                ("status", "CONFIRMED"),
+            ],
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
+
+    def test_no_status_filter_returns_all_statuses(self) -> None:
+        pending = _make_assigned_entity(appt_id=_ASSIGNED_APPT_ID, status="PENDING")
+        confirmed = _make_assigned_entity(appt_id=_ASSIGNED_APPT_ID_2, status="CONFIRMED")
+        appts = FakeAppointmentRepository(appointments=[pending, confirmed])
+        resp = _client(appts=appts).get(
+            self._URL,
+            params=self._params(),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
+
+    # --- Auth / RBAC ---------------------------------------------------------
+
+    def test_no_token_returns_401(self) -> None:
+        resp = _client().get(self._URL, params=self._params())
+        assert resp.status_code == 401
+
+    def test_client_role_returns_403(self) -> None:
+        resp = _client().get(
+            self._URL,
+            params=self._params(),
+            headers=_auth_header(role="CLIENT"),
+        )
+        assert resp.status_code == 403
+
+    def test_manager_role_returns_403(self) -> None:
+        resp = _client().get(
+            self._URL,
+            params=self._params(),
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 403
+
+    def test_admin_role_returns_403(self) -> None:
+        resp = _client().get(
+            self._URL,
+            params=self._params(),
+            headers=_auth_header(role="ADMIN"),
+        )
+        assert resp.status_code == 403
+
+    # --- Validation 422 ------------------------------------------------------
+
+    def test_missing_date_from_returns_422(self) -> None:
+        resp = _client().get(
+            self._URL,
+            params={"date_to": "2026-08-07"},
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 422
+
+    def test_missing_date_to_returns_422(self) -> None:
+        resp = _client().get(
+            self._URL,
+            params={"date_from": "2026-08-01"},
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 422
+
+    def test_date_to_before_date_from_returns_422(self) -> None:
+        resp = _client().get(
+            self._URL,
+            params=self._params(date_from="2026-08-07", date_to="2026-08-01"),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 422
+
+    def test_range_exactly_42_days_returns_200(self) -> None:
+        # (2026-02-12 - 2026-01-01).days == 42 → borne incluse → 200.
+        resp = _client().get(
+            self._URL,
+            params=self._params(date_from="2026-01-01", date_to="2026-02-12"),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 200
+
+    def test_range_over_42_days_returns_422(self) -> None:
+        # (2026-02-13 - 2026-01-01).days == 43 → dépasse la limite → 422.
+        resp = _client().get(
+            self._URL,
+            params=self._params(date_from="2026-01-01", date_to="2026-02-13"),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 422
+
+    def test_invalid_date_format_returns_422(self) -> None:
+        resp = _client().get(
+            self._URL,
+            params=self._params(date_from="not-a-date"),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 422
+
+    def test_invalid_status_value_returns_422(self) -> None:
+        resp = _client().get(
+            self._URL,
+            params={**self._params(), "status": "INVALID_STATUS"},
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 422
+
+    # --- Forme de la réponse -------------------------------------------------
+
+    def test_response_fields_match_schema(self) -> None:
+        appt = _make_assigned_entity()
+        appts = FakeAppointmentRepository(appointments=[appt])
+        resp = _client(appts=appts).get(
+            self._URL,
+            params=self._params(),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 200
+        item = resp.json()[0]
+        for field in (
+            "id", "salon_id", "client_id", "hairdresser_id",
+            "status", "date", "start_time", "end_time", "services",
+        ):
+            assert field in item
+
+    def test_results_sorted_by_start_time(self) -> None:
+        later = _make_assigned_entity(
+            appt_id=_ASSIGNED_APPT_ID,
+            date=datetime.date(2026, 8, 3),
+            start_time=datetime.time(11, 0),
+        )
+        earlier = _make_assigned_entity(
+            appt_id=_ASSIGNED_APPT_ID_2,
+            date=datetime.date(2026, 8, 3),
+            start_time=datetime.time(9, 0),
+        )
+        appts = FakeAppointmentRepository(appointments=[later, earlier])
+        resp = _client(appts=appts).get(
+            self._URL,
+            params=self._params(),
+            headers=_auth_header(role="HAIRDRESSER"),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert data[0]["start_time"] <= data[1]["start_time"]
+
+    # --- Invariant deny-by-default -------------------------------------------
+
+    def test_assigned_route_absent_from_public_route_paths(self) -> None:
+        from coiflink_api.adapters.inbound.security import PUBLIC_ROUTE_PATHS
+        assert "/appointments/assigned" not in PUBLIC_ROUTE_PATHS

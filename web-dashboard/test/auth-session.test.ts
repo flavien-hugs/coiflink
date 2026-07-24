@@ -4,8 +4,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { displayRoleLabel, isManager } from "../src/domain/auth/role";
-import { canAccessGerant, type AuthenticatedUser } from "../src/domain/auth/session";
+import { displayRoleLabel, isHairdresser, isManager } from "../src/domain/auth/role";
+import { canAccessCoiffeur, canAccessGerant, type AuthenticatedUser } from "../src/domain/auth/session";
 
 function makeUser(
   role: AuthenticatedUser["role"],
@@ -68,5 +68,49 @@ describe("canAccessGerant", () => {
 
   it("retourne false pour ADMIN avec statut INACTIVE (mauvais rôle et inactif)", () => {
     expect(canAccessGerant(makeUser("ADMIN", "INACTIVE"))).toBe(false);
+  });
+});
+
+describe("isHairdresser", () => {
+  it("retourne true pour le rôle HAIRDRESSER", () => {
+    expect(isHairdresser("HAIRDRESSER")).toBe(true);
+  });
+
+  it("retourne false pour MANAGER", () => {
+    expect(isHairdresser("MANAGER")).toBe(false);
+  });
+
+  it("retourne false pour CLIENT", () => {
+    expect(isHairdresser("CLIENT")).toBe(false);
+  });
+
+  it("retourne false pour ADMIN", () => {
+    expect(isHairdresser("ADMIN")).toBe(false);
+  });
+});
+
+describe("canAccessCoiffeur", () => {
+  it("retourne true pour HAIRDRESSER avec statut ACTIVE", () => {
+    expect(canAccessCoiffeur(makeUser("HAIRDRESSER", "ACTIVE"))).toBe(true);
+  });
+
+  it("retourne false pour HAIRDRESSER avec statut INACTIVE (compte désactivé)", () => {
+    expect(canAccessCoiffeur(makeUser("HAIRDRESSER", "INACTIVE"))).toBe(false);
+  });
+
+  it("retourne false pour HAIRDRESSER avec statut SUSPENDED", () => {
+    expect(canAccessCoiffeur(makeUser("HAIRDRESSER", "SUSPENDED"))).toBe(false);
+  });
+
+  it("retourne false pour MANAGER avec statut ACTIVE (mauvais rôle)", () => {
+    expect(canAccessCoiffeur(makeUser("MANAGER", "ACTIVE"))).toBe(false);
+  });
+
+  it("retourne false pour CLIENT avec statut ACTIVE (mauvais rôle)", () => {
+    expect(canAccessCoiffeur(makeUser("CLIENT", "ACTIVE"))).toBe(false);
+  });
+
+  it("retourne false pour ADMIN avec statut ACTIVE (mauvais rôle)", () => {
+    expect(canAccessCoiffeur(makeUser("ADMIN", "ACTIVE"))).toBe(false);
   });
 });
