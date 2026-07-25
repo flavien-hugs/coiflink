@@ -993,9 +993,78 @@ class FakeAppointmentRepository:
         return tuple(result)
 
 
+class FakeCustomerRepository:
+    """Dépôt de fiches clients en mémoire (US-4.1, #28).
+
+    Implémente le port `CustomerRepository` sans I/O réelle. Isolation §11.2 :
+    `find_by_id`, `list_for_salon`, `count_for_salon` et `phone_exists` filtrent
+    sur `salon_id` — une fiche d'un autre salon est indiscernable d'une fiche
+    inexistante, et le même téléphone reste acceptable dans **un autre** salon.
+
+    `raise_conflict=True` simule la **course concurrente** : `create` lève
+    `CustomerAlreadyExists` (le filet base derrière le pré-contrôle applicatif).
+    """
+
+    def __init__(self, *, raise_conflict: bool = False) -> None:
+        self._customers: dict[uuid.UUID, object] = {}
+        self.created: list = []
+        self.raise_conflict = raise_conflict
+
+    def create(self, customer):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.customer import Customer
+        from coiflink_api.domain.errors import CustomerAlreadyExists
+
+        if self.raise_conflict:
+            raise CustomerAlreadyExists(
+                "Une fiche existe déjà pour ce numéro dans ce salon."
+            )
+        entity = Customer(
+            id=uuid.uuid4(),
+            salon_id=customer.salon_id,
+            full_name=customer.full_name,
+            phone=customer.phone,
+            gender=customer.gender,
+            notes=customer.notes,
+            last_visit_at=None,
+            total_visits=0,
+            created_at=_CREATED_AT,
+            updated_at=_CREATED_AT,
+        )
+        self._customers[entity.id] = entity
+        self.created.append(customer)
+        return entity
+
+    def find_by_id(self, salon_id: uuid.UUID, customer_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        customer = self._customers.get(customer_id)
+        if customer is None or customer.salon_id != salon_id:  # type: ignore[union-attr]
+            return None
+        return customer
+
+    def _for_salon(self, salon_id: uuid.UUID) -> list:
+        return [
+            c
+            for c in self._customers.values()
+            if c.salon_id == salon_id  # type: ignore[union-attr]
+        ]
+
+    def list_for_salon(self, salon_id: uuid.UUID, *, limit: int, offset: int):  # type: ignore[no-untyped-def]
+        return tuple(self._for_salon(salon_id)[offset : offset + limit])
+
+    def count_for_salon(self, salon_id: uuid.UUID) -> int:
+        return len(self._for_salon(salon_id))
+
+    def phone_exists(self, salon_id: uuid.UUID, phone: str) -> bool:
+        return any(c.phone == phone for c in self._for_salon(salon_id))  # type: ignore[union-attr]
+
+
 @pytest.fixture()
 def fake_service_repository() -> "FakeServiceRepository":
     return FakeServiceRepository()
+
+
+@pytest.fixture()
+def fake_customer_repository() -> "FakeCustomerRepository":
+    return FakeCustomerRepository()
 
 
 @pytest.fixture()

@@ -1,0 +1,171 @@
+"""Cas d'usage : **gestion des fiches clients d'un salon** (US-4.1, #28).
+
+Tranche applicative hexagonale calquée sur #17 : ces cas d'usage ne dépendent que
+de **ports** (`CustomerRepository`, `AuditLog`) — aucune dépendance
+FastAPI/SQLAlchemy. Ils orchestrent le domaine (`domain/customer.py`,
+`domain/audit.py`) et laissent l'adapter entrant traduire les erreurs en HTTP.
+
+Trois invariants structurants :
+
+- **`salon_id` imposé par la portée** : le salon d'une fiche provient toujours de
+  la portée validée (`require_salon_scope`), passé en argument d'`execute` ; il
+  n'est **jamais** lu du corps de requête (garde-fou anti-élévation).
+- **Journalisation §11.4/§11.3 dans la même unité de travail** : la création
+  enregistre une `AuditEntry` via le port `AuditLog`, dans la **même `Session`**
+  que l'écriture métier — commit/rollback atomique. Créer une fiche est une
+  **collecte de données personnelles** : c'est un « accès sensible » au sens du
+  PRD §11.3, d'où la trace.
+- **Aucune PII journalisée** : `metadata` est **vide**. Ni le nom, ni le
+  téléphone, ni le genre, ni les notes n'entrent au journal d'audit.
+
+Le cas d'usage n'interroge **jamais** la table `users` par téléphone (ni pour
+rattacher un `user_id`, ni pour suggérer un compte) : ce serait offrir au gérant
+un **oracle d'existence de compte** (§11.1/§11.3, ADR-0026). Les fiches créées
+ici sont des fiches **walk-in** (`user_id = NULL`).
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+
+from coiflink_api.application.ports.audit_log import AuditLog
+from coiflink_api.application.ports.customer_repository import CustomerRepository
+from coiflink_api.domain.audit import ENTITY_TYPE_CUSTOMER, AuditAction, AuditEntry
+from coiflink_api.domain.customer import (
+    Customer,
+    CustomerToCreate,
+    normalize_customer_phone,
+    normalize_gender,
+    normalize_notes,
+    validate_customer_name,
+)
+from coiflink_api.domain.errors import CustomerAlreadyExists, CustomerNotFound
+
+
+@dataclass(frozen=True)
+class CustomerCommand:
+    """Champs saisissables d'une fiche client (US-4.1 : « nom, téléphone, genre
+    optionnel, notes internes »).
+
+    Ni `salon_id`, ni `id`, ni `user_id`, ni `total_visits`/`last_visit_at` : le
+    salon vient de la portée, l'identité est générée, le rattachement à un compte
+    est hors périmètre (#28 crée des fiches walk-in) et les compteurs de visites
+    sont alimentés par #29. Seul `full_name` est **obligatoire**.
+    """
+
+    full_name: str
+    phone: str | None = None
+    gender: str | None = None
+    notes: str | None = None
+
+
+def _validate(command: CustomerCommand) -> tuple[str, str | None, str | None, str | None]:
+    """Valide la commande (nom → téléphone → genre → notes) ; retourne les champs normalisés.
+
+    La validation précède **toute** écriture (aucun appel au dépôt si un champ est
+    invalide, donc aucune fiche ni aucune trace d'audit). L'ordre est stable pour
+    des messages d'erreur déterministes.
+    """
+
+    full_name = validate_customer_name(command.full_name)
+    phone = normalize_customer_phone(command.phone)
+    gender = normalize_gender(command.gender)
+    notes = normalize_notes(command.notes)
+    return full_name, phone, gender, notes
+
+
+class CreateCustomer:
+    """Crée une fiche client rattachée au salon de la portée et journalise (§11.4)."""
+
+    def __init__(self, repository: CustomerRepository, audit_log: AuditLog) -> None:
+        self._repository = repository
+        self._audit_log = audit_log
+
+    def execute(
+        self,
+        salon_id: uuid.UUID,
+        command: CustomerCommand,
+        *,
+        actor_user_id: uuid.UUID,
+    ) -> Customer:
+        """Valide, refuse le doublon de téléphone, persiste, puis journalise.
+
+        Séquence : validation domaine → pré-contrôle d'unicité `(salon_id, phone)`
+        → `repository.create(...)` → `audit.record(CUSTOMER_CREATED)`. Le
+        `salon_id` provient de la portée validée. Le pré-contrôle produit un `409`
+        explicite dans le cas nominal ; en concurrence, c'est l'index unique base
+        qui tranche (le dépôt retraduit alors l'`IntegrityError` en
+        `CustomerAlreadyExists`).
+        """
+
+        full_name, phone, gender, notes = _validate(command)
+
+        if phone is not None and self._repository.phone_exists(salon_id, phone):
+            # Message **neutre** : il ne rappelle jamais le numéro soumis (§11.3).
+            raise CustomerAlreadyExists(
+                "Une fiche existe déjà pour ce numéro dans ce salon."
+            )
+
+        customer = self._repository.create(
+            CustomerToCreate(
+                salon_id=salon_id,
+                full_name=full_name,
+                phone=phone,
+                gender=gender,
+                notes=notes,
+            )
+        )
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.CUSTOMER_CREATED.value,
+                actor_user_id=actor_user_id,
+                salon_id=salon_id,
+                entity_type=ENTITY_TYPE_CUSTOMER,
+                entity_id=customer.id,
+                # `metadata` **vide** : aucune PII au journal (§11.3/§11.4).
+                metadata={},
+            )
+        )
+        return customer
+
+
+class ListSalonCustomers:
+    """Liste paginée des fiches d'un salon (lecture — pas d'audit)."""
+
+    def __init__(self, repository: CustomerRepository) -> None:
+        self._repository = repository
+
+    def execute(
+        self, salon_id: uuid.UUID, *, limit: int, offset: int
+    ) -> tuple[tuple[Customer, ...], int]:
+        """Retourne `(page, total)` — les plus récentes d'abord.
+
+        Le total accompagne la page pour permettre une pagination correcte côté
+        interface sans seconde requête.
+        """
+
+        page = self._repository.list_for_salon(salon_id, limit=limit, offset=offset)
+        total = self._repository.count_for_salon(salon_id)
+        return page, total
+
+
+class GetCustomer:
+    """Consulte une fiche dans le périmètre du salon (lecture — pas d'audit)."""
+
+    def __init__(self, repository: CustomerRepository) -> None:
+        self._repository = repository
+
+    def execute(self, salon_id: uuid.UUID, customer_id: uuid.UUID) -> Customer:
+        customer = self._repository.find_by_id(salon_id, customer_id)
+        if customer is None:
+            raise CustomerNotFound("Fiche client introuvable.")
+        return customer
+
+
+__all__ = [
+    "CustomerCommand",
+    "CreateCustomer",
+    "ListSalonCustomers",
+    "GetCustomer",
+]

@@ -252,8 +252,15 @@ client** est livré (#22, **M3 en cours**, voir [ADR-0024](./docs/adr/0024-reser
 créneau → commentaire → confirmation) consommant les endpoints #21 — sans modifier le backend. La
 couche d'authentification cliente minimale (`POST /auth/login`, `TokenStore` en mémoire au MVP) est
 livrée dans ce même périmètre ; statut initial **« En attente »** affiché depuis la réponse du `POST`.
-L'historique « Mes rendez-vous », la modification/annulation (#23/#24) et le planning salon/coiffeur
-(#25–#27) restent à venir.
+L'historique « Mes rendez-vous », la modification et l'annulation côté client (#23/#24), le cycle de
+statuts gérant (#25) et le planning salon/coiffeur (#26/#27) sont livrés — **M3 achevé**. **M4 est
+amorcé** avec la **création d'une fiche client** (#28, voir
+[ADR-0026](./docs/adr/0026-fiche-client-portee-salon.md)) : le gérant crée une fiche rattachée à son
+salon (nom, téléphone optionnel normalisé E.164, genre optionnel, notes internes) via
+`POST /salons/{salon_id}/customers` — permission `CUSTOMER_MANAGE`, **isolation par salon** (§11.2),
+unicité du téléphone **dans le salon** garantie en base, création **journalisée** (§11.4/§11.3) sans
+aucune PII au journal ; la section **Clients** du dashboard gérant est ouverte. L'historique des
+visites (#29), les statistiques par client (#31) et l'encaissement (#33+) restent à venir.
 
 ---
 

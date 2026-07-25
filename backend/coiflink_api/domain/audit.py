@@ -33,6 +33,9 @@ ENTITY_TYPE_SALON = "salon"
 # Type d'entité journalisée pour les rendez-vous (§11.4 « Modification rendez-vous »).
 ENTITY_TYPE_APPOINTMENT = "appointment"
 
+# Type d'entité journalisée pour les fiches clients (§11.3 « accès sensibles »).
+ENTITY_TYPE_CUSTOMER = "customer"
+
 
 @unique
 class AuditAction(_StrEnum):
@@ -62,6 +65,12 @@ class AuditAction(_StrEnum):
     APPOINTMENT_STATUS_CHANGED = "APPOINTMENT_STATUS_CHANGED"
     APPOINTMENT_HAIRDRESSER_ASSIGNED = "APPOINTMENT_HAIRDRESSER_ASSIGNED"
 
+    # Fiche client — #28 (US-4.1). Journalisée au titre de §11.3 (« journalisation
+    # des accès sensibles ») : créer une fiche est une **collecte de données
+    # personnelles**. L'entrée reste **neutre** — `metadata` est vide : ni nom, ni
+    # téléphone, ni genre, ni note n'entre au journal.
+    CUSTOMER_CREATED = "CUSTOMER_CREATED"
+
 
 @dataclass(frozen=True)
 class AuditEntry:
@@ -87,6 +96,7 @@ __all__ = [
     "ENTITY_TYPE_SERVICE",
     "ENTITY_TYPE_SALON",
     "ENTITY_TYPE_APPOINTMENT",
+    "ENTITY_TYPE_CUSTOMER",
     "AuditAction",
     "AuditEntry",
 ]

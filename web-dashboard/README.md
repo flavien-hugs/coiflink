@@ -44,6 +44,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `/gerant/parametres` | **protégée** | `MANAGER` — création/consultation du salon (#15) |
 | `/gerant/prestations` | **protégée** | `MANAGER` — catalogue et gestion des prestations (#17) |
 | `/gerant/planning` | **protégée** | `MANAGER` — planning du salon, jour/semaine/mois (#26) |
+| `/gerant/clients` | **protégée** | `MANAGER` — fichier client du salon, création de fiche (#28) |
 | `/coiffeur/planning` | **protégée** | `HAIRDRESSER` actif — **son** planning assigné, lecture seule (#27) |
 | `POST /api/auth/login` | interne (BFF) | proxifie `POST /auth/login`, pose les cookies httpOnly |
 | `POST /api/auth/logout` | interne (BFF) | efface les cookies de session |
@@ -54,6 +55,8 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `POST /api/salons/[id]/services` | interne (BFF) | proxifie `POST /salons/{id}/services` (création, #17) |
 | `PUT /api/salons/[id]/services/[serviceId]` | interne (BFF) | proxifie `PUT /salons/{id}/services/{id}` (modification journalisée, #17) |
 | `DELETE /api/salons/[id]/services/[serviceId]` | interne (BFF) | proxifie `DELETE …` (désactivation soft-delete, #17) |
+| `GET /api/salons/[id]/customers` | interne (BFF) | proxifie `GET /salons/{id}/customers` (fiches du salon, #28) |
+| `POST /api/salons/[id]/customers` | interne (BFF) | proxifie `POST /salons/{id}/customers` (création de fiche, #28) |
 
 `/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
 publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
@@ -117,6 +120,24 @@ plus 2 décimales, durée entière `> 0` ≤ 24 h, nom non vide) avant d'être p
 `POST/PUT /api/salons/[id]/services[/serviceId]` et `DELETE …` (désactivation). Le **backend reste
 l'autorité** ; la modification et la désactivation y sont **journalisées §11.4**. Le catalogue **client
 public** (#18/#19) et la **réservation** (#21+) restent hors périmètre.
+
+### Clients — fiches du salon (#28)
+
+La section **Clients** (`/gerant/clients`, Server Component) est **disponible** depuis #28. Elle charge
+**côté serveur** (jeton du cookie httpOnly, jamais exposé, invariant #14) le salon du gérant puis ses
+fiches : sans salon, elle invite à en créer un d'abord (Paramètres) ; sinon elle affiche le **fichier
+client** (`CustomerList` — recherche locale sur nom/téléphone/notes) et un **drawer de création**
+(`CustomerForm`).
+
+La saisie (nom, téléphone, genre, notes internes) est **validée côté client** (`validateCustomer`,
+`src/domain/customer/customer.ts` — **parité** avec `domain/customer.py` : nom requis ≤ 255, téléphone
+optionnel, genre ∈ `FEMALE|MALE|OTHER` ou non renseigné, notes ≤ 2000) avant d'être postée au Route
+Handler BFF `POST /api/salons/[id]/customers` ; après succès, `router.refresh()`. Le **backend reste
+l'autorité** : il normalise le téléphone en E.164, refuse un doublon de numéro **dans le salon**
+(`409` → message neutre « Une fiche existe déjà pour ce numéro dans ce salon. ») et **journalise** la
+création (§11.4/§11.3). Les **notes internes** sont annoncées comme « visible uniquement par le salon »
+et ne sortent jamais de cette vue gérant (PRD §11.3). L'historique des visites (#29), la note privée
+éditable (#32) et les statistiques (#31) restent hors périmètre.
 
 ### Zone coiffeur — Mon planning (#27)
 

@@ -67,6 +67,20 @@ class AppointmentStatus(_StrEnum):
 
 
 @unique
+class Gender(_StrEnum):
+    """Genre d'une fiche client (US-4.1, #28) — **optionnel** : `NULL` = non renseigné.
+
+    Le PRD ne fixe aucune liste : trois valeurs neutres suffisent au besoin
+    (« genre optionnel »). Aucune valeur `UNSPECIFIED` — l'absence est portée par
+    `NULL` en base, pour n'avoir **qu'une** représentation du « non renseigné ».
+    """
+
+    FEMALE = "FEMALE"
+    MALE = "MALE"
+    OTHER = "OTHER"
+
+
+@unique
 class PaymentMethod(_StrEnum):
     """Modes de paiement MVP (PRD §9.6)."""
 
@@ -142,6 +156,7 @@ __all__ = [
     "UserStatus",
     "SalonStatus",
     "AppointmentStatus",
+    "Gender",
     "PaymentMethod",
     "PaymentStatus",
     "CashOperationType",
