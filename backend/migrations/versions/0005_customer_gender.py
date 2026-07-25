@@ -71,5 +71,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("uq_customer_profiles_salon_phone", table_name="customer_profiles")
-    op.drop_constraint("gender", "customer_profiles", type_="check")
+    op.drop_constraint("ck_customer_profiles_gender", "customer_profiles", type_="check")
     op.drop_column("customer_profiles", "gender")
