@@ -29,9 +29,11 @@ de rupture** : aucune ligne n'existe en pratique (aucun writer avant #28).
 Aucun secret ni aucune donnée personnelle (PII) n'apparaît dans ce fichier.
 
 - `upgrade()`   : `ADD COLUMN gender` → `CHECK` → index unique partiel.
-- `downgrade()` : index → `CHECK` (nom court « gender », expansé par la convention
-                  en `ck_customer_profiles_gender`) → colonne (réversion complète,
-                  exigée par le round-trip Alembic de la CI).
+- `downgrade()` : index → `CHECK` (nom complet `ck_customer_profiles_gender`,
+                  tel que stocké en base après expansion par la convention) →
+                  colonne (réversion complète, exigée par le round-trip Alembic
+                  de la CI). `op.drop_constraint` n'applique pas la convention
+                  de nommage : le nom fourni doit être le nom réel en base.
 """
 
 from __future__ import annotations
@@ -72,5 +74,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("uq_customer_profiles_salon_phone", table_name="customer_profiles")
-    op.drop_constraint("gender", "customer_profiles", type_="check")
+    op.drop_constraint("ck_customer_profiles_gender", "customer_profiles", type_="check")
     op.drop_column("customer_profiles", "gender")
