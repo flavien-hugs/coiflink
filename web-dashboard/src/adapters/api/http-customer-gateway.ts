@@ -13,10 +13,12 @@ import type {
   CustomerGateway,
   CustomerHistoryResult,
   CustomerListOptions,
+  CustomerStatsResult,
   GetCustomerResult,
   ListCustomersResult,
 } from "@/src/application/ports/customer-gateway";
 import type { Customer, CustomerInput } from "@/src/domain/customer/customer";
+import type { CustomerServiceStats } from "@/src/domain/customer/stats";
 import type { VisitHistory } from "@/src/domain/customer/visit";
 import { resolveApiBaseUrl } from "./config";
 
@@ -105,6 +107,40 @@ function toHistory(payload: CustomerHistoryPayload): VisitHistory {
     totalVisits: payload.total_visits,
     lastVisitAt: payload.last_visit_at,
     totalAmount: payload.total_amount,
+    currency: payload.currency,
+  };
+}
+
+// Forme du corps `CustomerServiceStatsResponse` renvoyé par le backend (#31).
+// `client_id`/`user_id` ne sont **pas** exposés (anti-oracle ADR-0026).
+interface ServiceFrequencyPayload {
+  service_id: string;
+  name: string;
+  count: number;
+  total_amount: string;
+}
+
+interface CustomerStatsPayload {
+  customer_id: string;
+  services: ServiceFrequencyPayload[];
+  total_visits: number;
+  total_services: number;
+  currency: string;
+}
+
+// Projette la réponse backend (snake_case) sur le read model de domaine (camelCase).
+// L'ordre du classement est préservé tel quel : le backend est l'autorité du tri.
+function toStats(payload: CustomerStatsPayload): CustomerServiceStats {
+  return {
+    customerId: payload.customer_id,
+    services: payload.services.map((service) => ({
+      serviceId: service.service_id,
+      name: service.name,
+      count: service.count,
+      totalAmount: service.total_amount,
+    })),
+    totalVisits: payload.total_visits,
+    totalServices: payload.total_services,
     currency: payload.currency,
   };
 }
@@ -271,6 +307,40 @@ export function createHttpCustomerGateway(
       if (response.status === 200) {
         const payload = (await response.json()) as CustomerHistoryPayload;
         return { ok: true, history: toHistory(payload) };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "not-found" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async stats(
+      salonId: string,
+      customerId: string,
+    ): Promise<CustomerStatsResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `${customersUrl(salonId)}/${encodeURIComponent(customerId)}/stats`,
+          { headers: { ...authHeader() }, cache: "no-store" },
+        );
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as CustomerStatsPayload;
+        return { ok: true, stats: toStats(payload) };
       }
       if (response.status === 401) {
         return { ok: false, reason: "unauthenticated" };

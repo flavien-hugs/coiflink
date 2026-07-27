@@ -1,6 +1,6 @@
 // Tests unitaires — adapter `http-customer-gateway` (fetch mocké, aucun réseau réel).
-// Couvre `list`, `create`, `get` : mapping des statuts HTTP → résultats de domaine,
-// présence de l'en-tête Authorization, comportement sans jeton, projection
+// Couvre `list`, `create`, `get`, `stats` : mapping des statuts HTTP → résultats de
+// domaine, présence de l'en-tête Authorization, comportement sans jeton, projection
 // snake_case → camelCase, absence de fuite du jeton dans les résultats.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -424,5 +424,207 @@ describe("createHttpCustomerGateway().get() — codes de statut", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stats() — prestations préférées (US-4.3, #31)
+// ---------------------------------------------------------------------------
+
+const FAKE_STATS_PAYLOAD = {
+  customer_id: CUSTOMER_ID,
+  services: [
+    {
+      service_id: "service-uuid-001",
+      name: "Coupe homme",
+      count: 3,
+      total_amount: "15000.00",
+    },
+    {
+      service_id: "service-uuid-002",
+      name: "Barbe",
+      count: 1,
+      total_amount: "2000.00",
+    },
+  ],
+  total_visits: 2,
+  total_services: 4,
+  currency: "XOF",
+};
+
+describe("createHttpCustomerGateway().stats() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpCustomerGateway({ accessToken: null }).stats(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accessToken undefined → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpCustomerGateway({}).stats(SALON_ID, CUSTOMER_ID);
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("createHttpCustomerGateway().stats() — codes de statut", () => {
+  it("200 → ok:true avec les stats transformées (snake_case → camelCase)", async () => {
+    stubFetch(200, FAKE_STATS_PAYLOAD);
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).stats(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.stats.customerId).toBe(CUSTOMER_ID);
+      expect(result.stats.services).toHaveLength(2);
+      expect(result.stats.services[0].serviceId).toBe("service-uuid-001");
+      expect(result.stats.services[0].name).toBe("Coupe homme");
+      expect(result.stats.services[0].count).toBe(3);
+      expect(result.stats.services[0].totalAmount).toBe("15000.00");
+      expect(result.stats.totalVisits).toBe(2);
+      expect(result.stats.totalServices).toBe(4);
+      expect(result.stats.currency).toBe("XOF");
+    }
+  });
+
+  it("200 classement vide (fiche walk-in) → ok:true avec services []", async () => {
+    stubFetch(200, {
+      customer_id: CUSTOMER_ID,
+      services: [],
+      total_visits: 0,
+      total_services: 0,
+      currency: "XOF",
+    });
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).stats(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.stats.services).toHaveLength(0);
+      expect(result.stats.totalVisits).toBe(0);
+      expect(result.stats.totalServices).toBe(0);
+    }
+  });
+
+  it("200 → le jeton n'est pas inclus dans le résultat", async () => {
+    stubFetch(200, FAKE_STATS_PAYLOAD);
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).stats(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(TOKEN);
+  });
+
+  it("200 → user_id et client_id absents du résultat (anti-oracle ADR-0026)", async () => {
+    stubFetch(200, FAKE_STATS_PAYLOAD);
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).stats(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("user_id");
+    expect(serialized).not.toContain("client_id");
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).stats(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unauthenticated");
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).stats(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("forbidden");
+  });
+
+  it("404 → not-found", async () => {
+    stubFetch(404, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).stats(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("not-found");
+  });
+
+  it("503 → unavailable", async () => {
+    stubFetch(503, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).stats(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("erreur réseau → unavailable", async () => {
+    stubFetchNetworkError();
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).stats(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("appel réseau inclut l'en-tête Authorization", async () => {
+    const fetchMock = stubFetch(200, FAKE_STATS_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).stats(SALON_ID, CUSTOMER_ID);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init?.headers as Record<string, string>;
+    expect(headers?.["Authorization"]).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("l'URL appelée contient /stats", async () => {
+    const fetchMock = stubFetch(200, FAKE_STATS_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).stats(SALON_ID, CUSTOMER_ID);
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/stats");
+    expect(url).toContain(SALON_ID);
+    expect(url).toContain(CUSTOMER_ID);
   });
 });

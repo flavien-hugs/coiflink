@@ -269,8 +269,13 @@ US-4.4) est livré : `GET /appointments/history` liste en lecture seule les RDV 
 du client authentifié (filtre `CLIENT_HISTORY_STATUSES` forcé serveur, route d'**appartenance** sans
 portée salon, `APPOINTMENT_READ_OWN`) avec leurs prestations et montants figés (`price_at_booking`,
 FCFA) — du plus récent au plus ancien ; l'écran **« Mon historique »** de l'application mobile consomme
-ce chemin, distinct de « Mes rendez-vous » (actifs). Les statistiques par client (#31) et l'encaissement
-(#33+) restent à venir.
+ce chemin, distinct de « Mes rendez-vous » (actifs). **Les prestations préférées d'un client** (#31,
+US-4.3) sont livrées : `GET /salons/{salon_id}/customers/{customer_id}/stats` classe les prestations les
+**plus fréquentes** de la fiche — nombre d'occurrences et montant cumulé (`price_at_booking` figé, XOF) —
+de la plus à la moins fréquente, **dérivé en lecture** des mêmes visites `COMPLETED` que #29 (aucun
+nouvel accès base), lecture salon-scopée et fiche-scopée (`CUSTOMER_MANAGE`, anti-oracle ADR-0026),
+rendu par un panneau **« Prestations préférées »** sur la page `/gerant/clients/{id}`. L'encaissement
+(#33+) reste à venir.
 
 ---
 

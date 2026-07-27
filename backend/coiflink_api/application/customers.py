@@ -41,7 +41,13 @@ from coiflink_api.domain.customer import (
     validate_customer_name,
 )
 from coiflink_api.domain.errors import CustomerAlreadyExists, CustomerNotFound
-from coiflink_api.domain.visit import HISTORY_STATUSES, VisitHistory, build_history
+from coiflink_api.domain.visit import (
+    HISTORY_STATUSES,
+    CustomerServiceStats,
+    VisitHistory,
+    build_history,
+    favourite_services,
+)
 
 
 @dataclass(frozen=True)
@@ -191,10 +197,40 @@ class GetCustomerVisitHistory:
         return build_history(visits)
 
 
+class GetCustomerServiceStats:
+    """Prestations préférées d'une fiche (lecture — pas d'audit, US-4.3, #31).
+
+    Lecture **fiche-scopée**, dérivée de la brique #29 (**aucun nouvel accès
+    base**) : la fiche est d'abord résolue **dans le salon** (réutilise
+    `GetCustomer` → `CustomerNotFound`/`404` **après** portée, sans oracle — une
+    fiche d'un autre salon est indiscernable d'une inexistante). Puis les visites
+    `COMPLETED` liées sont lues via la **même** `list_visits(HISTORY_STATUSES)`
+    (le lien `user_id` reste encapsulé côté dépôt, `salon_id` refiltré en SQL), et
+    le classement des prestations préférées est agrégé **en mémoire**
+    (`favourite_services`, pur). Aucune écriture, aucun audit (patron des lectures
+    `GetCustomerVisitHistory` / `ListSalonCustomers`).
+    """
+
+    def __init__(self, repository: CustomerRepository) -> None:
+        self._repository = repository
+
+    def execute(
+        self, salon_id: uuid.UUID, customer_id: uuid.UUID
+    ) -> CustomerServiceStats:
+        # 1. Résout la fiche DANS le salon (404 après portée si hors salon/inconnue).
+        GetCustomer(self._repository).execute(salon_id, customer_id)
+        # 2. Lit les visites terminées liées (COMPLETED) — `user_id` encapsulé côté
+        #    dépôt, `salon_id`/`client_id` refiltrés en SQL (défense en profondeur §11.2).
+        visits = self._repository.list_visits(salon_id, customer_id, HISTORY_STATUSES)
+        # 3. Agrège le classement des prestations préférées (pur, jamais persisté).
+        return favourite_services(visits)
+
+
 __all__ = [
     "CustomerCommand",
     "CreateCustomer",
     "ListSalonCustomers",
     "GetCustomer",
     "GetCustomerVisitHistory",
+    "GetCustomerServiceStats",
 ]

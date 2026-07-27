@@ -15,8 +15,10 @@ import Link from "next/link";
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
 import { createHttpCustomerGateway } from "@/src/adapters/api/http-customer-gateway";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
+import { CustomerServiceStatsPanel } from "@/src/adapters/ui/customer-service-stats";
 import { CustomerVisitHistory } from "@/src/adapters/ui/customer-visit-history";
 import { genderLabel, type Customer } from "@/src/domain/customer/customer";
+import type { CustomerServiceStats } from "@/src/domain/customer/stats";
 import type { VisitHistory } from "@/src/domain/customer/visit";
 
 export default async function CustomerDetailPage({
@@ -47,14 +49,16 @@ export default async function CustomerDetailPage({
   }
 
   const gateway = createHttpCustomerGateway({ accessToken });
-  const [customerResult, historyResult] = await Promise.all([
+  const [customerResult, historyResult, statsResult] = await Promise.all([
     gateway.get(salon.id, customerId),
     gateway.history(salon.id, customerId),
+    gateway.stats(salon.id, customerId),
   ]);
 
   if (
     (!customerResult.ok && customerResult.reason === "not-found") ||
-    (!historyResult.ok && historyResult.reason === "not-found")
+    (!historyResult.ok && historyResult.reason === "not-found") ||
+    (!statsResult.ok && statsResult.reason === "not-found")
   ) {
     return (
       <Shell>
@@ -71,10 +75,18 @@ export default async function CustomerDetailPage({
     );
   }
 
+  // Dégradation **locale** du panneau « préférées » : un échec non-`not-found`
+  // (403 hors motif de portée, réseau) n'empêche pas d'afficher la fiche et
+  // l'historique — le panneau rend alors un état neutre (spec § Open Questions §6).
+  const stats: CustomerServiceStats | null = statsResult.ok
+    ? statsResult.stats
+    : null;
+
   return (
     <Shell>
       <CustomerHeader customer={customerResult.customer} />
       <History history={historyResult.history} />
+      <FavouriteServices stats={stats} />
     </Shell>
   );
 }
@@ -121,6 +133,21 @@ function History({ history }: { history: VisitHistory }) {
         </p>
       </div>
       <CustomerVisitHistory history={history} />
+    </div>
+  );
+}
+
+function FavouriteServices({ stats }: { stats: CustomerServiceStats | null }) {
+  return (
+    <div className="flex flex-col gap-5">
+      <div>
+        <h2 className="text-lg font-semibold">Prestations préférées</h2>
+        <p className="mt-1 max-w-prose text-sm text-muted">
+          Les prestations les plus fréquentes de ce client, calculées sur ses
+          rendez-vous terminés, de la plus fréquente à la moins fréquente.
+        </p>
+      </div>
+      <CustomerServiceStatsPanel stats={stats} />
     </div>
   );
 }
