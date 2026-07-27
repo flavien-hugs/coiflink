@@ -2170,3 +2170,243 @@ class TestListAssignedAppointmentsAPI:
     def test_assigned_route_absent_from_public_route_paths(self) -> None:
         from coiflink_api.adapters.inbound.security import PUBLIC_ROUTE_PATHS
         assert "/appointments/assigned" not in PUBLIC_ROUTE_PATHS
+
+
+# ---------------------------------------------------------------------------
+# GET /appointments/history — historique client (US-4.4, #30)
+# ---------------------------------------------------------------------------
+
+_HISTORY_APPT_ID_1 = uuid.UUID("eeeeeeee-0000-0000-0001-000000000001")
+_HISTORY_APPT_ID_2 = uuid.UUID("eeeeeeee-0000-0000-0001-000000000002")
+_OTHER_CLIENT_HISTORY = uuid.UUID("99999999-0000-0001-0000-000000000099")
+
+_HISTORY_URL = "/appointments/history"
+
+
+def _make_history_entity(
+    *,
+    appt_id: uuid.UUID = _HISTORY_APPT_ID_1,
+    client_id: uuid.UUID = _CLIENT_ID,
+    status: str = "COMPLETED",
+    date: datetime.date = datetime.date(2026, 6, 1),
+    start_time: datetime.time = datetime.time(9, 0),
+) -> AppointmentEntity:
+    return AppointmentEntity(
+        id=appt_id,
+        salon_id=_SALON_ID,
+        client_id=client_id,
+        hairdresser_id=None,
+        date=date,
+        start_time=start_time,
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT,
+        services=(
+            BookedServiceEntity(
+                service_id=_SERVICE_ID,
+                price_at_booking=decimal.Decimal("5000.00"),
+            ),
+        ),
+    )
+
+
+class TestListMyAppointmentHistoryAPI:
+    """Tests HTTP pour GET /appointments/history (US-4.4, #30).
+
+    Couvre : filtre COMPLETED serveur (rien d'autre) ; appartenance (§11.2) ;
+    RBAC deny-by-default (401/403) ; réponse avec prestations et price_at_booking ;
+    état vide ; route absente de PUBLIC_ROUTE_PATHS ; non-régression GET /appointments.
+    """
+
+    # --- Filtre COMPLETED serveur (acceptation « rien d'autre ») -------------
+
+    def test_returns_200_with_completed_appointments(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_history_entity(status="COMPLETED")]
+        )
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["status"] == "COMPLETED"
+
+    def test_pending_appointment_not_in_history(self) -> None:
+        pending = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_1, status="PENDING"
+        )
+        completed = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_2, status="COMPLETED"
+        )
+        appts = FakeAppointmentRepository(appointments=[pending, completed])
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["status"] == "COMPLETED"
+
+    def test_confirmed_appointment_not_in_history(self) -> None:
+        confirmed = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_1, status="CONFIRMED"
+        )
+        appts = FakeAppointmentRepository(appointments=[confirmed])
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_cancelled_appointment_not_in_history(self) -> None:
+        cancelled = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_1, status="CANCELLED"
+        )
+        appts = FakeAppointmentRepository(appointments=[cancelled])
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_no_show_appointment_not_in_history(self) -> None:
+        no_show = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_1, status="NO_SHOW"
+        )
+        appts = FakeAppointmentRepository(appointments=[no_show])
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_empty_history_returns_200_empty_list(self) -> None:
+        appts = FakeAppointmentRepository()
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    # --- Appartenance §11.2 : seuls les RDV du client demandeur ---------------
+
+    def test_returns_only_own_appointments(self) -> None:
+        own = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_1, client_id=_CLIENT_ID, status="COMPLETED"
+        )
+        other = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_2,
+            client_id=_OTHER_CLIENT_HISTORY,
+            status="COMPLETED",
+        )
+        appts = FakeAppointmentRepository(appointments=[own, other])
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["client_id"] == str(_CLIENT_ID)
+
+    # --- Réponse : champs et prestations --------------------------------------
+
+    def test_response_contains_expected_fields(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_history_entity()]
+        )
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        item = resp.json()[0]
+        for field in ("id", "salon_id", "client_id", "status", "date",
+                      "start_time", "end_time", "services"):
+            assert field in item
+
+    def test_response_services_carry_price_at_booking(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_history_entity()]
+        )
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        services = resp.json()[0]["services"]
+        assert len(services) == 1
+        assert "price_at_booking" in services[0]
+        assert services[0]["price_at_booking"] == "5000.00"
+
+    def test_response_status_is_completed(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_history_entity()]
+        )
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json()[0]["status"] == "COMPLETED"
+
+    # --- RBAC deny-by-default (ADR-0015) -------------------------------------
+
+    def test_no_token_returns_401(self) -> None:
+        resp = _client().get(_HISTORY_URL)
+        assert resp.status_code == 401
+
+    def test_manager_role_returns_403(self) -> None:
+        resp = _client().get(_HISTORY_URL, headers=_auth_header(role="MANAGER"))
+        assert resp.status_code == 403
+
+    def test_admin_role_returns_403(self) -> None:
+        resp = _client().get(_HISTORY_URL, headers=_auth_header(role="ADMIN"))
+        assert resp.status_code == 403
+
+    def test_hairdresser_role_returns_403(self) -> None:
+        resp = _client().get(
+            _HISTORY_URL, headers=_auth_header(role="HAIRDRESSER")
+        )
+        assert resp.status_code == 403
+
+    # --- Invariant deny-by-default : route protégée --------------------------
+
+    def test_history_route_absent_from_public_route_paths(self) -> None:
+        from coiflink_api.adapters.inbound.security import PUBLIC_ROUTE_PATHS
+
+        assert "/appointments/history" not in PUBLIC_ROUTE_PATHS
+
+    def test_unprotected_routes_remains_empty(self) -> None:
+        from coiflink_api.adapters.inbound.security import unprotected_routes
+
+        assert unprotected_routes(app) == []
+
+    # --- Non-régression : GET /appointments ne renvoie que les actifs --------
+
+    def test_get_appointments_still_excludes_completed(self) -> None:
+        pending = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_1, status="PENDING"
+        )
+        completed = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_2, status="COMPLETED"
+        )
+        appts = FakeAppointmentRepository(appointments=[pending, completed])
+        resp = _client(appts=appts).get("/appointments", headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        statuses = {item["status"] for item in data}
+        assert "COMPLETED" not in statuses
+
+    def test_get_appointments_still_returns_pending(self) -> None:
+        pending = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_1, status="PENDING"
+        )
+        appts = FakeAppointmentRepository(appointments=[pending])
+        resp = _client(appts=appts).get("/appointments", headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["status"] == "PENDING"
+
+    # --- Ordre descendant (plus récent d'abord) --------------------------------
+
+    def test_history_ordered_newest_first(self) -> None:
+        older = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_1,
+            status="COMPLETED",
+            date=datetime.date(2026, 5, 1),
+            start_time=datetime.time(9, 0),
+        )
+        newer = _make_history_entity(
+            appt_id=_HISTORY_APPT_ID_2,
+            status="COMPLETED",
+            date=datetime.date(2026, 6, 1),
+            start_time=datetime.time(9, 0),
+        )
+        appts = FakeAppointmentRepository(appointments=[older, newer])
+        resp = _client(appts=appts).get(_HISTORY_URL, headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        # Plus récent (2026-06-01) doit apparaître en premier.
+        assert data[0]["date"] >= data[1]["date"]

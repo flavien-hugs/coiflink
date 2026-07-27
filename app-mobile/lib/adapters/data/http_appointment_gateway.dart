@@ -163,6 +163,43 @@ class HttpAppointmentGateway implements AppointmentGateway {
   }
 
   @override
+  Future<List<Appointment>> myHistory({required String accessToken}) async {
+    // Miroir strict de `myAppointments` sur `GET /appointments/history` : le serveur
+    // ne renvoie que les RDV **terminés** du client (statut forcé serveur, #30).
+    final uri = config.resolve('/appointments/history');
+
+    final http.Response response;
+    try {
+      response = await _client.get(
+        uri,
+        headers: <String, String>{'authorization': 'Bearer $accessToken'},
+      );
+    } catch (_) {
+      throw const AppointmentGatewayException('Impossible de joindre le serveur.');
+    }
+
+    switch (response.statusCode) {
+      case 200:
+        break;
+      case 401:
+        throw const UnauthorizedException();
+      default:
+        throw const AppointmentGatewayException(
+          'Impossible de charger votre historique.',
+        );
+    }
+
+    try {
+      final body = jsonDecode(response.body) as List<dynamic>;
+      return body
+          .map((a) => _appointmentFromJson(a as Map<String, dynamic>))
+          .toList(growable: false);
+    } catch (_) {
+      throw const AppointmentGatewayException('Réponse du serveur illisible.');
+    }
+  }
+
+  @override
   Future<Appointment> modify({
     required String appointmentId,
     required BookingDraft draft,

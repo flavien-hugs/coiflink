@@ -171,13 +171,20 @@ class AppointmentRepository(Protocol):
         self,
         client_id: uuid.UUID,
         statuses: tuple[str, ...] | None = None,
+        *,
+        newest_first: bool = False,
     ) -> tuple[Appointment, ...]:
         """Liste les RDV **du client** (`client_id`), avec leurs `BookedService`.
 
         Ne renvoie **que** les données du client demandeur (§11.2/§11.3) — jamais
         l'identité d'un tiers. `statuses` restreint la lecture (p. ex. aux états
-        actifs `PENDING`/`CONFIRMED`) ; `None` ne filtre pas sur le statut. Tri
-        chronologique (date puis heure de début).
+        actifs `PENDING`/`CONFIRMED`, ou aux `COMPLETED` de l'historique #30) ;
+        `None` ne filtre pas sur le statut.
+
+        `newest_first` (additif, rétro-compatible) contrôle **l'ordre** : par défaut
+        (`False`) tri **chronologique croissant** (date puis heure — les RDV « à
+        venir » de `GET /appointments`) ; `True` trie **décroissant** (du plus récent
+        au plus ancien — l'historique se lit naturellement ainsi, US-4.4 #30).
         """
         ...
 

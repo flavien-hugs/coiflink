@@ -154,3 +154,27 @@ Découpage pour l'annulation :
 un **motif facultatif** (`reason`), **omis s'il est vide** et **jamais journalisé** (donnée cliente).
 Au succès, la liste se rafraîchit (le RDV annulé la quitte). `409` → message + rafraîchissement ; `401`
 → session invalidée → reconnexion. Le jeton n'apparaît dans **aucun** log.
+
+## Mon historique — RDV terminés (US-4.4, #30)
+
+L'écran **« Mon historique »** (`adapters/ui/appointments/appointment_history_screen.dart`) liste, **en
+lecture seule**, les RDV **terminés** (`COMPLETED`) du client via `GET /appointments/history` : date,
+horaires, statut « Terminé » et prestations avec leur **montant figé** (`priceAtBooking`, FCFA). Un RDV
+terminé est terminal (§8.1) : **aucun** bouton modifier/annuler. Le client ne voit que **ses propres**
+RDV réalisés — le statut est **forcé serveur** (« rien d'autre »). Un bouton **« Mon historique »** sur
+l'accueil ouvre l'écran (patron « Mes rendez-vous »).
+
+Découpage (extension **additive** du chemin rendez-vous) :
+
+- `application/ports/appointment_gateway.dart` — `AppointmentGateway.myHistory({accessToken})` ;
+- `application/use_cases/list_my_appointment_history.dart` — cas d'usage dédié (miroir de
+  `ListMyAppointments`) ;
+- `adapters/data/http_appointment_gateway.dart` — `myHistory` (`GET /appointments/history`,
+  `Authorization: Bearer` ; mapping `200 → List<Appointment>`, `401 → Unauthorized`, défaut →
+  `AppointmentGatewayException` neutre) ;
+- `adapters/ui/appointments/appointment_history_screen.dart` — écran lecture seule (chargement, liste,
+  **vide** « aucun rendez-vous terminé » ≠ erreur, non-authentifié → `onRequireLogin`, `401` → session
+  invalidée, erreur réseau → réessayer, pull-to-refresh).
+
+**Garde-fous (§11)** : l'adapter ne journalise **ni** URL, **ni** corps, **ni** jeton, **ni** PII ; les
+échecs deviennent des exceptions **neutres**. Aucune donnée de gestion ni RDV d'un tiers n'est exposée.

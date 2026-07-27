@@ -15,6 +15,7 @@ import '../../application/use_cases/book_appointment.dart';
 import '../../application/use_cases/cancel_appointment.dart';
 import '../../application/use_cases/check_availability.dart';
 import '../../application/use_cases/get_salon_detail.dart';
+import '../../application/use_cases/list_my_appointment_history.dart';
 import '../../application/use_cases/list_my_appointments.dart';
 import '../../application/use_cases/modify_appointment.dart';
 import '../../application/use_cases/search_salons.dart';
@@ -25,6 +26,7 @@ import '../data/api_config.dart';
 import '../data/http_appointment_gateway.dart';
 import '../data/http_auth_gateway.dart';
 import '../data/http_salon_catalog_gateway.dart';
+import 'appointments/appointment_history_screen.dart';
 import 'appointments/my_appointments_screen.dart';
 import 'auth/login_screen.dart';
 import 'booking/booking_flow_screen.dart';
@@ -53,6 +55,8 @@ class CoifLinkApp extends StatelessWidget {
     final checkAvailability = CheckAvailability(appointmentGateway);
     final bookAppointment = BookAppointment(appointmentGateway);
     final listMyAppointments = ListMyAppointments(appointmentGateway);
+    final listMyAppointmentHistory =
+        ListMyAppointmentHistory(appointmentGateway);
     final modifyAppointment = ModifyAppointment(appointmentGateway);
     final cancelAppointment = CancelAppointment(appointmentGateway);
     final signIn = SignIn(authGateway, session);
@@ -124,6 +128,20 @@ class CoifLinkApp extends StatelessWidget {
       );
     }
 
+    // Point d'entrée « Mon historique » (#30) : liste, en lecture seule, les RDV
+    // terminés du client (statut forcé serveur — « rien d'autre »).
+    void openMyHistory(BuildContext context) {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => AppointmentHistoryScreen(
+            listMyAppointmentHistory: listMyAppointmentHistory,
+            session: session,
+            onRequireLogin: (ctx) => _requireLogin(ctx, signIn),
+          ),
+        ),
+      );
+    }
+
     return MaterialApp(
       title: 'CoifLink',
       theme: ThemeData(
@@ -135,6 +153,7 @@ class CoifLinkApp extends StatelessWidget {
         getSalonDetail: getSalonDetail,
         onBook: openBooking,
         onOpenMyAppointments: openMyAppointments,
+        onOpenMyHistory: openMyHistory,
       ),
     );
   }
@@ -157,6 +176,7 @@ class AccueilEcran extends StatelessWidget {
     required this.getSalonDetail,
     this.onBook,
     this.onOpenMyAppointments,
+    this.onOpenMyHistory,
   });
 
   final SearchSalons searchSalons;
@@ -166,9 +186,13 @@ class AccueilEcran extends StatelessWidget {
   /// Ouvre l'écran « Mes rendez-vous » (#23), ou `null` pour le masquer.
   final void Function(BuildContext context)? onOpenMyAppointments;
 
+  /// Ouvre l'écran « Mon historique » (#30), ou `null` pour le masquer.
+  final void Function(BuildContext context)? onOpenMyHistory;
+
   @override
   Widget build(BuildContext context) {
     final openMyAppointments = onOpenMyAppointments;
+    final openMyHistory = onOpenMyHistory;
     return Scaffold(
       appBar: AppBar(title: const Text('CoifLink')),
       body: Center(
@@ -198,6 +222,14 @@ class AccueilEcran extends StatelessWidget {
                 icon: const Icon(Icons.event_note),
                 label: const Text('Mes rendez-vous'),
                 onPressed: () => openMyAppointments(context),
+              ),
+            ],
+            if (openMyHistory != null) ...<Widget>[
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.history),
+                label: const Text('Mon historique'),
+                onPressed: () => openMyHistory(context),
               ),
             ],
           ],

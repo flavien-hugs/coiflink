@@ -197,6 +197,18 @@ def counts_towards_revenue(status: str) -> bool:
     return status in REVENUE_STATUSES
 
 
+# Statuts exposés par l'**historique client** (§6 Épic 4, US-4.4, #30). Un client ne
+# voit que ses RDV **réalisés** (`COMPLETED`) et **rien d'autre** — c'est l'unique
+# critère d'acceptation de #30. Ce jeu est **décidé serveur** : la route d'historique
+# le force et n'accepte **aucun** statut soumis par le client (garantie « rien d'autre »
+# par construction, pas par confiance dans le client). Il **coïncide** aujourd'hui avec
+# `REVENUE_STATUSES` (tous deux `(COMPLETED,)`) mais on le **nomme distinctement** : le
+# concept « visible dans l'historique client » et le concept « comptabilisé au CA » sont
+# deux décisions métier séparées, susceptibles de diverger (même posture que
+# `CLIENT_MODIFIABLE_STATUSES` vs `CLIENT_CANCELLABLE_STATUSES`).
+CLIENT_HISTORY_STATUSES: tuple[str, ...] = (AppointmentStatus.COMPLETED.value,)
+
+
 # --------------------------------------------------------------------------- #
 # Machine à états **gérant** d'un rendez-vous (§8.1, §6 Épic 3, US-3.4, #25).
 # --------------------------------------------------------------------------- #
@@ -315,6 +327,7 @@ __all__ = [
     "normalize_cancellation_reason",
     "REVENUE_STATUSES",
     "counts_towards_revenue",
+    "CLIENT_HISTORY_STATUSES",
     "TERMINAL_STATUSES",
     "ALLOWED_STATUS_TRANSITIONS",
     "is_valid_transition",

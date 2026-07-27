@@ -264,7 +264,12 @@ visites d'un client** (#29) est livré : `GET /salons/{salon_id}/customers/{cust
 liste les RDV **terminés** (`COMPLETED`) de la fiche avec prestations nommées et montants figés
 (`price_at_booking`, XOF), plus un résumé dérivé en lecture (nombre de visites, dernière visite,
 total) — lecture salon-scopée et fiche-scopée, lien fiche ↔ compte encapsulé (anti-oracle ADR-0026),
-rendu par la page de détail `/gerant/clients/{id}`. Les statistiques par client (#31) et l'encaissement
+rendu par la page de détail `/gerant/clients/{id}`. **L'historique de prestations côté client** (#30,
+US-4.4) est livré : `GET /appointments/history` liste en lecture seule les RDV **terminés** (`COMPLETED`)
+du client authentifié (filtre `CLIENT_HISTORY_STATUSES` forcé serveur, route d'**appartenance** sans
+portée salon, `APPOINTMENT_READ_OWN`) avec leurs prestations et montants figés (`price_at_booking`,
+FCFA) — du plus récent au plus ancien ; l'écran **« Mon historique »** de l'application mobile consomme
+ce chemin, distinct de « Mes rendez-vous » (actifs). Les statistiques par client (#31) et l'encaissement
 (#33+) restent à venir.
 
 ---

@@ -154,6 +154,15 @@ abstract class AppointmentGateway {
   /// réponse invalide).
   Future<List<Appointment>> myAppointments({required String accessToken});
 
+  /// Liste l'**historique** du client authentifié via `GET /appointments/history`
+  /// (en-tête `Authorization: Bearer <accessToken>`). Ne renvoie que **ses propres**
+  /// RDV **terminés** (`COMPLETED`), tous salons confondus (§11.2/§11.3) — le statut
+  /// est forcé serveur, jamais soumis par le client (US-4.4, #30). Lecture seule.
+  ///
+  /// Lève [UnauthorizedException] (`401`), [AppointmentGatewayException] (réseau /
+  /// réponse invalide).
+  Future<List<Appointment>> myHistory({required String accessToken});
+
   /// Re-planifie **son** rendez-vous via `PATCH /appointments/{appointmentId}` avec
   /// l'en-tête `Authorization: Bearer <accessToken>` (corps sans `client_id`/
   /// `salon_id`/`status`, §11.2). Sémantique *replace* (miroir de [book]).
