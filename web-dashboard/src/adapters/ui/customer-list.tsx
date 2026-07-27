@@ -9,6 +9,7 @@
 // route salon-scopée (isolation §11.2). Les notes internes ne sont jamais
 // exposées ailleurs que dans cette vue gérant (PRD §11.3).
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { CustomerForm } from "@/src/adapters/ui/customer-form";
@@ -91,6 +92,7 @@ export function CustomerList({
                 <th className="px-4 py-3">Genre</th>
                 <th className="px-4 py-3">Visites</th>
                 <th className="px-4 py-3">Fiche créée le</th>
+                <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-surface">
@@ -106,11 +108,19 @@ export function CustomerList({
                   <td className="px-4 py-3 text-muted">{genderLabel(customer.gender)}</td>
                   <td className="px-4 py-3">{customer.totalVisits}</td>
                   <td className="px-4 py-3 text-muted">{formatDate(customer.createdAt)}</td>
+                  <td className="px-4 py-3 text-right">
+                    <Link
+                      href={`/gerant/clients/${customer.id}`}
+                      className="font-medium text-accent hover:underline"
+                    >
+                      Voir l&apos;historique
+                    </Link>
+                  </td>
                 </tr>
               ))}
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted">
+                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted">
                     {customers.length === 0
                       ? "Aucune fiche client pour le moment."
                       : "Aucune fiche ne correspond à la recherche."}

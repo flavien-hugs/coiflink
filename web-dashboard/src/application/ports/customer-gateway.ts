@@ -5,6 +5,7 @@
 // `src/adapters/api/`.
 
 import type { Customer, CustomerInput } from "@/src/domain/customer/customer";
+import type { VisitHistory } from "@/src/domain/customer/visit";
 
 // Motifs d'échec **génériques** (aucune divulgation) : `invalid` = `422` de
 // validation backend, `duplicate` = `409` (une fiche porte déjà ce téléphone
@@ -35,6 +36,16 @@ export type GetCustomerResult =
       reason: "forbidden" | "unauthenticated" | "not-found" | "unavailable";
     };
 
+// Historique des visites terminées d'une fiche (US-4.2, #29). `not-found` =
+// `404` (fiche absente, portée validée) ; une fiche walk-in ou sans visite
+// réalisée renvoie `ok: true` avec un historique **vide** (pas une erreur).
+export type CustomerHistoryResult =
+  | { ok: true; history: VisitHistory }
+  | {
+      ok: false;
+      reason: "forbidden" | "unauthenticated" | "not-found" | "unavailable";
+    };
+
 export interface CustomerListOptions {
   limit?: number;
   offset?: number;
@@ -47,4 +58,6 @@ export interface CustomerGateway {
   create(salonId: string, input: CustomerInput): Promise<CreateCustomerResult>;
   // Proxifie `GET /salons/{id}/customers/{customerId}`.
   get(salonId: string, customerId: string): Promise<GetCustomerResult>;
+  // Proxifie `GET /salons/{id}/customers/{customerId}/appointments` (historique).
+  history(salonId: string, customerId: string): Promise<CustomerHistoryResult>;
 }

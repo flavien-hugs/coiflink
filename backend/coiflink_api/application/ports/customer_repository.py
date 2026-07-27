@@ -18,6 +18,7 @@ import uuid
 from typing import Protocol
 
 from coiflink_api.domain.customer import Customer, CustomerToCreate
+from coiflink_api.domain.visit import CustomerVisit
 
 # Bornes de pagination de la liste (garde de coût §12.1 — patron catalogue #18).
 CUSTOMER_LIMIT_DEFAULT = 50
@@ -63,6 +64,29 @@ class CustomerRepository(Protocol):
         Pré-contrôle applicatif : il produit un `409` explicite dans le cas
         nominal, mais **ne garantit rien** en concurrence — la garantie est l'index
         unique partiel `uq_customer_profiles_salon_phone`.
+        """
+        ...
+
+    def list_visits(
+        self,
+        salon_id: uuid.UUID,
+        customer_id: uuid.UUID,
+        statuses: tuple[str, ...],
+    ) -> tuple[CustomerVisit, ...]:
+        """Visites (RDV `statuses`) du **compte lié** à la fiche `(salon_id, customer_id)`.
+
+        Renvoie les RDV du compte utilisateur rattaché à la fiche dont le `status`
+        est dans `statuses`, avec leurs prestations (nom + prix figé), triés **date
+        décroissante** puis `start_time` décroissant (plus récent d'abord).
+
+        **Encapsule le lien `user_id`** (anti-oracle ADR-0026) : le pont
+        `customer_profiles.user_id == appointments.client_id` est calculé
+        **entièrement en SQL** ; l'`user_id`/`client_id` ne quitte **jamais** la
+        couche de persistance. Si la fiche est walk-in (`user_id IS NULL`) ou
+        introuvable dans le salon, renvoie un **tuple vide** — pas une erreur.
+
+        **Isolation §11.2** : les RDV sont refiltrés sur `salon_id` (jamais les RDV
+        du même compte dans un **autre** salon — cloisonnement strict).
         """
         ...
 

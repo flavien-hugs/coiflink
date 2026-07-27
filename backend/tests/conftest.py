@@ -1007,8 +1007,19 @@ class FakeCustomerRepository:
 
     def __init__(self, *, raise_conflict: bool = False) -> None:
         self._customers: dict[uuid.UUID, object] = {}
+        # Visites terminées par fiche (US-4.2, #29), déjà triées « plus récent
+        # d'abord » comme le contrat du dépôt SQL. Les fakes n'ont **pas** d'`user_id` :
+        # le lien fiche ↔ compte est encapsulé — une fiche sans entrée ici renvoie
+        # une liste vide (équivalent d'une fiche walk-in ou sans visite réalisée).
+        self._visits: dict[uuid.UUID, tuple] = {}
         self.created: list = []
+        self.last_visits_call: tuple | None = None
         self.raise_conflict = raise_conflict
+
+    def set_visits(self, customer_id: uuid.UUID, visits: tuple) -> None:
+        """Amorce l'historique de visites d'une fiche (helper de test, #29)."""
+
+        self._visits[customer_id] = visits
 
     def create(self, customer):  # type: ignore[no-untyped-def]
         from coiflink_api.domain.customer import Customer
@@ -1055,6 +1066,17 @@ class FakeCustomerRepository:
 
     def phone_exists(self, salon_id: uuid.UUID, phone: str) -> bool:
         return any(c.phone == phone for c in self._for_salon(salon_id))  # type: ignore[union-attr]
+
+    def list_visits(self, salon_id, customer_id, statuses):  # type: ignore[no-untyped-def]
+        # Enregistre l'appel (les tests vérifient que `statuses == HISTORY_STATUSES`).
+        self.last_visits_call = (salon_id, customer_id, statuses)
+        customer = self._customers.get(customer_id)
+        if customer is None or customer.salon_id != salon_id:  # type: ignore[union-attr]
+            # Fiche hors salon/inexistante : aucun RDV reliable (isolation §11.2).
+            return ()
+        visits = self._visits.get(customer_id, ())
+        # Le dépôt SQL filtre le statut en base ; le fake reproduit ce filtre.
+        return tuple(v for v in visits if v.status in statuses)
 
 
 @pytest.fixture()
