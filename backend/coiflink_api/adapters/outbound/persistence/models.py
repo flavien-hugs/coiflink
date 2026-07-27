@@ -402,6 +402,9 @@ class CustomerProfile(Base):
     user_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Genre **optionnel** (US-4.1, #28) : `NULL` = non renseigné. Domaine fermé,
+    # dérivé de `enums.Gender` par le `CHECK` ci-dessous (migration 0005).
+    gender: Mapped[str | None] = mapped_column(String(16), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_visit_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -420,6 +423,7 @@ class CustomerProfile(Base):
             ["user_id"], ["users.id"], name="fk_customer_profiles_user_id", ondelete="RESTRICT"
         ),
         CheckConstraint("total_visits >= 0", name="total_visits_positive"),
+        enum_check("gender", enums.Gender, name="gender"),
         # Un même utilisateur n'a qu'une fiche par salon (quand il a un compte).
         Index(
             "uq_customer_profiles_salon_user",
@@ -427,6 +431,17 @@ class CustomerProfile(Base):
             "user_id",
             unique=True,
             postgresql_where=text("user_id IS NOT NULL"),
+        ),
+        # Un même **téléphone** n'a qu'une fiche par salon (#28) : deux fiches pour
+        # le même numéro fausseraient l'historique de visites (#29) et les
+        # statistiques (#31). Partiel — le téléphone est optionnel (walk-in), et
+        # deux salons distincts peuvent ficher le même numéro (cloisonnement §11.2).
+        Index(
+            "uq_customer_profiles_salon_phone",
+            "salon_id",
+            "phone",
+            unique=True,
+            postgresql_where=text("phone IS NOT NULL"),
         ),
         Index("ix_customer_profiles_salon_id", "salon_id"),
     )

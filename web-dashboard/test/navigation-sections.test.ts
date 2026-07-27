@@ -64,8 +64,15 @@ describe("DASHBOARD_SECTIONS", () => {
     expect(planning?.status).toBe("available");
   });
 
+  it("marque 'clients' comme 'available' (création de fiche client, #28)", () => {
+    const clients = DASHBOARD_SECTIONS.find((s) => s.key === "clients");
+    expect(clients).toBeDefined();
+    expect(clients?.status).toBe("available");
+    expect(clients?.href).toBe("/gerant/clients");
+  });
+
   it("marque les sections M2–M5 restantes 'coming-soon'", () => {
-    const comingSoon = ["clients", "encaissements", "employes"];
+    const comingSoon = ["encaissements", "employes"];
     for (const key of comingSoon) {
       const section = DASHBOARD_SECTIONS.find((s) => s.key === key);
       expect(section?.status).toBe("coming-soon");

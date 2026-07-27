@@ -635,6 +635,51 @@ est **câblée ici pour la première fois**.
   `status` (schéma #3). Les tests e2e Postgres (isolation inter-coiffeurs/inter-salons, RDV non assignés
   exclus) **skip proprement** sans `DATABASE_URL`.
 
+## Clients — fiche client (US-4.1, #28 — [ADR-0026](../docs/adr/0026-fiche-client-portee-salon.md))
+
+Le gérant **crée une fiche client rattachée à son salon** (critère d'acceptation). Les routes sont
+montées sous `/salons/{salon_id}/customers` (imbriquées pour hériter de `require_salon_scope`,
+isolation §11.2) et **toutes protégées** ; #28 est la **première mise en service** de la permission
+`CUSTOMER_MANAGE` (§4.1), détenue par le **seul `MANAGER`** — la matrice n'est **pas** modifiée
+(l'`ADMIN` ne l'a pas : supervision ≠ exploitation). **Rien** n'est ajouté à `PUBLIC_ROUTE_PATHS`.
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `POST` | `/salons/{salon_id}/customers` | `CUSTOMER_MANAGE` + portée | `201` + fiche \| `409` doublon \| `422` | `CUSTOMER_CREATED` |
+| `GET` | `/salons/{salon_id}/customers?limit=&offset=` | `CUSTOMER_MANAGE` + portée | `200` + page (`items`, `total`, `limit`, `offset`) | — |
+| `GET` | `/salons/{salon_id}/customers/{customer_id}` | `CUSTOMER_MANAGE` + portée | `200` \| `404` | — |
+
+```bash
+curl -X POST "$API/salons/$SALON_ID/customers" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"full_name":"Awa Koné","phone":"0700000000","gender":"FEMALE","notes":"Préfère le samedi matin."}'
+```
+
+- **Champs** (`domain/customer.py`, validation **avant** écriture — les contraintes SQL restent un
+  filet) : `full_name` **obligatoire**, non vide ≤ 255 ; `phone` **optionnel** (client walk-in),
+  normalisé **E.164** (`+225` par défaut) ; `gender` **optionnel** et **fermé**
+  (`FEMALE` | `MALE` | `OTHER` ; `null` = non renseigné, aucune tolérance de casse) ; `notes`
+  **optionnelles** ≤ 2000, **internes au salon**. `salon_id`/`id`/`user_id`/`total_visits`/
+  `last_visit_at` ne sont **jamais** lus du corps (`extra="ignore"`). Invalide → **`422`**.
+- **Isolation §11.2 (cœur de l'AC)** : `require_salon_scope` sur chaque route **et** filtre `salon_id`
+  en SQL dans le dépôt. Un accès inter-salons reçoit le `403` **générique** (aucun oracle d'existence) ;
+  le `404` n'arrive qu'**après** validation de portée.
+- **Doublon de téléphone → `409`** : garanti par l'index unique **partiel**
+  `uq_customer_profiles_salon_phone` (migration `0005`). Le pré-contrôle applicatif couvre le cas
+  nominal ; en concurrence, l'`IntegrityError` du perdant est retraduite en `CustomerAlreadyExists`.
+  L'unicité est **par salon** — deux salons peuvent ficher le même numéro.
+- **Fiche walk-in** : `user_id` reste `NULL` et **n'est pas exposé** ; la table `users` n'est
+  **jamais** interrogée par téléphone (ce serait un **oracle d'existence de compte**, §11.1/§11.3).
+  `last_visit_at`/`total_visits` restent à leurs défauts (`NULL`/`0`) — l'historique des visites est
+  l'objet de #29.
+
+**Journalisation §11.4/§11.3** — chaque création écrit une `AuditEntry` `CUSTOMER_CREATED`
+(entité `customer`) dans la **même `Session`** que l'écriture (commit/rollback conjoint). Elle est
+journalisée au titre de §11.3 (« journalisation des accès sensibles » : créer une fiche est une
+**collecte de PII**) et reste **neutre** : `metadata = {}` — ni nom, ni téléphone, ni genre, ni note.
+Les lectures ne sont pas journalisées. **Invariant : aucune PII dans l'audit, les logs ou les messages
+d'erreur** (« Une fiche existe déjà pour ce numéro dans ce salon. » ne rappelle pas le numéro).
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
@@ -771,7 +816,7 @@ erDiagram
 | **`services`** | `salon_id→salons`, `name`, `price`, `duration_minutes`, `category`, `is_active` | FK `salon_id` ; `uq_services_salon_id (salon_id, id)` ; CHECK `price >= 0`, `duration_minutes > 0` ; index `salon_id` |
 | **`appointments`** | `salon_id→salons`, `client_id→users`, `hairdresser_id?→users`, `appointment_date`, `start_time`, `end_time`, `status`, `cancellation_reason?`, `client_note?`, `slot` (généré) | FK `salon_id`/`client_id` NOT NULL (§8.1) ; `uq_appointments_salon_id (salon_id, id)` ; CHECK `end_time > start_time`, `status` ; **EXCLUDE** anti double-booking ; index `(salon_id, appointment_date)`, `client_id` |
 | **`appointment_services`** *(jonction)* | `appointment_id→appointments`, `service_id→services`, `salon_id`, `price_at_booking` | PK `(appointment_id, service_id)` ; **FK composites** `(salon_id, appointment_id)` et `(salon_id, service_id)` (cohérence salon) ; `ON DELETE CASCADE` depuis le RDV ; CHECK `price >= 0` |
-| **`customer_profiles`** | `salon_id→salons`, `user_id?→users`, `full_name`, `phone?`, `notes?`, `last_visit_at?`, `total_visits` | FK `salon_id`/`user_id` ; `uq_customer_profiles_salon_user (salon_id, user_id) WHERE user_id IS NOT NULL` ; CHECK `total_visits >= 0` ; index `salon_id` |
+| **`customer_profiles`** | `salon_id→salons`, `user_id?→users`, `full_name`, `phone?`, `gender?`, `notes?`, `last_visit_at?`, `total_visits` | FK `salon_id`/`user_id` ; `uq_customer_profiles_salon_user (salon_id, user_id) WHERE user_id IS NOT NULL` ; **`uq_customer_profiles_salon_phone (salon_id, phone) WHERE phone IS NOT NULL`** (#28) ; CHECK `total_visits >= 0`, `gender` ; index `salon_id` |
 | **`payments`** | `salon_id→salons`, `appointment_id?`, `service_id?`, `client_id?→users`, `amount`, `currency`, `payment_method`, `status`, `recorded_by→users`, `reference?` | FK `salon_id`/`recorded_by` NOT NULL (§8.2) ; FK composites vers RDV/prestation ; **CHECK `appointment_id IS NOT NULL OR service_id IS NOT NULL`** (§8.2) ; CHECK `amount >= 0`, `payment_method`, `status` ; index `(salon_id, created_at)`, `appointment_id` |
 | **`cash_journal`** *(append-only)* | `salon_id→salons`, `transaction_id?→payments`, `operation_type`, `amount`, `performed_by→users`, `description?` | FK `salon_id`/`performed_by` NOT NULL ; `created_at` horodaté (§8.2) ; CHECK `operation_type` ; index `(salon_id, created_at)` |
 | **`notifications`** | `user_id?→users`, `salon_id?→salons`, `appointment_id?→appointments`, `type`, `channel`, `title`, `message`, `status`, `sent_at?` | CHECK `type`/`channel`/`status` ; index `user_id`, `(salon_id, created_at)` |

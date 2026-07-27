@@ -15,6 +15,7 @@ import uuid
 
 from coiflink_api.domain.audit import (
     ENTITY_TYPE_APPOINTMENT,
+    ENTITY_TYPE_CUSTOMER,
     ENTITY_TYPE_SALON,
     ENTITY_TYPE_SERVICE,
     AuditAction,
@@ -58,8 +59,11 @@ class TestAuditAction:
             == "APPOINTMENT_HAIRDRESSER_ASSIGNED"
         )
 
-    def test_exactly_nine_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 9
+    def test_customer_created_value(self) -> None:
+        assert AuditAction.CUSTOMER_CREATED == "CUSTOMER_CREATED"
+
+    def test_exactly_ten_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 10
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -80,6 +84,7 @@ class TestAuditAction:
             "APPOINTMENT_CANCELLED",
             "APPOINTMENT_STATUS_CHANGED",
             "APPOINTMENT_HAIRDRESSER_ASSIGNED",
+            "CUSTOMER_CREATED",
         }
 
 
@@ -192,3 +197,16 @@ class TestEntityTypeAppointment:
 
     def test_value_is_appointment(self) -> None:
         assert ENTITY_TYPE_APPOINTMENT == "appointment"
+
+
+# ---------------------------------------------------------------------------
+# ENTITY_TYPE_CUSTOMER (US-4.1, #28)
+# ---------------------------------------------------------------------------
+
+
+class TestEntityTypeCustomer:
+    def test_value_is_string(self) -> None:
+        assert isinstance(ENTITY_TYPE_CUSTOMER, str)
+
+    def test_value_is_customer(self) -> None:
+        assert ENTITY_TYPE_CUSTOMER == "customer"

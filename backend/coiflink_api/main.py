@@ -20,6 +20,7 @@ from fastapi import Depends, FastAPI
 from coiflink_api.adapters.inbound.appointments import router as appointments_router
 from coiflink_api.adapters.inbound.auth import router as auth_router
 from coiflink_api.adapters.inbound.catalog import router as catalog_router
+from coiflink_api.adapters.inbound.customers import router as customers_router
 from coiflink_api.adapters.inbound.employees import router as employees_router
 from coiflink_api.adapters.inbound.health import router as health_router
 from coiflink_api.adapters.inbound.salons import router as salons_router
@@ -134,3 +135,10 @@ app.include_router(catalog_router)
 # la contrainte d'exclusion base ex_appointments_hairdresser_slot (schéma #3) ; la
 # disponibilité est publique-listée dans `security.PUBLIC_ROUTE_PATHS` (ADR-0023).
 app.include_router(appointments_router)
+# Fiches clients (#28, US-4.1) : création + lectures sous /salons/{id}/customers.
+# Première mise en service de la permission CUSTOMER_MANAGE (§4.1, détenue par le
+# seul MANAGER) ; portée salon obligatoire (isolation §11.2). La création est
+# journalisée (CUSTOMER_CREATED) dans la même unité de travail que l'écriture —
+# collecte de PII au sens §11.3, entrée d'audit **neutre**. Rien n'est ajouté à
+# `security.PUBLIC_ROUTE_PATHS` : une fiche client n'est jamais publique.
+app.include_router(customers_router)

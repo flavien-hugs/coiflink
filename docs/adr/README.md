@@ -38,6 +38,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0023](./0023-moteur-disponibilite-anti-double-reservation.md) | Moteur de disponibilité & anti double-réservation — garantie portée par la contrainte d'exclusion base, moteur pur au-dessus | Accepté | #21 |
 | [0024](./0024-reservation-cote-client.md) | Réservation côté client — tunnel mobile & session cliente au-dessus des endpoints #21 | Accepté | #22 |
 | [0025](./0025-annulation-rendez-vous-client.md) | Annulation d'un rendez-vous côté client — transition d'état soft, motif optionnel & invariant CA | Accepté | #24 |
+| [0026](./0026-fiche-client-portee-salon.md) | Fiche client — portée salon, genre optionnel & unicité du téléphone | Accepté | #28 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
@@ -88,7 +89,11 @@ ultérieure et signalés en *Conséquences* des ADR concernés :
     n'introduit **aucune** migration.
 - **Journalisation d'audit** (PRD §11.4) — la **table `audit_logs`** (mécanisme de persistance) est
   **établie par #17** ([ADR-0019](./0019-journalisation-audit-et-prestations.md)) et journalise les
-  mutations de prestations (`SERVICE_CREATED`, `SERVICE_UPDATED`, `SERVICE_DEACTIVATED`). La
+  mutations de prestations (`SERVICE_CREATED`, `SERVICE_UPDATED`, `SERVICE_DEACTIVATED`). **Étendue par
+  #28** ([ADR-0026](./0026-fiche-client-portee-salon.md)) à la **création d'une fiche client**
+  (`CUSTOMER_CREATED`, entité `customer`) — journalisée non pas au titre de la liste §11.4 mais de
+  **§11.3** (« journalisation des accès sensibles » : créer une fiche est une collecte de PII), avec des
+  `metadata` **vides** (ni nom, ni téléphone, ni genre, ni note). La
   journalisation des **refus d'accès** (log de sécurité) reste **rattachée à #52** et peut réutiliser
   la même table via le port `AuditLog`. ADR-0015 pose le cadre : un éventuel log de refus ne contient
   **que** `user_id` (UUID), `role`, méthode + chemin et décision — **jamais** de jeton, mot de passe,

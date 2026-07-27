@@ -129,6 +129,46 @@ class ServiceNotFound(DomainError):
     """
 
 
+class InvalidCustomerName(DomainError):
+    """Le nom de la fiche client est vide ou hors bornes (US-4.1, #28)."""
+
+
+class InvalidCustomerGender(DomainError):
+    """Le genre soumis n'appartient pas à l'énumération fermée (US-4.1, #28).
+
+    Le genre est **optionnel** (absent → `None`) mais **fermé** quand il est
+    fourni : aucune valeur n'est devinée ni corrigée (pas de tolérance de casse).
+    Message neutre — l'adapter entrant la traduit en `422`.
+    """
+
+
+class InvalidCustomerNotes(DomainError):
+    """Les notes internes dépassent la borne applicative (US-4.1, #28).
+
+    La colonne est `TEXT` : la borne est **applicative** (ne pas accepter un corps
+    non borné). Le message ne reprend **jamais** le contenu des notes (§11.3).
+    """
+
+
+class CustomerNotFound(DomainError):
+    """La fiche client visée n'existe pas pour ce salon (US-4.1, #28).
+
+    N'est traduite en `404` **qu'après** validation de la portée : une fiche hors
+    périmètre a déjà reçu un `403` générique (aucun oracle d'existence, §11.2).
+    """
+
+
+class CustomerAlreadyExists(DomainError):
+    """Une fiche porte déjà ce téléphone **dans ce salon** (doublon refusé, #28).
+
+    Levée par le pré-contrôle applicatif **et** par la retraduction de la violation
+    de l'index unique partiel `uq_customer_profiles_salon_phone` (filet de la course
+    concurrente). Deux fiches pour un même numéro fausseraient l'historique de
+    visites (#29) et les statistiques (#31). Message **neutre** : il ne rappelle
+    jamais le numéro (§11.3). L'adapter entrant la traduit en `409 Conflict`.
+    """
+
+
 class SlotAlreadyBooked(DomainError):
     """Le créneau est déjà réservé pour ce coiffeur (anti double-réservation, §8.1, #21).
 
@@ -307,6 +347,11 @@ __all__ = [
     "InvalidServiceDuration",
     "InvalidServiceCategory",
     "ServiceNotFound",
+    "InvalidCustomerName",
+    "InvalidCustomerGender",
+    "InvalidCustomerNotes",
+    "CustomerNotFound",
+    "CustomerAlreadyExists",
     "SlotAlreadyBooked",
     "SlotUnavailable",
     "SalonNotBookable",
