@@ -45,7 +45,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `/gerant/prestations` | **protégée** | `MANAGER` — catalogue et gestion des prestations (#17) |
 | `/gerant/planning` | **protégée** | `MANAGER` — planning du salon, jour/semaine/mois (#26) |
 | `/gerant/clients` | **protégée** | `MANAGER` — fichier client du salon, création de fiche (#28) |
-| `/gerant/clients/[customerId]` | **protégée** | `MANAGER` — fiche client + historique des visites terminées (#29) |
+| `/gerant/clients/[customerId]` | **protégée** | `MANAGER` — fiche client + historique des visites terminées (#29) + prestations préférées (#31) |
 | `/coiffeur/planning` | **protégée** | `HAIRDRESSER` actif — **son** planning assigné, lecture seule (#27) |
 | `POST /api/auth/login` | interne (BFF) | proxifie `POST /auth/login`, pose les cookies httpOnly |
 | `POST /api/auth/logout` | interne (BFF) | efface les cookies de session |
@@ -59,6 +59,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `GET /api/salons/[id]/customers` | interne (BFF) | proxifie `GET /salons/{id}/customers` (fiches du salon, #28) |
 | `POST /api/salons/[id]/customers` | interne (BFF) | proxifie `POST /salons/{id}/customers` (création de fiche, #28) |
 | `GET /api/salons/[id]/customers/[customerId]/appointments` | interne (BFF) | proxifie `GET /salons/{id}/customers/{id}/appointments` (historique des visites, #29) |
+| `GET /api/salons/[id]/customers/[customerId]/stats` | interne (BFF) | proxifie `GET /salons/{id}/customers/{id}/stats` (prestations préférées, #31) |
 
 `/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
 publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
@@ -155,7 +156,22 @@ au fuseau d'Abidjan) : le **backend reste l'autorité des montants** (`price_at_
 explicite** (« Aucune visite terminée pour ce client ») — pas une erreur. `client_id`/`user_id` ne sont
 **jamais** exposés (anti-oracle ADR-0026). Le Route Handler BFF
 `GET /api/salons/[id]/customers/[customerId]/appointments` proxifie la lecture avec des messages
-neutres. Les statistiques par client (#31) restent hors périmètre.
+neutres.
+
+### Clients — prestations préférées (#31)
+
+La page de détail `/gerant/clients/[customerId]` charge en parallèle (dans le même `Promise.all` que
+`get`/`history`) les **prestations préférées** du client (`stats` → `GET /salons/{id}/customers/{id}/stats`,
+#31) et rend, **sous** l'historique, un panneau **« Prestations préférées »** : un classement des
+prestations les plus fréquentes (rang, nom, « ×N fois », montant cumulé), du plus fréquent au moins
+fréquent (`CustomerServiceStatsPanel`). Le domaine `src/domain/customer/stats.ts` porte les types et
+réutilise `formatAmountXof` : le **backend reste l'autorité des chiffres** (comptes, montants figés,
+**ordre du classement**), le front **formate** seulement et ne re-trie jamais. Une fiche walk-in ou sans
+RDV terminé affiche un **état vide explicite** (« Aucune prestation réalisée pour ce client ») — pas une
+erreur. `client_id`/`user_id` ne sont **jamais** exposés (anti-oracle ADR-0026). Le Route Handler BFF
+`GET /api/salons/[id]/customers/[customerId]/stats` proxifie la lecture avec des messages neutres ; un
+échec **non-`not-found`** (`403`/réseau) **dégrade seulement ce panneau** (état neutre local) sans casser
+la fiche ni l'historique.
 
 ### Zone coiffeur — Mon planning (#27)
 

@@ -106,6 +106,107 @@ def visit_total(services: tuple[VisitService, ...]) -> decimal.Decimal:
     return total
 
 
+@dataclass(frozen=True)
+class ServiceFrequency:
+    """Une prestation dans le classement des préférences d'un client (US-4.3, #31).
+
+    `count` = nombre d'occurrences **réalisées** (une ligne `appointment_services`
+    par occurrence, dans les RDV `COMPLETED`) ; `total_amount` = somme des
+    `price_at_booking` de cette prestation (prix **figés** à la réservation, XOF,
+    jamais le tarif courant). `name` est le libellé **courant** (`services.name`),
+    résoluble même si la prestation est soft-deletée (`is_active = false`, FK
+    `RESTRICT`). La clé d'agrégation est **toujours** `service_id` (deux prestations
+    distinctes partageant un libellé ne sont pas fusionnées). `Decimal` de bout en
+    bout, **jamais** de flottant.
+    """
+
+    service_id: uuid.UUID
+    name: str
+    count: int
+    total_amount: decimal.Decimal
+
+
+@dataclass(frozen=True)
+class CustomerServiceStats:
+    """Statistiques « prestations préférées » d'une fiche : classement + totaux dérivés.
+
+    `services` est trié de la **plus fréquente à la moins fréquente** (ordre
+    déterministe, voir `favourite_services`). `total_visits` = nombre de visites
+    `COMPLETED` considérées ; `total_services` = nombre total d'occurrences de
+    prestations agrégées. Une fiche walk-in ou sans visite réalisée donne un
+    classement **vide** (comportement normal, pas une erreur). Rien n'est
+    persisté : tout est **dérivé en lecture** des visites déjà exposées par #29.
+    """
+
+    services: tuple[ServiceFrequency, ...] = ()
+    total_visits: int = 0
+    total_services: int = 0
+    currency: str = DEFAULT_CURRENCY
+
+
+def favourite_services(
+    visits: tuple[CustomerVisit, ...],
+    *,
+    currency: str = DEFAULT_CURRENCY,
+) -> CustomerServiceStats:
+    """Classe les prestations d'un client par fréquence (fonction **pure**).
+
+    Parcourt les visites (attendues `COMPLETED`, invariant §8.1 « ≥ 1 prestation »),
+    agrège par `service_id` (`count += 1`, `total_amount += price_at_booking`),
+    puis trie **fréquence décroissante**, en départageant par `total_amount`
+    décroissant, puis `name` croissant, puis `service_id` (chaîne) croissant —
+    ordre **déterministe** et stable (utile aux tests, indépendant de l'ordre
+    d'itération d'un dict). Une entrée vide (aucune visite) donne un classement
+    vide. `Decimal` de bout en bout : **jamais** de flottant.
+
+    Le lien `user_id`/`client_id` n'est **jamais** vu ici (encapsulé côté dépôt,
+    anti-oracle ADR-0026) : l'agrégation ne connaît que des prestations nommées.
+    """
+
+    # Agrégation par `service_id` — l'insertion préserve le premier libellé vu ;
+    # `services.name` étant stable par `service_id`, ce choix est sans effet en
+    # pratique (voir spec § *Open Questions* — clé = `service_id`, jamais le nom).
+    totals: dict[uuid.UUID, ServiceFrequency] = {}
+    total_services = 0
+    for visit in visits:
+        for service in visit.services:
+            total_services += 1
+            existing = totals.get(service.service_id)
+            if existing is None:
+                totals[service.service_id] = ServiceFrequency(
+                    service_id=service.service_id,
+                    name=service.name,
+                    count=1,
+                    total_amount=service.price_at_booking,
+                )
+            else:
+                totals[service.service_id] = ServiceFrequency(
+                    service_id=existing.service_id,
+                    name=existing.name,
+                    count=existing.count + 1,
+                    total_amount=existing.total_amount + service.price_at_booking,
+                )
+
+    ranked = tuple(
+        sorted(
+            totals.values(),
+            key=lambda entry: (
+                -entry.count,
+                -entry.total_amount,
+                entry.name,
+                str(entry.service_id),
+            ),
+        )
+    )
+
+    return CustomerServiceStats(
+        services=ranked,
+        total_visits=len(visits),
+        total_services=total_services,
+        currency=currency,
+    )
+
+
 def build_history(
     visits: tuple[CustomerVisit, ...],
     *,
@@ -145,6 +246,9 @@ __all__ = [
     "VisitService",
     "CustomerVisit",
     "VisitHistory",
+    "ServiceFrequency",
+    "CustomerServiceStats",
     "visit_total",
     "build_history",
+    "favourite_services",
 ]

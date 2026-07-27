@@ -53,6 +53,7 @@ from coiflink_api.application.customers import (
     CreateCustomer,
     CustomerCommand,
     GetCustomer,
+    GetCustomerServiceStats,
     GetCustomerVisitHistory,
     ListSalonCustomers,
 )
@@ -80,7 +81,11 @@ from coiflink_api.domain.errors import (
 )
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
-from coiflink_api.domain.visit import CustomerVisit, VisitHistory
+from coiflink_api.domain.visit import (
+    CustomerServiceStats,
+    CustomerVisit,
+    VisitHistory,
+)
 
 router = APIRouter(prefix="/salons", tags=["customers"])
 
@@ -200,6 +205,39 @@ class CustomerVisitHistoryResponse(BaseModel):
     currency: str
 
 
+class ServiceFrequencyResponse(BaseModel):
+    """Une prestation dans le classement des préférences d'un client (US-4.3, #31).
+
+    `count` = nombre d'occurrences **réalisées** (`COMPLETED`) ; `total_amount` =
+    somme des `price_at_booking` de cette prestation (prix **figés**, `NUMERIC(12,2)`
+    sérialisé en chaîne décimale, jamais de flottant). `name` est le libellé
+    **courant** (résoluble même si la prestation est soft-deletée).
+    """
+
+    service_id: uuid.UUID
+    name: str
+    count: int
+    total_amount: decimal.Decimal
+
+
+class CustomerServiceStatsResponse(BaseModel):
+    """Prestations préférées d'une fiche : classement **dérivé en lecture** (US-4.3, #31).
+
+    Les prestations sont classées de la **plus fréquente à la moins fréquente**.
+    `total_visits`/`total_services` sont dérivés à la volée des visites `COMPLETED`
+    (jamais persistés). Fiche walk-in ou sans visite → `services: []`,
+    `total_visits: 0`, `total_services: 0` (comportement **normal**, pas une
+    erreur). **`user_id`/`client_id` ne sont jamais exposés** (anti-oracle
+    ADR-0026). Devise **XOF** (§9.6).
+    """
+
+    customer_id: uuid.UUID
+    services: list[ServiceFrequencyResponse]
+    total_visits: int
+    total_services: int
+    currency: str
+
+
 # --------------------------------------------------------------------------- #
 # Injection de dépendances (surchargeable en test via `app.dependency_overrides`).
 # --------------------------------------------------------------------------- #
@@ -268,6 +306,26 @@ def _history_response(
         last_visit_at=history.last_visit_at,
         total_amount=history.total_amount,
         currency=history.currency,
+    )
+
+
+def _stats_response(
+    customer_id: uuid.UUID, stats: CustomerServiceStats
+) -> CustomerServiceStatsResponse:
+    return CustomerServiceStatsResponse(
+        customer_id=customer_id,
+        services=[
+            ServiceFrequencyResponse(
+                service_id=service.service_id,
+                name=service.name,
+                count=service.count,
+                total_amount=service.total_amount,
+            )
+            for service in stats.services
+        ],
+        total_visits=stats.total_visits,
+        total_services=stats.total_services,
+        currency=stats.currency,
     )
 
 
@@ -425,6 +483,45 @@ def get_customer_history(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
     return _history_response(customer_id, history)
+
+
+@router.get(
+    "/{salon_id}/customers/{customer_id}/stats",
+    response_model=CustomerServiceStatsResponse,
+    summary="Prestations préférées d'un client (les plus fréquentes)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "Fiche introuvable (portée déjà validée)"},
+    },
+)
+def get_customer_stats(
+    salon_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    repository: Annotated[CustomerRepository, Depends(get_customer_repository)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.CUSTOMER_MANAGE))
+    ],
+) -> CustomerServiceStatsResponse:
+    """Prestations préférées de la fiche `(salon_id, customer_id)` (US-4.3, #31).
+
+    Lecture **fiche-scopée** dérivée des visites `COMPLETED` (réutilise la brique
+    #29, **aucun nouvel accès base**) : la fiche est résolue dans le salon (`404`
+    **après** portée si hors salon/inconnue, sans oracle) puis ses visites
+    terminées liées sont agrégées **par `service_id`** et classées de la plus
+    fréquente à la moins fréquente. Une fiche walk-in ou sans visite réalisée →
+    `services: []` (comportement normal). Montants **figés** (`price_at_booking`,
+    XOF). Aucune écriture, aucun audit — ni `user_id`/`client_id` exposés.
+    """
+
+    try:
+        stats = GetCustomerServiceStats(repository).execute(salon_id, customer_id)
+    except CustomerNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _stats_response(customer_id, stats)
 
 
 __all__ = ["router"]

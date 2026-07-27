@@ -5,6 +5,7 @@
 // `src/adapters/api/`.
 
 import type { Customer, CustomerInput } from "@/src/domain/customer/customer";
+import type { CustomerServiceStats } from "@/src/domain/customer/stats";
 import type { VisitHistory } from "@/src/domain/customer/visit";
 
 // Motifs d'échec **génériques** (aucune divulgation) : `invalid` = `422` de
@@ -46,6 +47,16 @@ export type CustomerHistoryResult =
       reason: "forbidden" | "unauthenticated" | "not-found" | "unavailable";
     };
 
+// Prestations préférées d'une fiche (US-4.3, #31). `not-found` = `404` (fiche
+// absente, portée validée) ; une fiche walk-in ou sans visite réalisée renvoie
+// `ok: true` avec un classement **vide** (pas une erreur).
+export type CustomerStatsResult =
+  | { ok: true; stats: CustomerServiceStats }
+  | {
+      ok: false;
+      reason: "forbidden" | "unauthenticated" | "not-found" | "unavailable";
+    };
+
 export interface CustomerListOptions {
   limit?: number;
   offset?: number;
@@ -60,4 +71,6 @@ export interface CustomerGateway {
   get(salonId: string, customerId: string): Promise<GetCustomerResult>;
   // Proxifie `GET /salons/{id}/customers/{customerId}/appointments` (historique).
   history(salonId: string, customerId: string): Promise<CustomerHistoryResult>;
+  // Proxifie `GET /salons/{id}/customers/{customerId}/stats` (prestations préférées).
+  stats(salonId: string, customerId: string): Promise<CustomerStatsResult>;
 }

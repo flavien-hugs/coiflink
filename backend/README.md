@@ -745,6 +745,59 @@ ses `services` (`name` + `price_at_booking`) et son `total_amount` — ainsi qu'
   volée (`domain/visit.py::build_history`) ; les colonnes homonymes de `customer_profiles` **restent à
   leurs défauts** (aucune dénormalisation, aucune migration). Lecture pure : **aucun** audit.
 
+## Clients — prestations préférées (US-4.3, #31)
+
+Le gérant **connaît les prestations préférées d'un client** — les prestations les **plus fréquentes**,
+classées de la plus à la moins fréquente (critère d'acceptation). Une route **de lecture** s'ajoute à la
+tranche « clients », sous le même préfixe fiche-scopé et **protégée** par `CUSTOMER_MANAGE` + portée
+salon (rien n'entre dans `PUBLIC_ROUTE_PATHS`). **Aucun nouvel accès base** : le classement est **dérivé
+en lecture** des mêmes visites `COMPLETED` que l'historique #29 (`list_visits`).
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/customers/{customer_id}/stats` | `CUSTOMER_MANAGE` + portée | `200` classement \| `401` \| `403` \| `404` fiche hors salon | — (lecture) |
+
+```bash
+curl "$API/salons/$SALON_ID/customers/$CUSTOMER_ID/stats" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+```jsonc
+// 200 — prestations les plus fréquentes d'abord
+{
+  "customer_id": "…uuid…",
+  "services": [
+    { "service_id": "…", "name": "Coupe homme", "count": 5, "total_amount": "25000.00" },
+    { "service_id": "…", "name": "Barbe",        "count": 3, "total_amount": "6000.00"  }
+  ],
+  "total_visits": 6,      // visites COMPLETED considérées (dérivé)
+  "total_services": 8,    // occurrences de prestations agrégées (dérivé)
+  "currency": "XOF"
+}
+```
+
+- **« Préférée » = fréquence des `COMPLETED`.** L'agrégation (`domain/visit.py::favourite_services`, pure)
+  parcourt les visites **réalisées** (mêmes `HISTORY_STATUSES` que #29) et compte, **par `service_id`**,
+  le nombre d'**occurrences** (`count`) et la **somme des `price_at_booking`** (`total_amount`). Un RDV
+  `CANCELLED`/`NO_SHOW`/actif ne pèse **pas**.
+- **Clé d'agrégation = `service_id`** (jamais le nom) : deux prestations distinctes partageant un libellé
+  ne sont **pas** fusionnées. Le `name` affiché est le libellé **courant** (`services.name`) — résoluble
+  même pour une prestation soft-deletée (FK `RESTRICT`).
+- **Tri déterministe** : fréquence décroissante, puis `total_amount` décroissant, puis `name` croissant,
+  puis `service_id` — ordre stable (le backend est l'autorité du classement, le front ne re-trie pas).
+- **Montants figés.** `total_amount` = somme des `price_at_booking` (prix figés à la réservation, jamais
+  le tarif courant) ; devise **XOF** (§9.6), `NUMERIC(12,2)` sérialisé en chaîne décimale (jamais de
+  flottant).
+- **Lien fiche → RDV encapsulé (anti-oracle ADR-0026).** Réutilise `list_visits` : le pont
+  `customer_profiles.user_id == appointments.client_id` (même `salon_id`) reste calculé **entièrement en
+  SQL** ; `user_id`/`client_id` ne sont **jamais** renvoyés ni journalisés. Une **fiche walk-in**
+  (`user_id = NULL`) ou sans visite réalisée renvoie `200` avec `services: []`, `total_visits: 0`,
+  `total_services: 0` — comportement **normal**, indiscernable d'une fiche liée sans visite.
+- **Isolation §11.2 en profondeur.** `require_salon_scope` (403 générique) **et** fiche résolue via
+  `(salon_id, customer_id)` (réutilise `GetCustomer` → `404` **après** portée) **et** RDV refiltrés
+  `salon_id`/`client_id` en SQL : jamais les prestations consommées par le même client dans un **autre**
+  salon. Lecture pure : **aucun** audit.
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

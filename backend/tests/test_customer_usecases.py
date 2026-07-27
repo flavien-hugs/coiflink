@@ -27,6 +27,7 @@ from coiflink_api.application.customers import (
     CreateCustomer,
     CustomerCommand,
     GetCustomer,
+    GetCustomerServiceStats,
     GetCustomerVisitHistory,
     ListSalonCustomers,
 )
@@ -577,3 +578,184 @@ class TestGetCustomerVisitHistory:
         with pytest.raises(CustomerNotFound):
             GetCustomerVisitHistory(repo).execute(_SALON_ID, uuid.uuid4())
         assert repo.last_visits_call is None
+
+
+# ---------------------------------------------------------------------------
+# GetCustomerServiceStats (US-4.3, #31)
+# ---------------------------------------------------------------------------
+
+
+_SERVICE_ID_C = uuid.UUID("cccccccc-cccc-0000-0000-000000000003")
+_APT_ID_3 = uuid.UUID("33333333-3333-0000-0000-000000000003")
+_APT_ID_4 = uuid.UUID("44444444-4444-0000-0000-000000000004")
+
+
+def _make_completed_visit_with_services(
+    appointment_id: uuid.UUID,
+    services_data: list[tuple[uuid.UUID, str, str]],
+    date: datetime.date = _DATE_RECENT,
+) -> CustomerVisit:
+    """Crée une visite COMPLETED avec les prestations (service_id, nom, prix)."""
+    services = tuple(
+        VisitService(
+            service_id=sid,
+            name=name,
+            price_at_booking=decimal.Decimal(price),
+        )
+        for sid, name, price in services_data
+    )
+    total = sum((decimal.Decimal(p) for _, _, p in services_data), decimal.Decimal("0"))
+    return CustomerVisit(
+        appointment_id=appointment_id,
+        date=date,
+        start_time=_TIME_09,
+        end_time=_TIME_10,
+        status=AppointmentStatus.COMPLETED.value,
+        services=services,
+        total_amount=total,
+    )
+
+
+class TestGetCustomerServiceStats:
+    def _create_customer(
+        self, repo: FakeCustomerRepository, salon_id: uuid.UUID
+    ) -> object:
+        audit = FakeAuditLog()
+        return CreateCustomer(repo, audit).execute(
+            salon_id, CustomerCommand(full_name="Awa Koné"), actor_user_id=_ACTOR_ID
+        )
+
+    def test_raises_not_found_for_unknown_customer(self) -> None:
+        repo = FakeCustomerRepository()
+        with pytest.raises(CustomerNotFound):
+            GetCustomerServiceStats(repo).execute(_SALON_ID, uuid.uuid4())
+
+    def test_raises_not_found_for_customer_in_other_salon(self) -> None:
+        """Isolation §11.2 : fiche d'un autre salon indiscernable d'une inexistante."""
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _OTHER_SALON_ID)
+        with pytest.raises(CustomerNotFound):
+            GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+
+    def test_walk_in_returns_empty_services(self) -> None:
+        """Fiche walk-in (aucune visite COMPLETED) → classement vide (comportement normal)."""
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        assert stats.services == ()
+
+    def test_walk_in_total_visits_is_zero(self) -> None:
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        assert stats.total_visits == 0
+
+    def test_walk_in_total_services_is_zero(self) -> None:
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        assert stats.total_services == 0
+
+    def test_walk_in_currency_is_xof(self) -> None:
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        assert stats.currency == "XOF"
+
+    def test_statuses_passed_to_repository_is_history_statuses(self) -> None:
+        """Le cas d'usage passe exactement `HISTORY_STATUSES` au dépôt (filtre COMPLETED)."""
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        assert repo.last_visits_call is not None
+        _, _, statuses = repo.last_visits_call
+        assert statuses == HISTORY_STATUSES
+
+    def test_repository_call_uses_correct_salon_and_customer_ids(self) -> None:
+        """Défense en profondeur §11.2 : `salon_id` et `customer_id` sont transmis au dépôt."""
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        assert repo.last_visits_call is not None
+        salon_arg, customer_arg, _ = repo.last_visits_call
+        assert salon_arg == _SALON_ID
+        assert customer_arg == customer.id
+
+    def test_not_found_raised_before_visits_query(self) -> None:
+        """CustomerNotFound est levée avant tout appel `list_visits`."""
+        repo = FakeCustomerRepository()
+        with pytest.raises(CustomerNotFound):
+            GetCustomerServiceStats(repo).execute(_SALON_ID, uuid.uuid4())
+        assert repo.last_visits_call is None
+
+    def test_only_completed_visits_counted(self) -> None:
+        """Seules les visites `COMPLETED` sont comptabilisées — PENDING/CANCELLED exclus."""
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        completed = _make_completed_visit_with_services(
+            _APT_ID_1, [(_SERVICE_ID_A, "Coupe homme", "5000.00")]
+        )
+        pending = _make_visit_with_status(AppointmentStatus.PENDING.value, _APT_ID_2)
+        cancelled = _make_visit_with_status(AppointmentStatus.CANCELLED.value, _APT_ID_3)
+        repo.set_visits(customer.id, (completed, pending, cancelled))
+        stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        # Seul le COMPLETED compte : un service, count=1.
+        assert len(stats.services) == 1
+        assert stats.services[0].count == 1
+        assert stats.total_visits == 1
+        assert stats.total_services == 1
+
+    def test_no_show_visit_excluded(self) -> None:
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        no_show = _make_visit_with_status(AppointmentStatus.NO_SHOW.value, _APT_ID_2)
+        repo.set_visits(customer.id, (no_show,))
+        stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        assert stats.services == ()
+        assert stats.total_visits == 0
+
+    def test_multiple_visits_aggregated(self) -> None:
+        """Plusieurs visites COMPLETED → services agrégés par fréquence."""
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        v1 = _make_completed_visit_with_services(
+            _APT_ID_1, [(_SERVICE_ID_A, "Coupe homme", "5000.00")]
+        )
+        v2 = _make_completed_visit_with_services(
+            _APT_ID_2,
+            [(_SERVICE_ID_A, "Coupe homme", "5000.00"), (_SERVICE_ID_B, "Barbe", "2000.00")],
+            date=_DATE_OLDER,
+        )
+        repo.set_visits(customer.id, (v1, v2))
+        stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        assert stats.total_visits == 2
+        assert stats.total_services == 3
+        # Coupe homme (count=2) avant Barbe (count=1).
+        assert stats.services[0].service_id == _SERVICE_ID_A
+        assert stats.services[0].count == 2
+        assert stats.services[1].service_id == _SERVICE_ID_B
+        assert stats.services[1].count == 1
+
+    def test_total_amount_is_sum_of_price_at_booking(self) -> None:
+        """Montants = somme des `price_at_booking` figés, pas le tarif courant."""
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        v1 = _make_completed_visit_with_services(
+            _APT_ID_1, [(_SERVICE_ID_A, "Coupe homme", "5000.00")]
+        )
+        v2 = _make_completed_visit_with_services(
+            _APT_ID_2, [(_SERVICE_ID_A, "Coupe homme", "6000.00")]
+        )
+        repo.set_visits(customer.id, (v1, v2))
+        stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        assert stats.services[0].total_amount == decimal.Decimal("11000.00")
+
+    def test_total_amount_is_decimal_not_float(self) -> None:
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        visit = _make_completed_visit_with_services(
+            _APT_ID_1, [(_SERVICE_ID_A, "Coupe", "5000.00")]
+        )
+        repo.set_visits(customer.id, (visit,))
+        stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
+        assert isinstance(stats.services[0].total_amount, decimal.Decimal)
