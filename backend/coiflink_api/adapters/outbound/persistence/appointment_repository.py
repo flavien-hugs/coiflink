@@ -358,18 +358,32 @@ class SqlAppointmentRepository:
         self,
         client_id: uuid.UUID,
         statuses: tuple[str, ...] | None = None,
+        *,
+        newest_first: bool = False,
     ) -> tuple[Appointment, ...]:
-        """RDV du client (avec prestations), filtrés par statut, triés chronologiquement."""
+        """RDV du client (avec prestations), filtrés par statut, triés par date/heure.
+
+        `newest_first=True` inverse l'ordre (du plus récent au plus ancien) pour
+        l'historique client (#30) ; par défaut, ordre chronologique croissant (RDV à
+        venir de `GET /appointments`). L'index `ix_appointments_client_id` couvre le
+        filtre `client_id`.
+        """
 
         stmt = select(models.Appointment).where(
             models.Appointment.client_id == client_id
         )
         if statuses is not None:
             stmt = stmt.where(models.Appointment.status.in_(statuses))
-        stmt = stmt.order_by(
-            models.Appointment.appointment_date.asc(),
-            models.Appointment.start_time.asc(),
-        )
+        if newest_first:
+            stmt = stmt.order_by(
+                models.Appointment.appointment_date.desc(),
+                models.Appointment.start_time.desc(),
+            )
+        else:
+            stmt = stmt.order_by(
+                models.Appointment.appointment_date.asc(),
+                models.Appointment.start_time.asc(),
+            )
         rows = self._session.scalars(stmt).all()
         return tuple(_to_domain(row, self._load_services(row.id)) for row in rows)
 

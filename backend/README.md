@@ -635,6 +635,31 @@ est **câblée ici pour la première fois**.
   `status` (schéma #3). Les tests e2e Postgres (isolation inter-coiffeurs/inter-salons, RDV non assignés
   exclus) **skip proprement** sans `DATABASE_URL`.
 
+## Historique de prestations — côté client (US-4.4, #30)
+
+Le **client** consulte, depuis l'application mobile, **son propre** historique de RDV **terminés**
+(`COMPLETED`), tous salons confondus — et **rien d'autre** (unique critère d'acceptation). C'est la
+contrepartie cliente de l'historique salon-scopé livré au gérant (#29) : là où le gérant lit
+l'historique d'une **fiche de son salon**, le client lit **ses** RDV réalisés.
+
+| Méthode | Route | Accès | Réponse | Erreurs |
+| --- | --- | --- | --- | --- |
+| `GET` | `/appointments/history` | `APPOINTMENT_READ_OWN` (client) | `200` `list[AppointmentResponse]` (`COMPLETED`, du plus récent au plus ancien, prestations + `price_at_booking`) | `401` · `403` (rôle sans la permission) |
+
+- **Route d'appartenance** (patron `GET /appointments`) : **pas** de `salon_id` dans le chemin, **pas**
+  de `require_salon_scope`. Le filtre `client_id = principal.id` est **imposé serveur** — un client ne
+  voit **que ses propres** RDV, jamais ceux d'un tiers (§11.2/§11.3).
+- **Statut forcé serveur (« rien d'autre »)** : le jeu `CLIENT_HISTORY_STATUSES = (COMPLETED,)`
+  (`domain/appointment.py`) est **décidé serveur** ; le client ne soumet **aucun** paramètre de statut.
+  Impossible, par construction, d'obtenir un RDV `PENDING`/`CONFIRMED`/`CANCELLED`/`NO_SHOW` via cette
+  route. La route « Mes rendez-vous » (`GET /appointments`, actifs) reste **inchangée**.
+- **Ordre & montants** : lecture **du plus récent au plus ancien** (`list_for_client(newest_first=True)`,
+  additif, défaut inchangé pour `GET /appointments`) ; montants = `price_at_booking` **figés** (aucun
+  calcul, aucun agrégat, aucun reçu — statistiques client différées #31). Lecture seule (RDV terminal
+  §8.1). **Route protégée** : **rien** ajouté à `PUBLIC_ROUTE_PATHS`.
+- **Aucun nouveau schéma** : la lecture s'appuie sur `status`/`appointment_date`/`start_time` et la
+  jonction `appointment_services.price_at_booking` (schéma #3), via l'index `ix_appointments_client_id`.
+
 ## Clients — fiche client (US-4.1, #28 — [ADR-0026](../docs/adr/0026-fiche-client-portee-salon.md))
 
 Le gérant **crée une fiche client rattachée à son salon** (critère d'acceptation). Les routes sont

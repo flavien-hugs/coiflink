@@ -1111,6 +1111,170 @@ void main() {
     });
 
     // -----------------------------------------------------------------------
+    // myHistory
+    // -----------------------------------------------------------------------
+    group('myHistory', () {
+      group('URL et en-tête', () {
+        test('envoie GET /appointments/history avec Authorization: Bearer',
+            () async {
+          final capturing = _CapturingClient(
+            statusCode: 200,
+            body: jsonEncode(<dynamic>[
+              _appointmentJsonFull(status: 'COMPLETED'),
+            ]),
+          );
+
+          await _gateway(capturing).myHistory(
+            accessToken: 'test-history-token',
+          );
+
+          final url = capturing.lastRequest!.url;
+          expect(url.path, endsWith('/appointments/history'));
+          expect(capturing.lastRequest!.method, 'GET');
+          final auth = capturing.lastHeaders?['authorization'];
+          expect(auth, 'Bearer test-history-token');
+        });
+      });
+
+      group('mapping 200 → List<Appointment>', () {
+        test('liste vide → liste vide', () async {
+          final client = _FakeHttpClient(
+            statusCode: 200,
+            body: jsonEncode(<dynamic>[]),
+          );
+
+          final result = await _gateway(client).myHistory(accessToken: 'tok');
+
+          expect(result, isEmpty);
+        });
+
+        test('un rendez-vous COMPLETED → liste à un élément avec statut completed',
+            () async {
+          final client = _FakeHttpClient(
+            statusCode: 200,
+            body: jsonEncode(<dynamic>[
+              _appointmentJsonFull(id: 'rdv-hist-1', status: 'COMPLETED'),
+            ]),
+          );
+
+          final result = await _gateway(client).myHistory(accessToken: 'tok');
+
+          expect(result, hasLength(1));
+          expect(result.first.id, 'rdv-hist-1');
+          expect(result.first.status, AppointmentStatus.completed);
+          expect(result.first.status.label, 'Terminé');
+        });
+
+        test('plusieurs rendez-vous → liste complète dans l\'ordre', () async {
+          final client = _FakeHttpClient(
+            statusCode: 200,
+            body: jsonEncode(<dynamic>[
+              _appointmentJsonFull(id: 'rdv-h1', status: 'COMPLETED'),
+              _appointmentJsonFull(id: 'rdv-h2', status: 'COMPLETED'),
+            ]),
+          );
+
+          final result = await _gateway(client).myHistory(accessToken: 'tok');
+
+          expect(result, hasLength(2));
+          expect(result[0].id, 'rdv-h1');
+          expect(result[1].id, 'rdv-h2');
+        });
+
+        test('services portent price_at_booking figé', () async {
+          final client = _FakeHttpClient(
+            statusCode: 200,
+            body: jsonEncode(<dynamic>[
+              _appointmentJsonFull(
+                status: 'COMPLETED',
+                services: [
+                  {'service_id': 'svc-hist', 'price_at_booking': '7500.00'},
+                ],
+              ),
+            ]),
+          );
+
+          final result = await _gateway(client).myHistory(accessToken: 'tok');
+
+          expect(result.first.services, hasLength(1));
+          expect(result.first.services.first.serviceId, 'svc-hist');
+          expect(result.first.services.first.priceAtBooking, '7500.00');
+        });
+      });
+
+      group('gestion des erreurs', () {
+        test('401 → UnauthorizedException', () async {
+          final client = _FakeHttpClient(statusCode: 401, body: '{}');
+
+          await expectLater(
+            _gateway(client).myHistory(accessToken: 'expired'),
+            throwsA(isA<UnauthorizedException>()),
+          );
+        });
+
+        test('500 → AppointmentGatewayException', () async {
+          final client = _FakeHttpClient(statusCode: 500, body: '');
+
+          await expectLater(
+            _gateway(client).myHistory(accessToken: 'tok'),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('panne réseau → AppointmentGatewayException', () async {
+          await expectLater(
+            _gateway(_NetworkFailClient()).myHistory(accessToken: 'tok'),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('corps JSON illisible sur 200 → AppointmentGatewayException',
+            () async {
+          final client =
+              _FakeHttpClient(statusCode: 200, body: 'not-valid-json');
+
+          await expectLater(
+            _gateway(client).myHistory(accessToken: 'tok'),
+            throwsA(isA<AppointmentGatewayException>()),
+          );
+        });
+
+        test('UnauthorizedException ne contient pas le jeton (§11.1)', () async {
+          final client = _FakeHttpClient(statusCode: 401, body: '{}');
+
+          Object? caught;
+          try {
+            await _gateway(client).myHistory(
+              accessToken: 'secret-history-token-xyz',
+            );
+          } catch (e) {
+            caught = e;
+          }
+
+          expect(caught, isA<UnauthorizedException>());
+          final msg = (caught as UnauthorizedException).message;
+          expect(msg.contains('secret-history-token-xyz'), isFalse);
+        });
+
+        test('message d\'erreur ne contient pas l\'URL ni de PII (§11)',
+            () async {
+          final client = _FakeHttpClient(statusCode: 500, body: '');
+
+          Object? caught;
+          try {
+            await _gateway(client).myHistory(accessToken: 'tok');
+          } catch (e) {
+            caught = e;
+          }
+
+          expect(caught, isA<AppointmentGatewayException>());
+          final msg = (caught as AppointmentGatewayException).message;
+          expect(msg.contains('test.local'), isFalse);
+        });
+      });
+    });
+
+    // -----------------------------------------------------------------------
     // cancel
     // -----------------------------------------------------------------------
     group('cancel', () {

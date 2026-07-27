@@ -26,6 +26,7 @@ from coiflink_api.domain.appointment import (
     AppointmentUpdate,
     BookedService,
     CLIENT_CANCELLABLE_STATUSES,
+    CLIENT_HISTORY_STATUSES,
     CLIENT_MODIFIABLE_STATUSES,
     MAX_CANCELLATION_REASON_LENGTH,
     REVENUE_STATUSES,
@@ -554,6 +555,53 @@ class TestRevenueStatuses:
 
     def test_is_tuple_type(self) -> None:
         assert isinstance(REVENUE_STATUSES, tuple)
+
+
+# ---------------------------------------------------------------------------
+# CLIENT_HISTORY_STATUSES (US-4.4, #30)
+# ---------------------------------------------------------------------------
+
+
+class TestClientHistoryStatuses:
+    """Invariant acceptation #30 : un client ne voit que ses RDV COMPLETED.
+
+    Le filtre est décidé serveur (jamais soumis par le client). La constante est
+    nommée distinctement de `REVENUE_STATUSES` même si les deux valent `(COMPLETED,)`
+    au MVP : les concepts « visible dans l'historique client » et « comptabilisé au CA »
+    sont deux décisions métier séparées, susceptibles de diverger.
+    """
+
+    def test_is_tuple_type(self) -> None:
+        assert isinstance(CLIENT_HISTORY_STATUSES, tuple)
+
+    def test_contains_completed(self) -> None:
+        assert "COMPLETED" in CLIENT_HISTORY_STATUSES
+
+    def test_exactly_one_status(self) -> None:
+        assert len(CLIENT_HISTORY_STATUSES) == 1
+
+    def test_does_not_contain_pending(self) -> None:
+        # Acceptation « rien d'autre » : PENDING est exclu.
+        assert "PENDING" not in CLIENT_HISTORY_STATUSES
+
+    def test_does_not_contain_confirmed(self) -> None:
+        assert "CONFIRMED" not in CLIENT_HISTORY_STATUSES
+
+    def test_does_not_contain_cancelled(self) -> None:
+        assert "CANCELLED" not in CLIENT_HISTORY_STATUSES
+
+    def test_does_not_contain_no_show(self) -> None:
+        assert "NO_SHOW" not in CLIENT_HISTORY_STATUSES
+
+    def test_distinct_from_client_modifiable_statuses(self) -> None:
+        # Un RDV COMPLETED est justement ce que le client NE peut PAS modifier.
+        assert not set(CLIENT_HISTORY_STATUSES) & set(CLIENT_MODIFIABLE_STATUSES)
+
+    def test_coincides_with_revenue_statuses_at_mvp(self) -> None:
+        # Invariant MVP : les deux constantes valent (COMPLETED,) — la séparation
+        # est nominale, pas encore factuelle. Si l'un évolue, ce test doit être
+        # revu (et la séparation justifiée).
+        assert set(CLIENT_HISTORY_STATUSES) == set(REVENUE_STATUSES)
 
 
 # ---------------------------------------------------------------------------

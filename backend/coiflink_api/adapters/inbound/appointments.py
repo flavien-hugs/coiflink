@@ -92,6 +92,7 @@ from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepo
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.appointment import (
     Appointment,
+    CLIENT_HISTORY_STATUSES,
     CLIENT_MODIFIABLE_STATUSES,
 )
 from coiflink_api.domain.availability import SlotRange
@@ -457,6 +458,48 @@ def list_my_appointments(
 
     result = ListMyAppointments(appointments).execute(
         principal.id, statuses=CLIENT_MODIFIABLE_STATUSES
+    )
+    return [_appointment_response(appointment) for appointment in result]
+
+
+@router.get(
+    "/appointments/history",
+    response_model=list[AppointmentResponse],
+    summary="Consulter son historique de prestations (client, US-4.4)",
+    responses={
+        200: {
+            "description": (
+                "RDV terminés (COMPLETED) du client, du plus récent au plus ancien"
+            )
+        },
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant (lecture réservée au client)"},
+    },
+)
+def list_my_appointment_history(
+    appointments: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    principal: Annotated[
+        Principal, Depends(require_permission(Permission.APPOINTMENT_READ_OWN))
+    ],
+) -> list[AppointmentResponse]:
+    """Liste les RDV **terminés** (`COMPLETED`) du **client authentifié** (US-4.4, #30).
+
+    Route d'**appartenance** (pas de portée salon, `APPOINTMENT_READ_OWN`) : le filtre
+    `client_id = principal.id` est imposé serveur — un client ne voit **que ses
+    propres** RDV, tous salons confondus, jamais ceux d'un tiers (§11.2/§11.3). Le
+    statut `COMPLETED` est **décidé serveur** (`CLIENT_HISTORY_STATUSES`) : le client
+    ne soumet **aucun** statut, l'acceptation « son historique de RDV terminés et rien
+    d'autre » est donc garantie **par construction**. Chaque RDV porte ses prestations
+    et leurs montants **figés** (`price_at_booking`). Lecture seule (RDV terminal
+    §8.1) — aucune action de modification/annulation. Ordre **du plus récent au plus
+    ancien**. `401`/`403` **génériques** (aucun oracle). L'écran est **vide** (≠ erreur)
+    tant qu'aucun RDV n'a été passé à `COMPLETED` par le gérant (#25).
+    """
+
+    result = ListMyAppointments(appointments).execute(
+        principal.id, statuses=CLIENT_HISTORY_STATUSES, newest_first=True
     )
     return [_appointment_response(appointment) for appointment in result]
 

@@ -946,13 +946,24 @@ class FakeAppointmentRepository:
         self._appointments[appointment_id] = updated
         return updated
 
-    def list_for_client(self, client_id, statuses=None):  # type: ignore[no-untyped-def]
-        """Liste les RDV du `client_id`, filtrés par `statuses` si fourni."""
-        return tuple(
-            a for a in self._appointments.values()
+    def list_for_client(  # type: ignore[no-untyped-def]
+        self, client_id, statuses=None, *, newest_first=False
+    ):
+        """Liste les RDV du `client_id`, filtrés par `statuses` si fourni.
+
+        `newest_first` inverse l'ordre (historique #30) ; par défaut, tri
+        chronologique croissant `(date, start_time)` — miroir du SQL.
+        """
+        result = [
+            a
+            for a in self._appointments.values()
             if a.client_id == client_id
             and (statuses is None or a.status in statuses)
+        ]
+        result.sort(
+            key=lambda a: (a.date, a.start_time), reverse=newest_first
         )
+        return tuple(result)
 
     def list_for_salon(  # type: ignore[no-untyped-def]
         self, salon_id, date_from, date_to, statuses=None

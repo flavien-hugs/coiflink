@@ -50,6 +50,10 @@ class _StubGateway implements AppointmentGateway {
       throw UnimplementedError();
 
   @override
+  Future<List<Appointment>> myHistory({required String accessToken}) =>
+      throw UnimplementedError();
+
+  @override
   Future<Appointment> modify({
     required String appointmentId,
     required BookingDraft draft,

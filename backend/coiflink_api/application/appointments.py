@@ -660,12 +660,13 @@ class AssignHairdresser:
 
 
 class ListMyAppointments:
-    """Liste les RDV **du client** authentifié (lecture « Mes rendez-vous », #23).
+    """Liste les RDV **du client** authentifié (« Mes rendez-vous » #23, historique #30).
 
-    Prérequis du flux de modification : le client retrouve ses RDV pour en choisir
-    un à modifier. Ne renvoie **que** ses propres RDV (§11.2/§11.3) ; `statuses`
-    restreint aux états utiles (par défaut, l'adapter entrant filtre les états
-    actifs/modifiables `PENDING`/`CONFIRMED`).
+    Ne renvoie **que** ses propres RDV (§11.2/§11.3) ; `statuses` restreint aux états
+    utiles — l'adapter entrant force le jeu (actifs `PENDING`/`CONFIRMED` pour « Mes
+    rendez-vous », `COMPLETED` pour l'historique US-4.4 #30), jamais un statut soumis
+    par le client. `newest_first` inverse l'ordre : l'historique se lit du plus récent
+    au plus ancien, alors que « Mes rendez-vous » liste les RDV à venir (croissant).
     """
 
     def __init__(self, appointment_repository: AppointmentRepository) -> None:
@@ -676,8 +677,11 @@ class ListMyAppointments:
         client_id: uuid.UUID,
         *,
         statuses: tuple[str, ...] | None = None,
+        newest_first: bool = False,
     ) -> tuple[Appointment, ...]:
-        return self._appointments.list_for_client(client_id, statuses)
+        return self._appointments.list_for_client(
+            client_id, statuses, newest_first=newest_first
+        )
 
 
 class ListSalonAppointments:
