@@ -259,8 +259,13 @@ amorcé** avec la **création d'une fiche client** (#28, voir
 salon (nom, téléphone optionnel normalisé E.164, genre optionnel, notes internes) via
 `POST /salons/{salon_id}/customers` — permission `CUSTOMER_MANAGE`, **isolation par salon** (§11.2),
 unicité du téléphone **dans le salon** garantie en base, création **journalisée** (§11.4/§11.3) sans
-aucune PII au journal ; la section **Clients** du dashboard gérant est ouverte. L'historique des
-visites (#29), les statistiques par client (#31) et l'encaissement (#33+) restent à venir.
+aucune PII au journal ; la section **Clients** du dashboard gérant est ouverte. **L'historique des
+visites d'un client** (#29) est livré : `GET /salons/{salon_id}/customers/{customer_id}/appointments`
+liste les RDV **terminés** (`COMPLETED`) de la fiche avec prestations nommées et montants figés
+(`price_at_booking`, XOF), plus un résumé dérivé en lecture (nombre de visites, dernière visite,
+total) — lecture salon-scopée et fiche-scopée, lien fiche ↔ compte encapsulé (anti-oracle ADR-0026),
+rendu par la page de détail `/gerant/clients/{id}`. Les statistiques par client (#31) et l'encaissement
+(#33+) restent à venir.
 
 ---
 

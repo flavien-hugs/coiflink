@@ -680,6 +680,46 @@ journalisée au titre de §11.3 (« journalisation des accès sensibles » : cr�
 Les lectures ne sont pas journalisées. **Invariant : aucune PII dans l'audit, les logs ou les messages
 d'erreur** (« Une fiche existe déjà pour ce numéro dans ce salon. » ne rappelle pas le numéro).
 
+## Clients — historique des visites (US-4.2, #29)
+
+Le gérant **consulte l'historique des visites d'un client** — ses RDV **terminés** avec prestations et
+montants (critère d'acceptation). Une route **de lecture** s'ajoute à la tranche « clients », sous le
+même préfixe fiche-scopé et **protégée** par `CUSTOMER_MANAGE` + portée salon (rien n'entre dans
+`PUBLIC_ROUTE_PATHS`).
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/customers/{customer_id}/appointments` | `CUSTOMER_MANAGE` + portée | `200` historique \| `401` \| `403` \| `404` fiche hors salon | — (lecture) |
+
+```bash
+curl "$API/salons/$SALON_ID/customers/$CUSTOMER_ID/appointments" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+La réponse porte les visites (`items`, plus récente d'abord) — chacune avec sa `date`, son créneau,
+ses `services` (`name` + `price_at_booking`) et son `total_amount` — ainsi qu'un **résumé dérivé** :
+`total_visits`, `last_visit_at`, `total_amount`, `currency` (`XOF`).
+
+- **« Terminé » = `COMPLETED`.** L'historique liste les RDV **réalisés** (`domain/visit.py`,
+  `HISTORY_STATUSES == (COMPLETED,)` — nommé distinctement de `REVENUE_STATUSES`). Les RDV
+  `CANCELLED`/`NO_SHOW`/actifs ne sont **pas** des visites.
+- **Montants figés.** Le montant d'une visite est la **somme des `price_at_booking`** (prix figé à la
+  réservation, jamais le tarif courant) ; devise **XOF** (§9.6), `NUMERIC(12,2)` sérialisé en chaîne
+  décimale (jamais de flottant). Le **nom** de prestation est le libellé courant (`services.name`) —
+  résoluble même pour une prestation soft-deletée (FK `RESTRICT`).
+- **Lien fiche → RDV encapsulé (anti-oracle ADR-0026).** Le pont
+  `customer_profiles.user_id == appointments.client_id` (même `salon_id`) est calculé **entièrement en
+  SQL** ; `user_id`/`client_id` ne sont **jamais** renvoyés ni journalisés, et `users` n'est **jamais**
+  interrogée par téléphone. Une **fiche walk-in** (`user_id = NULL`) ou sans visite réalisée renvoie
+  `200` avec `items: []`, `total_visits: 0`, `last_visit_at: null`, `total_amount: "0"` — comportement
+  **normal**, indiscernable d'une fiche liée sans visite (aucun signal sur l'existence d'un compte).
+- **Isolation §11.2 en profondeur.** `require_salon_scope` (403 générique) **et** fiche résolue via
+  `(salon_id, customer_id)` (réutilise `GetCustomer` → `404` **après** portée) **et** RDV refiltrés
+  `salon_id`/`client_id` en SQL : jamais les visites du même client dans un **autre** salon.
+- **Agrégats dérivés en lecture** — `total_visits`/`last_visit_at`/`total_amount` sont calculés à la
+  volée (`domain/visit.py::build_history`) ; les colonnes homonymes de `customer_profiles` **restent à
+  leurs défauts** (aucune dénormalisation, aucune migration). Lecture pure : **aucun** audit.
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

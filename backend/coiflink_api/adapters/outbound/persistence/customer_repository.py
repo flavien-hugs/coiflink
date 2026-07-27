@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.customer import Customer, CustomerToCreate
 from coiflink_api.domain.errors import CustomerAlreadyExists
+from coiflink_api.domain.visit import CustomerVisit, VisitService, visit_total
 
 # Index unique partiel garantissant l'unicité du téléphone **dans un salon** (0005).
 _PHONE_UNIQUE_INDEX = "uq_customer_profiles_salon_phone"
@@ -119,6 +120,113 @@ class SqlCustomerRepository:
             models.CustomerProfile.phone == phone,
         )
         return self._session.scalar(stmt) is not None
+
+    def list_visits(
+        self,
+        salon_id: uuid.UUID,
+        customer_id: uuid.UUID,
+        statuses: tuple[str, ...],
+    ) -> tuple[CustomerVisit, ...]:
+        """RDV `statuses` du compte lié à la fiche `(salon_id, customer_id)`, triés récent d'abord.
+
+        Le lien `customer_profiles.user_id == appointments.client_id` est calculé
+        **entièrement en SQL** et **jamais** exposé (anti-oracle ADR-0026). Étapes :
+
+        1. Projette l'`user_id` de la fiche filtrée `(id, salon_id)` (isolation
+           §11.2). Fiche introuvable dans le salon **ou** walk-in
+           (`user_id IS NULL`) → tuple vide (aucun RDV reliable, pas une erreur).
+        2. Charge les RDV `(salon_id, client_id = user_id, status IN statuses)` —
+           le `salon_id` est **refiltré** (cloisonnement strict : jamais un RDV du
+           même compte dans un autre salon) — joints à leurs prestations
+           (`appointment_services`) et libellés (`services.name`), triés `date
+           DESC, start_time DESC`. Les lignes plates (une par prestation) sont
+           regroupées par RDV, l'ordre des prestations stabilisé par `created_at`
+           de la jonction puis `service_id`. **Lecture seule** : aucun flush.
+        """
+
+        user_id = self._session.scalar(
+            select(models.CustomerProfile.user_id).where(
+                models.CustomerProfile.id == customer_id,
+                models.CustomerProfile.salon_id == salon_id,
+            )
+        )
+        if user_id is None:
+            # Fiche hors salon/inexistante, ou fiche walk-in : aucun RDV reliable.
+            # L'`user_id` n'est jamais renvoyé — indiscernable d'une fiche liée
+            # sans visite terminée (aucun oracle sur l'existence d'un compte).
+            return ()
+
+        stmt = (
+            select(
+                models.Appointment.id,
+                models.Appointment.appointment_date,
+                models.Appointment.start_time,
+                models.Appointment.end_time,
+                models.Appointment.status,
+                models.AppointmentService.service_id,
+                models.AppointmentService.price_at_booking,
+                models.AppointmentService.created_at,
+                models.Service.name,
+            )
+            .join(
+                models.AppointmentService,
+                models.AppointmentService.appointment_id == models.Appointment.id,
+            )
+            .join(
+                models.Service,
+                models.Service.id == models.AppointmentService.service_id,
+            )
+            .where(
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.client_id == user_id,
+                models.Appointment.status.in_(statuses),
+            )
+            .order_by(
+                models.Appointment.appointment_date.desc(),
+                models.Appointment.start_time.desc(),
+                models.Appointment.id.desc(),
+                models.AppointmentService.created_at.asc(),
+                models.AppointmentService.service_id.asc(),
+            )
+        )
+
+        visits: list[CustomerVisit] = []
+        current_id: uuid.UUID | None = None
+        current_row: object | None = None
+        current_services: list[VisitService] = []
+
+        def _flush() -> None:
+            if current_row is None:
+                return
+            services = tuple(current_services)
+            visits.append(
+                CustomerVisit(
+                    appointment_id=current_row.id,
+                    date=current_row.appointment_date,
+                    start_time=current_row.start_time,
+                    end_time=current_row.end_time,
+                    status=current_row.status,
+                    services=services,
+                    total_amount=visit_total(services),
+                )
+            )
+
+        for row in self._session.execute(stmt):
+            if row.id != current_id:
+                _flush()
+                current_id = row.id
+                current_row = row
+                current_services = []
+            current_services.append(
+                VisitService(
+                    service_id=row.service_id,
+                    name=row.name,
+                    price_at_booking=row.price_at_booking,
+                )
+            )
+        _flush()
+
+        return tuple(visits)
 
 
 def _is_phone_duplicate(exc: IntegrityError) -> bool:

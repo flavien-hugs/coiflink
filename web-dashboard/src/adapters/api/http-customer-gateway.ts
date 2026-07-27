@@ -11,11 +11,13 @@
 import type {
   CreateCustomerResult,
   CustomerGateway,
+  CustomerHistoryResult,
   CustomerListOptions,
   GetCustomerResult,
   ListCustomersResult,
 } from "@/src/application/ports/customer-gateway";
 import type { Customer, CustomerInput } from "@/src/domain/customer/customer";
+import type { VisitHistory } from "@/src/domain/customer/visit";
 import { resolveApiBaseUrl } from "./config";
 
 // Forme du corps `CustomerResponse` renvoyé par le backend (#28). `user_id`
@@ -53,6 +55,57 @@ function toCustomer(payload: CustomerResponsePayload): Customer {
     totalVisits: payload.total_visits,
     createdAt: payload.created_at,
     updatedAt: payload.updated_at,
+  };
+}
+
+// Forme du corps `CustomerVisitHistoryResponse` renvoyé par le backend (#29).
+// `client_id`/`user_id` ne sont **pas** exposés (anti-oracle ADR-0026).
+interface VisitServicePayload {
+  service_id: string;
+  name: string;
+  price_at_booking: string;
+}
+
+interface CustomerVisitPayload {
+  appointment_id: string;
+  date: string;
+  start_time: string;
+  end_time: string;
+  status: string;
+  services: VisitServicePayload[];
+  total_amount: string;
+}
+
+interface CustomerHistoryPayload {
+  customer_id: string;
+  items: CustomerVisitPayload[];
+  total_visits: number;
+  last_visit_at: string | null;
+  total_amount: string;
+  currency: string;
+}
+
+// Projette la réponse backend (snake_case) sur le read model de domaine (camelCase).
+function toHistory(payload: CustomerHistoryPayload): VisitHistory {
+  return {
+    customerId: payload.customer_id,
+    visits: payload.items.map((item) => ({
+      appointmentId: item.appointment_id,
+      date: item.date,
+      startTime: item.start_time,
+      endTime: item.end_time,
+      status: item.status,
+      services: item.services.map((service) => ({
+        serviceId: service.service_id,
+        name: service.name,
+        priceAtBooking: service.price_at_booking,
+      })),
+      totalAmount: item.total_amount,
+    })),
+    totalVisits: payload.total_visits,
+    lastVisitAt: payload.last_visit_at,
+    totalAmount: payload.total_amount,
+    currency: payload.currency,
   };
 }
 
@@ -184,6 +237,40 @@ export function createHttpCustomerGateway(
       if (response.status === 200) {
         const payload = (await response.json()) as CustomerResponsePayload;
         return { ok: true, customer: toCustomer(payload) };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "not-found" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async history(
+      salonId: string,
+      customerId: string,
+    ): Promise<CustomerHistoryResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `${customersUrl(salonId)}/${encodeURIComponent(customerId)}/appointments`,
+          { headers: { ...authHeader() }, cache: "no-store" },
+        );
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as CustomerHistoryPayload;
+        return { ok: true, history: toHistory(payload) };
       }
       if (response.status === 401) {
         return { ok: false, reason: "unauthenticated" };

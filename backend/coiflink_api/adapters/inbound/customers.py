@@ -31,6 +31,8 @@ messages d'erreur, ni les logs applicatifs ne portent de nom, téléphone ou not
 
 from __future__ import annotations
 
+import datetime
+import decimal
 import uuid
 from typing import Annotated
 
@@ -51,6 +53,7 @@ from coiflink_api.application.customers import (
     CreateCustomer,
     CustomerCommand,
     GetCustomer,
+    GetCustomerVisitHistory,
     ListSalonCustomers,
 )
 from coiflink_api.application.ports.audit_log import AuditLog
@@ -77,6 +80,7 @@ from coiflink_api.domain.errors import (
 )
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
+from coiflink_api.domain.visit import CustomerVisit, VisitHistory
 
 router = APIRouter(prefix="/salons", tags=["customers"])
 
@@ -150,6 +154,52 @@ class CustomerPageResponse(BaseModel):
     offset: int
 
 
+class VisitServiceResponse(BaseModel):
+    """Prestation d'une visite : libellé + prix figé (US-4.2, #29).
+
+    `price_at_booking` est le prix **figé à la réservation** (`NUMERIC(12,2)`
+    sérialisé en chaîne décimale, jamais de flottant), jamais le tarif courant.
+    """
+
+    service_id: uuid.UUID
+    name: str
+    price_at_booking: decimal.Decimal
+
+
+class CustomerVisitResponse(BaseModel):
+    """Une visite terminée : date, créneau, prestations nommées et montant total.
+
+    **`client_id`/`user_id` ne sont pas exposés** (anti-oracle ADR-0026) : seule
+    l'identité du RDV (`appointment_id`) et ses données de visite sont renvoyées.
+    """
+
+    appointment_id: uuid.UUID
+    date: datetime.date
+    start_time: datetime.time
+    end_time: datetime.time
+    status: str
+    services: list[VisitServiceResponse]
+    total_amount: decimal.Decimal
+
+
+class CustomerVisitHistoryResponse(BaseModel):
+    """Historique des visites d'une fiche + résumé **dérivé en lecture** (US-4.2, #29).
+
+    `total_visits`/`last_visit_at`/`total_amount` sont calculés à la volée depuis
+    les visites `COMPLETED` (jamais lus des colonnes dénormalisées de
+    `customer_profiles`). Fiche walk-in ou sans visite → `items: []`,
+    `total_visits: 0`, `last_visit_at: null`, `total_amount: "0"` (comportement
+    normal, pas une erreur). Devise **XOF** (§9.6).
+    """
+
+    customer_id: uuid.UUID
+    items: list[CustomerVisitResponse]
+    total_visits: int
+    last_visit_at: datetime.datetime | None
+    total_amount: decimal.Decimal
+    currency: str
+
+
 # --------------------------------------------------------------------------- #
 # Injection de dépendances (surchargeable en test via `app.dependency_overrides`).
 # --------------------------------------------------------------------------- #
@@ -186,6 +236,38 @@ def _customer_response(customer: Customer) -> CustomerResponse:
         total_visits=customer.total_visits,
         created_at=customer.created_at,
         updated_at=customer.updated_at,
+    )
+
+
+def _visit_response(visit: CustomerVisit) -> CustomerVisitResponse:
+    return CustomerVisitResponse(
+        appointment_id=visit.appointment_id,
+        date=visit.date,
+        start_time=visit.start_time,
+        end_time=visit.end_time,
+        status=visit.status,
+        services=[
+            VisitServiceResponse(
+                service_id=service.service_id,
+                name=service.name,
+                price_at_booking=service.price_at_booking,
+            )
+            for service in visit.services
+        ],
+        total_amount=visit.total_amount,
+    )
+
+
+def _history_response(
+    customer_id: uuid.UUID, history: VisitHistory
+) -> CustomerVisitHistoryResponse:
+    return CustomerVisitHistoryResponse(
+        customer_id=customer_id,
+        items=[_visit_response(visit) for visit in history.visits],
+        total_visits=history.total_visits,
+        last_visit_at=history.last_visit_at,
+        total_amount=history.total_amount,
+        currency=history.currency,
     )
 
 
@@ -305,6 +387,44 @@ def get_customer(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
     return _customer_response(customer)
+
+
+@router.get(
+    "/{salon_id}/customers/{customer_id}/appointments",
+    response_model=CustomerVisitHistoryResponse,
+    summary="Historique des visites terminées d'un client (prestations + montants)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "Fiche introuvable (portée déjà validée)"},
+    },
+)
+def get_customer_history(
+    salon_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    repository: Annotated[CustomerRepository, Depends(get_customer_repository)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.CUSTOMER_MANAGE))
+    ],
+) -> CustomerVisitHistoryResponse:
+    """Historique des visites `COMPLETED` de la fiche `(salon_id, customer_id)` (US-4.2, #29).
+
+    Lecture **fiche-scopée** : la fiche est résolue dans le salon (`404` **après**
+    portée si hors salon/inconnue, sans oracle) puis ses RDV terminés liés sont
+    lus (lien `user_id` encapsulé côté dépôt, `salon_id` refiltré en SQL). Le
+    résumé (`total_visits`, `last_visit_at`, `total_amount`) est **dérivé en
+    lecture**. Une fiche walk-in ou sans visite réalisée → `items: []` (comportement
+    normal). Aucune écriture, aucun audit — ni `user_id`/`client_id` exposés.
+    """
+
+    try:
+        history = GetCustomerVisitHistory(repository).execute(salon_id, customer_id)
+    except CustomerNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _history_response(customer_id, history)
 
 
 __all__ = ["router"]

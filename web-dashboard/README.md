@@ -45,6 +45,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `/gerant/prestations` | **protégée** | `MANAGER` — catalogue et gestion des prestations (#17) |
 | `/gerant/planning` | **protégée** | `MANAGER` — planning du salon, jour/semaine/mois (#26) |
 | `/gerant/clients` | **protégée** | `MANAGER` — fichier client du salon, création de fiche (#28) |
+| `/gerant/clients/[customerId]` | **protégée** | `MANAGER` — fiche client + historique des visites terminées (#29) |
 | `/coiffeur/planning` | **protégée** | `HAIRDRESSER` actif — **son** planning assigné, lecture seule (#27) |
 | `POST /api/auth/login` | interne (BFF) | proxifie `POST /auth/login`, pose les cookies httpOnly |
 | `POST /api/auth/logout` | interne (BFF) | efface les cookies de session |
@@ -57,6 +58,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `DELETE /api/salons/[id]/services/[serviceId]` | interne (BFF) | proxifie `DELETE …` (désactivation soft-delete, #17) |
 | `GET /api/salons/[id]/customers` | interne (BFF) | proxifie `GET /salons/{id}/customers` (fiches du salon, #28) |
 | `POST /api/salons/[id]/customers` | interne (BFF) | proxifie `POST /salons/{id}/customers` (création de fiche, #28) |
+| `GET /api/salons/[id]/customers/[customerId]/appointments` | interne (BFF) | proxifie `GET /salons/{id}/customers/{id}/appointments` (historique des visites, #29) |
 
 `/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
 publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
@@ -136,8 +138,24 @@ Handler BFF `POST /api/salons/[id]/customers` ; après succès, `router.refresh(
 l'autorité** : il normalise le téléphone en E.164, refuse un doublon de numéro **dans le salon**
 (`409` → message neutre « Une fiche existe déjà pour ce numéro dans ce salon. ») et **journalise** la
 création (§11.4/§11.3). Les **notes internes** sont annoncées comme « visible uniquement par le salon »
-et ne sortent jamais de cette vue gérant (PRD §11.3). L'historique des visites (#29), la note privée
-éditable (#32) et les statistiques (#31) restent hors périmètre.
+et ne sortent jamais de cette vue gérant (PRD §11.3). La note privée éditable (#32) et les statistiques
+(#31) restent hors périmètre.
+
+### Clients — historique des visites (#29)
+
+Chaque ligne du fichier client ouvre une **page de détail** `/gerant/clients/[customerId]` (Server
+Component) via un lien « Voir l'historique ». Elle charge **côté serveur** (jeton du cookie httpOnly,
+invariant #14) le salon du gérant, la fiche (`get`) et son **historique de visites** (`history`) en
+parallèle, puis rend un en-tête de fiche, un **résumé** (visites terminées, dernière visite, total
+dépensé) et un **tableau des visites** (date, créneau, prestations nommées + prix figé, montant), le
+plus récent d'abord (`CustomerVisitHistory`). Le domaine `src/domain/customer/visit.ts` porte les
+types et les **helpers de formatage purs** (`formatAmountXof` → FCFA, `formatVisitDate`/`formatVisitTime`
+au fuseau d'Abidjan) : le **backend reste l'autorité des montants** (`price_at_booking` figé, devise
+`XOF`), le front **formate** seulement. Une fiche walk-in ou sans RDV terminé affiche un **état vide
+explicite** (« Aucune visite terminée pour ce client ») — pas une erreur. `client_id`/`user_id` ne sont
+**jamais** exposés (anti-oracle ADR-0026). Le Route Handler BFF
+`GET /api/salons/[id]/customers/[customerId]/appointments` proxifie la lecture avec des messages
+neutres. Les statistiques par client (#31) restent hors périmètre.
 
 ### Zone coiffeur — Mon planning (#27)
 

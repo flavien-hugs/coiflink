@@ -41,6 +41,7 @@ from coiflink_api.domain.customer import (
     validate_customer_name,
 )
 from coiflink_api.domain.errors import CustomerAlreadyExists, CustomerNotFound
+from coiflink_api.domain.visit import HISTORY_STATUSES, VisitHistory, build_history
 
 
 @dataclass(frozen=True)
@@ -163,9 +164,37 @@ class GetCustomer:
         return customer
 
 
+class GetCustomerVisitHistory:
+    """Historique des visites terminées d'une fiche (lecture — pas d'audit, US-4.2, #29).
+
+    Lecture **fiche-scopée** : la fiche est d'abord résolue **dans le salon**
+    (réutilise `GetCustomer` → `CustomerNotFound`/`404` **après** portée, sans
+    oracle — une fiche d'un autre salon est indiscernable d'une inexistante). Puis
+    les RDV `COMPLETED` liés sont lus via le port (le lien `user_id` reste
+    encapsulé côté dépôt, la lecture refiltre `salon_id`), et le résumé dérivé est
+    construit **en mémoire** (`build_history`, pur). Aucune écriture, aucun audit
+    (patron des lectures `ListSalonCustomers` / `ListSalonAppointments`).
+    """
+
+    def __init__(self, repository: CustomerRepository) -> None:
+        self._repository = repository
+
+    def execute(
+        self, salon_id: uuid.UUID, customer_id: uuid.UUID
+    ) -> VisitHistory:
+        # 1. Résout la fiche DANS le salon (404 après portée si hors salon/inconnue).
+        GetCustomer(self._repository).execute(salon_id, customer_id)
+        # 2. Lit les RDV terminés liés (COMPLETED) — `user_id` encapsulé côté dépôt,
+        #    salon_id refiltré en SQL (défense en profondeur §11.2).
+        visits = self._repository.list_visits(salon_id, customer_id, HISTORY_STATUSES)
+        # 3. Construit le résumé dérivé (pur, jamais persisté).
+        return build_history(visits)
+
+
 __all__ = [
     "CustomerCommand",
     "CreateCustomer",
     "ListSalonCustomers",
     "GetCustomer",
+    "GetCustomerVisitHistory",
 ]
