@@ -6,6 +6,8 @@ Couvre :
   décimales refusé ; non-fini refusé ; entier converti ; message neutre.
 - `validate_payment_method` : None/vide/inconnu refusés ; sensible à la casse ;
   toutes les valeurs valides de l'enum acceptées.
+- `validate_currency` : None/vide → `DEFAULT_CURRENCY` ; devise conforme acceptée ;
+  devise différente ou non-string refusée (MVP mono-devise).
 - `normalize_reference` : None → None ; vide/espaces → None ; trim ; troncature.
 - `require_reference_present` : les deux absents → erreur ; l'un ou l'autre
   présent → OK ; les deux présents → OK.
@@ -22,17 +24,20 @@ import pytest
 
 from coiflink_api.domain.errors import (
     InvalidPaymentAmount,
+    InvalidPaymentCurrency,
     InvalidPaymentMethod,
     PaymentReferenceRequired,
 )
 from coiflink_api.domain.payment import (
     AMOUNT_MAX,
     AMOUNT_MIN,
+    DEFAULT_CURRENCY,
     PAYMENT_METHOD_VALUES,
     REFERENCE_MAX_LENGTH,
     normalize_reference,
     require_reference_present,
     validate_amount,
+    validate_currency,
     validate_payment_method,
 )
 
@@ -153,6 +158,47 @@ class TestValidatePaymentMethod:
 
     def test_returns_string(self) -> None:
         result = validate_payment_method(PAYMENT_METHOD_VALUES[0])
+        assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# validate_currency
+# ---------------------------------------------------------------------------
+
+
+class TestValidateCurrency:
+    def test_none_defaults_to_default_currency(self) -> None:
+        assert validate_currency(None) == DEFAULT_CURRENCY
+
+    def test_empty_string_defaults_to_default_currency(self) -> None:
+        assert validate_currency("") == DEFAULT_CURRENCY
+
+    def test_whitespace_only_defaults_to_default_currency(self) -> None:
+        assert validate_currency("   ") == DEFAULT_CURRENCY
+
+    def test_default_currency_accepted(self) -> None:
+        assert validate_currency(DEFAULT_CURRENCY) == DEFAULT_CURRENCY
+
+    def test_different_currency_raises(self) -> None:
+        with pytest.raises(InvalidPaymentCurrency):
+            validate_currency("USD")
+
+    def test_lowercase_variant_raises(self) -> None:
+        """La comparaison porte sur la valeur exacte — pas de correction de casse."""
+        with pytest.raises(InvalidPaymentCurrency):
+            validate_currency("xof")
+
+    def test_oversized_value_raises(self) -> None:
+        """Refusé en amont plutôt que de violer la colonne `String(3)` (500)."""
+        with pytest.raises(InvalidPaymentCurrency):
+            validate_currency("EURO")
+
+    def test_non_string_raises(self) -> None:
+        with pytest.raises(InvalidPaymentCurrency):
+            validate_currency(123)  # type: ignore[arg-type]
+
+    def test_returns_string(self) -> None:
+        result = validate_currency(DEFAULT_CURRENCY)
         assert isinstance(result, str)
 
 

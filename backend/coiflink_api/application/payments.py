@@ -42,6 +42,7 @@ from coiflink_api.domain.payment import (
     normalize_reference,
     require_reference_present,
     validate_amount,
+    validate_currency,
     validate_payment_method,
 )
 
@@ -96,6 +97,7 @@ class RecordPayment:
         # Validation domaine AVANT toute écriture (aucun paiement ni trace si invalide).
         amount = validate_amount(command.amount)
         method = validate_payment_method(command.payment_method)
+        currency = validate_currency(command.currency)
         require_reference_present(command.appointment_id, command.service_id)
         reference = normalize_reference(command.reference)
 
@@ -108,7 +110,7 @@ class RecordPayment:
                 appointment_id=command.appointment_id,
                 service_id=command.service_id,
                 client_id=command.client_id,
-                currency=command.currency or DEFAULT_CURRENCY,
+                currency=currency,
                 reference=reference,
             )
         )

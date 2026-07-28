@@ -297,6 +297,26 @@ class TestRecordPayment422:
         )
         assert r.status_code == 422
 
+    def test_unsupported_currency_returns_422(self, manager_client: TestClient) -> None:
+        """MVP mono-devise (§9.6) : une devise ≠ XOF est refusée avant écriture."""
+        body = {**_VALID_PAYMENT_BODY, "currency": "USD"}
+        r = manager_client.post(
+            _payments_url(_SALON_ID),
+            json=body,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+
+    def test_oversized_currency_returns_422_not_500(self, manager_client: TestClient) -> None:
+        """Refusé en amont plutôt que de violer la colonne `payments.currency` (String(3))."""
+        body = {**_VALID_PAYMENT_BODY, "currency": "EURO"}
+        r = manager_client.post(
+            _payments_url(_SALON_ID),
+            json=body,
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # POST /salons/{id}/payments — 401/403
