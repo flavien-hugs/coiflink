@@ -78,6 +78,7 @@ from coiflink_api.domain.cash_journal import (
 from coiflink_api.domain.errors import (
     InvalidAdjustment,
     InvalidPaymentAmount,
+    InvalidPaymentCurrency,
     InvalidPaymentMethod,
     PaymentNotAdjustable,
     PaymentNotFound,
@@ -98,6 +99,7 @@ router = APIRouter(prefix="/salons", tags=["payments"])
 _VALIDATION_ERRORS = (
     InvalidPaymentAmount,
     InvalidPaymentMethod,
+    InvalidPaymentCurrency,
     PaymentReferenceRequired,
     InvalidAdjustment,
 )
@@ -126,7 +128,7 @@ class CreatePaymentRequest(BaseModel):
     reference: str | None = Field(
         default=None, max_length=REFERENCE_MAX_LENGTH, examples=["REC-2026-0001"]
     )
-    currency: str = Field(default=DEFAULT_CURRENCY, examples=[DEFAULT_CURRENCY])
+    currency: str = Field(default=DEFAULT_CURRENCY, max_length=3, examples=[DEFAULT_CURRENCY])
 
 
 class CreateAdjustmentRequest(BaseModel):
@@ -279,7 +281,7 @@ def _entry_response(entry: CashJournalEntry) -> CashJournalEntryResponse:
     responses={
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
-        422: {"description": "Montant, mode de paiement ou référence invalides"},
+        422: {"description": "Montant, mode de paiement, devise ou référence invalides"},
     },
 )
 def record_payment(

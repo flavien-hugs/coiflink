@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from coiflink_api.domain.enums import PaymentMethod, PaymentStatus, values
 from coiflink_api.domain.errors import (
     InvalidPaymentAmount,
+    InvalidPaymentCurrency,
     InvalidPaymentMethod,
     PaymentReferenceRequired,
 )
@@ -99,6 +100,28 @@ def validate_payment_method(method: str | None) -> str:
         raise InvalidPaymentMethod("Le mode de paiement est requis.")
     if cleaned not in PAYMENT_METHOD_VALUES:
         raise InvalidPaymentMethod("Le mode de paiement est invalide.")
+    return cleaned
+
+
+def validate_currency(currency: str | None) -> str:
+    """Valide la devise **optionnelle** ; lève `InvalidPaymentCurrency` sinon.
+
+    Le MVP est mono-devise (§9.6) : seule `DEFAULT_CURRENCY` (XOF) est acceptée.
+    `None` retombe sur `DEFAULT_CURRENCY`. Miroir de la colonne `payments.currency`
+    (`String(3)`) — refuse toute valeur non conforme **avant** l'écriture plutôt que
+    de la laisser produire un `500` de violation de colonne ou un stockage silencieux
+    incohérent avec l'affichage (codé en dur sur `DEFAULT_CURRENCY`).
+    """
+
+    if currency is None:
+        return DEFAULT_CURRENCY
+    if not isinstance(currency, str):
+        raise InvalidPaymentCurrency("La devise du paiement est invalide.")
+    cleaned = currency.strip()
+    if not cleaned:
+        return DEFAULT_CURRENCY
+    if cleaned != DEFAULT_CURRENCY:
+        raise InvalidPaymentCurrency("La devise du paiement est invalide.")
     return cleaned
 
 
@@ -190,6 +213,7 @@ __all__ = [
     "PAYMENT_METHOD_VALUES",
     "validate_amount",
     "validate_payment_method",
+    "validate_currency",
     "normalize_reference",
     "require_reference_present",
     "PaymentToCreate",

@@ -295,6 +295,15 @@ class PaymentReferenceRequired(DomainError):
     """
 
 
+class InvalidPaymentCurrency(DomainError):
+    """La devise ne correspond pas à `DEFAULT_CURRENCY` (MVP mono-devise, US-5.1).
+
+    Miroir de la colonne `payments.currency` (`String(3)`) : une valeur absente,
+    trop longue ou différente de la devise unique du MVP est refusée **avant**
+    l'écriture (jamais un `500` de violation de colonne). Message neutre.
+    """
+
+
 class PaymentNotFound(DomainError):
     """Le paiement visé n'existe pas pour ce salon (US-5.3, #34).
 
@@ -413,6 +422,7 @@ __all__ = [
     "CustomerAlreadyExists",
     "InvalidPaymentAmount",
     "InvalidPaymentMethod",
+    "InvalidPaymentCurrency",
     "PaymentReferenceRequired",
     "PaymentNotFound",
     "PaymentNotAdjustable",
