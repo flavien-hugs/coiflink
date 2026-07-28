@@ -523,11 +523,16 @@ class TestRecordPaymentE2E:
         assert _count_cash_journal_entries(salon_id) == 0
 
     def test_incoherent_amount_leaves_no_audit_entry(self, _e2e_client: TestClient) -> None:
-        """Un montant incohérent ne crée aucune entrée d'audit (atomicité §11.4)."""
+        """Un montant incohérent ne crée aucune entrée d'audit (atomicité §11.4).
+
+        La création de la prestation (`SERVICE_CREATED`) journalise déjà une
+        entrée sur ce salon : on compare un **delta**, pas un total absolu.
+        """
         _register_manager(_e2e_client)
         token = _login(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
         service_id = _create_service(_e2e_client, token, salon_id)
+        baseline = _count_audit_entries_for_salon(salon_id)
 
         _e2e_client.post(
             _payments_url(salon_id),
@@ -538,7 +543,7 @@ class TestRecordPaymentE2E:
             },
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert _count_audit_entries_for_salon(salon_id) == 0
+        assert _count_audit_entries_for_salon(salon_id) == baseline
 
     def test_incoherent_amount_error_does_not_reveal_expected_price(
         self, _e2e_client: TestClient
