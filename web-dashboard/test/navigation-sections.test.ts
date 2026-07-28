@@ -71,8 +71,15 @@ describe("DASHBOARD_SECTIONS", () => {
     expect(clients?.href).toBe("/gerant/clients");
   });
 
+  it("marque 'encaissements' comme 'available' (enregistrement d'un paiement, #33)", () => {
+    const encaissements = DASHBOARD_SECTIONS.find((s) => s.key === "encaissements");
+    expect(encaissements).toBeDefined();
+    expect(encaissements?.status).toBe("available");
+    expect(encaissements?.href).toBe("/gerant/encaissements");
+  });
+
   it("marque les sections M2–M5 restantes 'coming-soon'", () => {
-    const comingSoon = ["encaissements", "employes"];
+    const comingSoon = ["employes"];
     for (const key of comingSoon) {
       const section = DASHBOARD_SECTIONS.find((s) => s.key === key);
       expect(section?.status).toBe("coming-soon");

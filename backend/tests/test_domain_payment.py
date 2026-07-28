@@ -11,6 +11,9 @@ Couvre :
 - `normalize_reference` : None → None ; vide/espaces → None ; trim ; troncature.
 - `require_reference_present` : les deux absents → erreur ; l'un ou l'autre
   présent → OK ; les deux présents → OK.
+- `validate_amount_matches` : égalité stricte au centime ; message neutre (§11.3).
+- `expected_amount_for_prices` : somme vide → 0.00 ; somme simple ; somme multiple ;
+  résultat quantifié ; retour `Decimal`.
 
 Aucune base, aucun réseau — domaine pur.
 """
@@ -26,6 +29,7 @@ from coiflink_api.domain.errors import (
     InvalidPaymentAmount,
     InvalidPaymentCurrency,
     InvalidPaymentMethod,
+    PaymentAmountMismatch,
     PaymentReferenceRequired,
 )
 from coiflink_api.domain.payment import (
@@ -34,9 +38,11 @@ from coiflink_api.domain.payment import (
     DEFAULT_CURRENCY,
     PAYMENT_METHOD_VALUES,
     REFERENCE_MAX_LENGTH,
+    expected_amount_for_prices,
     normalize_reference,
     require_reference_present,
     validate_amount,
+    validate_amount_matches,
     validate_currency,
     validate_payment_method,
 )
@@ -259,3 +265,81 @@ class TestRequireReferencePresent:
     def test_error_is_payment_reference_required(self) -> None:
         with pytest.raises(PaymentReferenceRequired):
             require_reference_present(None, None)
+
+
+# ---------------------------------------------------------------------------
+# validate_amount_matches
+# ---------------------------------------------------------------------------
+
+
+class TestValidateAmountMatches:
+    def test_equal_amounts_passes(self) -> None:
+        validate_amount_matches(decimal.Decimal("5000.00"), decimal.Decimal("5000.00"))
+
+    def test_different_quantization_equal_value_passes(self) -> None:
+        """5000 et 5000.00 sont identiques au centime près."""
+        validate_amount_matches(decimal.Decimal("5000"), decimal.Decimal("5000.00"))
+
+    def test_different_amounts_raises(self) -> None:
+        with pytest.raises(PaymentAmountMismatch):
+            validate_amount_matches(decimal.Decimal("5001.00"), decimal.Decimal("5000.00"))
+
+    def test_one_cent_off_raises(self) -> None:
+        """L'égalité est stricte au centime — 0.01 d'écart est refusé."""
+        with pytest.raises(PaymentAmountMismatch):
+            validate_amount_matches(decimal.Decimal("5000.01"), decimal.Decimal("5000.00"))
+
+    def test_error_type_is_payment_amount_mismatch(self) -> None:
+        with pytest.raises(PaymentAmountMismatch):
+            validate_amount_matches(decimal.Decimal("1000.00"), decimal.Decimal("2000.00"))
+
+    def test_error_message_does_not_contain_amounts(self) -> None:
+        """Le message d'erreur ne reprend jamais les montants (§11.3)."""
+        try:
+            validate_amount_matches(decimal.Decimal("1234.00"), decimal.Decimal("5678.00"))
+        except PaymentAmountMismatch as exc:
+            assert "1234" not in str(exc)
+            assert "5678" not in str(exc)
+
+    def test_zero_vs_zero_passes(self) -> None:
+        validate_amount_matches(decimal.Decimal("0.00"), decimal.Decimal("0.00"))
+
+    def test_returns_none(self) -> None:
+        result = validate_amount_matches(decimal.Decimal("100.00"), decimal.Decimal("100.00"))
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# expected_amount_for_prices
+# ---------------------------------------------------------------------------
+
+
+class TestExpectedAmountForPrices:
+    def test_empty_iterable_returns_zero(self) -> None:
+        result = expected_amount_for_prices([])
+        assert result == decimal.Decimal("0.00")
+
+    def test_single_price_returned(self) -> None:
+        result = expected_amount_for_prices([decimal.Decimal("5000.00")])
+        assert result == decimal.Decimal("5000.00")
+
+    def test_multiple_prices_summed(self) -> None:
+        result = expected_amount_for_prices([
+            decimal.Decimal("2000.00"),
+            decimal.Decimal("3000.00"),
+        ])
+        assert result == decimal.Decimal("5000.00")
+
+    def test_result_quantized_to_cent(self) -> None:
+        """Un prix entier est quantifié à deux décimales (NUMERIC(12,2))."""
+        result = expected_amount_for_prices([decimal.Decimal("1000")])
+        assert result == decimal.Decimal("1000.00")
+        assert result.as_tuple().exponent == -2
+
+    def test_returns_decimal(self) -> None:
+        result = expected_amount_for_prices([decimal.Decimal("1000.00")])
+        assert isinstance(result, decimal.Decimal)
+
+    def test_tuple_iterable_accepted(self) -> None:
+        result = expected_amount_for_prices((decimal.Decimal("1500.00"), decimal.Decimal("500.00")))
+        assert result == decimal.Decimal("2000.00")

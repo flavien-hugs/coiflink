@@ -280,7 +280,15 @@ remplace la note interne d'une fiche existante (préférences, allergies, habitu
 **efface** la note) — permission `CUSTOMER_MANAGE`, **isolation par salon** (§11.2), édition
 **journalisée** (`CUSTOMER_NOTE_UPDATED`, §11.4/§11.3) sans aucune PII au journal ; la note reste
 **interne au salon**, jamais visible du client, et devient éditable via un panneau **« Note privée »**
-sur la page `/gerant/clients/{id}`. L'encaissement (#33+) reste à venir.
+sur la page `/gerant/clients/{id}`. **L'enregistrement d'un paiement** (#33, US-5.1) est livré :
+`POST /salons/{salon_id}/payments` crée un paiement **`VALIDATED`** lié à un RDV/prestation, dont le
+**montant est vérifié cohérent** avec la prestation liée (§5.3/§8.2 — somme des `price_at_booking` d'un
+RDV, ou `Service.price` d'une prestation active ; égalité stricte, tout écart → `422` sans écriture),
+inscrit au **journal de caisse** (ligne `PAYMENT`) et **journalisé** (`PAYMENT_RECORDED`, `metadata` vide,
+§11.4) dans la même unité de travail — permission `PAYMENT_RECORD` (seul le gérant), **isolation par
+salon** (§11.2). La section **Encaissements** du dashboard gérant est ouverte : montant **pré-rempli** au
+prix de la prestation, mode de paiement et référence optionnelle. Le journal de caisse consultable et la
+correction par ajustement (#34, US-5.3) sont livrés côté backend.
 
 ---
 

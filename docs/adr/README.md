@@ -39,6 +39,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0024](./0024-reservation-cote-client.md) | Réservation côté client — tunnel mobile & session cliente au-dessus des endpoints #21 | Accepté | #22 |
 | [0025](./0025-annulation-rendez-vous-client.md) | Annulation d'un rendez-vous côté client — transition d'état soft, motif optionnel & invariant CA | Accepté | #24 |
 | [0026](./0026-fiche-client-portee-salon.md) | Fiche client — portée salon, genre optionnel & unicité du téléphone | Accepté | #28 |
+| [0027](./0027-encaissement-coherence-montant.md) | Encaissement — cohérence du montant avec la prestation liée & enregistrement d'un paiement | Accepté | #33 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
