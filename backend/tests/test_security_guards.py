@@ -88,6 +88,30 @@ def test_no_unprotected_routes() -> None:
     assert bad == [], f"Routes non protégées détectées : {bad}"
 
 
+def test_no_destructive_routes_for_payments_or_cash_journal() -> None:
+    """Invariant append-only §8.2 : aucune route DELETE/PUT/PATCH sur payments ou cash-journal.
+
+    Un paiement validé n'est jamais supprimé ; une ligne de journal n'est jamais
+    modifiée. L'absence de verbe destructif sur ces ressources est vérifiée ici
+    mécaniquement (miroir du contrat du port qui n'expose pas de méthode `delete`).
+    """
+    from fastapi.routing import APIRoute
+
+    destructive = {"DELETE", "PUT", "PATCH"}
+    bad: list[str] = []
+    for route in main_app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        path: str = route.path
+        if "/payments" not in path and "/cash-journal" not in path:
+            continue
+        for method in route.methods or set():
+            if method in destructive:
+                bad.append(f"{method} {path}")
+
+    assert bad == [], f"Routes destructives détectées sur payments/cash-journal : {bad}"
+
+
 # ---------------------------------------------------------------------------
 # is_public_path
 # ---------------------------------------------------------------------------

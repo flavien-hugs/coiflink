@@ -23,6 +23,7 @@ from coiflink_api.adapters.inbound.catalog import router as catalog_router
 from coiflink_api.adapters.inbound.customers import router as customers_router
 from coiflink_api.adapters.inbound.employees import router as employees_router
 from coiflink_api.adapters.inbound.health import router as health_router
+from coiflink_api.adapters.inbound.payments import router as payments_router
 from coiflink_api.adapters.inbound.salons import router as salons_router
 from coiflink_api.adapters.inbound.security import require_authenticated
 from coiflink_api.adapters.inbound.services import router as services_router
@@ -142,3 +143,12 @@ app.include_router(appointments_router)
 # collecte de PII au sens §11.3, entrée d'audit **neutre**. Rien n'est ajouté à
 # `security.PUBLIC_ROUTE_PATHS` : une fiche client n'est jamais publique.
 app.include_router(customers_router)
+# Encaissement & journal de caisse (#33/#34, US-5.1/5.3) : enregistrement d'un
+# paiement (PAYMENT_RECORD), journal horodaté en lecture (CASH_JOURNAL_READ) et
+# correction par ligne d'ajustement (PAYMENT_RECORD) sous /salons/{id}/…. Journal
+# **append-only** (§8.2) : aucune route ne supprime un paiement validé ni une
+# ligne de journal ; une correction crée une opération ADJUSTMENT. Écritures
+# journalisées (PAYMENT_RECORDED/CASH_ADJUSTED) dans la même unité de travail,
+# entrées **neutres** (§11.4). Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` :
+# le journal de caisse (données financières) n'est jamais public.
+app.include_router(payments_router)

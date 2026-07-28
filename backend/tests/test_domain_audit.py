@@ -15,7 +15,9 @@ import uuid
 
 from coiflink_api.domain.audit import (
     ENTITY_TYPE_APPOINTMENT,
+    ENTITY_TYPE_CASH_JOURNAL,
     ENTITY_TYPE_CUSTOMER,
+    ENTITY_TYPE_PAYMENT,
     ENTITY_TYPE_SALON,
     ENTITY_TYPE_SERVICE,
     AuditAction,
@@ -65,8 +67,14 @@ class TestAuditAction:
     def test_customer_note_updated_value(self) -> None:
         assert AuditAction.CUSTOMER_NOTE_UPDATED == "CUSTOMER_NOTE_UPDATED"
 
-    def test_exactly_eleven_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 11
+    def test_payment_recorded_value(self) -> None:
+        assert AuditAction.PAYMENT_RECORDED == "PAYMENT_RECORDED"
+
+    def test_cash_adjusted_value(self) -> None:
+        assert AuditAction.CASH_ADJUSTED == "CASH_ADJUSTED"
+
+    def test_exactly_thirteen_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 13
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -89,6 +97,8 @@ class TestAuditAction:
             "APPOINTMENT_HAIRDRESSER_ASSIGNED",
             "CUSTOMER_CREATED",
             "CUSTOMER_NOTE_UPDATED",
+            "PAYMENT_RECORDED",
+            "CASH_ADJUSTED",
         }
 
 
@@ -214,3 +224,24 @@ class TestEntityTypeCustomer:
 
     def test_value_is_customer(self) -> None:
         assert ENTITY_TYPE_CUSTOMER == "customer"
+
+
+# ---------------------------------------------------------------------------
+# ENTITY_TYPE_PAYMENT / ENTITY_TYPE_CASH_JOURNAL (US-5.3, #34)
+# ---------------------------------------------------------------------------
+
+
+class TestEntityTypePayment:
+    def test_value_is_string(self) -> None:
+        assert isinstance(ENTITY_TYPE_PAYMENT, str)
+
+    def test_value_is_payment(self) -> None:
+        assert ENTITY_TYPE_PAYMENT == "payment"
+
+
+class TestEntityTypeCashJournal:
+    def test_value_is_string(self) -> None:
+        assert isinstance(ENTITY_TYPE_CASH_JOURNAL, str)
+
+    def test_value_is_cash_journal(self) -> None:
+        assert ENTITY_TYPE_CASH_JOURNAL == "cash_journal"

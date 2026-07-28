@@ -268,6 +268,65 @@ class InvalidAppointmentTransition(DomainError):
     """
 
 
+class InvalidPaymentAmount(DomainError):
+    """Le montant du paiement est absent, non numérique ou hors bornes (US-5.1/5.3).
+
+    Levée quand le montant — **obligatoire** — est manquant, négatif, non fini,
+    au-delà de la précision `NUMERIC(12,2)` ou comporte plus de deux décimales.
+    Message **neutre** — il ne reprend jamais la valeur soumise (§11.3). L'adapter
+    entrant la traduit en `422`.
+    """
+
+
+class InvalidPaymentMethod(DomainError):
+    """Le mode de paiement n'appartient pas à l'énumération fermée (US-5.1/5.3).
+
+    Miroir des `CHECK` dérivés de `enums.PaymentMethod` : aucune valeur n'est
+    devinée ni corrigée. Message neutre — l'adapter entrant la traduit en `422`.
+    """
+
+
+class PaymentReferenceRequired(DomainError):
+    """Un paiement doit référencer une prestation **ou** un rendez-vous (§8.2, US-5.1).
+
+    Miroir du `CHECK (appointment_id IS NOT NULL OR service_id IS NOT NULL)` de la
+    table `payments` : un encaissement sans lien métier est refusé. Message neutre —
+    l'adapter entrant la traduit en `422`.
+    """
+
+
+class PaymentNotFound(DomainError):
+    """Le paiement visé n'existe pas pour ce salon (US-5.3, #34).
+
+    N'est traduite en `404` **qu'après** validation de la portée : un paiement hors
+    périmètre a déjà reçu un `403` générique (aucun oracle d'existence, §11.2). Un
+    paiement d'un autre salon est **indiscernable** d'un paiement inexistant.
+    """
+
+
+class PaymentNotAdjustable(DomainError):
+    """Le paiement n'est pas dans un état corrigible (US-5.3, #34, §8.2).
+
+    Une correction ne s'applique qu'à un paiement **`VALIDATED`** : un paiement
+    `PENDING`, `CANCELLED` ou déjà `ADJUSTED` est refusé. La règle §8.2 « un
+    paiement validé n'est jamais supprimé » n'est pas contredite — la correction est
+    une **ligne d'ajustement**, jamais une suppression. Message **neutre** (ni
+    montant, ni statut détaillé). L'adapter entrant la traduit en `409 Conflict`.
+    """
+
+
+class InvalidAdjustment(DomainError):
+    """Le delta de correction est nul ou hors bornes (US-5.3, #34, §8.2).
+
+    Levée quand le montant d'ajustement est **nul** (une correction doit changer
+    quelque chose), non fini, hors de la précision `NUMERIC(12,2)`, comporte plus de
+    deux décimales, ou dépasse la borne de robustesse. Contrairement à un paiement,
+    le delta d'un `ADJUSTMENT` **peut être négatif** (correction à la baisse).
+    Message **neutre** — il ne reprend jamais la valeur soumise (§11.3). L'adapter
+    entrant la traduit en `422`.
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -352,6 +411,12 @@ __all__ = [
     "InvalidCustomerNotes",
     "CustomerNotFound",
     "CustomerAlreadyExists",
+    "InvalidPaymentAmount",
+    "InvalidPaymentMethod",
+    "PaymentReferenceRequired",
+    "PaymentNotFound",
+    "PaymentNotAdjustable",
+    "InvalidAdjustment",
     "SlotAlreadyBooked",
     "SlotUnavailable",
     "SalonNotBookable",
