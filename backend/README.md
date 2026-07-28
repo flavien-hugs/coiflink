@@ -705,6 +705,47 @@ journalisée au titre de §11.3 (« journalisation des accès sensibles » : cr�
 Les lectures ne sont pas journalisées. **Invariant : aucune PII dans l'audit, les logs ou les messages
 d'erreur** (« Une fiche existe déjà pour ce numéro dans ce salon. » ne rappelle pas le numéro).
 
+## Clients — note privée (US-4.5, #32 — [ADR-0026](../docs/adr/0026-fiche-client-portee-salon.md))
+
+Le gérant **ajoute/édite une note privée** sur une fiche existante (préférences, allergies, habitudes ;
+critère d'acceptation « non visible du client »). #28 saisissait la note **à la création** puis la
+figeait ; #32 ajoute une **route d'écriture ciblée** — **sans migration** (la colonne
+`customer_profiles.notes` `TEXT NULL` existe depuis `0001`) ni élargissement de droits. Sémantique
+*replace* : la note fournie **remplace** la précédente ; `null`, chaîne vide ou blanche **efface** la
+note (`notes = NULL`) — « éditer » couvre « retirer ». **Seule** `notes` est éditable ; l'édition du
+nom/téléphone/genre reste hors périmètre. **Rien** n'est ajouté à `PUBLIC_ROUTE_PATHS`.
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `PUT` | `/salons/{salon_id}/customers/{customer_id}/notes` | `CUSTOMER_MANAGE` + portée | `200` + fiche à jour \| `401` \| `403` \| `404` fiche hors salon \| `422` note trop longue | `CUSTOMER_NOTE_UPDATED` |
+
+```bash
+curl -X PUT "$API/salons/$SALON_ID/customers/$CUSTOMER_ID/notes" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"notes":"Allergie au réactif X. Préfère le samedi matin."}'
+# Effacer la note : -d '{"notes":null}' (ou "") → 200 avec notes:null.
+```
+
+- **Champs** : `notes` **optionnelle** ≤ 2000 (validation `normalize_notes` **avant** écriture — une
+  note trop longue ne produit ni mutation ni audit). Tout champ privilégié du corps (`full_name`,
+  `phone`, `gender`, `salon_id`, `id`, `user_id`, `total_visits`, `last_visit_at`) est **ignoré**
+  (`extra="ignore"`). La réponse est identique à `GET` fiche (`CustomerResponse`, `updated_at` régénéré,
+  **pas de `user_id`**).
+- **Isolation §11.2** : `require_salon_scope` sur la route **et** filtre `(salon_id, customer_id)` en
+  SQL dans `update_notes`. Un accès inter-salons reçoit le `403` **générique** (aucun oracle) ; le `404`
+  n'arrive qu'**après** validation de portée. Une fiche d'un autre salon est indiscernable d'une fiche
+  inexistante.
+- **Permission `CUSTOMER_MANAGE`** (§4.1), détenue par le **seul `MANAGER`** — la matrice n'est **pas**
+  modifiée. La note reste hors du catalogue public (#18/#19), de la disponibilité (#21) et de **toutes**
+  les routes de l'application mobile : jamais exposée au client.
+
+**Journalisation §11.4/§11.3** — chaque édition écrit une `AuditEntry` `CUSTOMER_NOTE_UPDATED`
+(entité `customer`) dans la **même `Session`** que l'écriture (commit/rollback conjoint), levée
+**après** `CustomerNotFound` (aucune trace pour une cible inexistante). Elle est journalisée au titre de
+§11.3 (« accès sensibles » : la note peut contenir des **données de santé**, allergies) et reste
+**neutre** : `metadata = {}` — ni le contenu de la note, ni l'ancienne valeur, ni un indicateur de
+présence n'entre au journal.
+
 ## Clients — historique des visites (US-4.2, #29)
 
 Le gérant **consulte l'historique des visites d'un client** — ses RDV **terminés** avec prestations et

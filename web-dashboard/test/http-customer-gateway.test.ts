@@ -628,3 +628,218 @@ describe("createHttpCustomerGateway().stats() — codes de statut", () => {
     expect(url).toContain(CUSTOMER_ID);
   });
 });
+
+// ---------------------------------------------------------------------------
+// updateNote() — note privée (US-4.5, #32)
+// ---------------------------------------------------------------------------
+
+describe("createHttpCustomerGateway().updateNote() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpCustomerGateway({ accessToken: null }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accessToken undefined → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpCustomerGateway({}).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("createHttpCustomerGateway().updateNote() — codes de statut", () => {
+  it("200 → ok:true avec la fiche transformée (snake_case → camelCase)", async () => {
+    stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "Allergie réactif X.",
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.customer.id).toBe(CUSTOMER_ID);
+      expect(result.customer.fullName).toBe("Awa Koné");
+    }
+  });
+
+  it("200 avec notes null (effacement) → ok:true", async () => {
+    stubFetch(200, { ...FAKE_CUSTOMER_PAYLOAD, notes: null });
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      null,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.customer.notes).toBeNull();
+    }
+  });
+
+  it("200 → le jeton n'est pas inclus dans le résultat", async () => {
+    stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(TOKEN);
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unauthenticated");
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("forbidden");
+  });
+
+  it("404 → not-found", async () => {
+    stubFetch(404, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("not-found");
+  });
+
+  it("422 → invalid", async () => {
+    stubFetch(422, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("invalid");
+  });
+
+  it("503 → unavailable", async () => {
+    stubFetch(503, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("erreur réseau → unavailable", async () => {
+    stubFetchNetworkError();
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("appel réseau utilise la méthode PUT", async () => {
+    const fetchMock = stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init?.method).toBe("PUT");
+  });
+
+  it("appel réseau inclut l'en-tête Authorization", async () => {
+    const fetchMock = stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init?.headers as Record<string, string>;
+    expect(headers?.["Authorization"]).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("l'URL appelée contient /notes et les IDs", async () => {
+    const fetchMock = stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "note",
+    );
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/notes");
+    expect(url).toContain(SALON_ID);
+    expect(url).toContain(CUSTOMER_ID);
+  });
+
+  it("le corps envoyé contient uniquement 'notes' (pas de PII ni de salon_id)", async () => {
+    const fetchMock = stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).updateNote(
+      SALON_ID,
+      CUSTOMER_ID,
+      "Allergie réactif X.",
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init?.body as string);
+    expect(body).toHaveProperty("notes", "Allergie réactif X.");
+    expect(Object.keys(body)).toEqual(["notes"]);
+  });
+});

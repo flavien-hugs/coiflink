@@ -12,6 +12,7 @@ import {
   GENDER_VALUES,
   NOTES_MAX_LENGTH,
   validateCustomer,
+  validateNote,
 } from "../src/domain/customer/customer";
 import type { RawCustomerInput } from "../src/domain/customer/customer";
 
@@ -254,6 +255,47 @@ describe("GENDER_VALUES", () => {
 // ---------------------------------------------------------------------------
 // GENDER_OPTIONS constant
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// validateNote — US-4.5 #32 (réutilisée par BFF et formulaire d'édition)
+// ---------------------------------------------------------------------------
+
+describe("validateNote", () => {
+  it("note null → ok, valeur null (efface la note)", () => {
+    const r = validateNote(null);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBeNull();
+  });
+
+  it("chaîne vide → ok, valeur null (efface la note)", () => {
+    const r = validateNote("");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBeNull();
+  });
+
+  it("espaces uniquement → ok, valeur null (efface la note)", () => {
+    const r = validateNote("   ");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBeNull();
+  });
+
+  it("note valide → trimée et retournée", () => {
+    const r = validateNote("  Allergie réactif X.  ");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBe("Allergie réactif X.");
+  });
+
+  it(`note exactement ${NOTES_MAX_LENGTH} caractères → ok`, () => {
+    const r = validateNote("A".repeat(NOTES_MAX_LENGTH));
+    expect(r.ok).toBe(true);
+  });
+
+  it(`note dépassant ${NOTES_MAX_LENGTH} caractères → invalid-notes`, () => {
+    const r = validateNote("A".repeat(NOTES_MAX_LENGTH + 1));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invalid-notes");
+  });
+});
 
 describe("GENDER_OPTIONS", () => {
   it("contient quatre options (non renseigné + 3 valeurs)", () => {

@@ -25,6 +25,9 @@ from coiflink_api.domain.tokens import TokenClaims, TokenPair
 from coiflink_api.domain.user import User, UserToCreate
 
 _CREATED_AT = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc)
+# Horodatage postérieur à `_CREATED_AT` : les fakes de mutation le posent sur
+# `updated_at` pour qu'un test puisse vérifier sa régénération (miroir `onupdate`).
+_UPDATED_AT = datetime.datetime(2026, 1, 2, 0, 0, 0, tzinfo=datetime.timezone.utc)
 _FIXED_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 # Paire de jetons synthétiques réutilisable dans les tests de connexion.
@@ -1077,6 +1080,20 @@ class FakeCustomerRepository:
 
     def phone_exists(self, salon_id: uuid.UUID, phone: str) -> bool:
         return any(c.phone == phone for c in self._for_salon(salon_id))  # type: ignore[union-attr]
+
+    def update_notes(self, salon_id, customer_id, notes):  # type: ignore[no-untyped-def]
+        from dataclasses import replace
+
+        from coiflink_api.domain.errors import CustomerNotFound
+
+        customer = self._customers.get(customer_id)
+        if customer is None or customer.salon_id != salon_id:  # type: ignore[union-attr]
+            # Fiche hors salon/inexistante : indiscernable (isolation §11.2).
+            raise CustomerNotFound("Fiche client introuvable.")
+        # Seule `notes` change ; `updated_at` régénéré (miroir du `onupdate` SQL).
+        updated = replace(customer, notes=notes, updated_at=_UPDATED_AT)
+        self._customers[customer_id] = updated
+        return updated
 
     def list_visits(self, salon_id, customer_id, statuses):  # type: ignore[no-untyped-def]
         # Enregistre l'appel (les tests vérifient que `statuses == HISTORY_STATUSES`).

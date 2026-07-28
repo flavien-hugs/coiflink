@@ -62,8 +62,11 @@ class TestAuditAction:
     def test_customer_created_value(self) -> None:
         assert AuditAction.CUSTOMER_CREATED == "CUSTOMER_CREATED"
 
-    def test_exactly_ten_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 10
+    def test_customer_note_updated_value(self) -> None:
+        assert AuditAction.CUSTOMER_NOTE_UPDATED == "CUSTOMER_NOTE_UPDATED"
+
+    def test_exactly_eleven_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 11
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -85,6 +88,7 @@ class TestAuditAction:
             "APPOINTMENT_STATUS_CHANGED",
             "APPOINTMENT_HAIRDRESSER_ASSIGNED",
             "CUSTOMER_CREATED",
+            "CUSTOMER_NOTE_UPDATED",
         }
 
 

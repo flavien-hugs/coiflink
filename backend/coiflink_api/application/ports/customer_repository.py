@@ -67,6 +67,19 @@ class CustomerRepository(Protocol):
         """
         ...
 
+    def update_notes(
+        self, salon_id: uuid.UUID, customer_id: uuid.UUID, notes: str | None
+    ) -> Customer:
+        """Remplace la note privée de la fiche `(salon_id, customer_id)` (US-4.5, #32).
+
+        Le filtre porte sur `salon_id` **et** `id` (isolation §11.2) : une fiche
+        d'un autre salon est indiscernable d'une fiche inexistante. Lève
+        `domain.errors.CustomerNotFound` si la fiche est absente du salon (jamais
+        un oracle d'existence). `notes = None` **efface** la note (`notes = NULL`).
+        Seule la colonne `notes` est modifiée ; aucune autre donnée de la fiche.
+        """
+        ...
+
     def list_visits(
         self,
         salon_id: uuid.UUID,

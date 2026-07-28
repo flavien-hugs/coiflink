@@ -274,8 +274,13 @@ US-4.3) sont livrées : `GET /salons/{salon_id}/customers/{customer_id}/stats` c
 **plus fréquentes** de la fiche — nombre d'occurrences et montant cumulé (`price_at_booking` figé, XOF) —
 de la plus à la moins fréquente, **dérivé en lecture** des mêmes visites `COMPLETED` que #29 (aucun
 nouvel accès base), lecture salon-scopée et fiche-scopée (`CUSTOMER_MANAGE`, anti-oracle ADR-0026),
-rendu par un panneau **« Prestations préférées »** sur la page `/gerant/clients/{id}`. L'encaissement
-(#33+) reste à venir.
+rendu par un panneau **« Prestations préférées »** sur la page `/gerant/clients/{id}`. **La note client
+privée éditable** (#32, US-4.5) est livrée : `PUT /salons/{salon_id}/customers/{customer_id}/notes`
+remplace la note interne d'une fiche existante (préférences, allergies, habitudes ; `null`/vide
+**efface** la note) — permission `CUSTOMER_MANAGE`, **isolation par salon** (§11.2), édition
+**journalisée** (`CUSTOMER_NOTE_UPDATED`, §11.4/§11.3) sans aucune PII au journal ; la note reste
+**interne au salon**, jamais visible du client, et devient éditable via un panneau **« Note privée »**
+sur la page `/gerant/clients/{id}`. L'encaissement (#33+) reste à venir.
 
 ---
 
