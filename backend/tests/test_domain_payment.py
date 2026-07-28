@@ -1,0 +1,215 @@
+"""Tests unitaires — domaine `payment` (US-5.1/5.3, #33/#34).
+
+Couvre :
+- `validate_amount` : None/bool refusés ; zéro accepté ; positif accepté ;
+  négatif refusé ; hors borne refusé ; borne exacte acceptée ; plus de deux
+  décimales refusé ; non-fini refusé ; entier converti ; message neutre.
+- `validate_payment_method` : None/vide/inconnu refusés ; sensible à la casse ;
+  toutes les valeurs valides de l'enum acceptées.
+- `normalize_reference` : None → None ; vide/espaces → None ; trim ; troncature.
+- `require_reference_present` : les deux absents → erreur ; l'un ou l'autre
+  présent → OK ; les deux présents → OK.
+
+Aucune base, aucun réseau — domaine pur.
+"""
+
+from __future__ import annotations
+
+import decimal
+import uuid
+
+import pytest
+
+from coiflink_api.domain.errors import (
+    InvalidPaymentAmount,
+    InvalidPaymentMethod,
+    PaymentReferenceRequired,
+)
+from coiflink_api.domain.payment import (
+    AMOUNT_MAX,
+    AMOUNT_MIN,
+    PAYMENT_METHOD_VALUES,
+    REFERENCE_MAX_LENGTH,
+    normalize_reference,
+    require_reference_present,
+    validate_amount,
+    validate_payment_method,
+)
+
+
+# ---------------------------------------------------------------------------
+# validate_amount
+# ---------------------------------------------------------------------------
+
+
+class TestValidateAmount:
+    def test_none_raises(self) -> None:
+        with pytest.raises(InvalidPaymentAmount):
+            validate_amount(None)
+
+    def test_bool_raises(self) -> None:
+        with pytest.raises(InvalidPaymentAmount):
+            validate_amount(True)
+
+    def test_zero_valid(self) -> None:
+        result = validate_amount(decimal.Decimal("0.00"))
+        assert result == decimal.Decimal("0")
+
+    def test_positive_valid(self) -> None:
+        result = validate_amount(decimal.Decimal("5000.00"))
+        assert result == decimal.Decimal("5000.00")
+
+    def test_negative_raises(self) -> None:
+        with pytest.raises(InvalidPaymentAmount):
+            validate_amount(decimal.Decimal("-0.01"))
+
+    def test_above_max_raises(self) -> None:
+        with pytest.raises(InvalidPaymentAmount):
+            validate_amount(AMOUNT_MAX + decimal.Decimal("0.01"))
+
+    def test_exactly_max_valid(self) -> None:
+        result = validate_amount(AMOUNT_MAX)
+        assert result == AMOUNT_MAX
+
+    def test_exactly_min_valid(self) -> None:
+        result = validate_amount(AMOUNT_MIN)
+        assert result == AMOUNT_MIN
+
+    def test_three_decimals_raises(self) -> None:
+        with pytest.raises(InvalidPaymentAmount):
+            validate_amount(decimal.Decimal("1.001"))
+
+    def test_two_decimals_valid(self) -> None:
+        result = validate_amount(decimal.Decimal("1.01"))
+        assert result == decimal.Decimal("1.01")
+
+    def test_integer_coerced_to_decimal(self) -> None:
+        result = validate_amount(1000)
+        assert isinstance(result, decimal.Decimal)
+        assert result == decimal.Decimal("1000")
+
+    def test_infinity_raises(self) -> None:
+        with pytest.raises(InvalidPaymentAmount):
+            validate_amount(decimal.Decimal("Infinity"))
+
+    def test_nan_raises(self) -> None:
+        with pytest.raises(InvalidPaymentAmount):
+            validate_amount(decimal.Decimal("NaN"))
+
+    def test_string_raises(self) -> None:
+        with pytest.raises(InvalidPaymentAmount):
+            validate_amount("100")  # type: ignore[arg-type]
+
+    def test_float_raises(self) -> None:
+        with pytest.raises(InvalidPaymentAmount):
+            validate_amount(1.5)  # type: ignore[arg-type]
+
+    def test_error_message_does_not_contain_value(self) -> None:
+        """Le message d'erreur ne reprend jamais le montant soumis (§11.3)."""
+        try:
+            validate_amount(decimal.Decimal("-9999.00"))
+        except InvalidPaymentAmount as exc:
+            assert "9999" not in str(exc)
+
+    def test_returns_decimal(self) -> None:
+        result = validate_amount(decimal.Decimal("100.00"))
+        assert isinstance(result, decimal.Decimal)
+
+
+# ---------------------------------------------------------------------------
+# validate_payment_method
+# ---------------------------------------------------------------------------
+
+
+class TestValidatePaymentMethod:
+    def test_none_raises(self) -> None:
+        with pytest.raises(InvalidPaymentMethod):
+            validate_payment_method(None)
+
+    def test_empty_string_raises(self) -> None:
+        with pytest.raises(InvalidPaymentMethod):
+            validate_payment_method("")
+
+    def test_whitespace_only_raises(self) -> None:
+        with pytest.raises(InvalidPaymentMethod):
+            validate_payment_method("   ")
+
+    def test_unknown_method_raises(self) -> None:
+        with pytest.raises(InvalidPaymentMethod):
+            validate_payment_method("CRYPTO")
+
+    def test_all_valid_methods_accepted(self) -> None:
+        for method in PAYMENT_METHOD_VALUES:
+            result = validate_payment_method(method)
+            assert result == method
+
+    def test_case_sensitive_lowercase_raises(self) -> None:
+        """La comparaison porte sur la valeur exacte — pas de correction de casse."""
+        with pytest.raises(InvalidPaymentMethod):
+            validate_payment_method("cash")
+
+    def test_at_least_one_valid_method_exists(self) -> None:
+        assert len(PAYMENT_METHOD_VALUES) > 0
+
+    def test_returns_string(self) -> None:
+        result = validate_payment_method(PAYMENT_METHOD_VALUES[0])
+        assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# normalize_reference
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeReference:
+    def test_none_returns_none(self) -> None:
+        assert normalize_reference(None) is None
+
+    def test_empty_string_returns_none(self) -> None:
+        assert normalize_reference("") is None
+
+    def test_whitespace_only_returns_none(self) -> None:
+        assert normalize_reference("   ") is None
+
+    def test_strips_whitespace(self) -> None:
+        assert normalize_reference("  REC-001  ") == "REC-001"
+
+    def test_long_string_truncated(self) -> None:
+        long = "x" * (REFERENCE_MAX_LENGTH + 10)
+        result = normalize_reference(long)
+        assert result is not None
+        assert len(result) == REFERENCE_MAX_LENGTH
+
+    def test_string_at_exact_max_not_truncated(self) -> None:
+        s = "x" * REFERENCE_MAX_LENGTH
+        assert normalize_reference(s) == s
+
+    def test_normal_reference_preserved(self) -> None:
+        assert normalize_reference("REC-2026-0001") == "REC-2026-0001"
+
+    def test_non_string_returns_none(self) -> None:
+        assert normalize_reference(42) is None  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# require_reference_present
+# ---------------------------------------------------------------------------
+
+
+class TestRequireReferencePresent:
+    def test_both_none_raises(self) -> None:
+        with pytest.raises(PaymentReferenceRequired):
+            require_reference_present(None, None)
+
+    def test_appointment_id_present_passes(self) -> None:
+        require_reference_present(uuid.uuid4(), None)
+
+    def test_service_id_present_passes(self) -> None:
+        require_reference_present(None, uuid.uuid4())
+
+    def test_both_present_passes(self) -> None:
+        require_reference_present(uuid.uuid4(), uuid.uuid4())
+
+    def test_error_is_payment_reference_required(self) -> None:
+        with pytest.raises(PaymentReferenceRequired):
+            require_reference_present(None, None)

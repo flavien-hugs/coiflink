@@ -1130,3 +1130,116 @@ def fake_salon_catalog_repository() -> "FakeSalonCatalogRepository":
 @pytest.fixture()
 def fake_appointment_repository() -> "FakeAppointmentRepository":
     return FakeAppointmentRepository()
+
+
+class FakePaymentRepository:
+    """Dépôt de paiements en mémoire (US-5.1/5.3, #33/#34).
+
+    Implémente le port `PaymentRepository` sans I/O réelle. Isolation §11.2 :
+    `get` et `mark_adjusted` filtrent sur `(salon_id, id)` — un paiement d'un autre
+    salon est indiscernable d'un paiement inexistant. **Aucune** méthode `delete`
+    n'est exposée : un paiement validé n'est jamais supprimé (§8.2).
+    """
+
+    def __init__(self, payments: list | None = None) -> None:
+        self._payments: dict[uuid.UUID, object] = {}
+        self.created: list = []
+        self.mark_adjusted_calls: list[tuple[uuid.UUID, uuid.UUID]] = []
+        for p in payments or []:
+            self._payments[p.id] = p  # type: ignore[union-attr]
+
+    def create(self, payment):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.payment import Payment
+
+        entity = Payment(
+            id=uuid.uuid4(),
+            salon_id=payment.salon_id,
+            amount=payment.amount,
+            currency=payment.currency,
+            payment_method=payment.payment_method,
+            status=payment.status,
+            recorded_by=payment.recorded_by,
+            appointment_id=payment.appointment_id,
+            service_id=payment.service_id,
+            client_id=payment.client_id,
+            reference=payment.reference,
+            created_at=_CREATED_AT,
+        )
+        self._payments[entity.id] = entity
+        self.created.append(payment)
+        return entity
+
+    def get(self, salon_id: uuid.UUID, payment_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.errors import PaymentNotFound
+
+        payment = self._payments.get(payment_id)
+        if payment is None or payment.salon_id != salon_id:  # type: ignore[union-attr]
+            raise PaymentNotFound("Paiement introuvable.")
+        return payment
+
+    def mark_adjusted(self, salon_id: uuid.UUID, payment_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.enums import PaymentStatus
+        from coiflink_api.domain.errors import PaymentNotAdjustable, PaymentNotFound
+
+        payment = self._payments.get(payment_id)
+        if payment is None or payment.salon_id != salon_id:  # type: ignore[union-attr]
+            raise PaymentNotFound("Paiement introuvable.")
+        if payment.status != PaymentStatus.VALIDATED.value:  # type: ignore[union-attr]
+            raise PaymentNotAdjustable("Ce paiement ne peut pas être corrigé.")
+        self.mark_adjusted_calls.append((salon_id, payment_id))
+        updated = _dc.replace(payment, status=PaymentStatus.ADJUSTED.value)
+        self._payments[payment_id] = updated
+        return updated
+
+
+class FakeCashJournalRepository:
+    """Dépôt du journal de caisse en mémoire (append-only, US-5.3, #34).
+
+    Implémente le port `CashJournalRepository` sans I/O réelle. **Invariant
+    append-only structurel** : ce fake n'expose **aucune** méthode `update`/`delete`
+    — l'immuabilité du journal est ainsi vérifiée par le contrat lui-même. Isolation
+    §11.2 : `list_for_salon` et `count_for_salon` filtrent sur `salon_id`.
+    """
+
+    def __init__(self) -> None:
+        self._entries: list = []
+        self.appended: list = []
+
+    def append(self, entry):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.cash_journal import CashJournalEntry
+
+        created = CashJournalEntry(
+            id=uuid.uuid4(),
+            salon_id=entry.salon_id,
+            operation_type=entry.operation_type,
+            amount=entry.amount,
+            currency="XOF",
+            performed_by=entry.performed_by,
+            performed_by_name=None,
+            transaction_id=entry.transaction_id,
+            description=entry.description,
+            created_at=_CREATED_AT,
+        )
+        self._entries.append(created)
+        self.appended.append(entry)
+        return created
+
+    def list_for_salon(self, salon_id: uuid.UUID, *, limit: int, offset: int):  # type: ignore[no-untyped-def]
+        entries = [e for e in self._entries if e.salon_id == salon_id]
+        entries_desc = list(reversed(entries))
+        return tuple(entries_desc[offset : offset + limit])
+
+    def count_for_salon(self, salon_id: uuid.UUID) -> int:
+        return sum(1 for e in self._entries if e.salon_id == salon_id)
+
+
+@pytest.fixture()
+def fake_payment_repository() -> "FakePaymentRepository":
+    return FakePaymentRepository()
+
+
+@pytest.fixture()
+def fake_cash_journal_repository() -> "FakeCashJournalRepository":
+    return FakeCashJournalRepository()

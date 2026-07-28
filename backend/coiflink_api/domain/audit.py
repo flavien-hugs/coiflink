@@ -36,6 +36,12 @@ ENTITY_TYPE_APPOINTMENT = "appointment"
 # Type d'entité journalisée pour les fiches clients (§11.3 « accès sensibles »).
 ENTITY_TYPE_CUSTOMER = "customer"
 
+# Type d'entité journalisée pour les paiements (§11.4 « Paiement enregistré ») — #34.
+ENTITY_TYPE_PAYMENT = "payment"
+
+# Type d'entité journalisée pour le journal de caisse (§11.4 « Correction de caisse ») — #34.
+ENTITY_TYPE_CASH_JOURNAL = "cash_journal"
+
 
 @unique
 class AuditAction(_StrEnum):
@@ -77,6 +83,20 @@ class AuditAction(_StrEnum):
     # contenu de la note, ni l'ancienne valeur n'entrent au journal.
     CUSTOMER_NOTE_UPDATED = "CUSTOMER_NOTE_UPDATED"
 
+    # Paiement enregistré — #34 (US-5.3, §11.4 « Paiement enregistré »). Chaque
+    # paiement validé porte son auteur (`recorded_by`) et son horodatage. L'entrée
+    # reste **neutre** — `metadata` est vide : ni le montant, ni le mode, ni
+    # l'identité du client n'entrent au journal d'audit (le détail financier vit
+    # dans `payments`/`cash_journal`, accès borné par permission).
+    PAYMENT_RECORDED = "PAYMENT_RECORDED"
+
+    # Correction de caisse — #34 (US-5.3, §11.4 « Correction de caisse »). Une
+    # correction crée une ligne d'ajustement (`ADJUSTMENT`) sans jamais supprimer le
+    # paiement d'origine. Comme les autres actions caisse, l'entrée reste **neutre**
+    # — `metadata` est vide : ni le delta, ni le motif de correction n'entrent au
+    # journal d'audit.
+    CASH_ADJUSTED = "CASH_ADJUSTED"
+
 
 @dataclass(frozen=True)
 class AuditEntry:
@@ -103,6 +123,8 @@ __all__ = [
     "ENTITY_TYPE_SALON",
     "ENTITY_TYPE_APPOINTMENT",
     "ENTITY_TYPE_CUSTOMER",
+    "ENTITY_TYPE_PAYMENT",
+    "ENTITY_TYPE_CASH_JOURNAL",
     "AuditAction",
     "AuditEntry",
 ]
