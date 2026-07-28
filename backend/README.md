@@ -839,6 +839,53 @@ curl "$API/salons/$SALON_ID/customers/$CUSTOMER_ID/stats" \
   `salon_id`/`client_id` en SQL : jamais les prestations consommées par le même client dans un **autre**
   salon. Lecture pure : **aucun** audit.
 
+## Encaissement — enregistrement d'un paiement (US-5.1, #33)
+
+Le gérant **encaisse une prestation** : `POST /salons/{salon_id}/payments` crée un paiement
+**`VALIDATED`** lié à un RDV ou à une prestation, l'inscrit au **journal de caisse** (ligne `PAYMENT`) et
+le **journalise** (`PAYMENT_RECORDED`, §11.4) dans la **même unité de travail** (atomicité). La route est
+**protégée** par `PAYMENT_RECORD` (§4.1, **seul le `MANAGER`**) + portée salon ; rien n'entre dans
+`PUBLIC_ROUTE_PATHS` (données financières jamais publiques). La tranche d'écriture a été livrée comme
+socle de #34 (journal de caisse) ; **#33 y ajoute la vérification de cohérence du montant**.
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `POST` | `/salons/{salon_id}/payments` | `PAYMENT_RECORD` + portée | `201` paiement \| `401` \| `403` \| `422` | `PAYMENT_RECORDED` (`metadata` **vide**) |
+
+**Règle de cohérence du montant (§5.3/§8.2, cœur de #33).** Le montant saisi doit **correspondre au prix
+de la prestation liée** — il n'est plus possible d'encaisser un montant arbitraire. Le « montant
+attendu » est résolu depuis une source **salon-scopée**, jamais depuis un champ soumis :
+
+- paiement lié à un **RDV** (`appointment_id`) → attendu = **somme des `price_at_booking`** des lignes du
+  RDV (prix **figés** à la réservation ; un changement de tarif ne réécrit pas l'historique) ;
+- paiement lié à une **prestation seule** (`service_id`, sans RDV) → attendu = **`Service.price`** de la
+  prestation **active** du salon ;
+- si les deux sont fournis, la cohérence porte sur le **RDV** et le `service_id` doit faire partie de ses
+  prestations.
+
+Règle MVP = **égalité stricte au centime** (comparaison en `Decimal` quantifié à `0.01`, jamais un
+flottant). Tout écart → `422` **« Le montant ne correspond pas à la prestation. »** Une référence
+inexistante ou **hors salon** est **indiscernable** (aucun oracle §11.2) → `422` **« Prestation ou
+rendez-vous introuvable pour ce salon. »**. Dans les deux cas, le rejet a lieu **avant** toute écriture :
+**aucune** ligne `payments`/`cash_journal`/`audit_logs` n'est créée.
+
+**Sécurité/PII.** `recorded_by` vient **toujours** du `Principal` (non-répudiation §8.2), jamais du corps ;
+`status` est imposé `VALIDATED`. L'audit `PAYMENT_RECORDED` est **neutre** (`metadata = {}` : ni montant,
+ni mode, ni identité client). Les messages `422` restent **métier et neutres** — ils ne reprennent **jamais**
+le montant saisi ni le prix attendu (§11.3).
+
+```bash
+# Cas cohérent (montant = prix de la prestation active) → 201
+curl -X POST "$API/salons/$SALON_ID/payments" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"amount": "5000.00", "payment_method": "CASH", "service_id": "'"$SERVICE_ID"'"}'
+
+# Cas incohérent (montant ≠ prix) → 422 « Le montant ne correspond pas à la prestation. »
+curl -X POST "$API/salons/$SALON_ID/payments" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"amount": "4000.00", "payment_method": "CASH", "service_id": "'"$SERVICE_ID"'"}'
+```
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
@@ -1280,6 +1327,30 @@ Issue #19 ajoute deux suites dédiées à la fiche salon publique (détail) :
   absent ; photos — URLs signées, clé d'objet brute non exposée, `[]` si aucune photo ;
   coordonnées sérialisées en **nombres flottants** JSON ; invariant deny-by-default : `unprotected_routes`
   vide après ajout de la route de détail.
+
+Issue #33 ajoute trois suites dédiées à la cohérence du montant et à l'enregistrement d'un paiement :
+
+- `test_domain_payment.py` (étendu) — domaine pur (aucune I/O) : `validate_amount_matches` :
+  égalité stricte au centime (en `Decimal` quantifié à `0.01`) ; 0,01 d'écart → `PaymentAmountMismatch` ;
+  quantisations différentes pour même valeur → OK ; `metadata` neutre — les messages ne reprennent jamais
+  les montants (§11.3). `expected_amount_for_prices` : itérable vide → `Decimal("0.00")` ; une entrée ;
+  plusieurs entrées ; résultat toujours quantifié à `0.01` (miroir de `NUMERIC(12,2)`) ; tuple accepté.
+- `test_cash_journal_usecases.py` (étendu) — cas d'usage `RecordPayment` avec cohérence (#33, ports 100 %
+  fakes) : nominal via **prestation seule** — montant = `Service.price` → paiement `VALIDATED` + ligne
+  `PAYMENT` + audit `PAYMENT_RECORDED` neutre (`metadata = {}`) ; **montant incohérent** →
+  `PaymentAmountMismatch` sans aucune écriture ; **prestation inconnue** ou **inactive** →
+  `PaymentReferenceNotFound` sans aucune écriture ; nominal via **RDV** — attendu = somme des
+  `price_at_booking` des lignes du RDV ; **RDV inconnu ou hors salon** → `PaymentReferenceNotFound` ;
+  **`service_id` fourni n'appartenant pas au RDV** → `PaymentReferenceNotFound`. Invariant structurel :
+  un paiement incohérent ou dont la référence est invalide ne laisse aucune trace dans `payments`,
+  `cash_journal` ou `audit_logs`.
+- `test_cash_journal_api.py` (étendu) — adapter entrant (`TestClient`, ports fakes, sans base) :
+  `POST /salons/{id}/payments` : `201` (paiement `VALIDATED`, `recorded_by` du `Principal`) ; `422`
+  (montant négatif, mode inconnu, référence prestation/RDV absente, **montant incohérent** →
+  `PaymentAmountMismatch`, **prestation inconnue** → `PaymentReferenceNotFound`) ; `401` sans jeton ;
+  `403` `CLIENT`/`HAIRDRESSER`/hors-portée (message **générique et constant**) ; champs privilégiés
+  dans le corps (`recorded_by`, `status`, `salon_id`) → **ignorés** (`extra="ignore"`) ; aucune route
+  caisse/paiement dans `PUBLIC_ROUTE_PATHS` (données financières jamais publiques).
 
 Issue #21 ajoute cinq suites dédiées au moteur de disponibilité et à l'anti double-réservation :
 

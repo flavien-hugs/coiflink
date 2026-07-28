@@ -32,13 +32,21 @@ import decimal
 import uuid
 from dataclasses import dataclass
 
+from collections.abc import Iterable
+
 from coiflink_api.domain.enums import PaymentMethod, PaymentStatus, values
 from coiflink_api.domain.errors import (
     InvalidPaymentAmount,
     InvalidPaymentCurrency,
     InvalidPaymentMethod,
+    PaymentAmountMismatch,
     PaymentReferenceRequired,
 )
+
+# Précision de comparaison des montants : le centime (miroir de `NUMERIC(12,2)`).
+# Toute comparaison de cohérence quantifie à ce pas, en `Decimal` (jamais un
+# flottant), pour ne jamais dépendre d'un artefact de représentation binaire.
+_AMOUNT_QUANTUM = decimal.Decimal("0.01")
 
 # Bornes de montant, alignées sur la colonne `NUMERIC(12,2)` de `payments.amount`
 # (contrainte base `CHECK amount >= 0`). Un paiement ne peut pas être négatif.
@@ -84,6 +92,34 @@ def validate_amount(amount: decimal.Decimal | int | None) -> decimal.Decimal:
             "Le montant ne doit pas comporter plus de deux décimales."
         )
     return amount
+
+
+def expected_amount_for_prices(prices: Iterable[decimal.Decimal]) -> decimal.Decimal:
+    """Somme (pure) des prix figés d'un RDV → « montant attendu » (§5.3/§8.2, US-5.1).
+
+    Alimente la vérification de cohérence pour un paiement lié à un rendez-vous : le
+    montant attendu est la **somme des `price_at_booking`** de ses lignes (prix figés
+    à la réservation, source de vérité déjà utilisée par #29/#30/#31 — un changement
+    de tarif ultérieur ne réécrit pas l'historique). Le résultat est quantifié au
+    centime (`NUMERIC(12,2)`), en `Decimal`. Une somme vide vaut `0.00`.
+    """
+
+    total = sum(prices, decimal.Decimal("0"))
+    return total.quantize(_AMOUNT_QUANTUM)
+
+
+def validate_amount_matches(amount: decimal.Decimal, expected: decimal.Decimal) -> None:
+    """Vérifie que le montant saisi **correspond** au prix attendu (§5.3/§8.2, US-5.1).
+
+    Cœur de #33 : le PRD impose « le système vérifie que le montant correspond à la
+    prestation ». Règle MVP = **égalité stricte au centime** (`amount == expected`),
+    la comparaison étant faite en `Decimal` quantifié à `0.01` (jamais un flottant).
+    Lève `PaymentAmountMismatch` sinon. Le message reste **neutre** : il ne reprend
+    **jamais** ni le montant saisi ni le prix attendu (§11.3).
+    """
+
+    if amount.quantize(_AMOUNT_QUANTUM) != expected.quantize(_AMOUNT_QUANTUM):
+        raise PaymentAmountMismatch("Le montant ne correspond pas à la prestation.")
 
 
 def validate_payment_method(method: str | None) -> str:
@@ -212,6 +248,8 @@ __all__ = [
     "REFERENCE_MAX_LENGTH",
     "PAYMENT_METHOD_VALUES",
     "validate_amount",
+    "expected_amount_for_prices",
+    "validate_amount_matches",
     "validate_payment_method",
     "validate_currency",
     "normalize_reference",

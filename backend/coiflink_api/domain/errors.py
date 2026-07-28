@@ -304,6 +304,29 @@ class InvalidPaymentCurrency(DomainError):
     """
 
 
+class PaymentAmountMismatch(DomainError):
+    """Le montant du paiement ne correspond pas à la prestation liée (§5.3/§8.2, US-5.1).
+
+    Cœur de #33 : le PRD impose que « le système vérifie que le montant correspond
+    à la prestation ». Le montant attendu est la **somme des `price_at_booking`** des
+    lignes d'un RDV lié, ou le `Service.price` d'une prestation active liée. Levée
+    lorsque le montant saisi diffère (égalité stricte au centime, MVP). Message
+    **neutre** — il ne reprend **jamais** ni le montant saisi ni le prix attendu
+    (§11.3). L'adapter entrant la traduit en `422`.
+    """
+
+
+class PaymentReferenceNotFound(DomainError):
+    """La prestation/le RDV lié au paiement est introuvable pour ce salon (§11.2, US-5.1).
+
+    Levée quand `appointment_id`/`service_id` n'existe pas **ou** appartient à un
+    autre salon : les deux cas sont **indiscernables** (aucun oracle d'existence
+    inter-salons). Le montant attendu ne pouvant être résolu, le paiement est refusé
+    **avant** toute écriture. Message **neutre**. L'adapter entrant la traduit en
+    `422` (donnée de requête invalide, cohérent avec les autres refus de paiement).
+    """
+
+
 class PaymentNotFound(DomainError):
     """Le paiement visé n'existe pas pour ce salon (US-5.3, #34).
 
@@ -424,6 +447,8 @@ __all__ = [
     "InvalidPaymentMethod",
     "InvalidPaymentCurrency",
     "PaymentReferenceRequired",
+    "PaymentAmountMismatch",
+    "PaymentReferenceNotFound",
     "PaymentNotFound",
     "PaymentNotAdjustable",
     "InvalidAdjustment",

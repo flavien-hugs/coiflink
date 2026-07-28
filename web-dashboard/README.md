@@ -208,6 +208,25 @@ planning #26** (`rangeForView`/`todayIso`) et le composant `PlanningBoard` en **
 aucune action de statut** (le coiffeur **consulte** ; la frontière écriture #25 n'est pas franchie —
 voir la spec). L'aiguillage par rôle après connexion se fait **à la racine** (`/`), côté serveur.
 
+### Encaissements — enregistrement d'un paiement (#33, US-5.1)
+
+La section **Encaissements** (`/gerant/encaissements`, Server Component) est **disponible** depuis #33.
+Elle charge **côté serveur** (jeton du cookie httpOnly, jamais exposé au navigateur, invariant #14) le
+salon du gérant puis ses **prestations actives**, et rend le formulaire d'enregistrement d'un paiement
+(`RecordPaymentForm`, client component) : sélection de la **prestation à encaisser**, montant
+**pré-rempli** avec son prix (guidage de la cohérence — le **backend reste l'autorité** et rejette tout
+écart, §5.3/§8.2), mode de paiement (`CASH` / `MOBILE_MONEY_MANUAL` / `CARD_MANUAL` / `OTHER`) et
+référence optionnelle. Au succès, `router.refresh()` recharge la page.
+
+Le Route Handler BFF `POST /api/salons/[id]/payments` lit le jeton du cookie httpOnly **côté serveur**,
+valide la saisie (`validatePayment`, `src/domain/payments/payment.ts`, parité `domain/payment.py`) puis
+proxifie `POST /salons/{id}/payments` via `PaymentGateway.record`. Les erreurs sont **neutres** et
+distinguées à partir du message métier du backend : `422` « Le montant ne correspond pas à la
+prestation. » (incohérence de montant), `422` « Prestation ou rendez-vous introuvable pour ce salon. »
+(référence hors salon/inconnue, sans oracle §11.2), `422` « Paiement invalide. », `403` « Action non
+autorisée sur ce salon. », `401` « Session requise. ». Ni jeton, ni montant, ni PII ne sont journalisés
+(PRD §11.3). Le journal de caisse consultable + la correction (#34) restent à livrer côté web.
+
 ### Ajouter une section
 
 1. Ajouter une entrée à `src/domain/navigation/sections.ts`

@@ -17,6 +17,10 @@ Couvre :
   (`transaction_id = payment.id`, `performed_by = acteur`), audit `PAYMENT_RECORDED`
   avec `metadata == {}`.
 - `RecordPayment` validation invalide : aucune écriture, aucun audit.
+- `RecordPayment` cohérence (#33) : montant ≠ prix → `PaymentAmountMismatch` avant écriture ;
+  prestation inconnue/inactive → `PaymentReferenceNotFound` avant écriture.
+- `RecordPayment` via RDV : montant = somme `price_at_booking` ; RDV inconnu/hors-salon
+  → `PaymentReferenceNotFound` ; `service_id` hors RDV → `PaymentReferenceNotFound`.
 """
 
 from __future__ import annotations
@@ -29,19 +33,29 @@ import pytest
 
 from coiflink_api.application.cash_journal import AdjustPayment, ListCashJournal
 from coiflink_api.application.payments import PaymentCommand, RecordPayment
+from coiflink_api.domain.appointment import Appointment, BookedService
 from coiflink_api.domain.audit import ENTITY_TYPE_PAYMENT, AuditAction
 from coiflink_api.domain.cash_journal import CashJournalEntry
-from coiflink_api.domain.enums import CashOperationType, PaymentStatus
+from coiflink_api.domain.enums import AppointmentStatus, CashOperationType, PaymentStatus
 from coiflink_api.domain.errors import (
     InvalidAdjustment,
     InvalidPaymentAmount,
+    PaymentAmountMismatch,
     PaymentNotAdjustable,
     PaymentNotFound,
+    PaymentReferenceNotFound,
     PaymentReferenceRequired,
 )
 from coiflink_api.domain.payment import Payment
+from coiflink_api.domain.service import Service
 
-from .conftest import FakeAuditLog, FakeCashJournalRepository, FakePaymentRepository
+from .conftest import (
+    FakeAppointmentRepository,
+    FakeAuditLog,
+    FakeCashJournalRepository,
+    FakePaymentRepository,
+    FakeServiceRepository,
+)
 
 # ---------------------------------------------------------------------------
 # Constantes partagées
@@ -52,7 +66,33 @@ _OTHER_SALON_ID = uuid.UUID("22222222-0000-0000-0000-000000000002")
 _ACTOR_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _PAYMENT_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")
 _SERVICE_ID = uuid.UUID("cccccccc-0000-0000-0000-000000000001")
+_APPOINTMENT_ID = uuid.UUID("dddddddd-0000-0000-0000-000000000001")
+_CLIENT_ID = uuid.UUID("eeeeeeee-0000-0000-0000-000000000001")
 _CREATED_AT = datetime.datetime(2026, 7, 28, 10, 0, 0, tzinfo=datetime.timezone.utc)
+
+
+def _service_repo_for(price: decimal.Decimal) -> FakeServiceRepository:
+    """Dépôt de prestations seedé avec `_SERVICE_ID` **active** au prix voulu.
+
+    La cohérence du montant (#33) résout le prix attendu depuis la prestation liée :
+    ces tests `RecordPayment` (socle #34) doivent donc fournir une prestation dont le
+    prix **égale** le montant du paiement pour rester nominaux.
+    """
+
+    repo = FakeServiceRepository()
+    repo._services[_SERVICE_ID] = Service(
+        id=_SERVICE_ID,
+        salon_id=_SALON_ID,
+        name="Coupe",
+        description=None,
+        price=price,
+        duration_minutes=30,
+        category=None,
+        is_active=True,
+        created_at=_CREATED_AT,
+        updated_at=_CREATED_AT,
+    )
+    return repo
 
 
 def _make_payment(
@@ -438,9 +478,13 @@ class TestRecordPaymentNominal:
             payment_method=payment_method,
             service_id=_SERVICE_ID,
         )
-        payment = RecordPayment(payment_repo, journal_repo, audit).execute(
-            _SALON_ID, cmd, actor_user_id=_ACTOR_ID
-        )
+        payment = RecordPayment(
+            payment_repo,
+            journal_repo,
+            audit,
+            FakeAppointmentRepository(),
+            _service_repo_for(amount),
+        ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
         return payment, payment_repo, journal_repo, audit
 
     def test_payment_salon_id_from_scope(self) -> None:
@@ -505,9 +549,13 @@ class TestRecordPaymentValidation:
         )
 
         with pytest.raises(InvalidPaymentAmount):
-            RecordPayment(payment_repo, journal_repo, audit).execute(
-                _SALON_ID, cmd, actor_user_id=_ACTOR_ID
-            )
+            RecordPayment(
+                payment_repo,
+                journal_repo,
+                audit,
+                FakeAppointmentRepository(),
+                FakeServiceRepository(),
+            ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
 
         assert len(payment_repo.created) == 0
         assert len(journal_repo.appended) == 0
@@ -524,10 +572,297 @@ class TestRecordPaymentValidation:
         )
 
         with pytest.raises(PaymentReferenceRequired):
-            RecordPayment(payment_repo, journal_repo, audit).execute(
-                _SALON_ID, cmd, actor_user_id=_ACTOR_ID
-            )
+            RecordPayment(
+                payment_repo,
+                journal_repo,
+                audit,
+                FakeAppointmentRepository(),
+                FakeServiceRepository(),
+            ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
 
         assert len(payment_repo.created) == 0
         assert len(journal_repo.appended) == 0
         assert len(audit.recorded) == 0
+
+
+# ---------------------------------------------------------------------------
+# RecordPayment — cohérence du montant (#33, §5.3/§8.2)
+# ---------------------------------------------------------------------------
+
+
+def _make_inactive_service_repo() -> FakeServiceRepository:
+    """Dépôt seedé avec `_SERVICE_ID` **désactivée** (price 5000.00)."""
+    repo = FakeServiceRepository()
+    repo._services[_SERVICE_ID] = Service(
+        id=_SERVICE_ID,
+        salon_id=_SALON_ID,
+        name="Coupe",
+        description=None,
+        price=decimal.Decimal("5000.00"),
+        duration_minutes=30,
+        category=None,
+        is_active=False,
+        created_at=_CREATED_AT,
+        updated_at=_CREATED_AT,
+    )
+    return repo
+
+
+def _make_appointment(
+    *,
+    appointment_id: uuid.UUID = _APPOINTMENT_ID,
+    salon_id: uuid.UUID = _SALON_ID,
+    booked_amount: decimal.Decimal = decimal.Decimal("5000.00"),
+    service_id: uuid.UUID = _SERVICE_ID,
+) -> Appointment:
+    return Appointment(
+        id=appointment_id,
+        salon_id=salon_id,
+        client_id=_CLIENT_ID,
+        hairdresser_id=None,
+        date=datetime.date(2026, 7, 28),
+        start_time=datetime.time(10, 0),
+        end_time=datetime.time(10, 30),
+        status=AppointmentStatus.CONFIRMED.value,
+        client_note=None,
+        created_at=_CREATED_AT,
+        services=(BookedService(service_id=service_id, price_at_booking=booked_amount),),
+    )
+
+
+class TestRecordPaymentCoherence:
+    """Cohérence du montant (#33) : PaymentAmountMismatch / PaymentReferenceNotFound.
+
+    Toutes les erreurs de cohérence sont levées **avant** toute écriture : ni
+    `payments`, ni `cash_journal`, ni `audit_logs` ne sont modifiés.
+    """
+
+    def _record(
+        self,
+        payment_repo: FakePaymentRepository,
+        journal_repo: FakeCashJournalRepository,
+        audit: FakeAuditLog,
+        service_repo: FakeServiceRepository,
+        cmd: PaymentCommand,
+    ) -> None:
+        RecordPayment(
+            payment_repo,
+            journal_repo,
+            audit,
+            FakeAppointmentRepository(),
+            service_repo,
+        ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
+
+    def test_amount_mismatch_raises(self) -> None:
+        """Montant saisi ≠ prix de la prestation → PaymentAmountMismatch (§5.3/§8.2)."""
+        service_repo = _service_repo_for(decimal.Decimal("3000.00"))
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            service_id=_SERVICE_ID,
+        )
+        with pytest.raises(PaymentAmountMismatch):
+            self._record(FakePaymentRepository(), FakeCashJournalRepository(), FakeAuditLog(), service_repo, cmd)
+
+    def test_amount_mismatch_no_writes(self) -> None:
+        service_repo = _service_repo_for(decimal.Decimal("3000.00"))
+        payment_repo = FakePaymentRepository()
+        journal_repo = FakeCashJournalRepository()
+        audit = FakeAuditLog()
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            service_id=_SERVICE_ID,
+        )
+        with pytest.raises(PaymentAmountMismatch):
+            self._record(payment_repo, journal_repo, audit, service_repo, cmd)
+
+        assert len(payment_repo.created) == 0
+        assert len(journal_repo.appended) == 0
+        assert len(audit.recorded) == 0
+
+    def test_unknown_service_raises_reference_not_found(self) -> None:
+        """Prestation inconnue → PaymentReferenceNotFound, indiscernable de hors-salon (§11.2)."""
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            service_id=uuid.uuid4(),
+        )
+        with pytest.raises(PaymentReferenceNotFound):
+            self._record(FakePaymentRepository(), FakeCashJournalRepository(), FakeAuditLog(), FakeServiceRepository(), cmd)
+
+    def test_unknown_service_no_writes(self) -> None:
+        payment_repo = FakePaymentRepository()
+        journal_repo = FakeCashJournalRepository()
+        audit = FakeAuditLog()
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            service_id=uuid.uuid4(),
+        )
+        with pytest.raises(PaymentReferenceNotFound):
+            self._record(payment_repo, journal_repo, audit, FakeServiceRepository(), cmd)
+
+        assert len(payment_repo.created) == 0
+        assert len(journal_repo.appended) == 0
+        assert len(audit.recorded) == 0
+
+    def test_inactive_service_raises_reference_not_found(self) -> None:
+        """Prestation désactivée → PaymentReferenceNotFound (pas d'oracle actif/inactif §11.2)."""
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            service_id=_SERVICE_ID,
+        )
+        with pytest.raises(PaymentReferenceNotFound):
+            self._record(FakePaymentRepository(), FakeCashJournalRepository(), FakeAuditLog(), _make_inactive_service_repo(), cmd)
+
+    def test_inactive_service_no_writes(self) -> None:
+        payment_repo = FakePaymentRepository()
+        journal_repo = FakeCashJournalRepository()
+        audit = FakeAuditLog()
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            service_id=_SERVICE_ID,
+        )
+        with pytest.raises(PaymentReferenceNotFound):
+            self._record(payment_repo, journal_repo, audit, _make_inactive_service_repo(), cmd)
+
+        assert len(payment_repo.created) == 0
+        assert len(journal_repo.appended) == 0
+        assert len(audit.recorded) == 0
+
+
+# ---------------------------------------------------------------------------
+# RecordPayment — chemin via rendez-vous (appointment_id, §5.3/§8.2)
+# ---------------------------------------------------------------------------
+
+
+class TestRecordPaymentAppointmentPath:
+    """Paiement lié à un RDV : montant attendu = somme des `price_at_booking`.
+
+    Le chemin `appointment_id` est prioritaire sur `service_id` seul (§5.3) :
+    le montant attendu est la somme des lignes du RDV, pas le prix catalogue.
+    """
+
+    def _run(
+        self,
+        *,
+        cmd: PaymentCommand,
+        appointment_repo: FakeAppointmentRepository,
+    ) -> tuple:
+        payment_repo = FakePaymentRepository()
+        journal_repo = FakeCashJournalRepository()
+        audit = FakeAuditLog()
+        payment = RecordPayment(
+            payment_repo,
+            journal_repo,
+            audit,
+            appointment_repo,
+            FakeServiceRepository(),
+        ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
+        return payment, payment_repo, journal_repo, audit
+
+    def test_appointment_nominal_payment_validated(self) -> None:
+        appt = _make_appointment(booked_amount=decimal.Decimal("5000.00"))
+        appt_repo = FakeAppointmentRepository(appointments=[appt])
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            appointment_id=_APPOINTMENT_ID,
+        )
+        payment, _, _, _ = self._run(cmd=cmd, appointment_repo=appt_repo)
+        assert payment.status == PaymentStatus.VALIDATED.value
+
+    def test_appointment_nominal_journal_entry(self) -> None:
+        appt = _make_appointment(booked_amount=decimal.Decimal("5000.00"))
+        appt_repo = FakeAppointmentRepository(appointments=[appt])
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            appointment_id=_APPOINTMENT_ID,
+        )
+        _, _, journal_repo, _ = self._run(cmd=cmd, appointment_repo=appt_repo)
+        assert len(journal_repo.appended) == 1
+        assert journal_repo.appended[0].operation_type == CashOperationType.PAYMENT.value
+
+    def test_appointment_nominal_audit_recorded(self) -> None:
+        appt = _make_appointment(booked_amount=decimal.Decimal("5000.00"))
+        appt_repo = FakeAppointmentRepository(appointments=[appt])
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            appointment_id=_APPOINTMENT_ID,
+        )
+        _, _, _, audit = self._run(cmd=cmd, appointment_repo=appt_repo)
+        assert len(audit.recorded) == 1
+        assert audit.recorded[0].action == AuditAction.PAYMENT_RECORDED.value
+
+    def test_unknown_appointment_raises_reference_not_found(self) -> None:
+        """RDV inconnu → PaymentReferenceNotFound, indiscernable de hors-salon (§11.2)."""
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            appointment_id=uuid.uuid4(),
+        )
+        with pytest.raises(PaymentReferenceNotFound):
+            self._run(cmd=cmd, appointment_repo=FakeAppointmentRepository())
+
+    def test_unknown_appointment_no_writes(self) -> None:
+        payment_repo = FakePaymentRepository()
+        journal_repo = FakeCashJournalRepository()
+        audit = FakeAuditLog()
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            appointment_id=uuid.uuid4(),
+        )
+        with pytest.raises(PaymentReferenceNotFound):
+            RecordPayment(
+                payment_repo, journal_repo, audit,
+                FakeAppointmentRepository(), FakeServiceRepository(),
+            ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
+
+        assert len(payment_repo.created) == 0
+        assert len(journal_repo.appended) == 0
+        assert len(audit.recorded) == 0
+
+    def test_cross_salon_appointment_raises_reference_not_found(self) -> None:
+        """RDV d'un autre salon → PaymentReferenceNotFound (isolation §11.2)."""
+        appt = _make_appointment(salon_id=_OTHER_SALON_ID, booked_amount=decimal.Decimal("5000.00"))
+        appt_repo = FakeAppointmentRepository(appointments=[appt])
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            appointment_id=_APPOINTMENT_ID,
+        )
+        with pytest.raises(PaymentReferenceNotFound):
+            self._run(cmd=cmd, appointment_repo=appt_repo)
+
+    def test_appointment_and_service_in_appointment_passes(self) -> None:
+        """Les deux fournis : prestation présente dans le RDV → valide."""
+        appt = _make_appointment(booked_amount=decimal.Decimal("5000.00"), service_id=_SERVICE_ID)
+        appt_repo = FakeAppointmentRepository(appointments=[appt])
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            appointment_id=_APPOINTMENT_ID,
+            service_id=_SERVICE_ID,
+        )
+        payment, _, _, _ = self._run(cmd=cmd, appointment_repo=appt_repo)
+        assert payment.status == PaymentStatus.VALIDATED.value
+
+    def test_appointment_and_service_not_in_appointment_raises(self) -> None:
+        """Les deux fournis : prestation absente du RDV → PaymentReferenceNotFound."""
+        other_service_id = uuid.UUID("ffffffff-0000-0000-0000-000000000001")
+        appt = _make_appointment(booked_amount=decimal.Decimal("5000.00"), service_id=_SERVICE_ID)
+        appt_repo = FakeAppointmentRepository(appointments=[appt])
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="CASH",
+            appointment_id=_APPOINTMENT_ID,
+            service_id=other_service_id,
+        )
+        with pytest.raises(PaymentReferenceNotFound):
+            self._run(cmd=cmd, appointment_repo=appt_repo)

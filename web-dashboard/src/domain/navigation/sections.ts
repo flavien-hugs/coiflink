@@ -64,7 +64,7 @@ export const DASHBOARD_SECTIONS: readonly DashboardSection[] = [
     key: "encaissements",
     label: "Encaissements",
     href: "/gerant/encaissements",
-    status: "coming-soon",
+    status: "available",
     category: "offre-caisse",
   },
   {

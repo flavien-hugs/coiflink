@@ -52,6 +52,9 @@ from coiflink_api.adapters.inbound.security import (
     require_permission,
     require_salon_scope,
 )
+from coiflink_api.adapters.outbound.persistence.appointment_repository import (
+    SqlAppointmentRepository,
+)
 from coiflink_api.adapters.outbound.persistence.audit_log_repository import SqlAuditLog
 from coiflink_api.adapters.outbound.persistence.cash_journal_repository import (
     SqlCashJournalEntryRepository,
@@ -59,9 +62,13 @@ from coiflink_api.adapters.outbound.persistence.cash_journal_repository import (
 from coiflink_api.adapters.outbound.persistence.payment_repository import (
     SqlPaymentRepository,
 )
+from coiflink_api.adapters.outbound.persistence.service_repository import (
+    SqlServiceRepository,
+)
 from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.application.cash_journal import AdjustPayment, ListCashJournal
 from coiflink_api.application.payments import PaymentCommand, RecordPayment
+from coiflink_api.application.ports.appointment_repository import AppointmentRepository
 from coiflink_api.application.ports.audit_log import AuditLog
 from coiflink_api.application.ports.cash_journal_repository import (
     CASH_JOURNAL_LIMIT_DEFAULT,
@@ -70,6 +77,7 @@ from coiflink_api.application.ports.cash_journal_repository import (
     CashJournalRepository,
 )
 from coiflink_api.application.ports.payment_repository import PaymentRepository
+from coiflink_api.application.ports.service_repository import ServiceRepository
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.cash_journal import (
     DESCRIPTION_MAX_LENGTH,
@@ -80,8 +88,10 @@ from coiflink_api.domain.errors import (
     InvalidPaymentAmount,
     InvalidPaymentCurrency,
     InvalidPaymentMethod,
+    PaymentAmountMismatch,
     PaymentNotAdjustable,
     PaymentNotFound,
+    PaymentReferenceNotFound,
     PaymentReferenceRequired,
 )
 from coiflink_api.domain.payment import (
@@ -96,11 +106,16 @@ from coiflink_api.domain.principal import Principal
 router = APIRouter(prefix="/salons", tags=["payments"])
 
 # Erreurs de validation du domaine → 422 (jamais `str(exc)` sur un refus RBAC).
+# `PaymentAmountMismatch` (montant incohérent, §5.3/§8.2) et
+# `PaymentReferenceNotFound` (référence inexistante/hors salon, sans oracle §11.2)
+# rejoignent ce jeu : ce sont des données de requête invalides, pas des refus RBAC.
 _VALIDATION_ERRORS = (
     InvalidPaymentAmount,
     InvalidPaymentMethod,
     InvalidPaymentCurrency,
     PaymentReferenceRequired,
+    PaymentAmountMismatch,
+    PaymentReferenceNotFound,
     InvalidAdjustment,
 )
 
@@ -226,6 +241,32 @@ def get_cash_journal_repository(
     return SqlCashJournalEntryRepository(session)
 
 
+def get_appointment_repository(
+    session: Annotated[Session, Depends(get_session)],
+) -> AppointmentRepository:
+    """Dépôt des rendez-vous (lecture salon-scopée du prix figé) — même session.
+
+    Sert à résoudre le **montant attendu** d'un paiement lié à un RDV (somme des
+    `price_at_booking`), en lecture seule. Filtre `salon_id` (`get_in_salon`) :
+    isolation §11.2 en profondeur.
+    """
+
+    return SqlAppointmentRepository(session)
+
+
+def get_service_repository(
+    session: Annotated[Session, Depends(get_session)],
+) -> ServiceRepository:
+    """Dépôt des prestations (lecture salon-scopée du prix courant) — même session.
+
+    Sert à résoudre le **montant attendu** d'un paiement lié à une prestation seule
+    (`Service.price` de la prestation **active**), en lecture seule. Filtre
+    `salon_id` (`find_by_id`) : isolation §11.2 en profondeur.
+    """
+
+    return SqlServiceRepository(session)
+
+
 def get_audit_log(
     session: Annotated[Session, Depends(get_session)],
 ) -> AuditLog:
@@ -281,7 +322,13 @@ def _entry_response(entry: CashJournalEntry) -> CashJournalEntryResponse:
     responses={
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
-        422: {"description": "Montant, mode de paiement, devise ou référence invalides"},
+        422: {
+            "description": (
+                "Montant, mode de paiement, devise ou référence invalides ; "
+                "montant incohérent avec la prestation liée ; "
+                "prestation ou rendez-vous introuvable pour ce salon"
+            )
+        },
     },
 )
 def record_payment(
@@ -290,18 +337,29 @@ def record_payment(
     payment_repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
     cash_journal_repo: Annotated[CashJournalRepository, Depends(get_cash_journal_repository)],
     audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    appointment_repo: Annotated[AppointmentRepository, Depends(get_appointment_repository)],
+    service_repo: Annotated[ServiceRepository, Depends(get_service_repository)],
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
     principal: Annotated[Principal, Depends(require_permission(Permission.PAYMENT_RECORD))],
 ) -> PaymentResponse:
     """Enregistre un paiement `VALIDATED` pour le salon de la portée (US-5.1, #33).
 
     Le `salon_id` vient du chemin (portée), `recorded_by` du `Principal` — jamais
-    du corps. Inscrit une ligne `PAYMENT` au journal et journalise
-    `PAYMENT_RECORDED` (§11.4) dans la même unité de travail, `metadata` **vide**.
+    du corps. Le **montant** est vérifié **cohérent** avec la prestation/RDV lié
+    (§5.3/§8.2 : somme des `price_at_booking` d'un RDV, ou `Service.price` d'une
+    prestation active) — tout écart est refusé (`422`) **avant** toute écriture.
+    Inscrit une ligne `PAYMENT` au journal et journalise `PAYMENT_RECORDED` (§11.4)
+    dans la même unité de travail, `metadata` **vide**.
     """
 
     try:
-        payment = RecordPayment(payment_repo, cash_journal_repo, audit_log).execute(
+        payment = RecordPayment(
+            payment_repo,
+            cash_journal_repo,
+            audit_log,
+            appointment_repo,
+            service_repo,
+        ).execute(
             salon_id,
             PaymentCommand(
                 amount=payload.amount,
