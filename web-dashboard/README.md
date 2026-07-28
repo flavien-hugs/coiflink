@@ -45,7 +45,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `/gerant/prestations` | **protégée** | `MANAGER` — catalogue et gestion des prestations (#17) |
 | `/gerant/planning` | **protégée** | `MANAGER` — planning du salon, jour/semaine/mois (#26) |
 | `/gerant/clients` | **protégée** | `MANAGER` — fichier client du salon, création de fiche (#28) |
-| `/gerant/clients/[customerId]` | **protégée** | `MANAGER` — fiche client + historique des visites terminées (#29) + prestations préférées (#31) |
+| `/gerant/clients/[customerId]` | **protégée** | `MANAGER` — fiche client + note privée éditable (#32) + historique des visites terminées (#29) + prestations préférées (#31) |
 | `/coiffeur/planning` | **protégée** | `HAIRDRESSER` actif — **son** planning assigné, lecture seule (#27) |
 | `POST /api/auth/login` | interne (BFF) | proxifie `POST /auth/login`, pose les cookies httpOnly |
 | `POST /api/auth/logout` | interne (BFF) | efface les cookies de session |
@@ -60,6 +60,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `POST /api/salons/[id]/customers` | interne (BFF) | proxifie `POST /salons/{id}/customers` (création de fiche, #28) |
 | `GET /api/salons/[id]/customers/[customerId]/appointments` | interne (BFF) | proxifie `GET /salons/{id}/customers/{id}/appointments` (historique des visites, #29) |
 | `GET /api/salons/[id]/customers/[customerId]/stats` | interne (BFF) | proxifie `GET /salons/{id}/customers/{id}/stats` (prestations préférées, #31) |
+| `PUT /api/salons/[id]/customers/[customerId]` | interne (BFF) | proxifie `PUT /salons/{id}/customers/{id}/notes` (édition de la note privée, #32) |
 
 `/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
 publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
@@ -172,6 +173,21 @@ erreur. `client_id`/`user_id` ne sont **jamais** exposés (anti-oracle ADR-0026)
 `GET /api/salons/[id]/customers/[customerId]/stats` proxifie la lecture avec des messages neutres ; un
 échec **non-`not-found`** (`403`/réseau) **dégrade seulement ce panneau** (état neutre local) sans casser
 la fiche ni l'historique.
+
+### Clients — note privée éditable (#32)
+
+La page de détail `/gerant/clients/[customerId]` rend, **sous** l'en-tête de fiche, un panneau
+**« Note privée »** éditable (`CustomerNoteForm`, client component) : préférences, allergies, habitudes.
+Une `<textarea>` pré-remplie avec la note courante ; « Enregistrer » remplace la note, « Effacer » la
+vide (note `null`) — « éditer » couvre « retirer ». Au succès, `router.refresh()` recharge la fiche
+côté serveur. La mention « Visible uniquement par le salon — jamais partagé avec le client » réaffirme
+le critère d'acceptation (« non visible du client »). La validation `validateNote`
+(`src/domain/customer/customer.ts`, parité `normalize_notes` backend) borne la saisie (≤ 2000) ; le
+**backend reste l'autorité**. Le Route Handler BFF `PUT /api/salons/[id]/customers/[customerId]` lit le
+jeton du cookie httpOnly **côté serveur** (invariant #14), proxifie `PUT …/notes` via
+`CustomerGateway.updateNote` et renvoie des messages **neutres** (`422` « Note invalide. », `403`
+« Action non autorisée sur ce salon. », `404` « Fiche client introuvable. ») — ni jeton ni contenu de
+note journalisés (PRD §11.3).
 
 ### Zone coiffeur — Mon planning (#27)
 

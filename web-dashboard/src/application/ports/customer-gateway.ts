@@ -57,6 +57,22 @@ export type CustomerStatsResult =
       reason: "forbidden" | "unauthenticated" | "not-found" | "unavailable";
     };
 
+// Édition de la note privée d'une fiche (US-4.5, #32). `invalid` = `422` (note
+// trop longue), `forbidden` = `403` (rôle ≠ gérant ou salon hors périmètre),
+// `not-found` = `404` (fiche absente, portée validée), `unauthenticated` = `401`,
+// `unavailable` = `503`/panne réseau. Renvoie la fiche à jour en cas de succès.
+export type UpdateNoteResult =
+  | { ok: true; customer: Customer }
+  | {
+      ok: false;
+      reason:
+        | "invalid"
+        | "forbidden"
+        | "unauthenticated"
+        | "not-found"
+        | "unavailable";
+    };
+
 export interface CustomerListOptions {
   limit?: number;
   offset?: number;
@@ -73,4 +89,11 @@ export interface CustomerGateway {
   history(salonId: string, customerId: string): Promise<CustomerHistoryResult>;
   // Proxifie `GET /salons/{id}/customers/{customerId}/stats` (prestations préférées).
   stats(salonId: string, customerId: string): Promise<CustomerStatsResult>;
+  // Proxifie `PUT /salons/{id}/customers/{customerId}/notes` (édite la note privée ;
+  // `null`/vide efface la note). Renvoie la fiche à jour.
+  updateNote(
+    salonId: string,
+    customerId: string,
+    notes: string | null,
+  ): Promise<UpdateNoteResult>;
 }

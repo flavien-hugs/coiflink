@@ -94,6 +94,10 @@ def _customer_url(salon_id: uuid.UUID, customer_id: uuid.UUID) -> str:
     return f"/salons/{salon_id}/customers/{customer_id}"
 
 
+def _notes_url(salon_id: uuid.UUID, customer_id: uuid.UUID) -> str:
+    return f"/salons/{salon_id}/customers/{customer_id}/notes"
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -768,3 +772,323 @@ class TestCustomerRoutesNotPublic:
         """Invariant deny-by-default (ADR-0015) : fiches clients jamais publiques."""
         for path in PUBLIC_ROUTE_PATHS:
             assert "customer" not in path.lower()
+
+    def test_no_notes_path_in_public_routes(self) -> None:
+        """La route d'édition de note privée n'est jamais publique (US-4.5 #32)."""
+        for path in PUBLIC_ROUTE_PATHS:
+            assert "notes" not in path.lower()
+
+
+# ---------------------------------------------------------------------------
+# PUT /salons/{salon_id}/customers/{customer_id}/notes — US-4.5 #32
+# ---------------------------------------------------------------------------
+
+
+def _make_customer_in_repo(
+    repo: FakeCustomerRepository,
+    salon_id: uuid.UUID = _SALON_ID,
+) -> object:
+    """Crée une fiche dans le dépôt fake et retourne l'entité Customer."""
+    from coiflink_api.application.customers import CreateCustomer, CustomerCommand
+
+    audit = FakeAuditLog()
+    return CreateCustomer(repo, audit).execute(
+        salon_id, CustomerCommand(full_name="Awa Koné"), actor_user_id=_MANAGER_ID
+    )
+
+
+def _make_client_with_overrides(
+    customer_repo: FakeCustomerRepository,
+    audit_log: FakeAuditLog,
+    *,
+    user_id: uuid.UUID = _MANAGER_ID,
+    role: str,
+    scopes: dict | None = None,
+) -> TestClient:
+    creds = _creds(user_id, role)
+    user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
+    scope_repo = FakeSalonScopeRepository(
+        scopes=scopes if scopes is not None else {user_id: frozenset({_SALON_ID})}
+    )
+    app.dependency_overrides[get_customer_repository] = lambda: customer_repo
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    app.dependency_overrides[get_user_repository] = lambda: user_repo
+    app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+    return TestClient(app)
+
+
+def _cleanup_overrides() -> None:
+    app.dependency_overrides.pop(get_customer_repository, None)
+    app.dependency_overrides.pop(get_audit_log, None)
+    app.dependency_overrides.pop(get_user_repository, None)
+    app.dependency_overrides.pop(get_access_policy, None)
+
+
+class TestUpdateCustomerNoteApi:
+    """Tests API pour `PUT /salons/{salon_id}/customers/{customer_id}/notes` (US-4.5, #32)."""
+
+    def test_200_note_updated(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={"notes": "Allergie réactif X."},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        assert r.json()["notes"] == "Allergie réactif X."
+
+    def test_200_no_user_id_in_response(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Anti-oracle : `user_id` n'est pas exposé (ADR-0026)."""
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={"notes": "note"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert "user_id" not in r.json()
+
+    def test_200_erase_note_with_null(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """`notes: null` efface la note — `notes = NULL` en base."""
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={"notes": None},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        assert r.json()["notes"] is None
+
+    def test_200_privileged_fields_in_body_ignored(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Seule `notes` est prise en compte ; `full_name`/`phone`/`gender`/`salon_id`/`user_id` ignorés."""
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={
+                    "notes": "note réelle",
+                    "full_name": "Autre Nom",
+                    "phone": "+0000000000",
+                    "gender": "MALE",
+                    "salon_id": str(_OTHER_SALON_ID),
+                    "user_id": str(uuid.uuid4()),
+                },
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        data = r.json()
+        # Note mise à jour, mais le reste de la fiche est inchangé.
+        assert data["notes"] == "note réelle"
+        assert data["full_name"] == "Awa Koné"
+        assert data["salon_id"] == str(_SALON_ID)
+
+    def test_422_note_too_long(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={"notes": "A" * 2001},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 422
+
+    def test_404_unknown_customer(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, uuid.uuid4()),
+                json={"notes": "note"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 404
+
+    def test_404_customer_from_other_salon(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Isolation §11.2 : fiche d'un autre salon → 404 (après validation de portée)."""
+        customer = _make_customer_in_repo(customer_repo, _OTHER_SALON_ID)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={"notes": "note"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 404
+
+    def test_401_no_token(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={"notes": "note"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 401
+
+    def test_403_client_role(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        token = make_access_token(_CLIENT_ID, Role.CLIENT.value)
+        client = _make_client_with_overrides(
+            customer_repo,
+            audit_log,
+            user_id=_CLIENT_ID,
+            role=Role.CLIENT.value,
+            scopes={},
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={"notes": "note"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 403
+
+    def test_403_hairdresser_role(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        token = make_access_token(_HAIRDRESSER_ID, Role.HAIRDRESSER.value)
+        client = _make_client_with_overrides(
+            customer_repo,
+            audit_log,
+            user_id=_HAIRDRESSER_ID,
+            role=Role.HAIRDRESSER.value,
+            scopes={_HAIRDRESSER_ID: frozenset({_SALON_ID})},
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={"notes": "note"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 403
+
+    def test_403_out_of_scope(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Isolation §11.2 : un gérant ciblant un salon hors périmètre → 403 générique."""
+        customer = _make_customer_in_repo(customer_repo)
+        token = make_access_token(_OTHER_MANAGER_ID, Role.MANAGER.value)
+        client = _make_client_with_overrides(
+            customer_repo,
+            audit_log,
+            user_id=_OTHER_MANAGER_ID,
+            role=Role.MANAGER.value,
+            scopes={_OTHER_MANAGER_ID: frozenset({_OTHER_SALON_ID})},
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={"notes": "note"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 403
+
+    def test_403_detail_is_generic(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Le message 403 est constant et ne révèle pas le motif (ADR-0015)."""
+        customer = _make_customer_in_repo(customer_repo)
+        token = make_access_token(_CLIENT_ID, Role.CLIENT.value)
+        client = _make_client_with_overrides(
+            customer_repo,
+            audit_log,
+            user_id=_CLIENT_ID,
+            role=Role.CLIENT.value,
+            scopes={},
+        )
+        try:
+            r = client.put(
+                _notes_url(_SALON_ID, customer.id),
+                json={"notes": "note"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.json()["detail"] == "Accès refusé."

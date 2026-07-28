@@ -137,6 +137,62 @@ class CreateCustomer:
         return customer
 
 
+class UpdateCustomerNote:
+    """Édite la **note privée** d'une fiche du salon et journalise (§11.3/§11.4, US-4.5, #32).
+
+    Variante à **un seul champ** du patron d'écriture-avec-diff-neutre
+    (`UpdateSalon` #20, `UpdateService` #17) : validation domaine
+    (`normalize_notes`) **avant** toute écriture → `repository.update_notes(...)`
+    (résout la fiche dans le salon, `CustomerNotFound` si hors salon/inconnue,
+    **avant** l'audit) → `audit.record(CUSTOMER_NOTE_UPDATED)`.
+
+    Deux invariants structurants :
+
+    - **`salon_id` imposé par la portée** : le salon vient toujours de la portée
+      validée (`require_salon_scope`), jamais du corps de requête.
+    - **Aucune PII journalisée** : `metadata` est **vide** — ni le contenu de la
+      note, ni l'ancienne valeur, ni un booléen de présence n'entre au journal
+      (la note peut contenir des données de santé, §11.3). L'action
+      `CUSTOMER_NOTE_UPDATED` porte à elle seule l'information de traçabilité.
+
+    Une note vide/`null`/blanche est normalisée en `None` : « éditer » couvre
+    naturellement « retirer une note obsolète » (`notes = NULL`). Une note trop
+    longue lève `InvalidCustomerNotes` **avant** toute mutation → aucune écriture,
+    aucun audit. La fiche hors salon/inconnue lève `CustomerNotFound` **avant**
+    l'audit → aucune trace pour une cible inexistante.
+    """
+
+    def __init__(self, repository: CustomerRepository, audit_log: AuditLog) -> None:
+        self._repository = repository
+        self._audit_log = audit_log
+
+    def execute(
+        self,
+        salon_id: uuid.UUID,
+        customer_id: uuid.UUID,
+        notes: str | None,
+        *,
+        actor_user_id: uuid.UUID,
+    ) -> Customer:
+        # Validation avant écriture : `None` si vide/blanc → efface la note.
+        normalized = normalize_notes(notes)
+        # Résout la fiche DANS le salon et remplace la note ; `CustomerNotFound`
+        # (hors salon/inconnue) est levée AVANT l'audit → aucune trace sans écriture.
+        customer = self._repository.update_notes(salon_id, customer_id, normalized)
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.CUSTOMER_NOTE_UPDATED.value,
+                actor_user_id=actor_user_id,
+                salon_id=salon_id,
+                entity_type=ENTITY_TYPE_CUSTOMER,
+                entity_id=customer.id,
+                # `metadata` **vide** : aucune PII (ni contenu, ni ancienne valeur, §11.3/§11.4).
+                metadata={},
+            )
+        )
+        return customer
+
+
 class ListSalonCustomers:
     """Liste paginée des fiches d'un salon (lecture — pas d'audit)."""
 
@@ -229,6 +285,7 @@ class GetCustomerServiceStats:
 __all__ = [
     "CustomerCommand",
     "CreateCustomer",
+    "UpdateCustomerNote",
     "ListSalonCustomers",
     "GetCustomer",
     "GetCustomerVisitHistory",

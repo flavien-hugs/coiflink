@@ -71,6 +71,12 @@ class AuditAction(_StrEnum):
     # téléphone, ni genre, ni note n'entre au journal.
     CUSTOMER_CREATED = "CUSTOMER_CREATED"
 
+    # Note client privée — #32 (US-4.5). Journalisée au titre de §11.3 (« accès
+    # sensibles ») : la note peut contenir des données de santé (allergies). Comme
+    # `CUSTOMER_CREATED`, l'entrée reste **neutre** — `metadata` est vide : ni le
+    # contenu de la note, ni l'ancienne valeur n'entrent au journal.
+    CUSTOMER_NOTE_UPDATED = "CUSTOMER_NOTE_UPDATED"
+
 
 @dataclass(frozen=True)
 class AuditEntry:

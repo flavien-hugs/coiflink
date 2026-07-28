@@ -15,6 +15,7 @@ import Link from "next/link";
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
 import { createHttpCustomerGateway } from "@/src/adapters/api/http-customer-gateway";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
+import { CustomerNoteForm } from "@/src/adapters/ui/customer-note-form";
 import { CustomerServiceStatsPanel } from "@/src/adapters/ui/customer-service-stats";
 import { CustomerVisitHistory } from "@/src/adapters/ui/customer-visit-history";
 import { genderLabel, type Customer } from "@/src/domain/customer/customer";
@@ -85,6 +86,10 @@ export default async function CustomerDetailPage({
   return (
     <Shell>
       <CustomerHeader customer={customerResult.customer} />
+      <PrivateNote
+        salonId={salon.id}
+        customer={customerResult.customer}
+      />
       <History history={historyResult.history} />
       <FavouriteServices stats={stats} />
     </Shell>
@@ -113,11 +118,34 @@ function CustomerHeader({ customer }: { customer: Customer }) {
         <span>{customer.phone ?? "Téléphone non renseigné"}</span>
         <span>{genderLabel(customer.gender)}</span>
       </p>
-      {customer.notes ? (
-        <p className="mt-2 max-w-prose rounded-lg bg-foreground/5 p-3 text-sm text-muted">
-          {customer.notes}
+    </div>
+  );
+}
+
+// Note privée éditable (US-4.5, #32) : préférences, allergies, habitudes. La
+// note est **interne au salon** et n'est jamais visible du client. Le jeton
+// d'accès reste lu côté serveur (le formulaire poste au BFF, invariant #14).
+function PrivateNote({
+  salonId,
+  customer,
+}: {
+  salonId: string;
+  customer: Customer;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-6 shadow-soft">
+      <div>
+        <h2 className="text-lg font-semibold">Note privée</h2>
+        <p className="mt-1 max-w-prose text-sm text-muted">
+          Préférences, allergies, habitudes — ajoutez ou modifiez une note interne
+          au salon. Elle n&apos;est jamais visible du client.
         </p>
-      ) : null}
+      </div>
+      <CustomerNoteForm
+        salonId={salonId}
+        customerId={customer.id}
+        initialNotes={customer.notes}
+      />
     </div>
   );
 }

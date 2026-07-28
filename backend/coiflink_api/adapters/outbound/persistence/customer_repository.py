@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.customer import Customer, CustomerToCreate
-from coiflink_api.domain.errors import CustomerAlreadyExists
+from coiflink_api.domain.errors import CustomerAlreadyExists, CustomerNotFound
 from coiflink_api.domain.visit import CustomerVisit, VisitService, visit_total
 
 # Index unique partiel garantissant l'unicité du téléphone **dans un salon** (0005).
@@ -120,6 +120,33 @@ class SqlCustomerRepository:
             models.CustomerProfile.phone == phone,
         )
         return self._session.scalar(stmt) is not None
+
+    def update_notes(
+        self, salon_id: uuid.UUID, customer_id: uuid.UUID, notes: str | None
+    ) -> Customer:
+        """Remplace la note privée de la fiche `(salon_id, customer_id)` (US-4.5, #32).
+
+        Filtre d'isolation §11.2 `(salon_id, id)` : une fiche d'un autre salon est
+        indiscernable d'une fiche inexistante → `CustomerNotFound` (mappé `404`
+        **après** portée par l'adapter entrant), jamais un oracle. `notes = None`
+        efface la note (`notes = NULL`). Seule la colonne `notes` est écrite.
+        `flush` sans `commit` : le commit est piloté par `get_session`, ce qui
+        rend la mutation atomique avec l'entrée d'audit (patron `SqlServiceRepository`).
+        """
+
+        stmt = select(models.CustomerProfile).where(
+            models.CustomerProfile.salon_id == salon_id,
+            models.CustomerProfile.id == customer_id,
+        )
+        row = self._session.scalar(stmt)
+        if row is None:
+            raise CustomerNotFound("Fiche client introuvable.")
+        row.notes = notes
+        # `flush` déclenche l'UPDATE sans committer (atomicité avec l'audit).
+        self._session.flush()
+        # Recharge `updated_at` régénéré côté serveur (`onupdate`).
+        self._session.refresh(row)
+        return _to_domain(row)
 
     def list_visits(
         self,

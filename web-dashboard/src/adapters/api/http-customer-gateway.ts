@@ -16,6 +16,7 @@ import type {
   CustomerStatsResult,
   GetCustomerResult,
   ListCustomersResult,
+  UpdateNoteResult,
 } from "@/src/application/ports/customer-gateway";
 import type { Customer, CustomerInput } from "@/src/domain/customer/customer";
 import type { CustomerServiceStats } from "@/src/domain/customer/stats";
@@ -350,6 +351,50 @@ export function createHttpCustomerGateway(
       }
       if (response.status === 404) {
         return { ok: false, reason: "not-found" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async updateNote(
+      salonId: string,
+      customerId: string,
+      notes: string | null,
+    ): Promise<UpdateNoteResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `${customersUrl(salonId)}/${encodeURIComponent(customerId)}/notes`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", ...authHeader() },
+            // `null`/vide efface la note ; seule `notes` est transmise.
+            body: JSON.stringify({ notes }),
+            cache: "no-store",
+          },
+        );
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as CustomerResponsePayload;
+        return { ok: true, customer: toCustomer(payload) };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "not-found" };
+      }
+      if (response.status === 422) {
+        return { ok: false, reason: "invalid" };
       }
       return { ok: false, reason: "unavailable" };
     },

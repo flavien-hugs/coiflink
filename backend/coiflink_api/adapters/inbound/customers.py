@@ -56,6 +56,7 @@ from coiflink_api.application.customers import (
     GetCustomerServiceStats,
     GetCustomerVisitHistory,
     ListSalonCustomers,
+    UpdateCustomerNote,
 )
 from coiflink_api.application.ports.audit_log import AuditLog
 from coiflink_api.application.ports.customer_repository import (
@@ -126,6 +127,28 @@ class CreateCustomerRequest(BaseModel):
         default=None,
         max_length=NOTES_MAX_LENGTH,
         examples=["Préfère le samedi matin."],
+    )
+
+
+class UpdateCustomerNoteRequest(BaseModel):
+    """Corps de `PUT /salons/{salon_id}/customers/{customer_id}/notes` (US-4.5, #32).
+
+    **Seule** `notes` est éditable. Tout champ privilégié présent au corps
+    (`full_name`, `phone`, `gender`, `salon_id`, `id`, `user_id`, `total_visits`,
+    `last_visit_at`) est **ignoré** (`extra="ignore"`) : l'édition du nom, du
+    téléphone ou du genre reste hors périmètre (#32 n'édite que la note).
+
+    Sémantique *replace* : la note fournie **remplace** la précédente ; `null`,
+    chaîne vide ou blanche **efface** la note (`notes = NULL`). La note est
+    **interne au salon** et n'est jamais exposée au client.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    notes: str | None = Field(
+        default=None,
+        max_length=NOTES_MAX_LENGTH,
+        examples=["Allergie au réactif X. Préfère le samedi matin."],
     )
 
 
@@ -440,6 +463,54 @@ def get_customer(
 
     try:
         customer = GetCustomer(repository).execute(salon_id, customer_id)
+    except CustomerNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _customer_response(customer)
+
+
+@router.put(
+    "/{salon_id}/customers/{customer_id}/notes",
+    response_model=CustomerResponse,
+    summary="Éditer la note privée d'une fiche client (non visible du client)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "Fiche introuvable (portée déjà validée)"},
+        422: {"description": "Note trop longue"},
+    },
+)
+def update_customer_note(
+    salon_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    payload: UpdateCustomerNoteRequest,
+    repository: Annotated[CustomerRepository, Depends(get_customer_repository)],
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    principal: Annotated[
+        Principal, Depends(require_permission(Permission.CUSTOMER_MANAGE))
+    ],
+) -> CustomerResponse:
+    """Remplace la note privée de la fiche `(salon_id, customer_id)` (US-4.5, #32).
+
+    Sémantique *replace* : la note fournie remplace la précédente ;
+    `null`/vide/blanc **efface** la note. **Seule** `notes` est éditable (tout
+    champ privilégié du corps est ignoré). Le `salon_id` vient du chemin (portée),
+    jamais du corps. Journalise `CUSTOMER_NOTE_UPDATED` (§11.3/§11.4) dans la même
+    unité de travail, avec un `metadata` **vide** — la note peut contenir des
+    données de santé, aucune PII n'entre au journal. `404` (fiche hors
+    salon/inconnue) est renvoyé **après** validation de portée (sans oracle).
+    """
+
+    try:
+        customer = UpdateCustomerNote(repository, audit_log).execute(
+            salon_id, customer_id, payload.notes, actor_user_id=principal.id
+        )
+    except _VALIDATION_ERRORS as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     except CustomerNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)

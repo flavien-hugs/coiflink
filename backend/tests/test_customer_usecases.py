@@ -30,6 +30,7 @@ from coiflink_api.application.customers import (
     GetCustomerServiceStats,
     GetCustomerVisitHistory,
     ListSalonCustomers,
+    UpdateCustomerNote,
 )
 from coiflink_api.domain.audit import AuditAction, AuditEntry, ENTITY_TYPE_CUSTOMER
 from coiflink_api.domain.enums import AppointmentStatus
@@ -38,6 +39,7 @@ from coiflink_api.domain.errors import (
     CustomerNotFound,
     InvalidCustomerGender,
     InvalidCustomerName,
+    InvalidCustomerNotes,
     InvalidPhone,
 )
 from coiflink_api.domain.visit import HISTORY_STATUSES, CustomerVisit, VisitService
@@ -759,3 +761,227 @@ class TestGetCustomerServiceStats:
         repo.set_visits(customer.id, (visit,))
         stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
         assert isinstance(stats.services[0].total_amount, decimal.Decimal)
+
+
+# ---------------------------------------------------------------------------
+# UpdateCustomerNote (US-4.5, #32)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateCustomerNote:
+    def _create_customer(
+        self, repo: FakeCustomerRepository, salon_id: uuid.UUID = _SALON_ID
+    ) -> object:
+        audit = FakeAuditLog()
+        return CreateCustomer(repo, audit).execute(
+            salon_id, CustomerCommand(full_name="Awa Koné"), actor_user_id=_ACTOR_ID
+        )
+
+    def test_update_returns_customer_with_new_note(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        result = UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "Allergie réactif X.", actor_user_id=_ACTOR_ID
+        )
+        assert result.notes == "Allergie réactif X."
+
+    def test_audit_action_is_customer_note_updated(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "note", actor_user_id=_ACTOR_ID
+        )
+        # Seule l'entrée de l'édition de note est enregistrée (la création a son propre log).
+        note_entries = [
+            e for e in audit.recorded
+            if e.action == AuditAction.CUSTOMER_NOTE_UPDATED.value
+        ]
+        assert len(note_entries) == 1
+
+    def test_audit_actor_user_id_correct(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "note", actor_user_id=_ACTOR_ID
+        )
+        entry = next(
+            e for e in audit.recorded
+            if e.action == AuditAction.CUSTOMER_NOTE_UPDATED.value
+        )
+        assert entry.actor_user_id == _ACTOR_ID
+
+    def test_audit_salon_id_correct(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "note", actor_user_id=_ACTOR_ID
+        )
+        entry = next(
+            e for e in audit.recorded
+            if e.action == AuditAction.CUSTOMER_NOTE_UPDATED.value
+        )
+        assert entry.salon_id == _SALON_ID
+
+    def test_audit_entity_type_is_customer(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "note", actor_user_id=_ACTOR_ID
+        )
+        entry = next(
+            e for e in audit.recorded
+            if e.action == AuditAction.CUSTOMER_NOTE_UPDATED.value
+        )
+        assert entry.entity_type == ENTITY_TYPE_CUSTOMER
+
+    def test_audit_entity_id_matches_customer(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "note", actor_user_id=_ACTOR_ID
+        )
+        entry = next(
+            e for e in audit.recorded
+            if e.action == AuditAction.CUSTOMER_NOTE_UPDATED.value
+        )
+        assert entry.entity_id == customer.id
+
+    def test_audit_metadata_is_empty_dict(self) -> None:
+        """Invariant §11.3 : ni contenu, ni ancienne valeur dans le journal."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "Allergie réactif X.", actor_user_id=_ACTOR_ID
+        )
+        entry = next(
+            e for e in audit.recorded
+            if e.action == AuditAction.CUSTOMER_NOTE_UPDATED.value
+        )
+        assert entry.metadata == {}
+
+    def test_audit_metadata_contains_no_pii(self) -> None:
+        """Ni le contenu de la note ni l'ancienne valeur n'entrent au journal (§11.3)."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "Allergie réactif X.", actor_user_id=_ACTOR_ID
+        )
+        entry = next(
+            e for e in audit.recorded
+            if e.action == AuditAction.CUSTOMER_NOTE_UPDATED.value
+        )
+        forbidden_keys = {"notes", "note", "content", "value", "old", "new", "previous"}
+        assert not forbidden_keys & set(entry.metadata.keys())
+
+    def test_whitespace_note_erases(self) -> None:
+        """Note blanche normalisée en `None` : efface la note (§ effacement)."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        result = UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "   ", actor_user_id=_ACTOR_ID
+        )
+        assert result.notes is None
+
+    def test_empty_string_note_erases(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        result = UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "", actor_user_id=_ACTOR_ID
+        )
+        assert result.notes is None
+
+    def test_null_note_erases(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        result = UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, None, actor_user_id=_ACTOR_ID
+        )
+        assert result.notes is None
+
+    def test_note_trimmed(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        result = UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "  note avec espaces  ", actor_user_id=_ACTOR_ID
+        )
+        assert result.notes == "note avec espaces"
+
+    def test_note_too_long_raises_invalid(self) -> None:
+        """Note > 2000 → `InvalidCustomerNotes`, aucune écriture, aucun audit."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        with pytest.raises(InvalidCustomerNotes):
+            UpdateCustomerNote(repo, audit).execute(
+                _SALON_ID, customer.id, "A" * 2001, actor_user_id=_ACTOR_ID
+            )
+
+    def test_note_too_long_no_audit(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        audit.recorded.clear()
+        with pytest.raises(InvalidCustomerNotes):
+            UpdateCustomerNote(repo, audit).execute(
+                _SALON_ID, customer.id, "A" * 2001, actor_user_id=_ACTOR_ID
+            )
+        note_entries = [
+            e for e in audit.recorded
+            if e.action == AuditAction.CUSTOMER_NOTE_UPDATED.value
+        ]
+        assert note_entries == []
+
+    def test_unknown_customer_raises_not_found(self) -> None:
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        with pytest.raises(CustomerNotFound):
+            UpdateCustomerNote(repo, audit).execute(
+                _SALON_ID, uuid.uuid4(), "note", actor_user_id=_ACTOR_ID
+            )
+
+    def test_other_salon_customer_raises_not_found(self) -> None:
+        """Isolation §11.2 : fiche d'un autre salon indiscernable d'une inexistante."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo, _OTHER_SALON_ID)
+        with pytest.raises(CustomerNotFound):
+            UpdateCustomerNote(repo, audit).execute(
+                _SALON_ID, customer.id, "note", actor_user_id=_ACTOR_ID
+            )
+
+    def test_not_found_no_audit(self) -> None:
+        """Aucune trace d'audit si la fiche est hors salon/inconnue (§11.3)."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        audit.recorded.clear()
+        with pytest.raises(CustomerNotFound):
+            UpdateCustomerNote(repo, audit).execute(
+                _SALON_ID, uuid.uuid4(), "note", actor_user_id=_ACTOR_ID
+            )
+        note_entries = [
+            e for e in audit.recorded
+            if e.action == AuditAction.CUSTOMER_NOTE_UPDATED.value
+        ]
+        assert note_entries == []
+
+    def test_salon_id_comes_from_scope_argument(self) -> None:
+        """Invariant anti-élévation : `salon_id` vient de l'argument, jamais d'un corps."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo)
+        result = UpdateCustomerNote(repo, audit).execute(
+            _SALON_ID, customer.id, "note", actor_user_id=_ACTOR_ID
+        )
+        assert result.salon_id == _SALON_ID

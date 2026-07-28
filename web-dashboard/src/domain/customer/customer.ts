@@ -98,11 +98,28 @@ export function validateCustomer(raw: RawCustomerInput): CustomerValidationResul
   }
   const gender = rawGender.length > 0 ? (rawGender as Gender) : null;
 
-  const rawNotes = (raw.notes ?? "").trim();
-  if (rawNotes.length > NOTES_MAX_LENGTH) {
+  const validatedNotes = validateNote(raw.notes ?? null);
+  if (!validatedNotes.ok) {
     return { ok: false, reason: "invalid-notes" };
   }
-  const notes = rawNotes.length > 0 ? rawNotes : null;
 
-  return { ok: true, value: { fullName, phone, gender, notes } };
+  return {
+    ok: true,
+    value: { fullName, phone, gender, notes: validatedNotes.value },
+  };
+}
+
+export type NoteValidationResult =
+  | { ok: true; value: string | null }
+  | { ok: false; reason: "invalid-notes" };
+
+// Valide et normalise la note privée seule (parité `normalize_notes` backend,
+// US-4.5 #32) : trim, vide/blanc → `null` (efface la note), refus au-delà de
+// `NOTES_MAX_LENGTH`. Réutilisée par le formulaire d'édition et le BFF.
+export function validateNote(notes: string | null): NoteValidationResult {
+  const cleaned = (notes ?? "").trim();
+  if (cleaned.length > NOTES_MAX_LENGTH) {
+    return { ok: false, reason: "invalid-notes" };
+  }
+  return { ok: true, value: cleaned.length > 0 ? cleaned : null };
 }
