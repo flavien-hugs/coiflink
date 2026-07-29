@@ -288,7 +288,15 @@ inscrit au **journal de caisse** (ligne `PAYMENT`) et **journalisé** (`PAYMENT_
 §11.4) dans la même unité de travail — permission `PAYMENT_RECORD` (seul le gérant), **isolation par
 salon** (§11.2). La section **Encaissements** du dashboard gérant est ouverte : montant **pré-rempli** au
 prix de la prestation, mode de paiement et référence optionnelle. Le journal de caisse consultable et la
-correction par ajustement (#34, US-5.3) sont livrés côté backend.
+correction par ajustement (#34, US-5.3) sont livrés côté backend. **L'historique des transactions
+filtrable** (#35, US-5.2) est livré : `GET /salons/{salon_id}/payments` liste les paiements du salon **du
+plus récent au plus ancien**, paginé et **filtrable côté serveur** par **date, client, montant et mode de
+paiement** (filtres combinés en `ET`, plage de dates en jour civil `Africa/Abidjan`) — permission
+`CASH_JOURNAL_READ` (seul le gérant), **isolation par salon** (§11.2 ; un `client_id` étranger → liste
+vide, sans oracle), **lecture seule** et **cohérente avec le journal de caisse** (même source de vérité
+`payments` : montants, horodatages et auteurs concordent, un paiement corrigé apparaît `ADJUSTED`). La
+section **Encaissements** du dashboard gérant enrichit le formulaire d'une vue **Historique** (barre de
+filtres + liste read-only, filtrage serveur via `searchParams`).
 
 ---
 

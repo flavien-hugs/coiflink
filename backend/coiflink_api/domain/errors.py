@@ -359,6 +359,18 @@ class InvalidAdjustment(DomainError):
     """
 
 
+class InvalidTransactionFilter(DomainError):
+    """Un critère de filtrage de l'historique des transactions est invalide (US-5.2, #35).
+
+    Levée par `domain/transaction.py::validate_transaction_filter` quand une plage
+    est incohérente (`date_from > date_to`, `amount_min > amount_max`), qu'un mode
+    de paiement n'appartient pas à l'énumération fermée `PaymentMethod`, ou qu'une
+    borne de montant est mal formée (négative, non finie, hors borne, plus de deux
+    décimales). Message **neutre** — il ne reprend **jamais** la valeur saisie
+    (§11.3). L'adapter entrant la traduit en `422`.
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -452,6 +464,7 @@ __all__ = [
     "PaymentNotFound",
     "PaymentNotAdjustable",
     "InvalidAdjustment",
+    "InvalidTransactionFilter",
     "SlotAlreadyBooked",
     "SlotUnavailable",
     "SalonNotBookable",

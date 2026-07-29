@@ -1141,10 +1141,17 @@ class FakePaymentRepository:
     n'est exposée : un paiement validé n'est jamais supprimé (§8.2).
     """
 
-    def __init__(self, payments: list | None = None) -> None:
+    def __init__(
+        self,
+        payments: list | None = None,
+        *,
+        client_names: dict | None = None,
+    ) -> None:
         self._payments: dict[uuid.UUID, object] = {}
         self.created: list = []
         self.mark_adjusted_calls: list[tuple[uuid.UUID, uuid.UUID]] = []
+        # Résolution optionnelle `client_id → full_name` (miroir du join SQL #35).
+        self._client_names: dict = dict(client_names or {})
         for p in payments or []:
             self._payments[p.id] = p  # type: ignore[union-attr]
 
@@ -1192,6 +1199,43 @@ class FakePaymentRepository:
         updated = _dc.replace(payment, status=PaymentStatus.ADJUSTED.value)
         self._payments[payment_id] = updated
         return updated
+
+    def list_for_salon(self, salon_id, *, filter, limit, offset):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.transaction import Transaction
+
+        matches = self._matching(salon_id, filter)
+        # Tri déterministe : created_at DESC, id DESC (miroir du SQL #35).
+        matches.sort(key=lambda p: (p.created_at, p.id), reverse=True)
+        page = matches[offset : offset + limit]
+        return tuple(
+            Transaction(payment=p, client_name=self._client_names.get(p.client_id))
+            for p in page
+        )
+
+    def count_for_salon(self, salon_id, *, filter):  # type: ignore[no-untyped-def]
+        return len(self._matching(salon_id, filter))
+
+    def _matching(self, salon_id, filter):  # type: ignore[no-untyped-def]
+        """Filtrage en mémoire **miroir** des clauses SQL (§35) : salon + critères ET."""
+
+        result = []
+        for p in self._payments.values():
+            if p.salon_id != salon_id:  # type: ignore[union-attr]
+                continue
+            if filter.created_at_from is not None and p.created_at < filter.created_at_from:
+                continue
+            if filter.created_at_to is not None and p.created_at > filter.created_at_to:
+                continue
+            if filter.client_id is not None and p.client_id != filter.client_id:
+                continue
+            if filter.amount_min is not None and p.amount < filter.amount_min:
+                continue
+            if filter.amount_max is not None and p.amount > filter.amount_max:
+                continue
+            if filter.payment_method is not None and p.payment_method != filter.payment_method:
+                continue
+            result.append(p)
+        return result
 
 
 class FakeCashJournalRepository:

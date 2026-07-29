@@ -23,6 +23,14 @@ import uuid
 from typing import Protocol
 
 from coiflink_api.domain.payment import Payment, PaymentToCreate
+from coiflink_api.domain.transaction import Transaction, TransactionFilter
+
+# Bornes de pagination de la liste des transactions (US-5.2, #35 — garde de coût
+# §12.1). Alignées sur `CASH_JOURNAL_LIMIT_*` (50/1/200) pour la cohérence des
+# surfaces « caisse » (journal #34 ↔ historique #35).
+PAYMENTS_LIMIT_DEFAULT = 50
+PAYMENTS_LIMIT_MIN = 1
+PAYMENTS_LIMIT_MAX = 200
 
 
 class PaymentRepository(Protocol):
@@ -57,5 +65,41 @@ class PaymentRepository(Protocol):
         """
         ...
 
+    def list_for_salon(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        filter: TransactionFilter,
+        limit: int,
+        offset: int,
+    ) -> tuple[Transaction, ...]:
+        """Page **filtrée** des transactions du salon (US-5.2, #35) — lecture seule.
 
-__all__ = ["PaymentRepository"]
+        Applique **inconditionnellement** le filtre `salon_id` (isolation §11.2 en
+        profondeur : aucune transaction d'un autre salon, quel que soit le filtre),
+        puis **conditionnellement** les clauses présentes dans `filter` (date,
+        client, montant, mode — combinées en **ET**). Tri déterministe
+        `created_at DESC, id DESC`, bornes `limit`/`offset` appliquées **en SQL**
+        (jamais en mémoire). La projection résout `client_id → users.full_name`
+        (colonne non sensible **uniquement**, §11.3). **Aucune** écriture.
+        """
+        ...
+
+    def count_for_salon(
+        self, salon_id: uuid.UUID, *, filter: TransactionFilter
+    ) -> int:
+        """Nombre total de transactions du salon **sous le même filtre** (pagination).
+
+        Applique **exactement** les mêmes clauses que `list_for_salon` (filtre
+        `salon_id` inconditionnel + clauses conditionnelles) pour un `total`
+        cohérent avec la page.
+        """
+        ...
+
+
+__all__ = [
+    "PaymentRepository",
+    "PAYMENTS_LIMIT_DEFAULT",
+    "PAYMENTS_LIMIT_MIN",
+    "PAYMENTS_LIMIT_MAX",
+]
