@@ -61,6 +61,8 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `GET /api/salons/[id]/customers/[customerId]/appointments` | interne (BFF) | proxifie `GET /salons/{id}/customers/{id}/appointments` (historique des visites, #29) |
 | `GET /api/salons/[id]/customers/[customerId]/stats` | interne (BFF) | proxifie `GET /salons/{id}/customers/{id}/stats` (prestations préférées, #31) |
 | `PUT /api/salons/[id]/customers/[customerId]` | interne (BFF) | proxifie `PUT /salons/{id}/customers/{id}/notes` (édition de la note privée, #32) |
+| `POST /api/salons/[id]/payments` | interne (BFF) | proxifie `POST /salons/{id}/payments` (enregistrement d'un paiement validé, #33) |
+| `GET /api/salons/[id]/payments` | interne (BFF) | proxifie `GET /salons/{id}/payments` (historique filtrable des transactions, #35) |
 
 `/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
 publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
@@ -226,6 +228,17 @@ prestation. » (incohérence de montant), `422` « Prestation ou rendez-vous int
 (référence hors salon/inconnue, sans oracle §11.2), `422` « Paiement invalide. », `403` « Action non
 autorisée sur ce salon. », `401` « Session requise. ». Ni jeton, ni montant, ni PII ne sont journalisés
 (PRD §11.3). Le journal de caisse consultable + la correction (#34) restent à livrer côté web.
+
+La même page rend désormais la vue **Historique des transactions** (#35, US-5.2) : sous le formulaire, une
+**barre de filtres** (`transaction-filters.tsx`, client component — date, montant, mode de paiement,
+client) et une **liste read-only** (`transaction-list.tsx` — date/heure `Africa/Abidjan`, client, montant
+`formatXof`, mode `paymentMethodLabel`, statut). Les filtres sont **serveur** : soumettre met à jour les
+`searchParams` de la page (nouveau rendu serveur, relecture de la source de vérité `payments`), **jamais**
+un filtrage en mémoire. Le Route Handler BFF `GET /api/salons/[id]/payments` lit le cookie httpOnly **côté
+serveur**, propage les query params de filtre au backend (`PaymentGateway.listTransactions`) et renvoie un
+corps **neutre** en erreur (`422` filtre invalide, `403`, `401`, `503`). État vide explicite (« Aucune
+transaction ne correspond à ces filtres. »). La liste est **cohérente avec le journal de caisse** (même
+source `payments`). Ni jeton, ni montant, ni PII ne sont journalisés.
 
 ### Ajouter une section
 

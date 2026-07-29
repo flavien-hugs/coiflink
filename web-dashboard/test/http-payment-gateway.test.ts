@@ -3,6 +3,9 @@
 // 422 (amount-mismatch / reference-not-found / invalid) via le message métier
 // neutre, présence de l'en-tête Authorization, comportement sans jeton, projection
 // snake_case → camelCase, absence de fuite du jeton dans les résultats.
+// Couvre aussi `listTransactions` (#35) : 200 → page parsée (items/total/camelCase),
+// 401/403/422/503 → raisons discriminées, propagation des query params de filtre,
+// jeton jamais dans le résultat.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -301,5 +304,221 @@ describe("createHttpPaymentGateway().record() — raffinement 422", () => {
 
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("5000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listTransactions() — sans jeton (#35)
+// ---------------------------------------------------------------------------
+
+const FAKE_PAGE_PAYLOAD = {
+  items: [
+    {
+      id: "txn-uuid-001",
+      salon_id: SALON_ID,
+      amount: "15000.00",
+      currency: "XOF",
+      payment_method: "MOBILE_MONEY_MANUAL",
+      status: "VALIDATED",
+      recorded_by: "manager-uuid",
+      appointment_id: null,
+      service_id: "service-uuid",
+      client_id: "client-uuid",
+      reference: null,
+      created_at: "2026-03-15T10:00:00Z",
+      client_name: "Awa Koné",
+    },
+  ],
+  total: 42,
+  limit: 50,
+  offset: 0,
+};
+
+describe("createHttpPaymentGateway().listTransactions() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpPaymentGateway({ accessToken: null }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accessToken undefined → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpPaymentGateway({}).listTransactions(SALON_ID, {});
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listTransactions() — codes HTTP (#35)
+// ---------------------------------------------------------------------------
+
+describe("createHttpPaymentGateway().listTransactions() — codes de statut", () => {
+  it("200 → ok:true avec la page parsée", async () => {
+    stubFetch(200, FAKE_PAGE_PAYLOAD);
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.page.total).toBe(42);
+      expect(result.page.limit).toBe(50);
+      expect(result.page.offset).toBe(0);
+      expect(result.page.items).toHaveLength(1);
+    }
+  });
+
+  it("200 → projection snake_case → camelCase sur les items", async () => {
+    stubFetch(200, FAKE_PAGE_PAYLOAD);
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const item = result.page.items[0];
+      expect(item.salonId).toBe(SALON_ID);
+      expect(item.paymentMethod).toBe("MOBILE_MONEY_MANUAL");
+      expect(item.recordedBy).toBe("manager-uuid");
+      expect(item.serviceId).toBe("service-uuid");
+      expect(item.clientId).toBe("client-uuid");
+      expect(item.appointmentId).toBeNull();
+      expect(item.clientName).toBe("Awa Koné");
+    }
+  });
+
+  it("200 → client_name null préservé comme null", async () => {
+    stubFetch(200, {
+      ...FAKE_PAGE_PAYLOAD,
+      items: [{ ...FAKE_PAGE_PAYLOAD.items[0], client_name: null }],
+    });
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.page.items[0].clientName).toBeNull();
+    }
+  });
+
+  it("200 → le jeton n'est pas inclus dans le résultat", async () => {
+    stubFetch(200, FAKE_PAGE_PAYLOAD);
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unauthenticated");
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("forbidden");
+  });
+
+  it("422 → invalid (filtre incohérent côté backend)", async () => {
+    stubFetch(422, { detail: "Filtre de transactions invalide." });
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("invalid");
+  });
+
+  it("503 → unavailable", async () => {
+    stubFetch(503, {});
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("erreur réseau → unavailable", async () => {
+    stubFetchNetworkError();
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("appel réseau inclut l'en-tête Authorization", async () => {
+    const fetchMock = stubFetch(200, FAKE_PAGE_PAYLOAD);
+
+    await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(SALON_ID, {});
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init?.headers as Record<string, string>;
+    expect(headers?.["Authorization"]).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("filtre valide → query params transmis dans l'URL", async () => {
+    const fetchMock = stubFetch(200, FAKE_PAGE_PAYLOAD);
+
+    await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(SALON_ID, {
+      paymentMethod: "CASH",
+      amountMin: "1000.00",
+    });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toContain("payment_method=CASH");
+    expect(url).toContain("amount_min=1000.00");
+  });
+
+  it("filtre vide → aucun query param dans l'URL (hormis le chemin)", async () => {
+    const fetchMock = stubFetch(200, FAKE_PAGE_PAYLOAD);
+
+    await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(SALON_ID, {});
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).not.toContain("?");
   });
 });

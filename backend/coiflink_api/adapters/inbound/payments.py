@@ -76,7 +76,13 @@ from coiflink_api.application.ports.cash_journal_repository import (
     CASH_JOURNAL_LIMIT_MIN,
     CashJournalRepository,
 )
-from coiflink_api.application.ports.payment_repository import PaymentRepository
+from coiflink_api.application.ports.payment_repository import (
+    PAYMENTS_LIMIT_DEFAULT,
+    PAYMENTS_LIMIT_MAX,
+    PAYMENTS_LIMIT_MIN,
+    PaymentRepository,
+)
+from coiflink_api.application.transactions import ListTransactions
 from coiflink_api.application.ports.service_repository import ServiceRepository
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.cash_journal import (
@@ -88,6 +94,7 @@ from coiflink_api.domain.errors import (
     InvalidPaymentAmount,
     InvalidPaymentCurrency,
     InvalidPaymentMethod,
+    InvalidTransactionFilter,
     PaymentAmountMismatch,
     PaymentNotAdjustable,
     PaymentNotFound,
@@ -100,6 +107,7 @@ from coiflink_api.domain.payment import (
     REFERENCE_MAX_LENGTH,
     Payment,
 )
+from coiflink_api.domain.transaction import Transaction, validate_transaction_filter
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
 
@@ -117,6 +125,7 @@ _VALIDATION_ERRORS = (
     PaymentAmountMismatch,
     PaymentReferenceNotFound,
     InvalidAdjustment,
+    InvalidTransactionFilter,
 )
 
 
@@ -181,6 +190,27 @@ class PaymentResponse(BaseModel):
     client_id: uuid.UUID | None
     reference: str | None
     created_at: datetime.datetime
+
+
+class TransactionResponse(PaymentResponse):
+    """Une transaction de l'historique filtrable (US-5.2, #35).
+
+    Étend `PaymentResponse` (le paiement tel qu'enregistré, montant **brut** +
+    `status` — un paiement corrigé porte `ADJUSTED`, cohérent avec le journal
+    #34) du **seul** `client_name` (résolu `client_id → users.full_name`, colonne
+    non sensible ; `null` si aucun client lié ou nom non résolu).
+    """
+
+    client_name: str | None
+
+
+class TransactionPageResponse(BaseModel):
+    """Réponse paginée de `GET /salons/{salon_id}/payments` : items + total + bornes."""
+
+    items: list[TransactionResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class CashJournalEntryResponse(BaseModel):
@@ -297,6 +327,25 @@ def _payment_response(payment: Payment) -> PaymentResponse:
     )
 
 
+def _transaction_response(transaction: Transaction) -> TransactionResponse:
+    payment = transaction.payment
+    return TransactionResponse(
+        id=payment.id,
+        salon_id=payment.salon_id,
+        amount=payment.amount,
+        currency=payment.currency,
+        payment_method=payment.payment_method,
+        status=payment.status,
+        recorded_by=payment.recorded_by,
+        appointment_id=payment.appointment_id,
+        service_id=payment.service_id,
+        client_id=payment.client_id,
+        reference=payment.reference,
+        created_at=payment.created_at,
+        client_name=transaction.client_name,
+    )
+
+
 def _entry_response(entry: CashJournalEntry) -> CashJournalEntryResponse:
     return CashJournalEntryResponse(
         id=entry.id,
@@ -377,6 +426,76 @@ def record_payment(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
     return _payment_response(payment)
+
+
+@router.get(
+    "/{salon_id}/payments",
+    response_model=TransactionPageResponse,
+    summary="Historique filtrable des transactions du salon (paginé, plus récent d'abord)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {
+            "description": (
+                "Filtre invalide : plage incohérente (date/montant), mode hors "
+                "énumération ou montant mal formé"
+            )
+        },
+    },
+)
+def list_transactions(
+    salon_id: uuid.UUID,
+    payment_repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[Principal, Depends(require_permission(Permission.CASH_JOURNAL_READ))],
+    date_from: Annotated[datetime.date | None, Query()] = None,
+    date_to: Annotated[datetime.date | None, Query()] = None,
+    client_id: Annotated[uuid.UUID | None, Query()] = None,
+    amount_min: Annotated[decimal.Decimal | None, Query(ge=0)] = None,
+    amount_max: Annotated[decimal.Decimal | None, Query(ge=0)] = None,
+    payment_method: Annotated[str | None, Query()] = None,
+    limit: Annotated[
+        int,
+        Query(ge=PAYMENTS_LIMIT_MIN, le=PAYMENTS_LIMIT_MAX),
+    ] = PAYMENTS_LIMIT_DEFAULT,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> TransactionPageResponse:
+    """Liste **filtrable** des transactions du salon de la portée (US-5.2, #35).
+
+    Filtres **optionnels** combinés en **ET** : plage de dates inclusive
+    (`date_from`/`date_to`, jour civil `Africa/Abidjan`), `client_id`, plage de
+    montants (`amount_min`/`amount_max`), `payment_method` (enum fermé). Les
+    critères deviennent des clauses `WHERE` SQL (filtrage **serveur**, garde de
+    coût §12.1) ; un filtre invalide → `422` (`InvalidTransactionFilter`), message
+    métier neutre. Isolation §11.2 en profondeur : jamais de transaction d'un
+    autre salon ; un `client_id` étranger → **liste vide** (aucun oracle). Lecture
+    seule : aucune écriture, aucun audit. Source de vérité `payments` : montant,
+    horodatage et auteur **concordent** avec la ligne `PAYMENT` du journal (#34).
+    """
+
+    try:
+        transaction_filter = validate_transaction_filter(
+            date_from=date_from,
+            date_to=date_to,
+            client_id=client_id,
+            amount_min=amount_min,
+            amount_max=amount_max,
+            payment_method=payment_method,
+        )
+    except _VALIDATION_ERRORS as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    page, total = ListTransactions(payment_repo).execute(
+        salon_id, filter=transaction_filter, limit=limit, offset=offset
+    )
+    return TransactionPageResponse(
+        items=[_transaction_response(transaction) for transaction in page],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get(

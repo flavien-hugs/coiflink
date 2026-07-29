@@ -886,6 +886,53 @@ curl -X POST "$API/salons/$SALON_ID/payments" \
   -d '{"amount": "4000.00", "payment_method": "CASH", "service_id": "'"$SERVICE_ID"'"}'
 ```
 
+## Historique des transactions filtrable (US-5.2, #35)
+
+Le gérant **retrouve une transaction** : `GET /salons/{salon_id}/payments` liste les paiements du salon
+**du plus récent au plus ancien**, **paginé** et **filtrable côté serveur** par **date**, **client**,
+**montant** et **mode de paiement**. La route est **protégée** par `CASH_JOURNAL_READ` (§4.1, **seul le
+`MANAGER`**) + portée salon ; **lecture seule** (aucune écriture, aucun audit §11.4), rien n'entre dans
+`PUBLIC_ROUTE_PATHS`. La **source de vérité** est la table `payments` — la même qui alimente la ligne
+`PAYMENT` du journal de caisse (#34) : montant, horodatage (`created_at`) et auteur (`recorded_by`)
+**concordent** avec le journal, et un paiement corrigé apparaît **`ADJUSTED`** dans la liste **et** possède
+une ligne `ADJUSTMENT` au journal.
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/payments` | `CASH_JOURNAL_READ` + portée | `200` page filtrée \| `401` \| `403` \| `422` filtre invalide | *(aucun — lecture)* |
+
+**Filtres** (tous **optionnels**, combinés en **ET** ; absents = aucune contrainte) :
+
+| Param | Type | Sémantique |
+| --- | --- | --- |
+| `date_from` / `date_to` | `date` (`YYYY-MM-DD`) | plage **inclusive**, jour civil **`Africa/Abidjan`** (UTC+0) → bornes UTC `[00:00, 23:59:59.999999]` |
+| `client_id` | `uuid` | client lié (`payments.client_id`) ; un `client_id` étranger au salon → **liste vide** (aucun oracle §11.2) |
+| `amount_min` / `amount_max` | `Decimal` (≥ 0, ≤ 2 déc.) | plage de montants |
+| `payment_method` | `str` ∈ `PaymentMethod` | `CASH` \| `MOBILE_MONEY_MANUAL` \| `CARD_MANUAL` \| `OTHER` |
+| `limit` / `offset` | `int` (1..200, défaut 50) / (≥ 0) | pagination |
+
+**Validation (§11.3).** Une plage incohérente (`date_from > date_to`, `amount_min > amount_max`), un mode
+hors énumération ou un montant mal formé → `422` **« Filtre de transactions invalide. »** — message
+**métier et neutre**, sans reprendre la valeur saisie. Le filtrage est **toujours en SQL** (garde de coût
+§12.1), jamais en mémoire sur un jeu complet. Chaque item réutilise `PaymentResponse` (montant **brut** +
+`status`), enrichi du seul `client_name` (résolu `client_id → users.full_name`, colonne non sensible ;
+`null` sinon).
+
+```bash
+# Paiements en Mobile Money de mars 2026 ≥ 10 000 FCFA (plus récent d'abord) → 200
+curl -G "$API/salons/$SALON_ID/payments" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  --data-urlencode "date_from=2026-03-01" \
+  --data-urlencode "date_to=2026-03-31" \
+  --data-urlencode "payment_method=MOBILE_MONEY_MANUAL" \
+  --data-urlencode "amount_min=10000.00"
+
+# Plage de dates incohérente → 422 « Filtre de transactions invalide. »
+curl -G "$API/salons/$SALON_ID/payments" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  --data-urlencode "date_from=2026-03-31" --data-urlencode "date_to=2026-03-01"
+```
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

@@ -11,10 +11,17 @@
 // résultat renvoyé.
 
 import type {
+  ListTransactionsResult,
   PaymentGateway,
   RecordPaymentResult,
 } from "@/src/application/ports/payment-gateway";
 import type { Payment, PaymentDraft } from "@/src/domain/payments/payment";
+import {
+  serializeTransactionFilter,
+  type Transaction,
+  type TransactionFilterInput,
+  type TransactionPageOptions,
+} from "@/src/domain/payments/transaction";
 import { resolveApiBaseUrl } from "./config";
 
 // Motif d'échec (branche `ok: false` de la réponse) — utilisé pour typer le
@@ -45,6 +52,18 @@ interface PaymentResponsePayload {
 const AMOUNT_MISMATCH_DETAIL = "Le montant ne correspond pas à la prestation.";
 const REFERENCE_NOT_FOUND_DETAIL = "Prestation ou rendez-vous introuvable pour ce salon.";
 
+// Forme du corps `TransactionResponse` (#35) : un paiement + `client_name`.
+interface TransactionResponsePayload extends PaymentResponsePayload {
+  client_name: string | null;
+}
+
+interface TransactionPagePayload {
+  items: TransactionResponsePayload[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 // Projette la réponse backend (snake_case) sur l'entité de domaine (camelCase).
 function toPayment(payload: PaymentResponsePayload): Payment {
   return {
@@ -61,6 +80,10 @@ function toPayment(payload: PaymentResponsePayload): Payment {
     reference: payload.reference,
     createdAt: payload.created_at,
   };
+}
+
+function toTransaction(payload: TransactionResponsePayload): Transaction {
+  return { ...toPayment(payload), clientName: payload.client_name };
 }
 
 // Corps envoyé au backend (snake_case). `salon_id`/`recorded_by`/`status`/`id`
@@ -135,6 +158,52 @@ export function createHttpPaymentGateway(
       }
       if (response.status === 422) {
         return { ok: false, reason: await classify422(response) };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async listTransactions(
+      salonId: string,
+      filter: TransactionFilterInput,
+      page: TransactionPageOptions = {},
+    ): Promise<ListTransactionsResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      const query = serializeTransactionFilter(filter, page).toString();
+      const suffix = query ? `?${query}` : "";
+
+      let response: Response;
+      try {
+        response = await fetch(`${paymentsUrl(salonId)}${suffix}`, {
+          headers: { ...authHeader() },
+          cache: "no-store",
+        });
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as TransactionPagePayload;
+        return {
+          ok: true,
+          page: {
+            items: payload.items.map(toTransaction),
+            total: payload.total,
+            limit: payload.limit,
+            offset: payload.offset,
+          },
+        };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 422) {
+        return { ok: false, reason: "invalid" };
       }
       return { ok: false, reason: "unavailable" };
     },

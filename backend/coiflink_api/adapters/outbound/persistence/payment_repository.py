@@ -19,14 +19,16 @@ même si l'`id` est deviné (miroir de `SqlCustomerRepository`).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.enums import PaymentStatus
 from coiflink_api.domain.errors import PaymentNotAdjustable, PaymentNotFound
 from coiflink_api.domain.payment import Payment, PaymentToCreate
+from coiflink_api.domain.transaction import Transaction, TransactionFilter
 
 
 class SqlPaymentRepository:
@@ -83,6 +85,73 @@ class SqlPaymentRepository:
         self._session.flush()
         self._session.refresh(row)
         return _to_domain(row)
+
+    def list_for_salon(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        filter: TransactionFilter,
+        limit: int,
+        offset: int,
+    ) -> tuple[Transaction, ...]:
+        """Page **filtrée** des transactions du salon (US-5.2, #35) — lecture seule.
+
+        Filtre `salon_id` **inconditionnel** (isolation §11.2) + clauses de filtre
+        **conditionnelles** (date/client/montant/mode, combinées en ET), tri
+        `created_at DESC, id DESC`, bornes en SQL. Join restreint à
+        `users.full_name` (jamais d'autre PII, §11.3) pour l'affichage. **Aucune**
+        écriture, aucun `flush`.
+        """
+
+        stmt = (
+            select(models.Payment, models.User.full_name)
+            .outerjoin(models.User, models.User.id == models.Payment.client_id)
+            .where(*self._filter_clauses(salon_id, filter))
+            .order_by(models.Payment.created_at.desc(), models.Payment.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return tuple(
+            Transaction(payment=_to_domain(row), client_name=full_name)
+            for row, full_name in self._session.execute(stmt).all()
+        )
+
+    def count_for_salon(
+        self, salon_id: uuid.UUID, *, filter: TransactionFilter
+    ) -> int:
+        """Nombre total de transactions du salon **sous le même filtre** (pagination)."""
+
+        stmt = (
+            select(func.count())
+            .select_from(models.Payment)
+            .where(*self._filter_clauses(salon_id, filter))
+        )
+        return int(self._session.scalar(stmt) or 0)
+
+    @staticmethod
+    def _filter_clauses(
+        salon_id: uuid.UUID, filter: TransactionFilter
+    ) -> Sequence[ColumnElement[bool]]:
+        """Clauses `WHERE` : `salon_id` inconditionnel + critères présents (ET).
+
+        Partagées **à l'identique** par `list_for_salon` et `count_for_salon` pour
+        que le `total` corresponde exactement à la page.
+        """
+
+        clauses: list[ColumnElement[bool]] = [models.Payment.salon_id == salon_id]
+        if filter.created_at_from is not None:
+            clauses.append(models.Payment.created_at >= filter.created_at_from)
+        if filter.created_at_to is not None:
+            clauses.append(models.Payment.created_at <= filter.created_at_to)
+        if filter.client_id is not None:
+            clauses.append(models.Payment.client_id == filter.client_id)
+        if filter.amount_min is not None:
+            clauses.append(models.Payment.amount >= filter.amount_min)
+        if filter.amount_max is not None:
+            clauses.append(models.Payment.amount <= filter.amount_max)
+        if filter.payment_method is not None:
+            clauses.append(models.Payment.payment_method == filter.payment_method)
+        return clauses
 
     def _get_row(
         self, salon_id: uuid.UUID, payment_id: uuid.UUID

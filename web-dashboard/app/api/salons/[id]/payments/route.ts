@@ -14,6 +14,75 @@ import { NextResponse } from "next/server";
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
 import { createHttpPaymentGateway } from "@/src/adapters/api/http-payment-gateway";
 import { validatePayment } from "@/src/domain/payments/payment";
+import { TRANSACTIONS_LIMIT_MAX } from "@/src/domain/payments/transaction";
+
+function parseLimit(raw: string | null): number | undefined {
+  if (raw == null) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) return undefined;
+  return Math.min(value, TRANSACTIONS_LIMIT_MAX);
+}
+
+function parseOffset(raw: string | null): number | undefined {
+  if (raw == null) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) return undefined;
+  return value;
+}
+
+// Route Handler BFF `GET /api/salons/[id]/payments` — historique filtrable des
+// transactions (US-5.2, #35). Lit le jeton du cookie httpOnly **côté serveur**
+// (invariant #14), propage les query params de filtre au backend, renvoie un
+// corps **neutre** en erreur. Filtrage **serveur** ; aucun montant/PII/jeton
+// journalisé.
+export async function GET(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  const { id } = await context.params;
+
+  const { accessToken } = await createCookieSessionStore().read();
+  if (!accessToken) {
+    return NextResponse.json({ error: "Session requise." }, { status: 401 });
+  }
+
+  const search = new URL(request.url).searchParams;
+  const result = await createHttpPaymentGateway({ accessToken }).listTransactions(
+    id,
+    {
+      dateFrom: search.get("date_from"),
+      dateTo: search.get("date_to"),
+      clientId: search.get("client_id"),
+      amountMin: search.get("amount_min"),
+      amountMax: search.get("amount_max"),
+      paymentMethod: search.get("payment_method"),
+    },
+    {
+      limit: parseLimit(search.get("limit")),
+      offset: parseOffset(search.get("offset")),
+    },
+  );
+
+  if (result.ok) {
+    return NextResponse.json({ page: result.page }, { status: 200 });
+  }
+  switch (result.reason) {
+    case "invalid":
+      return NextResponse.json({ error: "Filtre invalide." }, { status: 422 });
+    case "forbidden":
+      return NextResponse.json(
+        { error: "Action non autorisée sur ce salon." },
+        { status: 403 },
+      );
+    case "unauthenticated":
+      return NextResponse.json({ error: "Session requise." }, { status: 401 });
+    default:
+      return NextResponse.json(
+        { error: "Service momentanément indisponible." },
+        { status: 503 },
+      );
+  }
+}
 
 export async function POST(
   request: Request,

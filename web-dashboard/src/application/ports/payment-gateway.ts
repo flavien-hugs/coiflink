@@ -4,6 +4,11 @@
 // (US-5.1, #33). Implémenté par un adapter dans `src/adapters/api/`.
 
 import type { Payment, PaymentDraft } from "@/src/domain/payments/payment";
+import type {
+  TransactionFilterInput,
+  TransactionPage,
+  TransactionPageOptions,
+} from "@/src/domain/payments/transaction";
 
 // Motifs d'échec **génériques** (aucune divulgation) : `invalid` = `422` de
 // validation backend (montant/mode/devise/référence), `amount-mismatch` = `422`
@@ -24,8 +29,28 @@ export type RecordPaymentResult =
         | "unavailable";
     };
 
+// Résultat de la liste filtrable des transactions (US-5.2, #35). `invalid` = `422`
+// (filtre incohérent côté backend), les autres motifs sont **génériques** (aucune
+// divulgation). Le jeton n'apparaît **jamais** dans le résultat.
+export type ListTransactionsResult =
+  | { ok: true; page: TransactionPage }
+  | {
+      ok: false;
+      reason: "invalid" | "forbidden" | "unauthenticated" | "unavailable";
+    };
+
 export interface PaymentGateway {
   // Proxifie `POST /salons/{id}/payments` ; renvoie le paiement `VALIDATED` créé.
   // Le montant est vérifié **cohérent** avec la prestation/RDV lié côté backend.
   record(salonId: string, draft: PaymentDraft): Promise<RecordPaymentResult>;
+
+  // Proxifie `GET /salons/{id}/payments` : liste **filtrable** (date/client/
+  // montant/mode) et paginée des transactions du salon, du plus récent au plus
+  // ancien. Le filtrage est **serveur** ; les critères sont sérialisés en query
+  // params. Cohérent avec le journal de caisse (même source `payments`).
+  listTransactions(
+    salonId: string,
+    filter: TransactionFilterInput,
+    page?: TransactionPageOptions,
+  ): Promise<ListTransactionsResult>;
 }
