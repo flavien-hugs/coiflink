@@ -22,6 +22,7 @@ from __future__ import annotations
 import uuid
 from typing import Protocol
 
+from coiflink_api.domain.discrepancy import CashDiscrepancy, DiscrepancyFilter
 from coiflink_api.domain.payment import Payment, PaymentToCreate
 from coiflink_api.domain.transaction import Transaction, TransactionFilter
 
@@ -93,6 +94,42 @@ class PaymentRepository(Protocol):
         Applique **exactement** les mêmes clauses que `list_for_salon` (filtre
         `salon_id` inconditionnel + clauses conditionnelles) pour un `total`
         cohérent avec la page.
+        """
+        ...
+
+    def list_completed_without_payment(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        filter: DiscrepancyFilter,
+        limit: int,
+        offset: int,
+    ) -> tuple[CashDiscrepancy, ...]:
+        """Page des **écarts de caisse** du salon (US-5.4, #36) — lecture seule.
+
+        Liste les RDV `COMPLETED` du salon **auxquels aucun paiement `VALIDATED`/
+        `ADJUSTED` n'est rattaché** (rapprochement `NOT EXISTS` sur
+        `payments.appointment_id`). Applique **inconditionnellement** le filtre
+        `salon_id` (isolation §11.2 en profondeur : jamais un RDV d'un autre salon, et
+        un paiement d'un autre salon ne « couvre » jamais un RDV), puis
+        **conditionnellement** les bornes de dates du `filter` (sur
+        `appointment_date`, jour civil `Africa/Abidjan`). Chaque écart porte le
+        **montant attendu** (somme des `price_at_booking` du RDV) et résout
+        `client_id → users.full_name` (colonne non sensible **uniquement**, §11.3).
+        Tri déterministe `appointment_date DESC, start_time DESC, id DESC`, bornes
+        `limit`/`offset` appliquées **en SQL** (jamais en mémoire). **Aucune** écriture.
+        """
+        ...
+
+    def count_completed_without_payment(
+        self, salon_id: uuid.UUID, *, filter: DiscrepancyFilter
+    ) -> int:
+        """Nombre total d'écarts du salon **sous le même filtre** (pagination).
+
+        Applique **exactement** les mêmes clauses `WHERE`/`NOT EXISTS` que
+        `list_completed_without_payment` (filtre `salon_id` inconditionnel + bornes de
+        dates), en comptant les **RDV** (jamais les lignes de prestation) pour un
+        `total` cohérent avec la page.
         """
         ...
 

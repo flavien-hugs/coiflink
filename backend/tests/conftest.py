@@ -1146,6 +1146,7 @@ class FakePaymentRepository:
         payments: list | None = None,
         *,
         client_names: dict | None = None,
+        discrepancies: list | None = None,
     ) -> None:
         self._payments: dict[uuid.UUID, object] = {}
         self.created: list = []
@@ -1154,6 +1155,10 @@ class FakePaymentRepository:
         self._client_names: dict = dict(client_names or {})
         for p in payments or []:
             self._payments[p.id] = p  # type: ignore[union-attr]
+        # Écarts de caisse pré-chargés (US-5.4, #36) — miroir du LEFT JOIN SQL.
+        self._discrepancies: list = list(discrepancies or [])
+        self.list_completed_calls: list = []
+        self.count_completed_calls: list = []
 
     def create(self, payment):  # type: ignore[no-untyped-def]
         from coiflink_api.domain.payment import Payment
@@ -1235,6 +1240,36 @@ class FakePaymentRepository:
             if filter.payment_method is not None and p.payment_method != filter.payment_method:
                 continue
             result.append(p)
+        return result
+
+    def list_completed_without_payment(  # type: ignore[no-untyped-def]
+        self, salon_id: uuid.UUID, *, filter, limit: int, offset: int
+    ):
+        self.list_completed_calls.append((salon_id, filter, limit, offset))
+        matches = self._matching_discrepancies(salon_id, filter)
+        return tuple(matches[offset: offset + limit])
+
+    def count_completed_without_payment(self, salon_id: uuid.UUID, *, filter) -> int:  # type: ignore[no-untyped-def]
+        self.count_completed_calls.append((salon_id, filter))
+        return len(self._matching_discrepancies(salon_id, filter))
+
+    def _matching_discrepancies(self, salon_id: uuid.UUID, filter) -> list:  # type: ignore[no-untyped-def]
+        """Filtrage en mémoire des écarts : salon_id + plage de dates (§36)."""
+
+        result = []
+        for d in self._discrepancies:
+            if d.salon_id != salon_id:
+                continue
+            if filter.date_from is not None and d.appointment_date < filter.date_from:
+                continue
+            if filter.date_to is not None and d.appointment_date > filter.date_to:
+                continue
+            result.append(d)
+        # Tri déterministe : appointment_date DESC, start_time DESC, appointment_id DESC.
+        result.sort(
+            key=lambda d: (d.appointment_date, d.start_time, d.appointment_id),
+            reverse=True,
+        )
         return result
 
 

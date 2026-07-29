@@ -371,6 +371,18 @@ class InvalidTransactionFilter(DomainError):
     """
 
 
+class InvalidDiscrepancyFilter(DomainError):
+    """Un critère de filtrage des écarts de caisse est invalide (US-5.4, #36).
+
+    Levée par `domain/discrepancy.py::validate_discrepancy_filter` quand la plage de
+    dates est incohérente (`date_from > date_to`) ou qu'une borne n'est pas une date.
+    Les bornes portent sur `appointments.appointment_date` (jour civil `Africa/Abidjan`,
+    UTC+0) : aucune conversion de fuseau n'est nécessaire (colonne `Date`). Message
+    **neutre** — il ne reprend **jamais** la valeur saisie (§11.3). L'adapter entrant
+    la traduit en `422`.
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -465,6 +477,7 @@ __all__ = [
     "PaymentNotAdjustable",
     "InvalidAdjustment",
     "InvalidTransactionFilter",
+    "InvalidDiscrepancyFilter",
     "SlotAlreadyBooked",
     "SlotUnavailable",
     "SalonNotBookable",

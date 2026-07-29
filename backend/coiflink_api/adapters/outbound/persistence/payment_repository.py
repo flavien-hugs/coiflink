@@ -18,6 +18,7 @@ même si l'`id` est deviné (miroir de `SqlCustomerRepository`).
 
 from __future__ import annotations
 
+import decimal
 import uuid
 from collections.abc import Sequence
 
@@ -25,10 +26,20 @@ from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
+from coiflink_api.domain.discrepancy import (
+    COMPLETED_STATUS,
+    PAID_PAYMENT_STATUSES,
+    CashDiscrepancy,
+    DiscrepancyFilter,
+)
 from coiflink_api.domain.enums import PaymentStatus
 from coiflink_api.domain.errors import PaymentNotAdjustable, PaymentNotFound
-from coiflink_api.domain.payment import Payment, PaymentToCreate
+from coiflink_api.domain.payment import DEFAULT_CURRENCY, Payment, PaymentToCreate
 from coiflink_api.domain.transaction import Transaction, TransactionFilter
+
+# Pas de comparaison de montant : le centime (miroir de `NUMERIC(12,2)`), pour
+# quantifier le montant attendu agrégé en `Decimal` (jamais un flottant).
+_AMOUNT_QUANTUM = decimal.Decimal("0.01")
 
 
 class SqlPaymentRepository:
@@ -151,6 +162,130 @@ class SqlPaymentRepository:
             clauses.append(models.Payment.amount <= filter.amount_max)
         if filter.payment_method is not None:
             clauses.append(models.Payment.payment_method == filter.payment_method)
+        return clauses
+
+    def list_completed_without_payment(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        filter: DiscrepancyFilter,
+        limit: int,
+        offset: int,
+    ) -> tuple[CashDiscrepancy, ...]:
+        """Page des **écarts de caisse** du salon (US-5.4, #36) — lecture seule.
+
+        RDV `COMPLETED` sans paiement `VALIDATED`/`ADJUSTED` rattaché (`NOT EXISTS`
+        sur `payments.appointment_id`), filtre `salon_id` **inconditionnel**
+        (isolation §11.2) + bornes de dates conditionnelles sur `appointment_date`.
+        Le `LEFT JOIN appointment_services` + `GROUP BY` calcule le **montant
+        attendu** (somme des `price_at_booking`) ; le join `users` (restreint à
+        `full_name`, §11.3) résout le nom du client. Tri déterministe, bornes en SQL.
+        **Aucune** écriture, aucun `flush`.
+        """
+
+        expected_amount = func.coalesce(
+            func.sum(models.AppointmentService.price_at_booking), 0
+        )
+        stmt = (
+            select(
+                models.Appointment.id,
+                models.Appointment.appointment_date,
+                models.Appointment.start_time,
+                models.Appointment.client_id,
+                models.User.full_name,
+                expected_amount,
+            )
+            .outerjoin(models.User, models.User.id == models.Appointment.client_id)
+            .outerjoin(
+                models.AppointmentService,
+                (models.AppointmentService.salon_id == models.Appointment.salon_id)
+                & (models.AppointmentService.appointment_id == models.Appointment.id),
+            )
+            .where(*self._discrepancy_clauses(salon_id, filter))
+            .group_by(
+                models.Appointment.id,
+                models.Appointment.appointment_date,
+                models.Appointment.start_time,
+                models.Appointment.client_id,
+                models.User.full_name,
+            )
+            .order_by(
+                models.Appointment.appointment_date.desc(),
+                models.Appointment.start_time.desc(),
+                models.Appointment.id.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        return tuple(
+            CashDiscrepancy(
+                appointment_id=appointment_id,
+                salon_id=salon_id,
+                appointment_date=appointment_date,
+                start_time=start_time,
+                client_id=client_id,
+                expected_amount=decimal.Decimal(amount).quantize(_AMOUNT_QUANTUM),
+                client_name=full_name,
+                currency=DEFAULT_CURRENCY,
+            )
+            for (
+                appointment_id,
+                appointment_date,
+                start_time,
+                client_id,
+                full_name,
+                amount,
+            ) in self._session.execute(stmt).all()
+        )
+
+    def count_completed_without_payment(
+        self, salon_id: uuid.UUID, *, filter: DiscrepancyFilter
+    ) -> int:
+        """Nombre total d'écarts du salon **sous le même filtre** (pagination).
+
+        Compte les **RDV** (jamais les lignes de prestation : pas de join
+        `appointment_services`) sous les **mêmes** clauses `WHERE`/`NOT EXISTS` que
+        `list_completed_without_payment`.
+        """
+
+        stmt = (
+            select(func.count())
+            .select_from(models.Appointment)
+            .where(*self._discrepancy_clauses(salon_id, filter))
+        )
+        return int(self._session.scalar(stmt) or 0)
+
+    @staticmethod
+    def _discrepancy_clauses(
+        salon_id: uuid.UUID, filter: DiscrepancyFilter
+    ) -> Sequence[ColumnElement[bool]]:
+        """Clauses `WHERE` des écarts : salon + `COMPLETED` + `NOT EXISTS` payé + dates.
+
+        Partagées **à l'identique** par `list_completed_without_payment` et
+        `count_completed_without_payment` (total cohérent avec la page). Le filtre
+        `salon_id` est **inconditionnel** (isolation §11.2) ; la sous-requête
+        `NOT EXISTS` porte elle aussi `salon_id` (un paiement d'un autre salon ne
+        couvre jamais un RDV).
+        """
+
+        paid_exists = (
+            select(models.Payment.id)
+            .where(
+                models.Payment.salon_id == models.Appointment.salon_id,
+                models.Payment.appointment_id == models.Appointment.id,
+                models.Payment.status.in_(PAID_PAYMENT_STATUSES),
+            )
+            .exists()
+        )
+        clauses: list[ColumnElement[bool]] = [
+            models.Appointment.salon_id == salon_id,
+            models.Appointment.status == COMPLETED_STATUS,
+            ~paid_exists,
+        ]
+        if filter.date_from is not None:
+            clauses.append(models.Appointment.appointment_date >= filter.date_from)
+        if filter.date_to is not None:
+            clauses.append(models.Appointment.appointment_date <= filter.date_to)
         return clauses
 
     def _get_row(
