@@ -1,4 +1,5 @@
-"""Tests e2e pour US-5.1 — enregistrement d'un paiement (#33), socle de #34.
+"""Tests e2e pour US-5.1/5.2 — enregistrement d'un paiement (#33) et historique
+des transactions filtrable (#35), socle de #34.
 
 Groupe TestRecordPaymentE2E (PostgreSQL requis) :
     pile complète : HTTP (TestClient) → router → cas d'usage → dépôts SQL réels
@@ -16,6 +17,15 @@ Scénarios (spec `specs/*.md`, cf. finding de revue automatisée sur la PR #111)
        `PaymentReferenceNotFound`, aucun oracle).
     4. Deny-by-default : accès sans jeton → `401`.
 
+Groupe TestListTransactionsE2E (PostgreSQL requis, US-5.2, #35) :
+    exerce `SqlPaymentRepository.list_for_salon`/`count_for_salon` — chemin SQL
+    réel (jointure `users.full_name`, clauses `WHERE` cumulées, tri, pagination)
+    qu'aucune suite unitaire/API (adossées à `FakePaymentRepository`) ne couvre.
+    Scénarios : isolation inter-salons, tri plus-récent-d'abord, filtres
+    (mode/montant), résolution du `client_name` par jointure, pagination
+    (`limit`/`offset`/`total` sous le même filtre), cohérence avec la ligne
+    `PAYMENT` du journal de caisse (#34).
+
 Prérequis :
     cd backend
     DATABASE_URL=postgresql://user:pwd@host/db alembic upgrade head
@@ -28,6 +38,7 @@ Nettoyage : les données de test sont supprimées avant et après chaque test
 from __future__ import annotations
 
 import datetime
+import decimal
 import os
 from collections.abc import Generator
 
@@ -53,6 +64,7 @@ _TEST_JWT_SECRET = "test-only-payments-e2e-jwt-secret-not-for-production"
 _E2E_PHONE_PREFIX = "+225075999"
 _PHONE_A_LOCAL = "0759990001"   # gérant A — parcours principal
 _PHONE_B_LOCAL = "0759990002"   # gérant B — isolation inter-salons
+_PHONE_CLIENT_LOCAL = "0759990003"   # client — résolution client_name (US-5.2)
 _PASSWORD = "payments-e2e-strong-password-2024"
 
 _SALON_NAME_A = "e2e-salon-payments-a"
@@ -183,6 +195,16 @@ def _register_manager(client: TestClient, *, phone: str = _PHONE_A_LOCAL) -> str
     return resp.json()["id"]
 
 
+def _register_client(client: TestClient, *, phone: str = _PHONE_CLIENT_LOCAL) -> str:
+    """Inscrit un compte client via l'API et retourne son UUID (résolution `client_name`)."""
+    resp = client.post(
+        "/auth/register",
+        json={"full_name": "Client E2E Paiements", "phone": phone, "password": _PASSWORD},
+    )
+    assert resp.status_code == 201, f"Inscription client échouée : {resp.text}"
+    return resp.json()["id"]
+
+
 def _login(client: TestClient, *, phone: str = _PHONE_A_LOCAL) -> str:
     """Connecte un compte et retourne l'access token."""
     resp = client.post(
@@ -218,6 +240,19 @@ def _create_service(
 
 def _payments_url(salon_id: str) -> str:
     return f"/salons/{salon_id}/payments"
+
+
+def _list_transactions(
+    client: TestClient, token: str, salon_id: str, **params: object
+) -> dict:
+    """`GET /salons/{id}/payments` (historique filtrable, US-5.2, #35)."""
+    resp = client.get(
+        _payments_url(salon_id),
+        params=params,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, f"Liste des transactions échouée : {resp.text}"
+    return resp.json()
 
 
 def _count_audit_entries(payment_id: str, action: str | None = None) -> int:
@@ -676,4 +711,256 @@ class TestRecordPaymentE2E:
                 "service_id": service_id,
             },
         )
+        assert resp.status_code == 401
+
+
+# ─── Groupe e2e : historique des transactions filtrable (PostgreSQL requis) ──
+
+
+@pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
+class TestListTransactionsE2E:
+    """`GET /salons/{id}/payments` bout-en-bout : jointure/filtres/tri/pagination SQL réels."""
+
+    # ── Parcours 1 : isolation inter-salons (§11.2) ───────────────────────────
+
+    def test_lists_only_this_salon_transactions(self, _e2e_client: TestClient) -> None:
+        """Un paiement du salon B n'apparaît jamais dans l'historique du salon A."""
+        _register_manager(_e2e_client, phone=_PHONE_A_LOCAL)
+        _register_manager(_e2e_client, phone=_PHONE_B_LOCAL)
+        token_a = _login(_e2e_client, phone=_PHONE_A_LOCAL)
+        token_b = _login(_e2e_client, phone=_PHONE_B_LOCAL)
+        salon_a_id = _create_salon(_e2e_client, token_a, name=_SALON_NAME_A)
+        salon_b_id = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
+        service_b_id = _create_service(_e2e_client, token_b, salon_b_id)
+        _e2e_client.post(
+            _payments_url(salon_b_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "CASH",
+                "service_id": service_b_id,
+            },
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+
+        page = _list_transactions(_e2e_client, token_a, salon_a_id)
+        assert page["items"] == []
+        assert page["total"] == 0
+
+    def test_cross_salon_access_returns_403(self, _e2e_client: TestClient) -> None:
+        """Le jeton du gérant A est refusé pour lister l'historique du salon B."""
+        _register_manager(_e2e_client, phone=_PHONE_A_LOCAL)
+        _register_manager(_e2e_client, phone=_PHONE_B_LOCAL)
+        token_a = _login(_e2e_client, phone=_PHONE_A_LOCAL)
+        token_b = _login(_e2e_client, phone=_PHONE_B_LOCAL)
+        salon_b_id = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
+
+        resp = _e2e_client.get(
+            _payments_url(salon_b_id),
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        assert resp.status_code == 403
+
+    # ── Parcours 2 : tri plus-récent-d'abord ──────────────────────────────────
+
+    def test_orders_most_recent_first(self, _e2e_client: TestClient) -> None:
+        """Deux paiements successifs apparaissent triés du plus récent au plus ancien."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_first = _create_service(_e2e_client, token, salon_id, price="1000.00")
+        service_second = _create_service(_e2e_client, token, salon_id, price="2000.00")
+
+        resp_first = _e2e_client.post(
+            _payments_url(salon_id),
+            json={"amount": "1000.00", "payment_method": "CASH", "service_id": service_first},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        resp_second = _e2e_client.post(
+            _payments_url(salon_id),
+            json={"amount": "2000.00", "payment_method": "CASH", "service_id": service_second},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        payment_first_id = resp_first.json()["id"]
+        payment_second_id = resp_second.json()["id"]
+
+        page = _list_transactions(_e2e_client, token, salon_id)
+        ids = [item["id"] for item in page["items"]]
+        assert ids.index(payment_second_id) < ids.index(payment_first_id)
+
+    # ── Parcours 3 : filtres (mode, montant) ──────────────────────────────────
+
+    def test_filter_by_payment_method(self, _e2e_client: TestClient) -> None:
+        """`payment_method=CASH` n'affiche que les transactions en espèces."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_cash = _create_service(_e2e_client, token, salon_id, price="1000.00")
+        service_card = _create_service(_e2e_client, token, salon_id, price="2000.00")
+
+        _e2e_client.post(
+            _payments_url(salon_id),
+            json={"amount": "1000.00", "payment_method": "CASH", "service_id": service_cash},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": "2000.00",
+                "payment_method": "CARD_MANUAL",
+                "service_id": service_card,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        page = _list_transactions(_e2e_client, token, salon_id, payment_method="CASH")
+        assert page["total"] == 1
+        assert page["items"][0]["payment_method"] == "CASH"
+
+    def test_filter_by_amount_range(self, _e2e_client: TestClient) -> None:
+        """`amount_min`/`amount_max` restreignent la liste à la plage demandée."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_low = _create_service(_e2e_client, token, salon_id, price="1000.00")
+        service_high = _create_service(_e2e_client, token, salon_id, price="9000.00")
+
+        _e2e_client.post(
+            _payments_url(salon_id),
+            json={"amount": "1000.00", "payment_method": "CASH", "service_id": service_low},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        _e2e_client.post(
+            _payments_url(salon_id),
+            json={"amount": "9000.00", "payment_method": "CASH", "service_id": service_high},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        page = _list_transactions(
+            _e2e_client, token, salon_id, amount_min="5000.00", amount_max="9500.00"
+        )
+        assert page["total"] == 1
+        assert page["items"][0]["amount"] == "9000.00"
+
+    # ── Parcours 4 : résolution du client_name (jointure users, §11.3) ───────
+
+    def test_client_name_resolved_via_join(self, _e2e_client: TestClient) -> None:
+        """`client_name` reflète `users.full_name` via la jointure (client_id fourni)."""
+        _register_manager(_e2e_client, phone=_PHONE_A_LOCAL)
+        client_id = _register_client(_e2e_client)
+        token = _login(_e2e_client, phone=_PHONE_A_LOCAL)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "CASH",
+                "service_id": service_id,
+                "client_id": client_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        page = _list_transactions(_e2e_client, token, salon_id)
+        assert page["items"][0]["client_name"] == "Client E2E Paiements"
+
+    def test_walk_in_payment_has_null_client_name(self, _e2e_client: TestClient) -> None:
+        """Un paiement sans `client_id` (walk-in) affiche `client_name: null`."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "CASH",
+                "service_id": service_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        page = _list_transactions(_e2e_client, token, salon_id)
+        assert page["items"][0]["client_name"] is None
+
+    # ── Parcours 5 : pagination (limit/offset/total sous le même filtre) ─────
+
+    def test_pagination_total_reflects_all_matches(self, _e2e_client: TestClient) -> None:
+        """`total` compte toutes les transactions du filtre, indépendamment de `limit`."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        for price in ("1000.00", "2000.00", "3000.00"):
+            service_id = _create_service(_e2e_client, token, salon_id, price=price)
+            _e2e_client.post(
+                _payments_url(salon_id),
+                json={"amount": price, "payment_method": "CASH", "service_id": service_id},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        page = _list_transactions(_e2e_client, token, salon_id, limit=1, offset=0)
+        assert page["total"] == 3
+        assert len(page["items"]) == 1
+
+    def test_pagination_offset_skips_items(self, _e2e_client: TestClient) -> None:
+        """`offset` avance dans la page sans changer `total` (tri plus-récent-d'abord)."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        payment_ids = []
+        for price in ("1000.00", "2000.00", "3000.00"):
+            service_id = _create_service(_e2e_client, token, salon_id, price=price)
+            resp = _e2e_client.post(
+                _payments_url(salon_id),
+                json={"amount": price, "payment_method": "CASH", "service_id": service_id},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            payment_ids.append(resp.json()["id"])
+
+        page_first = _list_transactions(_e2e_client, token, salon_id, limit=1, offset=0)
+        page_second = _list_transactions(_e2e_client, token, salon_id, limit=1, offset=1)
+        assert page_first["items"][0]["id"] != page_second["items"][0]["id"]
+        # Le plus récent (dernier créé) arrive en premier ; offset=0 → dernier payment.
+        assert page_first["items"][0]["id"] == payment_ids[-1]
+
+    # ── Parcours 6 : cohérence avec le journal de caisse (§8.2, #34) ──────────
+
+    def test_transaction_amount_matches_cash_journal_line(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Le montant listé correspond à la ligne `PAYMENT` du journal (même source)."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        resp = _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "CASH",
+                "service_id": service_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        payment_id = resp.json()["id"]
+
+        page = _list_transactions(_e2e_client, token, salon_id)
+        transaction = next(item for item in page["items"] if item["id"] == payment_id)
+        journal_entry = _fetch_cash_journal_entry(salon_id, payment_id)
+
+        assert decimal.Decimal(transaction["amount"]) == journal_entry["amount"]
+        assert transaction["status"] == "VALIDATED"
+
+    # ── Parcours 7 : deny-by-default (ADR-0015) ───────────────────────────────
+
+    def test_no_token_returns_401(self, _e2e_client: TestClient) -> None:
+        """GET sans jeton → 401 (deny-by-default, ADR-0015)."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+
+        resp = _e2e_client.get(_payments_url(salon_id))
         assert resp.status_code == 401
