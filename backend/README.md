@@ -933,6 +933,50 @@ curl -G "$API/salons/$SALON_ID/payments" \
   --data-urlencode "date_from=2026-03-31" --data-urlencode "date_to=2026-03-01"
 ```
 
+## Détection des écarts de caisse (US-5.4, #36)
+
+Le gérant **voit ce qui a été réalisé mais pas encaissé** :
+`GET /salons/{salon_id}/cash-discrepancies` liste les **RDV `COMPLETED` sans paiement rattaché** — un
+écart au sens de §8.2 (« les écarts entre prestations réalisées et paiements doivent être visibles »),
+**du plus récent au plus ancien**, **paginé**. La route est **protégée** par `CASH_JOURNAL_READ` (§4.1,
+**seul le `MANAGER`**) + portée salon ; **lecture pure** qui **signale** sans corriger (aucune écriture,
+aucun audit §11.4), rien n'entre dans `PUBLIC_ROUTE_PATHS`. Voir
+[ADR-0028](../docs/adr/0028-detection-ecarts-de-caisse.md).
+
+Le rapprochement se fait **uniquement** sur `payments.appointment_id` : un RDV est un écart s'il
+n'existe **aucun** paiement `VALIDATED` **ou** `ADJUSTED` rattaché (un paiement `CANCELLED`/`PENDING` ne
+couvre rien). Seul `COMPLETED` compte comme « réalisé » (jamais `NO_SHOW`/`CANCELLED`/`PENDING`/
+`CONFIRMED`). Chaque écart porte le **montant attendu** (somme des `price_at_booking` du RDV — la valeur
+« qui manque en caisse ») et le nom du client résolu (`users.full_name`, colonne non sensible §11.3 ;
+`null` sinon). Aucune migration : la détection dérive de tables/colonnes/index existants.
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/cash-discrepancies` | `CASH_JOURNAL_READ` + portée | `200` page d'écarts \| `401` \| `403` \| `422` filtre invalide | *(aucun — lecture)* |
+
+**Filtres** (tous **optionnels**, combinés en **ET** ; absents = aucune contrainte) :
+
+| Param | Type | Sémantique |
+| --- | --- | --- |
+| `date_from` / `date_to` | `date` (`YYYY-MM-DD`) | plage **inclusive** sur `appointment_date`, jour civil **`Africa/Abidjan`** (UTC+0 ; comparaison directe, sans conversion) |
+| `limit` / `offset` | `int` (1..200, défaut 50) / (≥ 0) | pagination |
+
+**Validation.** Une plage incohérente (`date_from > date_to`) → `422`
+**« Filtre des écarts de caisse invalide. »** — message **métier et neutre**. Tri, `NOT EXISTS` et
+bornes sont **toujours en SQL** (garde de coût §12.1), jamais en mémoire.
+
+```bash
+# Écarts de juillet 2026 (RDV terminés non encaissés, plus récent d'abord) → 200
+curl -G "$API/salons/$SALON_ID/cash-discrepancies" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  --data-urlencode "date_from=2026-07-01" --data-urlencode "date_to=2026-07-31"
+
+# Plage de dates incohérente → 422 « Filtre des écarts de caisse invalide. »
+curl -G "$API/salons/$SALON_ID/cash-discrepancies" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  --data-urlencode "date_from=2026-07-31" --data-urlencode "date_to=2026-07-01"
+```
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

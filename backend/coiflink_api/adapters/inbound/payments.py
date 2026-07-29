@@ -11,6 +11,11 @@ isolation §11.2) :
   `CASH_JOURNAL_READ`. Liste paginée des opérations, **de la plus récente à la plus
   ancienne**, chacune portant `created_at` (horodatage) et l'auteur (`performed_by`
   + nom résolu) ;
+- **`GET /salons/{salon_id}/cash-discrepancies`** — écarts de caisse (US-5.4, #36),
+  garde `CASH_JOURNAL_READ`. Liste paginée des RDV `COMPLETED` **sans paiement
+  rattaché** (prestation réalisée mais non encaissée), chacun portant le **montant
+  attendu** (somme des `price_at_booking`) — lecture pure qui **signale** sans
+  corriger ;
 - **`POST /salons/{salon_id}/payments/{payment_id}/adjustments`** — correction
   (US-5.3, #34), garde `PAYMENT_RECORD`. **Insère** une ligne `ADJUSTMENT` (delta
   signé) rattachée au paiement d'origine et passe ce dernier à `ADJUSTED` — **sans
@@ -82,6 +87,7 @@ from coiflink_api.application.ports.payment_repository import (
     PAYMENTS_LIMIT_MIN,
     PaymentRepository,
 )
+from coiflink_api.application.discrepancies import ListCashDiscrepancies
 from coiflink_api.application.transactions import ListTransactions
 from coiflink_api.application.ports.service_repository import ServiceRepository
 from coiflink_api.domain.access import SalonScope
@@ -89,8 +95,13 @@ from coiflink_api.domain.cash_journal import (
     DESCRIPTION_MAX_LENGTH,
     CashJournalEntry,
 )
+from coiflink_api.domain.discrepancy import (
+    CashDiscrepancy,
+    validate_discrepancy_filter,
+)
 from coiflink_api.domain.errors import (
     InvalidAdjustment,
+    InvalidDiscrepancyFilter,
     InvalidPaymentAmount,
     InvalidPaymentCurrency,
     InvalidPaymentMethod,
@@ -126,6 +137,7 @@ _VALIDATION_ERRORS = (
     PaymentReferenceNotFound,
     InvalidAdjustment,
     InvalidTransactionFilter,
+    InvalidDiscrepancyFilter,
 )
 
 
@@ -208,6 +220,33 @@ class TransactionPageResponse(BaseModel):
     """Réponse paginée de `GET /salons/{salon_id}/payments` : items + total + bornes."""
 
     items: list[TransactionResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class CashDiscrepancyResponse(BaseModel):
+    """Un écart de caisse : un RDV `COMPLETED` **sans** paiement rattaché (US-5.4, #36).
+
+    `expected_amount` est le **montant attendu** (somme des `price_at_booking` du RDV),
+    la valeur « qui manque en caisse », sérialisée en chaîne décimale (`NUMERIC(12,2)`,
+    jamais de flottant). `client_name` résout `client_id → users.full_name` (colonne
+    non sensible **uniquement**, §11.3 ; `null` si non résolu).
+    """
+
+    appointment_id: uuid.UUID
+    appointment_date: datetime.date
+    start_time: datetime.time
+    client_id: uuid.UUID
+    client_name: str | None
+    expected_amount: decimal.Decimal
+    currency: str
+
+
+class CashDiscrepancyPageResponse(BaseModel):
+    """Réponse paginée de `GET /salons/{salon_id}/cash-discrepancies` : items + bornes."""
+
+    items: list[CashDiscrepancyResponse]
     total: int
     limit: int
     offset: int
@@ -343,6 +382,18 @@ def _transaction_response(transaction: Transaction) -> TransactionResponse:
         reference=payment.reference,
         created_at=payment.created_at,
         client_name=transaction.client_name,
+    )
+
+
+def _discrepancy_response(discrepancy: CashDiscrepancy) -> CashDiscrepancyResponse:
+    return CashDiscrepancyResponse(
+        appointment_id=discrepancy.appointment_id,
+        appointment_date=discrepancy.appointment_date,
+        start_time=discrepancy.start_time,
+        client_id=discrepancy.client_id,
+        client_name=discrepancy.client_name,
+        expected_amount=discrepancy.expected_amount,
+        currency=discrepancy.currency,
     )
 
 
@@ -492,6 +543,63 @@ def list_transactions(
     )
     return TransactionPageResponse(
         items=[_transaction_response(transaction) for transaction in page],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/{salon_id}/cash-discrepancies",
+    response_model=CashDiscrepancyPageResponse,
+    summary="Écarts de caisse : RDV terminés sans paiement (paginé, plus récent d'abord)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {"description": "Filtre de dates incohérent (plage `date_from > date_to`)"},
+    },
+)
+def list_cash_discrepancies(
+    salon_id: uuid.UUID,
+    payment_repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[Principal, Depends(require_permission(Permission.CASH_JOURNAL_READ))],
+    date_from: Annotated[datetime.date | None, Query()] = None,
+    date_to: Annotated[datetime.date | None, Query()] = None,
+    limit: Annotated[
+        int,
+        Query(ge=PAYMENTS_LIMIT_MIN, le=PAYMENTS_LIMIT_MAX),
+    ] = PAYMENTS_LIMIT_DEFAULT,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> CashDiscrepancyPageResponse:
+    """Signale les **écarts de caisse** du salon de la portée (US-5.4, #36).
+
+    Un écart = un RDV `COMPLETED` (prestation réalisée) **auquel aucun paiement
+    `VALIDATED`/`ADJUSTED` n'est rattaché** — « ce qui a été fait mais pas encaissé ».
+    Bornes de dates **optionnelles** (`date_from`/`date_to`, jour civil
+    `Africa/Abidjan`, comparées à `appointment_date`) ; une plage incohérente → `422`
+    (`InvalidDiscrepancyFilter`), message métier neutre. Chaque écart porte le
+    **montant attendu** (somme des `price_at_booking` du RDV) et le nom du client
+    résolu (`users.full_name`, §11.3). Isolation §11.2 en profondeur : jamais un RDV
+    d'un autre salon, et un paiement d'un autre salon ne « couvre » jamais un RDV.
+    Lecture seule : aucune écriture, aucun audit. Cette route **signale**, elle ne
+    corrige pas (la correction passe par `POST …/payments`).
+    """
+
+    try:
+        discrepancy_filter = validate_discrepancy_filter(
+            date_from=date_from, date_to=date_to
+        )
+    except _VALIDATION_ERRORS as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    page, total = ListCashDiscrepancies(payment_repo).execute(
+        salon_id, filter=discrepancy_filter, limit=limit, offset=offset
+    )
+    return CashDiscrepancyPageResponse(
+        items=[_discrepancy_response(discrepancy) for discrepancy in page],
         total=total,
         limit=limit,
         offset=offset,
