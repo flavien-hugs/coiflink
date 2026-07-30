@@ -41,6 +41,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0026](./0026-fiche-client-portee-salon.md) | Fiche client — portée salon, genre optionnel & unicité du téléphone | Accepté | #28 |
 | [0027](./0027-encaissement-coherence-montant.md) | Encaissement — cohérence du montant avec la prestation liée & enregistrement d'un paiement | Accepté | #33 |
 | [0028](./0028-detection-ecarts-de-caisse.md) | Détection des écarts de caisse — rapprochement RDV terminés ↔ paiements, en lecture | Accepté | #36 |
+| [0029](./0029-supervision-agregee-transactions-admin.md) | Supervision agrégée des transactions (admin) — lecture plateforme `STATS_READ_PLATFORM`, net via `cash_journal`, non-PII | Accepté | #37 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 

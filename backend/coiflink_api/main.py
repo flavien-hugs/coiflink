@@ -17,6 +17,7 @@ import secrets
 
 from fastapi import Depends, FastAPI
 
+from coiflink_api.adapters.inbound.admin import router as admin_router
 from coiflink_api.adapters.inbound.appointments import router as appointments_router
 from coiflink_api.adapters.inbound.auth import router as auth_router
 from coiflink_api.adapters.inbound.catalog import router as catalog_router
@@ -152,3 +153,11 @@ app.include_router(customers_router)
 # entrées **neutres** (§11.4). Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` :
 # le journal de caisse (données financières) n'est jamais public.
 app.include_router(payments_router)
+# Supervision agrégée des transactions (#37, US-5.6) : GET /admin/transactions/summary
+# — lecture **plateforme** réservée à l'ADMIN (STATS_READ_PLATFORM), agrégats par
+# salon (compteurs + montant NET via le journal de caisse #34) **sans PII de
+# paiement** (§11.3). Router plateforme (non salon-scopé) : la garde de permission
+# suffit (l'admin voit tous les salons), pas de require_salon_scope. Lecture pure :
+# aucune écriture, aucun audit. Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` :
+# la supervision financière n'est jamais publique.
+app.include_router(admin_router)
