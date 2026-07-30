@@ -260,7 +260,7 @@ implicite** — ses droits de supervision sont listés, donc auditables.
 
 | Rôle | Permissions (résumé — `ROLE_PERMISSIONS` fait foi) |
 | --- | --- |
-| `CLIENT` | Consulter salons et prestations, réserver, lire **ses** rendez-vous |
+| `CLIENT` | Consulter salons et prestations, réserver, lire **ses** rendez-vous, consulter **ses** reçus de paiement (`PAYMENT_READ_OWN`) |
 | `HAIRDRESSER` | Lire **son** salon et les RDV qui lui sont **assignés**, mettre à jour leur statut |
 | `MANAGER` | Gérer **son** salon : prestations, employés, RDV, fiches clients, caisse, statistiques |
 | `ADMIN` | Supervision plateforme : lire tous les salons, les (dés)activer, gérer les comptes, KPI globaux |
@@ -975,6 +975,45 @@ curl -G "$API/salons/$SALON_ID/cash-discrepancies" \
 curl -G "$API/salons/$SALON_ID/cash-discrepancies" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   --data-urlencode "date_from=2026-07-31" --data-urlencode "date_to=2026-07-01"
+```
+
+## Reçu numérique de paiement (client) (US-5.5, #38)
+
+Le **client** récupère un **reçu numérique** de ses paiements : `GET /me/receipts` liste ses reçus **du
+plus récent au plus ancien** (paginé), `GET /me/receipts/{payment_id}` renvoie un reçu précis. Ce sont
+des **lectures d'appartenance** — gardées par `PAYMENT_READ_OWN` (§4.1, **seul le `CLIENT`**), **sans**
+portée salon (un client paie potentiellement dans plusieurs salons). Le filtre `client_id =
+principal.id` est **imposé serveur** (jamais soumis) : un client ne voit **que ses** reçus. Voir
+[ADR-0030](../docs/adr/0030-recu-numerique-remise-differee.md).
+
+Le reçu est une **projection en lecture seule** dérivée du paiement (#33) — **aucune** écriture,
+**aucune** migration : montant, devise, mode, statut, référence et horodatage viennent du `payment`
+(source de vérité) ; l'identité **publique** du salon (`salons.name`) est résolue depuis
+`payment.salon_id` ; les **lignes** de prestation sont figées (`appointment_services.price_at_booking`
+pour un RDV, `services.price` pour une prestation seule). Le total de référence reste `amount`. Montants
+en **chaîne décimale** (`NUMERIC(12,2)`, jamais de flottant). **Aucune PII tierce** (jamais
+`recorded_by`, ni un autre client, ni donnée de gestion).
+
+**Non-remise assumée.** #38 **génère** un reçu **récupérable** ; il n'**envoie** rien. La remise
+proactive (push FCM / SMS / e-mail) dépend du worker de notifications **différé en M5** (Épic 7,
+[ADR-0006](../docs/adr/0006-notifications-fcm-sms.md)) ; le stub no-op existant n'est pas sollicité.
+Rien n'entre dans `PUBLIC_ROUTE_PATHS` : un reçu financier n'est **jamais** public.
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/me/receipts` | `PAYMENT_READ_OWN` | `200` page de reçus \| `401` \| `403` | *(aucun — lecture)* |
+| `GET` | `/me/receipts/{payment_id}` | `PAYMENT_READ_OWN` | `200` reçu \| `401` \| `403` \| `404` (tiers/inexistant, neutre) | *(aucun — lecture)* |
+
+Un `payment_id` d'un **autre** client **ou** inexistant est un `404` **neutre indiscernable** (non-oracle
+§11.3) ; un paiement **sans `client_id`** (encaissement au comptoir) n'apparaît dans **aucun** reçu
+client. Bornes de pagination `1..100` (défaut `20`) ; tri, filtre et bornes **toujours en SQL**.
+
+```bash
+# Le client liste ses reçus (plus récent d'abord) → 200
+curl -G "$API/me/receipts" -H "Authorization: Bearer $CLIENT_ACCESS_TOKEN"
+
+# Un reçu précis du client → 200 ; reçu d'un tiers/inexistant → 404 neutre
+curl "$API/me/receipts/$PAYMENT_ID" -H "Authorization: Bearer $CLIENT_ACCESS_TOKEN"
 ```
 
 ## Configuration

@@ -25,6 +25,7 @@ from coiflink_api.adapters.inbound.customers import router as customers_router
 from coiflink_api.adapters.inbound.employees import router as employees_router
 from coiflink_api.adapters.inbound.health import router as health_router
 from coiflink_api.adapters.inbound.payments import router as payments_router
+from coiflink_api.adapters.inbound.receipts import router as receipts_router
 from coiflink_api.adapters.inbound.salons import router as salons_router
 from coiflink_api.adapters.inbound.security import require_authenticated
 from coiflink_api.adapters.inbound.services import router as services_router
@@ -153,6 +154,15 @@ app.include_router(customers_router)
 # entrées **neutres** (§11.4). Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` :
 # le journal de caisse (données financières) n'est jamais public.
 app.include_router(payments_router)
+# Reçu numérique de paiement (#38, US-5.5) : GET /me/receipts et
+# GET /me/receipts/{payment_id} — lectures d'**appartenance** réservées au client
+# (PAYMENT_READ_OWN), sans portée salon (`client_id = principal.id` imposé serveur).
+# Le reçu est une **projection en lecture** dérivée du paiement (#33) : aucune
+# écriture, aucune migration, aucune PII tierce. La **remise** proactive (push/SMS)
+# reste différée en M5 (Épic 7, ADR-0006) — #38 génère un reçu **récupérable**, il
+# n'envoie rien. Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` : un reçu
+# financier n'est jamais public.
+app.include_router(receipts_router)
 # Supervision agrégée des transactions (#37, US-5.6) : GET /admin/transactions/summary
 # — lecture **plateforme** réservée à l'ADMIN (STATS_READ_PLATFORM), agrégats par
 # salon (compteurs + montant NET via le journal de caisse #34) **sans PII de

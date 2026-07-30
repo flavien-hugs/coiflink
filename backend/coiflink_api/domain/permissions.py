@@ -67,6 +67,8 @@ class Permission(_StrEnum):
     # Caisse.
     PAYMENT_RECORD = "PAYMENT_RECORD"
     CASH_JOURNAL_READ = "CASH_JOURNAL_READ"
+    # Reçu numérique : le client lit **ses** reçus de paiement (US-5.5, #38).
+    PAYMENT_READ_OWN = "PAYMENT_READ_OWN"
 
     # Statistiques.
     STATS_READ_SALON = "STATS_READ_SALON"
@@ -81,13 +83,15 @@ class Permission(_StrEnum):
 # contrôle ad hoc dans une route.
 ROLE_PERMISSIONS: Mapping[Role, frozenset[Permission]] = {
     # Client : consulte les salons et prestations, réserve/modifie/annule **ses**
-    # rendez-vous, consulte **son** historique. Aucun droit de gestion.
+    # rendez-vous, consulte **son** historique et **ses** reçus de paiement (#38).
+    # Aucun droit de gestion.
     Role.CLIENT: frozenset(
         {
             Permission.SALON_READ_ANY,
             Permission.SERVICE_READ,
             Permission.APPOINTMENT_BOOK,
             Permission.APPOINTMENT_READ_OWN,
+            Permission.PAYMENT_READ_OWN,
         }
     ),
     # Coiffeur : voit **son** planning et les RDV qui lui sont assignés, met à

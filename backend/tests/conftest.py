@@ -1314,9 +1314,48 @@ class FakeCashJournalRepository:
         return sum(1 for e in self._entries if e.salon_id == salon_id)
 
 
+class FakeReceiptRepository:
+    """Dépôt de lecture des reçus en mémoire (US-5.5, #38).
+
+    Implémente le port `ReceiptRepository` sans I/O réelle. **Appartenance §11.2** :
+    `list_receipts_for_client`/`count_receipts_for_client`/`get_receipt_for_client`
+    filtrent **inconditionnellement** sur `client_id` (via `Receipt.payment_id` →
+    paiement du client) — un reçu d'un autre client est indiscernable d'un reçu
+    inexistant (non-oracle §11.3). **Aucune** méthode d'écriture n'est exposée : le
+    reçu est une projection en lecture.
+
+    `receipts_by_client` associe un `client_id` à un tuple de `Receipt` **déjà**
+    ordonné « plus récent d'abord » (miroir du tri SQL) ; un `client_id` absent
+    renvoie une liste vide.
+    """
+
+    def __init__(
+        self, receipts_by_client: dict | None = None
+    ) -> None:
+        self._by_client: dict = dict(receipts_by_client or {})
+
+    def list_receipts_for_client(self, client_id, *, limit, offset):  # type: ignore[no-untyped-def]
+        receipts = self._by_client.get(client_id, ())
+        return tuple(receipts[offset : offset + limit])
+
+    def count_receipts_for_client(self, client_id) -> int:  # type: ignore[no-untyped-def]
+        return len(self._by_client.get(client_id, ()))
+
+    def get_receipt_for_client(self, client_id, payment_id):  # type: ignore[no-untyped-def]
+        for receipt in self._by_client.get(client_id, ()):
+            if receipt.payment_id == payment_id:
+                return receipt
+        return None
+
+
 @pytest.fixture()
 def fake_payment_repository() -> "FakePaymentRepository":
     return FakePaymentRepository()
+
+
+@pytest.fixture()
+def fake_receipt_repository() -> "FakeReceiptRepository":
+    return FakeReceiptRepository()
 
 
 @pytest.fixture()
