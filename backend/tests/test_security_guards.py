@@ -88,6 +88,14 @@ def test_no_unprotected_routes() -> None:
     assert bad == [], f"Routes non protégées détectées : {bad}"
 
 
+def test_receipt_routes_not_in_public_route_paths() -> None:
+    """GET /me/receipts* : reçu financier, jamais public (non-oracle §11.3, US-5.5)."""
+    for path in PUBLIC_ROUTE_PATHS:
+        assert "/me/receipts" not in path, (
+            f"Route reçu trouvée dans PUBLIC_ROUTE_PATHS : {path}"
+        )
+
+
 def test_no_destructive_routes_for_payments_or_cash_journal() -> None:
     """Invariant append-only §8.2 : aucune route DELETE/PUT/PATCH sur payments ou cash-journal.
 

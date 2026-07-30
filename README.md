@@ -51,7 +51,7 @@ numérique simple, rapide et adaptée au terrain.
 2. **Gestion des salons** — salon, horaires, prestations
 3. **Rendez-vous** — réservation, statuts, planning, anti double-réservation
 4. **Gestion clients** — fiches, historique
-5. **Encaissement** — paiements, journal de caisse
+5. **Encaissement** — paiements, journal de caisse, reçu numérique client
 6. **Tableau de bord** — KPI gérant et admin
 7. **Notifications** — confirmation, rappel, annulation
 
@@ -304,6 +304,14 @@ devise) et l'identité métier du salon (id + nom), paginés et **filtrables par
 sans `require_salon_scope`), **lecture seule** et **sans PII de paiement** (§11.3 : aucun `client_id`,
 `reference`, `recorded_by` ni ligne de paiement). Le **montant net** dérive de la même source de vérité que
 le journal de caisse (#34 : somme signée des lignes `cash_journal`, un paiement corrigé fait baisser le net).
+Le **reçu numérique de paiement côté client** (#38, US-5.5) est livré côté backend : `GET /me/receipts` et
+`GET /me/receipts/{payment_id}` renvoient au **client authentifié** ses reçus — **projection en lecture
+seule** dérivée du paiement (#33 : montant, mode, statut, référence, horodatage, identité **publique** du
+salon et prestations figées), **générée** et **récupérable** dès l'enregistrement — permission
+`PAYMENT_READ_OWN` (**seul le client**), route d'**appartenance** sans portée salon (`client_id =
+principal.id` imposé serveur ; reçu d'un tiers/inexistant → `404` neutre), **sans écriture, sans migration
+ni PII tierce**. La **remise proactive** (push/SMS) reste différée en M5 (Épic 7, ADR-0006) : #38 **génère**
+un reçu, il n'**envoie** rien (voir [ADR-0030](./docs/adr/0030-recu-numerique-remise-differee.md)).
 
 ---
 

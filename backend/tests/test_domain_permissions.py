@@ -46,6 +46,7 @@ _CLIENT_EXPECTED = frozenset({
     Permission.SERVICE_READ,
     Permission.APPOINTMENT_BOOK,
     Permission.APPOINTMENT_READ_OWN,
+    Permission.PAYMENT_READ_OWN,
 })
 
 def test_client_has_exactly_its_permissions() -> None:
@@ -65,6 +66,27 @@ def test_client_cannot_manage_employees_or_cash() -> None:
     assert Permission.PAYMENT_RECORD not in perms
     assert Permission.CASH_JOURNAL_READ not in perms
     assert Permission.CUSTOMER_MANAGE not in perms
+
+
+# ---------------------------------------------------------------------------
+# PAYMENT_READ_OWN — CLIENT uniquement (US-5.5, #38)
+# ---------------------------------------------------------------------------
+
+def test_payment_read_own_in_client_only() -> None:
+    """PAYMENT_READ_OWN appartient au seul rôle CLIENT (reçu numérique §11.2)."""
+    assert Permission.PAYMENT_READ_OWN in ROLE_PERMISSIONS[Role.CLIENT]
+
+
+def test_payment_read_own_not_in_manager() -> None:
+    assert Permission.PAYMENT_READ_OWN not in ROLE_PERMISSIONS[Role.MANAGER]
+
+
+def test_payment_read_own_not_in_hairdresser() -> None:
+    assert Permission.PAYMENT_READ_OWN not in ROLE_PERMISSIONS[Role.HAIRDRESSER]
+
+
+def test_payment_read_own_not_in_admin() -> None:
+    assert Permission.PAYMENT_READ_OWN not in ROLE_PERMISSIONS[Role.ADMIN]
 
 
 def test_client_cannot_read_any_appointment_other_than_own() -> None:
