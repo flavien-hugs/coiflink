@@ -383,6 +383,18 @@ class InvalidDiscrepancyFilter(DomainError):
     """
 
 
+class InvalidPlatformSummaryFilter(DomainError):
+    """Un critère de filtrage de la supervision agrégée est invalide (US-5.6, #37).
+
+    Levée par `domain/platform_transactions.py::validate_platform_summary_filter`
+    quand la plage de dates est incohérente (`date_from > date_to`) ou qu'une borne
+    n'est pas une date. Les bornes portent sur des **jours civils** `Africa/Abidjan`
+    (UTC+0, convention #21) converties en bornes UTC inclusives pour comparer à
+    `cash_journal.created_at`. Message **neutre** — il ne reprend **jamais** la valeur
+    saisie (§11.3). L'adapter entrant la traduit en `422`.
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -478,6 +490,7 @@ __all__ = [
     "InvalidAdjustment",
     "InvalidTransactionFilter",
     "InvalidDiscrepancyFilter",
+    "InvalidPlatformSummaryFilter",
     "SlotAlreadyBooked",
     "SlotUnavailable",
     "SalonNotBookable",

@@ -296,7 +296,14 @@ paiement** (filtres combinés en `ET`, plage de dates en jour civil `Africa/Abid
 vide, sans oracle), **lecture seule** et **cohérente avec le journal de caisse** (même source de vérité
 `payments` : montants, horodatages et auteurs concordent, un paiement corrigé apparaît `ADJUSTED`). La
 section **Encaissements** du dashboard gérant enrichit le formulaire d'une vue **Historique** (barre de
-filtres + liste read-only, filtrage serveur via `searchParams`).
+filtres + liste read-only, filtrage serveur via `searchParams`). **La supervision agrégée des transactions**
+(#37, US-5.6) est livrée côté backend : `GET /admin/transactions/summary` renvoie, **par salon**, des
+**agrégats** de transactions (nombre de paiements, nombre de corrections, **montant net** encaissé et
+devise) et l'identité métier du salon (id + nom), paginés et **filtrables par plage de dates** (jour civil
+`Africa/Abidjan`) — permission `STATS_READ_PLATFORM` (**seul l'admin**), lecture **plateforme** (inter-salons,
+sans `require_salon_scope`), **lecture seule** et **sans PII de paiement** (§11.3 : aucun `client_id`,
+`reference`, `recorded_by` ni ligne de paiement). Le **montant net** dérive de la même source de vérité que
+le journal de caisse (#34 : somme signée des lignes `cash_journal`, un paiement corrigé fait baisser le net).
 
 ---
 

@@ -37,14 +37,15 @@ import datetime
 import decimal
 import uuid
 from dataclasses import dataclass
-from zoneinfo import ZoneInfo
 
 from coiflink_api.domain.enums import PaymentMethod, values
 from coiflink_api.domain.errors import InvalidTransactionFilter
 from coiflink_api.domain.payment import AMOUNT_MAX, AMOUNT_MIN, Payment
-
-# Fuseau des jours civils du salon (Africa/Abidjan = UTC+0, convention #21).
-SALON_TIMEZONE = ZoneInfo("Africa/Abidjan")
+from coiflink_api.domain.time_window import (
+    SALON_TIMEZONE,
+    day_end_utc as _day_end_utc,
+    day_start_utc as _day_start_utc,
+)
 
 # Précision de comparaison des montants : le centime (miroir de `NUMERIC(12,2)`).
 _AMOUNT_QUANTUM = decimal.Decimal("0.01")
@@ -145,22 +146,6 @@ def _validate_method(method: str | None) -> str | None:
     if cleaned not in PAYMENT_METHOD_VALUES:
         raise InvalidTransactionFilter("Filtre de transactions invalide.")
     return cleaned
-
-
-def _day_start_utc(day: datetime.date) -> datetime.datetime:
-    """Borne basse UTC (inclusive) du jour civil `Africa/Abidjan` (00:00:00)."""
-
-    local = datetime.datetime.combine(day, datetime.time.min, tzinfo=SALON_TIMEZONE)
-    return local.astimezone(datetime.timezone.utc)
-
-
-def _day_end_utc(day: datetime.date) -> datetime.datetime:
-    """Borne haute UTC (inclusive) du jour civil `Africa/Abidjan` (23:59:59.999999)."""
-
-    local = datetime.datetime.combine(
-        day, datetime.time(23, 59, 59, 999999), tzinfo=SALON_TIMEZONE
-    )
-    return local.astimezone(datetime.timezone.utc)
 
 
 def validate_transaction_filter(
