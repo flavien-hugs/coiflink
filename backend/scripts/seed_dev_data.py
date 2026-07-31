@@ -3,11 +3,14 @@
 Peuple une instance **locale** (API + base) via le contrat HTTP réel (aucun
 contournement du domaine : mots de passe hachés par le parcours d'inscription
 normal, `owner_id`/`role` imposés côté serveur comme en production). Seules
-deux exceptions ciblées passent par une requête SQL directe, faute d'endpoint
+trois exceptions ciblées passent par une requête SQL directe, faute d'endpoint
 HTTP pour ces réglages à ce stade du produit :
 - suspendre un compte (aucun endpoint d'administration des comptes encore) ;
 - fixer des horaires d'ouverture (`opening_hours`, différé à une issue
-  ultérieure) pour démontrer l'état « réservable » (§8.3) d'un salon.
+  ultérieure) pour démontrer l'état « réservable » (§8.3) d'un salon ;
+- promouvoir un compte `ADMIN` (aucun endpoint d'inscription `ADMIN`, PRD §9.1 —
+  le compte est d'abord inscrit `CLIENT` par l'API, puis promu par SQL, comme
+  dans les tests e2e de la supervision plateforme, #37).
 
 Idempotent : un numéro déjà enregistré (409) est traité comme « déjà présent »
 et le script continue plutôt que d'échouer.
@@ -105,6 +108,16 @@ def _suspend_by_phone(phone: str) -> None:
         conn.commit()
 
 
+def _promote_to_admin_by_phone(phone: str) -> None:
+    """Promeut un compte `ADMIN` par SQL direct (aucun endpoint d'inscription ADMIN, PRD §9.1)."""
+
+    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET role = 'ADMIN' WHERE phone = %s", (normalize_phone(phone),)
+        )
+        conn.commit()
+
+
 def _set_opening_hours_by_owner_phone(phone: str) -> None:
     """Fixe des horaires factices sur le salon du propriétaire (démo §8.3)."""
 
@@ -157,6 +170,10 @@ def main() -> int:
         print("\nClient (pour tester le refus de rôle sur le dashboard gérant)")
         _register(client, "/auth/register", full_name="Mariam Sanogo", phone="0705161718")
 
+        print("\nAdmin plateforme (supervision inter-salons, #37)")
+        _register(client, "/auth/register", full_name="Adama Ouattara", phone="0700112233")
+        _promote_to_admin_by_phone("0700112233")
+
     print("\n" + "=" * 72)
     print("Comptes de démo — mot de passe commun :", DEV_PASSWORD)
     print("=" * 72)
@@ -166,6 +183,7 @@ def main() -> int:
         ("Ibrahim Touré", "0709101112", "MANAGER", "SUSPENDED", "connexion refusée (401 générique)"),
         ("Awa Bamba", "0701121314", "HAIRDRESSER", "ACTIVE", "refus de rôle sur /gerant"),
         ("Mariam Sanogo", "0705161718", "CLIENT", "ACTIVE", "refus de rôle sur /gerant"),
+        ("Adama Ouattara", "0700112233", "ADMIN", "ACTIVE", "supervision plateforme /admin"),
     ]
     for full_name, phone, role, status_, note in rows:
         print(f"  {full_name:<16} {phone:<14} {role:<12} {status_:<10} {note}")
