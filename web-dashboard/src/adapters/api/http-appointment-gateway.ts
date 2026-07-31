@@ -11,13 +11,16 @@
 
 import type {
   AppointmentGateway,
+  DailyAppointmentSummaryResult,
   ListAppointmentsQuery,
   ListAppointmentsResult,
   MutateAppointmentResult,
 } from "@/src/application/ports/appointment-gateway";
-import type {
-  Appointment,
-  AppointmentStatus,
+import {
+  APPOINTMENT_STATUSES,
+  type Appointment,
+  type AppointmentStatus,
+  type DailyAppointmentSummary,
 } from "@/src/domain/appointment/appointment";
 import { resolveApiBaseUrl } from "./config";
 
@@ -58,6 +61,27 @@ function toAppointment(payload: AppointmentResponsePayload): Appointment {
       priceAtBooking: String(service.price_at_booking),
     })),
   };
+}
+
+// Forme du corps `DailyAppointmentsSummaryResponse` renvoyé par le backend (#39).
+interface DailyAppointmentsSummaryPayload {
+  date: string;
+  total: number;
+  by_status: Record<string, number>;
+}
+
+// Projette le décompte backend (snake_case, statuts partiels tolérés) sur le type
+// de domaine (camelCase) : `byStatus` porte **toutes** les valeurs de statut, un
+// statut absent du corps valant `0` (défense en profondeur — le backend les renvoie
+// déjà tous). Le `total` reste celui du backend (source de vérité, tous statuts).
+function toDailySummary(
+  payload: DailyAppointmentsSummaryPayload,
+): DailyAppointmentSummary {
+  const byStatus = {} as Record<AppointmentStatus, number>;
+  for (const status of APPOINTMENT_STATUSES) {
+    byStatus[status] = payload.by_status?.[status] ?? 0;
+  }
+  return { date: payload.date, total: payload.total, byStatus };
 }
 
 export interface HttpAppointmentGatewayDeps {
@@ -118,6 +142,42 @@ export function createHttpAppointmentGateway(
       }
 
       return mapListResponse(response);
+    },
+
+    async dailySummary(
+      salonId: string,
+      dateIso?: string,
+    ): Promise<DailyAppointmentSummaryResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      // Décompte du jour par statut (#39), lecture **côté serveur Next**, jeton du
+      // cookie httpOnly (jamais exposé au navigateur ni journalisé, invariant #14).
+      // `date` optionnel : absent, le backend applique le jour courant (UTC+0).
+      const query = dateIso
+        ? `?${new URLSearchParams({ date: dateIso }).toString()}`
+        : "";
+
+      let response: Response;
+      try {
+        response = await fetch(`${salonBase(salonId)}/daily-summary${query}`, {
+          headers: { ...authHeader() },
+          cache: "no-store",
+        });
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload =
+          (await response.json()) as DailyAppointmentsSummaryPayload;
+        return { ok: true, summary: toDailySummary(payload) };
+      }
+      if (response.status === 401) return { ok: false, reason: "unauthenticated" };
+      if (response.status === 403) return { ok: false, reason: "forbidden" };
+      if (response.status === 422) return { ok: false, reason: "invalid" };
+      return { ok: false, reason: "unavailable" };
     },
 
     async listAssigned(

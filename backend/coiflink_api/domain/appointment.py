@@ -25,8 +25,10 @@ from __future__ import annotations
 import datetime
 import decimal
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 
+from coiflink_api.domain import enums
 from coiflink_api.domain.availability import add_minutes
 from coiflink_api.domain.enums import AppointmentStatus
 from coiflink_api.domain.errors import AppointmentServiceRequired, SlotUnavailable
@@ -314,6 +316,51 @@ def compute_end_time(start_time: datetime.time, total_minutes: int) -> datetime.
     return end_time
 
 
+# --------------------------------------------------------------------------- #
+# Décompte **du jour par statut** (dashboard gérant, §6 Épic 6, US-6.1, #39).
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class DailyAppointmentSummary:
+    """Décompte des RDV d'un salon pour **un jour civil**, par statut (US-6.1, #39).
+
+    Objet-valeur de lecture **immuable** et **sans PII** (§11.3) : seulement une date
+    et des entiers. `by_status` porte **une entrée par valeur de `AppointmentStatus`**
+    (`PENDING`/`CONFIRMED`/`CANCELLED`/`COMPLETED`/`NO_SHOW`), dans l'ordre déclaré de
+    l'énumération — un statut sans RDV du jour vaut `0` (jamais absent). `total` est la
+    **somme** de tous les compteurs (tous statuts, y compris `PENDING`). Construit par
+    `build_daily_summary` : ces invariants sont donc garantis par construction (aucune
+    tuile n'a de valeur manquante côté route/web).
+    """
+
+    date: datetime.date
+    total: int
+    by_status: Mapping[str, int]
+
+
+def build_daily_summary(
+    day: datetime.date, counts: Mapping[str, int]
+) -> DailyAppointmentSummary:
+    """Complète un décompte partiel en `DailyAppointmentSummary` (pur, US-6.1, #39).
+
+    `counts` est le décompte **partiel** issu du `GROUP BY status` du dépôt : seuls
+    les statuts ayant au moins un RDV du jour y figurent. On le **complète** pour que
+    `by_status` porte **toutes** les valeurs de `AppointmentStatus` (statuts absents =
+    `0`, dans l'ordre de `enums.values(AppointmentStatus)`), puis `total = somme` des
+    compteurs. Fonction **pure** (aucune I/O), testable sans base.
+
+    Une clé de `counts` absente de l'énumération (impossible en pratique — la colonne
+    `status` est contrainte par un `CHECK` dérivé de l'énumération) est **ignorée
+    silencieusement** plutôt que de fausser `total` : `total` reflète exactement la
+    somme des compteurs **exposés** dans `by_status`.
+    """
+
+    by_status = {
+        value: counts.get(value, 0) for value in enums.values(AppointmentStatus)
+    }
+    total = sum(by_status.values())
+    return DailyAppointmentSummary(date=day, total=total, by_status=by_status)
+
+
 __all__ = [
     "BookedService",
     "AppointmentToCreate",
@@ -334,4 +381,6 @@ __all__ = [
     "require_services",
     "validate_booking_window",
     "compute_end_time",
+    "DailyAppointmentSummary",
+    "build_daily_summary",
 ]

@@ -82,6 +82,7 @@ from coiflink_api.application.appointments import (
     ModifyAppointment,
     ModifyAppointmentCommand,
     SetAppointmentStatus,
+    SummarizeDailyAppointments,
 )
 from coiflink_api.application.ports.appointment_repository import AppointmentRepository
 from coiflink_api.application.ports.audit_log import AuditLog
@@ -94,6 +95,7 @@ from coiflink_api.domain.appointment import (
     Appointment,
     CLIENT_HISTORY_STATUSES,
     CLIENT_MODIFIABLE_STATUSES,
+    DailyAppointmentSummary,
 )
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.enums import AppointmentStatus
@@ -112,6 +114,7 @@ from coiflink_api.domain.errors import (
 )
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
+from coiflink_api.domain.time_window import SALON_TIMEZONE
 
 router = APIRouter(tags=["appointments"])
 
@@ -255,6 +258,30 @@ class AppointmentResponse(BaseModel):
     services: list[BookedServiceResponse]
 
 
+class DailyAppointmentsSummaryResponse(BaseModel):
+    """Décompte du jour par statut renvoyé par `GET .../appointments/daily-summary`.
+
+    Réponse **sans PII** (§11.3) : uniquement la `date` du jour civil et des
+    compteurs entiers. `by_status` porte **toutes** les valeurs de `AppointmentStatus`
+    (statuts sans RDV = `0`), et `total` en est la **somme** (tous statuts, y compris
+    `PENDING`). Aucun `client_id`/`client_note`/`hairdresser_id` ni ligne de RDV.
+    """
+
+    date: datetime.date = Field(examples=["2026-07-31"])
+    total: int = Field(examples=[12])
+    by_status: dict[str, int] = Field(
+        examples=[
+            {
+                "PENDING": 2,
+                "CONFIRMED": 5,
+                "CANCELLED": 1,
+                "COMPLETED": 3,
+                "NO_SHOW": 1,
+            }
+        ]
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Injection de dépendances (surchargeable en test via `app.dependency_overrides`).
 # --------------------------------------------------------------------------- #
@@ -293,6 +320,12 @@ def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
 
+def _today() -> datetime.date:
+    """Jour civil courant dans le fuseau du salon (Africa/Abidjan, convention #21)."""
+
+    return datetime.datetime.now(SALON_TIMEZONE).date()
+
+
 def _slot_response(slot: SlotRange) -> SlotResponse:
     return SlotResponse(date=slot.date, start=slot.start, end=slot.end)
 
@@ -315,6 +348,16 @@ def _appointment_response(appointment: Appointment) -> AppointmentResponse:
             )
             for service in appointment.services
         ],
+    )
+
+
+def _daily_summary_response(
+    summary: DailyAppointmentSummary,
+) -> DailyAppointmentsSummaryResponse:
+    return DailyAppointmentsSummaryResponse(
+        date=summary.date,
+        total=summary.total,
+        by_status=dict(summary.by_status),
     )
 
 
@@ -777,6 +820,50 @@ def list_salon_appointments(
         salon_id, date_from, date_to, statuses=statuses
     )
     return [_appointment_response(appointment) for appointment in result]
+
+
+@router.get(
+    "/salons/{salon_id}/appointments/daily-summary",
+    response_model=DailyAppointmentsSummaryResponse,
+    summary="Décompte du jour par statut (dashboard gérant, US-6.1 §6)",
+    responses={
+        200: {"description": "Décompte du jour par statut (tous statuts présents)"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {"description": "Paramètre `date` mal formé"},
+    },
+)
+def get_daily_appointments_summary(
+    salon_id: uuid.UUID,
+    appointments: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.STATS_READ_SALON))
+    ],
+    date: Annotated[
+        datetime.date | None,
+        Query(description="Jour ciblé (AAAA-MM-JJ) ; absent = aujourd'hui"),
+    ] = None,
+) -> DailyAppointmentsSummaryResponse:
+    """Décompte des RDV **du salon** pour un jour, par statut (dashboard gérant, #39).
+
+    Route **salon-scopée** (`require_salon_scope` + `STATS_READ_SALON`, câblée ici pour
+    la **première fois** — premier consommateur de cette permission `MANAGER`) : le
+    `salon_id` vient du chemin, et le dépôt refiltre `salon_id` en SQL (défense en
+    profondeur §11.2). Un salon hors périmètre est un `403` **indiscernable** (aucun
+    oracle). Le paramètre `date` est **optionnel** : absent, il vaut le jour civil
+    courant (`Africa/Abidjan`, convention #21) ; mal formé, il donne un `422`. La
+    réponse ne porte **que** des compteurs entiers et la date (§11.3) : le décompte est
+    calculé **en base** (`GROUP BY status`), sans rapatrier de ligne de RDV ni de PII.
+    `by_status` liste **tous** les statuts (statuts sans RDV = `0`) et `total` en est la
+    somme (tous statuts, y compris `PENDING` non affiché dans les tuiles de l'AC).
+    """
+
+    day = date if date is not None else _today()
+    summary = SummarizeDailyAppointments(appointments).execute(salon_id, day)
+    return _daily_summary_response(summary)
 
 
 @router.post(

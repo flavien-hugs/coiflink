@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from collections.abc import Mapping
 from typing import Protocol
 
 from coiflink_api.domain.appointment import (
@@ -205,6 +206,24 @@ class AppointmentRepository(Protocol):
         est imposée **en SQL** (`WHERE salon_id = :salon_id`), en défense en profondeur
         de la garde HTTP `require_salon_scope`. L'index `ix_appointments_salon_id
         (salon_id, appointment_date)` couvre ce filtre.
+        """
+        ...
+
+    def count_by_status_for_day(
+        self, salon_id: uuid.UUID, day: datetime.date
+    ) -> Mapping[str, int]:
+        """Décompte des RDV **du salon** pour `day`, **groupés par statut** (US-6.1 #39).
+
+        Renvoie `{status: count}` pour les RDV dont `appointment_date == day`, agrégés
+        **en base** (`GROUP BY status`) : la lecture **ne rapatrie aucune ligne de RDV**
+        ni aucune PII (pas de `client_id`, `client_note`, `hairdresser_id`) — seulement
+        des compteurs (§11.3). Un statut **sans RDV** du jour est **absent** de la map
+        (le domaine le complète à `0` via `build_daily_summary`).
+
+        L'isolation §11.2 est imposée **en SQL** (`WHERE salon_id = :salon_id`), en
+        défense en profondeur de la garde HTTP `require_salon_scope` : la lecture ne
+        peut jamais compter un RDV d'un autre salon. L'index `ix_appointments_salon_id
+        (salon_id, appointment_date)` couvre le filtre.
         """
         ...
 

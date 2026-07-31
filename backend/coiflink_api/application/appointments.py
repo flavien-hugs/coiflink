@@ -34,6 +34,8 @@ from coiflink_api.domain.appointment import (
     AppointmentToCreate,
     AppointmentUpdate,
     BookedService,
+    DailyAppointmentSummary,
+    build_daily_summary,
     compute_end_time,
     is_client_cancellable,
     is_client_modifiable,
@@ -745,6 +747,27 @@ class ListAssignedAppointments:
         )
 
 
+class SummarizeDailyAppointments:
+    """Décompte les RDV **du salon** pour un jour, par statut (dashboard, US-6.1 #39).
+
+    Miroir agrégé de `ListSalonAppointments` : **lecture pure** (aucune écriture, aucun
+    audit — la consultation d'un tableau de bord n'est pas journalisée §11.4). Délègue
+    le comptage `GROUP BY status` au port (`count_by_status_for_day`, isolation §11.2
+    ré-affirmée en SQL) puis **complète** le décompte partiel via `build_daily_summary`
+    (tous les statuts présents, `total` cohérent). La **portée salon** est assurée par
+    la garde HTTP `require_salon_scope`, en défense en profondeur du filtre SQL.
+    """
+
+    def __init__(self, appointment_repository: AppointmentRepository) -> None:
+        self._appointments = appointment_repository
+
+    def execute(
+        self, salon_id: uuid.UUID, day: datetime.date
+    ) -> DailyAppointmentSummary:
+        counts = self._appointments.count_by_status_for_day(salon_id, day)
+        return build_daily_summary(day, counts)
+
+
 __all__ = [
     "BookingCommand",
     "CheckAvailability",
@@ -757,4 +780,5 @@ __all__ = [
     "ListMyAppointments",
     "ListSalonAppointments",
     "ListAssignedAppointments",
+    "SummarizeDailyAppointments",
 ]

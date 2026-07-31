@@ -28,9 +28,11 @@ from coiflink_api.domain.appointment import (
     CLIENT_CANCELLABLE_STATUSES,
     CLIENT_HISTORY_STATUSES,
     CLIENT_MODIFIABLE_STATUSES,
+    DailyAppointmentSummary,
     MAX_CANCELLATION_REASON_LENGTH,
     REVENUE_STATUSES,
     TERMINAL_STATUSES,
+    build_daily_summary,
     compute_end_time,
     counts_towards_revenue,
     is_client_cancellable,
@@ -792,3 +794,140 @@ class TestIsValidTransition:
 
     def test_both_unknown_returns_false(self) -> None:
         assert is_valid_transition("FUTURE_FROM", "FUTURE_TO") is False
+
+
+# ---------------------------------------------------------------------------
+# DailyAppointmentSummary — invariants dataclass (US-6.1, #39)
+# ---------------------------------------------------------------------------
+
+
+class TestDailyAppointmentSummary:
+    """Objet-valeur de lecture immuable : une date + des compteurs, aucune PII."""
+
+    _DAY = datetime.date(2026, 7, 31)
+
+    def _make(self) -> DailyAppointmentSummary:
+        by_status = {
+            "PENDING": 2,
+            "CONFIRMED": 5,
+            "CANCELLED": 1,
+            "COMPLETED": 3,
+            "NO_SHOW": 1,
+        }
+        return DailyAppointmentSummary(date=self._DAY, total=12, by_status=by_status)
+
+    def test_fields_preserved(self) -> None:
+        summary = self._make()
+        assert summary.date == self._DAY
+        assert summary.total == 12
+        assert summary.by_status["CONFIRMED"] == 5
+
+    def test_immutable(self) -> None:
+        summary = self._make()
+        with pytest.raises((AttributeError, TypeError)):
+            summary.total = 99  # type: ignore[misc]
+
+    def test_no_client_id_field(self) -> None:
+        # §11.3 : aucune PII dans le décompte
+        summary = self._make()
+        assert not hasattr(summary, "client_id")
+
+    def test_no_client_note_field(self) -> None:
+        summary = self._make()
+        assert not hasattr(summary, "client_note")
+
+    def test_no_hairdresser_id_field(self) -> None:
+        summary = self._make()
+        assert not hasattr(summary, "hairdresser_id")
+
+
+# ---------------------------------------------------------------------------
+# build_daily_summary — fonction pure (US-6.1, #39)
+# ---------------------------------------------------------------------------
+
+_ALL_STATUSES = {"PENDING", "CONFIRMED", "CANCELLED", "COMPLETED", "NO_SHOW"}
+_ENUM_ORDER = ["PENDING", "CONFIRMED", "CANCELLED", "COMPLETED", "NO_SHOW"]
+
+
+class TestBuildDailySummary:
+    """Constructeur pur : complète le décompte partiel, calcule `total`, garantit les clés."""
+
+    _DAY = datetime.date(2026, 7, 31)
+
+    def test_empty_counts_total_zero(self) -> None:
+        result = build_daily_summary(self._DAY, {})
+        assert result.total == 0
+
+    def test_empty_counts_all_statuses_present(self) -> None:
+        result = build_daily_summary(self._DAY, {})
+        assert set(result.by_status.keys()) == _ALL_STATUSES
+
+    def test_empty_counts_all_values_zero(self) -> None:
+        result = build_daily_summary(self._DAY, {})
+        assert all(v == 0 for v in result.by_status.values())
+
+    def test_date_preserved(self) -> None:
+        result = build_daily_summary(self._DAY, {})
+        assert result.date == self._DAY
+
+    def test_partial_counts_fills_missing_with_zero(self) -> None:
+        result = build_daily_summary(self._DAY, {"CONFIRMED": 3})
+        assert result.by_status["CONFIRMED"] == 3
+        assert result.by_status["PENDING"] == 0
+        assert result.by_status["CANCELLED"] == 0
+        assert result.by_status["COMPLETED"] == 0
+        assert result.by_status["NO_SHOW"] == 0
+
+    def test_all_statuses_present_after_partial_counts(self) -> None:
+        result = build_daily_summary(self._DAY, {"CONFIRMED": 3})
+        assert set(result.by_status.keys()) == _ALL_STATUSES
+
+    def test_total_equals_sum_of_by_status(self) -> None:
+        counts = {"PENDING": 2, "CONFIRMED": 5, "CANCELLED": 1, "COMPLETED": 3, "NO_SHOW": 1}
+        result = build_daily_summary(self._DAY, counts)
+        assert result.total == sum(result.by_status.values())
+        assert result.total == 12
+
+    def test_full_counts_correct_values(self) -> None:
+        counts = {
+            "PENDING": 1,
+            "CONFIRMED": 2,
+            "CANCELLED": 3,
+            "COMPLETED": 4,
+            "NO_SHOW": 5,
+        }
+        result = build_daily_summary(self._DAY, counts)
+        assert result.by_status["PENDING"] == 1
+        assert result.by_status["CONFIRMED"] == 2
+        assert result.by_status["CANCELLED"] == 3
+        assert result.by_status["COMPLETED"] == 4
+        assert result.by_status["NO_SHOW"] == 5
+        assert result.total == 15
+
+    def test_unknown_key_ignored_and_not_in_by_status(self) -> None:
+        # Clé absente de l'énumération → ignorée silencieusement (§11.3, CHECK SQL)
+        result = build_daily_summary(self._DAY, {"CONFIRMED": 3, "UNKNOWN_STATUS": 99})
+        assert "UNKNOWN_STATUS" not in result.by_status
+
+    def test_unknown_key_does_not_affect_total(self) -> None:
+        # `total` reflète exactement la somme des compteurs **exposés** dans by_status
+        result = build_daily_summary(self._DAY, {"PENDING": 2, "UNKNOWN_STATUS": 100})
+        assert result.total == 2
+
+    def test_by_status_keys_in_enum_declaration_order(self) -> None:
+        result = build_daily_summary(self._DAY, {})
+        assert list(result.by_status.keys()) == _ENUM_ORDER
+
+    def test_exactly_five_entries_in_by_status(self) -> None:
+        result = build_daily_summary(self._DAY, {})
+        assert len(result.by_status) == 5
+
+    def test_single_cancelled_rest_zero(self) -> None:
+        result = build_daily_summary(self._DAY, {"CANCELLED": 7})
+        assert result.by_status["CANCELLED"] == 7
+        assert result.by_status["PENDING"] == 0
+        assert result.total == 7
+
+    def test_result_is_daily_appointment_summary_instance(self) -> None:
+        result = build_daily_summary(self._DAY, {})
+        assert isinstance(result, DailyAppointmentSummary)

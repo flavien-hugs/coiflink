@@ -50,6 +50,7 @@ from coiflink_api.domain.enums import UserStatus
 from coiflink_api.domain.opening_hours import to_jsonb, parse_opening_hours
 from coiflink_api.domain.salon import Salon
 from coiflink_api.domain.service import Service
+from coiflink_api.domain.time_window import SALON_TIMEZONE
 from coiflink_api.main import app
 
 from .conftest import (
@@ -2410,3 +2411,270 @@ class TestListMyAppointmentHistoryAPI:
         assert len(data) == 2
         # Plus récent (2026-06-01) doit apparaître en premier.
         assert data[0]["date"] >= data[1]["date"]
+
+
+# ---------------------------------------------------------------------------
+# GET /salons/{salon_id}/appointments/daily-summary — décompte du jour (US-6.1, #39)
+# ---------------------------------------------------------------------------
+
+_DAILY_SUMMARY_URL = f"/salons/{_SALON_ID}/appointments/daily-summary"
+_SUMMARY_DAY = datetime.date(2026, 7, 31)
+_SUMMARY_DAY_STR = "2026-07-31"
+
+
+def _make_summary_entity(
+    *,
+    salon_id: uuid.UUID = _SALON_ID,
+    status: str = "PENDING",
+    date: datetime.date = _SUMMARY_DAY,
+) -> AppointmentEntity:
+    return AppointmentEntity(
+        id=uuid.uuid4(),
+        salon_id=salon_id,
+        client_id=_CLIENT_ID,
+        hairdresser_id=None,
+        date=date,
+        start_time=datetime.time(9, 0),
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT,
+    )
+
+
+def _daily_summary_client(
+    appts: FakeAppointmentRepository | None = None,
+    manager_scope: FakeSalonScopeRepository | None = None,
+) -> TestClient:
+    """TestClient MANAGER avec `_SALON_ID` dans sa portée (US-6.1, #39)."""
+    ap = appts if appts is not None else FakeAppointmentRepository()
+    scope = (
+        manager_scope
+        if manager_scope is not None
+        else FakeSalonScopeRepository({_MANAGER_ID: frozenset({_SALON_ID})})
+    )
+    app.dependency_overrides[get_appointment_repository] = lambda: ap
+    app.dependency_overrides[get_catalog_repository] = lambda: _catalog()
+    app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
+    app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
+    app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope)
+    app.dependency_overrides[get_salon_scope_repository] = lambda: FakeSalonScopeRepository()
+    return TestClient(app)
+
+
+class TestDailySummaryAPI:
+    """Tests HTTP pour GET /salons/{id}/appointments/daily-summary (US-6.1, #39).
+
+    Couvre : 200 réponse complète (toutes clés présentes, total == somme) ;
+    401 sans jeton ; 403 mauvais rôle et MANAGER hors périmètre ;
+    422 `date` mal formée ; isolation salon et isolation jour ;
+    non-PII (pas de client_id, client_note, hairdresser_id) ;
+    `date` par défaut = aujourd'hui (Africa/Abidjan).
+    """
+
+    # --- 401 / 403 : accès refusé -----------------------------------------
+
+    def test_no_token_returns_401(self) -> None:
+        resp = _daily_summary_client().get(_DAILY_SUMMARY_URL)
+        assert resp.status_code == 401
+
+    def test_client_role_returns_403(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL, headers=_auth_header(role="CLIENT")
+        )
+        assert resp.status_code == 403
+
+    def test_hairdresser_role_returns_403(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL, headers=_auth_header(role="HAIRDRESSER")
+        )
+        assert resp.status_code == 403
+
+    def test_admin_role_returns_403(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL, headers=_auth_header(role="ADMIN")
+        )
+        assert resp.status_code == 403
+
+    def test_manager_wrong_salon_returns_403(self) -> None:
+        # MANAGER authentifié mais portée ≠ _SALON_ID → 403 générique (aucun oracle)
+        other_salon = uuid.UUID("ffffffff-0000-0000-0000-000000000001")
+        out_of_scope = FakeSalonScopeRepository({_MANAGER_ID: frozenset({other_salon})})
+        resp = _daily_summary_client(manager_scope=out_of_scope).get(
+            _DAILY_SUMMARY_URL, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 403
+
+    # --- 200 : réponse valide -----------------------------------------------
+
+    def test_manager_of_salon_returns_200(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+
+    def test_response_contains_required_fields(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        data = resp.json()
+        assert "date" in data
+        assert "total" in data
+        assert "by_status" in data
+
+    def test_all_five_statuses_in_by_status(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        by_status = resp.json()["by_status"]
+        for status in ("PENDING", "CONFIRMED", "CANCELLED", "COMPLETED", "NO_SHOW"):
+            assert status in by_status, f"Statut manquant dans by_status : {status}"
+
+    def test_total_equals_sum_of_by_status(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[
+                _make_summary_entity(status="CONFIRMED"),
+                _make_summary_entity(status="PENDING"),
+            ]
+        )
+        resp = _daily_summary_client(appts=appts).get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        data = resp.json()
+        assert data["total"] == sum(data["by_status"].values())
+
+    def test_correct_counts_returned(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[
+                _make_summary_entity(status="CONFIRMED"),
+                _make_summary_entity(status="CONFIRMED"),
+                _make_summary_entity(status="NO_SHOW"),
+            ]
+        )
+        resp = _daily_summary_client(appts=appts).get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        data = resp.json()
+        assert data["by_status"]["CONFIRMED"] == 2
+        assert data["by_status"]["NO_SHOW"] == 1
+        assert data["total"] == 3
+
+    def test_empty_salon_all_counts_zero(self) -> None:
+        appts = FakeAppointmentRepository()
+        resp = _daily_summary_client(appts=appts).get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 0
+        assert all(v == 0 for v in data["by_status"].values())
+
+    # --- Paramètre `date` ---------------------------------------------------
+
+    def test_explicit_date_reflected_in_response(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["date"] == _SUMMARY_DAY_STR
+
+    def test_no_date_param_uses_today(self) -> None:
+        today = datetime.datetime.now(SALON_TIMEZONE).date().isoformat()
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL,
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["date"] == today
+
+    def test_malformed_date_returns_422(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL,
+            params={"date": "not-a-date"},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 422
+
+    # --- Isolation §11.2 : salon et jour ------------------------------------
+
+    def test_other_salon_appointments_not_counted(self) -> None:
+        other_salon = uuid.UUID("dddddddd-0000-0000-0000-000000000099")
+        appts = FakeAppointmentRepository(
+            appointments=[_make_summary_entity(salon_id=other_salon, status="CONFIRMED")]
+        )
+        resp = _daily_summary_client(appts=appts).get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 0
+
+    def test_appointments_on_different_day_not_counted(self) -> None:
+        yesterday = datetime.date(2026, 7, 30)
+        appts = FakeAppointmentRepository(
+            appointments=[_make_summary_entity(date=yesterday, status="CONFIRMED")]
+        )
+        resp = _daily_summary_client(appts=appts).get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+    # --- Non-PII §11.3 -------------------------------------------------------
+
+    def test_response_contains_no_client_id(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        data = resp.json()
+        assert "client_id" not in data
+
+    def test_response_contains_no_client_note(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        data = resp.json()
+        assert "client_note" not in data
+
+    def test_response_contains_no_hairdresser_id(self) -> None:
+        resp = _daily_summary_client().get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        data = resp.json()
+        assert "hairdresser_id" not in data
+
+    def test_by_status_values_are_integers(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_summary_entity(status="CONFIRMED")]
+        )
+        resp = _daily_summary_client(appts=appts).get(
+            _DAILY_SUMMARY_URL,
+            params={"date": _SUMMARY_DAY_STR},
+            headers=_auth_header(role="MANAGER"),
+        )
+        for v in resp.json()["by_status"].values():
+            assert isinstance(v, int)
