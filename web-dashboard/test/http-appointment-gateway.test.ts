@@ -558,3 +558,229 @@ describe("createHttpAppointmentGateway().listAssigned() — URL et paramètres",
     expect(url).not.toContain(TOKEN);
   });
 });
+
+// ---------------------------------------------------------------------------
+// dailySummary — sans jeton
+// ---------------------------------------------------------------------------
+
+describe("createHttpAppointmentGateway().dailySummary() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpAppointmentGateway({ accessToken: null }).dailySummary(
+      SALON_ID,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accessToken undefined → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpAppointmentGateway({}).dailySummary(SALON_ID);
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dailySummary — codes de statut
+// ---------------------------------------------------------------------------
+
+const FAKE_DAILY_SUMMARY_PAYLOAD = {
+  date: "2026-07-31",
+  total: 4,
+  by_status: {
+    PENDING: 1,
+    CONFIRMED: 2,
+    CANCELLED: 0,
+    COMPLETED: 1,
+    NO_SHOW: 0,
+  },
+};
+
+describe("createHttpAppointmentGateway().dailySummary() — codes de statut", () => {
+  it("200 → ok:true avec le résumé transformé", async () => {
+    stubFetch(200, FAKE_DAILY_SUMMARY_PAYLOAD);
+
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(
+      SALON_ID,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.summary.date).toBe("2026-07-31");
+      expect(result.summary.total).toBe(4);
+    }
+  });
+
+  it("200 → byStatus mappe toutes les valeurs de statut (snake_case → camelCase)", async () => {
+    stubFetch(200, FAKE_DAILY_SUMMARY_PAYLOAD);
+
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(
+      SALON_ID,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.summary.byStatus.PENDING).toBe(1);
+      expect(result.summary.byStatus.CONFIRMED).toBe(2);
+      expect(result.summary.byStatus.CANCELLED).toBe(0);
+      expect(result.summary.byStatus.COMPLETED).toBe(1);
+      expect(result.summary.byStatus.NO_SHOW).toBe(0);
+    }
+  });
+
+  it("200 avec by_status partiel → statuts absents complétés à 0 (défense en profondeur)", async () => {
+    stubFetch(200, { date: "2026-07-31", total: 1, by_status: { CONFIRMED: 1 } });
+
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(
+      SALON_ID,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.summary.byStatus.CONFIRMED).toBe(1);
+      expect(result.summary.byStatus.PENDING).toBe(0);
+      expect(result.summary.byStatus.CANCELLED).toBe(0);
+      expect(result.summary.byStatus.COMPLETED).toBe(0);
+      expect(result.summary.byStatus.NO_SHOW).toBe(0);
+    }
+  });
+
+  it("200 → le jeton n'est pas inclus dans le résultat", async () => {
+    stubFetch(200, FAKE_DAILY_SUMMARY_PAYLOAD);
+
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(
+      SALON_ID,
+    );
+
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(
+      SALON_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unauthenticated");
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(
+      SALON_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("forbidden");
+  });
+
+  it("422 → invalid", async () => {
+    stubFetch(422, {});
+
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(
+      SALON_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("invalid");
+  });
+
+  it("503 → unavailable", async () => {
+    stubFetch(503, {});
+
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(
+      SALON_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("erreur réseau → unavailable", async () => {
+    stubFetchNetworkError();
+
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(
+      SALON_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dailySummary — construction de l'URL
+// ---------------------------------------------------------------------------
+
+describe("createHttpAppointmentGateway().dailySummary() — URL", () => {
+  it("URL contient le salon_id et le chemin daily-summary", async () => {
+    stubFetch(200, FAKE_DAILY_SUMMARY_PAYLOAD);
+
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(SALON_ID);
+
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, unknown];
+    expect(url).toContain(`/salons/${SALON_ID}/appointments/daily-summary`);
+  });
+
+  it("dateIso fourni → paramètre date présent dans l'URL", async () => {
+    stubFetch(200, FAKE_DAILY_SUMMARY_PAYLOAD);
+
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(
+      SALON_ID,
+      "2026-07-31",
+    );
+
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, unknown];
+    expect(url).toContain("date=2026-07-31");
+  });
+
+  it("dateIso absent → aucun paramètre date (le backend applique aujourd'hui)", async () => {
+    stubFetch(200, FAKE_DAILY_SUMMARY_PAYLOAD);
+
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(SALON_ID);
+
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, unknown];
+    expect(url).not.toContain("date=");
+  });
+
+  it("URL encode le salon_id (caractères spéciaux)", async () => {
+    stubFetch(200, FAKE_DAILY_SUMMARY_PAYLOAD);
+
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary("abc/def");
+
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, unknown];
+    expect(url).toContain("abc%2Fdef");
+  });
+
+  it("le jeton n'apparaît pas dans l'URL (§11.3)", async () => {
+    stubFetch(200, FAKE_DAILY_SUMMARY_PAYLOAD);
+
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(SALON_ID);
+
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, unknown];
+    expect(url).not.toContain(TOKEN);
+  });
+
+  it("appel réseau inclut l'en-tête Authorization", async () => {
+    stubFetch(200, FAKE_DAILY_SUMMARY_PAYLOAD);
+
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).dailySummary(SALON_ID);
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    const headers = init?.headers as Record<string, string>;
+    expect(headers?.["Authorization"]).toBe(`Bearer ${TOKEN}`);
+  });
+});
