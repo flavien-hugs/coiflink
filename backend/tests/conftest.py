@@ -1006,6 +1006,20 @@ class FakeAppointmentRepository:
         result.sort(key=lambda a: (a.date, a.start_time))
         return tuple(result)
 
+    def count_by_status_for_day(  # type: ignore[no-untyped-def]
+        self, salon_id, day
+    ):
+        """Décompte des RDV du salon pour `day`, groupés par statut (US-6.1 #39).
+
+        Refiltre `salon_id` et `date` (isolation §11.2) — miroir du `GROUP BY` SQL.
+        Retourne `{status: count}` ; un statut sans RDV du jour est absent de la map.
+        """
+        counts: dict = {}
+        for appt in self._appointments.values():
+            if appt.salon_id == salon_id and appt.date == day:
+                counts[appt.status] = counts.get(appt.status, 0) + 1
+        return counts
+
 
 class FakeCustomerRepository:
     """Dépôt de fiches clients en mémoire (US-4.1, #28).

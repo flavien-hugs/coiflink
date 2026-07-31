@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from collections.abc import Mapping
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -446,6 +447,29 @@ class SqlAppointmentRepository:
         )
         rows = self._session.scalars(stmt).all()
         return tuple(_to_domain(row, self._load_services(row.id)) for row in rows)
+
+    def count_by_status_for_day(
+        self, salon_id: uuid.UUID, day: datetime.date
+    ) -> Mapping[str, int]:
+        """Décompte `GROUP BY status` des RDV du salon pour `day` (US-6.1 #39).
+
+        L'isolation §11.2 est ré-affirmée **en SQL** (`salon_id = :salon_id`) : le
+        comptage ne peut jamais inclure un RDV d'un autre salon. La lecture **agrège en
+        base** (`func.count()` + `group_by`) et ne rapatrie **aucune** ligne de RDV ni
+        PII — seulement `(status, count)`. Un statut sans RDV du jour est **absent** de
+        la map renvoyée (le domaine le complète à `0`). L'index `ix_appointments_salon_id
+        (salon_id, appointment_date)` couvre le filtre.
+        """
+
+        rows = self._session.execute(
+            select(models.Appointment.status, func.count())
+            .where(
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.appointment_date == day,
+            )
+            .group_by(models.Appointment.status)
+        ).all()
+        return {status: count for status, count in rows}
 
     def _load_services(
         self, appointment_id: uuid.UUID

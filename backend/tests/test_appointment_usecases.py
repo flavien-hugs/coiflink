@@ -41,6 +41,7 @@ from coiflink_api.application.appointments import (
     ModifyAppointment,
     ModifyAppointmentCommand,
     SetAppointmentStatus,
+    SummarizeDailyAppointments,
 )
 from coiflink_api.domain.appointment import Appointment, BookedService
 from coiflink_api.domain.audit import AuditAction, ENTITY_TYPE_APPOINTMENT
@@ -1970,3 +1971,121 @@ class TestListAssignedAppointments:
         appts = FakeAppointmentRepository(appointments=[_make_assigned_appointment()])
         result = self._uc(appts).execute(_HAIRDRESSER_ID, _DATE, _DATE)
         assert isinstance(result, tuple)
+
+
+# ---------------------------------------------------------------------------
+# SummarizeDailyAppointments — décompte du jour (US-6.1, #39)
+# ---------------------------------------------------------------------------
+
+_SUMMARY_SALON_ID = uuid.UUID("11111111-0000-0000-0000-000000000001")
+_SUMMARY_DAY = datetime.date(2026, 7, 31)
+_ALL_APPOINTMENT_STATUSES = {"PENDING", "CONFIRMED", "CANCELLED", "COMPLETED", "NO_SHOW"}
+
+
+def _make_day_appointment(
+    *,
+    salon_id: uuid.UUID = _SUMMARY_SALON_ID,
+    status: str = "PENDING",
+    date: datetime.date = _SUMMARY_DAY,
+) -> Appointment:
+    return Appointment(
+        id=uuid.uuid4(),
+        salon_id=salon_id,
+        client_id=uuid.uuid4(),
+        hairdresser_id=None,
+        date=date,
+        start_time=datetime.time(9, 0),
+        end_time=datetime.time(10, 0),
+        status=status,
+        client_note=None,
+        created_at=_CREATED_AT,
+    )
+
+
+class TestSummarizeDailyAppointments:
+    """Cas d'usage lecture pure : délègue au port et complète via `build_daily_summary`."""
+
+    def _uc(self, repo: FakeAppointmentRepository) -> SummarizeDailyAppointments:
+        return SummarizeDailyAppointments(repo)
+
+    def test_empty_day_total_zero(self) -> None:
+        repo = FakeAppointmentRepository()
+        result = self._uc(repo).execute(_SUMMARY_SALON_ID, _SUMMARY_DAY)
+        assert result.total == 0
+
+    def test_empty_day_all_statuses_zero(self) -> None:
+        repo = FakeAppointmentRepository()
+        result = self._uc(repo).execute(_SUMMARY_SALON_ID, _SUMMARY_DAY)
+        assert all(v == 0 for v in result.by_status.values())
+
+    def test_all_statuses_present_in_result(self) -> None:
+        repo = FakeAppointmentRepository()
+        result = self._uc(repo).execute(_SUMMARY_SALON_ID, _SUMMARY_DAY)
+        assert set(result.by_status.keys()) == _ALL_APPOINTMENT_STATUSES
+
+    def test_date_matches_requested_day(self) -> None:
+        repo = FakeAppointmentRepository()
+        result = self._uc(repo).execute(_SUMMARY_SALON_ID, _SUMMARY_DAY)
+        assert result.date == _SUMMARY_DAY
+
+    def test_single_confirmed_appointment_counted(self) -> None:
+        appt = _make_day_appointment(status="CONFIRMED")
+        repo = FakeAppointmentRepository(appointments=[appt])
+        result = self._uc(repo).execute(_SUMMARY_SALON_ID, _SUMMARY_DAY)
+        assert result.by_status["CONFIRMED"] == 1
+        assert result.total == 1
+
+    def test_multi_status_appointments_counted_correctly(self) -> None:
+        appts = [
+            _make_day_appointment(status="PENDING"),
+            _make_day_appointment(status="PENDING"),
+            _make_day_appointment(status="CONFIRMED"),
+            _make_day_appointment(status="CANCELLED"),
+            _make_day_appointment(status="COMPLETED"),
+            _make_day_appointment(status="COMPLETED"),
+            _make_day_appointment(status="NO_SHOW"),
+        ]
+        repo = FakeAppointmentRepository(appointments=appts)
+        result = self._uc(repo).execute(_SUMMARY_SALON_ID, _SUMMARY_DAY)
+        assert result.by_status["PENDING"] == 2
+        assert result.by_status["CONFIRMED"] == 1
+        assert result.by_status["CANCELLED"] == 1
+        assert result.by_status["COMPLETED"] == 2
+        assert result.by_status["NO_SHOW"] == 1
+        assert result.total == 7
+
+    def test_total_equals_sum_of_by_status(self) -> None:
+        appts = [_make_day_appointment(status=s) for s in ("PENDING", "CONFIRMED", "NO_SHOW")]
+        repo = FakeAppointmentRepository(appointments=appts)
+        result = self._uc(repo).execute(_SUMMARY_SALON_ID, _SUMMARY_DAY)
+        assert result.total == sum(result.by_status.values())
+
+    def test_isolation_other_salon_not_counted(self) -> None:
+        # Isolation §11.2 : un RDV d'un autre salon au même jour est exclu
+        other_salon = uuid.uuid4()
+        own_appt = _make_day_appointment(salon_id=_SUMMARY_SALON_ID, status="CONFIRMED")
+        other_appt = _make_day_appointment(salon_id=other_salon, status="CONFIRMED")
+        repo = FakeAppointmentRepository(appointments=[own_appt, other_appt])
+        result = self._uc(repo).execute(_SUMMARY_SALON_ID, _SUMMARY_DAY)
+        assert result.by_status["CONFIRMED"] == 1
+        assert result.total == 1
+
+    def test_isolation_other_day_not_counted(self) -> None:
+        # Un RDV du même salon mais un autre jour n'est pas compté
+        other_day = datetime.date(2026, 7, 30)
+        today_appt = _make_day_appointment(date=_SUMMARY_DAY, status="CONFIRMED")
+        other_appt = _make_day_appointment(date=other_day, status="CONFIRMED")
+        repo = FakeAppointmentRepository(appointments=[today_appt, other_appt])
+        result = self._uc(repo).execute(_SUMMARY_SALON_ID, _SUMMARY_DAY)
+        assert result.by_status["CONFIRMED"] == 1
+        assert result.total == 1
+
+    def test_no_write_side_effects(self) -> None:
+        # Lecture pure : aucun audit, aucun enregistrement
+        repo = FakeAppointmentRepository()
+        self._uc(repo).execute(_SUMMARY_SALON_ID, _SUMMARY_DAY)
+        assert repo.created == []
+        assert repo.updated == []
+        assert repo.cancelled == []
+        assert repo.status_changes == []
+        assert repo.assignments == []

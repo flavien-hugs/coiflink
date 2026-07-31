@@ -46,6 +46,18 @@ export interface Appointment {
   services: BookedService[];
 }
 
+// Décompte du jour **par statut** (dashboard gérant, US-6.1 #39) — miroir de
+// `DailyAppointmentSummary` du backend. Objet-valeur **sans PII** : uniquement la
+// `date` du jour civil et des compteurs entiers. `byStatus` porte **toutes** les
+// valeurs de `AppointmentStatus` (statuts sans RDV = `0`) ; `total` en est la somme
+// (tous statuts, y compris `PENDING`).
+export interface DailyAppointmentSummary {
+  // Jour du décompte, ISO "YYYY-MM-DD" (Africa/Abidjan).
+  date: string;
+  total: number;
+  byStatus: Record<AppointmentStatus, number>;
+}
+
 // Libellés **francisés** affichés (en attente | confirmé | annulé | terminé | absent).
 export const STATUS_LABELS_FR: Record<AppointmentStatus, string> = {
   PENDING: "En attente",

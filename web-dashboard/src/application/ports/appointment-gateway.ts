@@ -8,6 +8,7 @@
 import type {
   Appointment,
   AppointmentStatus,
+  DailyAppointmentSummary,
 } from "@/src/domain/appointment/appointment";
 
 // Paramètres de lecture : plage inclusive + filtre optionnel de statuts (répétable).
@@ -42,12 +43,28 @@ export type MutateAppointmentResult =
         | "unavailable";
     };
 
+// Décompte du jour par statut (#39) : `invalid` = `422` (date mal formée),
+// `forbidden` = `403` (rôle ≠ gérant ou salon hors périmètre), `unauthenticated` =
+// `401`, `unavailable` = `503`/panne réseau.
+export type DailyAppointmentSummaryResult =
+  | { ok: true; summary: DailyAppointmentSummary }
+  | {
+      ok: false;
+      reason: "forbidden" | "unauthenticated" | "invalid" | "unavailable";
+    };
+
 export interface AppointmentGateway {
   // Proxifie `GET /salons/{id}/appointments?date_from&date_to&status` (liste triée).
   listForSalon(
     salonId: string,
     query: ListAppointmentsQuery,
   ): Promise<ListAppointmentsResult>;
+  // Proxifie `GET /salons/{id}/appointments/daily-summary?date` (#39) : le décompte
+  // du jour par statut. `dateIso` optionnel (défaut backend = aujourd'hui UTC+0).
+  dailySummary(
+    salonId: string,
+    dateIso?: string,
+  ): Promise<DailyAppointmentSummaryResult>;
   // Proxifie `GET /appointments/assigned?date_from&date_to&status` (#27) : les RDV
   // **assignés au coiffeur authentifié** (`hairdresser_id` imposé serveur depuis le
   // `Principal`, jamais un paramètre). Route d'appartenance : aucun `salonId`.
