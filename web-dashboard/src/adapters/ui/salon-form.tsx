@@ -8,11 +8,20 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
+import {
+  CheckIcon,
+  MapPinIcon,
+  PhoneIcon,
+  StoreIcon,
+  XIcon,
+} from "@/src/adapters/ui/action-icons";
 import { FieldLabel } from "@/src/adapters/ui/field-label";
 import type { Salon } from "@/src/domain/salon/salon";
 
 const INPUT_CLASS =
   "rounded-lg border border-border bg-surface px-3 py-2.5 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
+const INPUT_WITH_ICON_CLASS =
+  "rounded-lg border border-border bg-surface py-2.5 pl-9 pr-3 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
 
 export interface SalonFormProps {
   // Salon à modifier ; absent pour une création.
@@ -108,15 +117,18 @@ export function SalonForm({ salon, onCancel, onSaved }: SalonFormProps) {
     <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel required>Nom du salon</FieldLabel>
-        <input
-          type="text"
-          name="name"
-          className={INPUT_CLASS}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          maxLength={255}
-          required
-        />
+        <div className="relative">
+          <StoreIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            type="text"
+            name="name"
+            className={INPUT_WITH_ICON_CLASS}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={255}
+            required
+          />
+        </div>
       </label>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel optional>Description</FieldLabel>
@@ -130,70 +142,88 @@ export function SalonForm({ salon, onCancel, onSaved }: SalonFormProps) {
       </label>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel optional>Téléphone</FieldLabel>
-        <input
-          type="tel"
-          name="phone"
-          className={INPUT_CLASS}
-          value={phone}
-          onChange={(e) => setPhone(e.target.value)}
-        />
+        <div className="relative">
+          <PhoneIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            type="tel"
+            name="phone"
+            className={INPUT_WITH_ICON_CLASS}
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+          />
+        </div>
       </label>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel optional>Adresse</FieldLabel>
-        <input
-          type="text"
-          name="address"
-          className={INPUT_CLASS}
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
-        />
+        <div className="relative">
+          <MapPinIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            type="text"
+            name="address"
+            className={INPUT_WITH_ICON_CLASS}
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+          />
+        </div>
       </label>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel optional>Ville</FieldLabel>
-          <input
-            type="text"
-            name="city"
-            className={INPUT_CLASS}
-            value={city}
-            onChange={(e) => setCity(e.target.value)}
-          />
+          <div className="relative">
+            <MapPinIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="text"
+              name="city"
+              className={INPUT_WITH_ICON_CLASS}
+              value={city}
+              onChange={(e) => setCity(e.target.value)}
+            />
+          </div>
         </label>
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel optional>Commune</FieldLabel>
-          <input
-            type="text"
-            name="commune"
-            className={INPUT_CLASS}
-            value={commune}
-            onChange={(e) => setCommune(e.target.value)}
-          />
+          <div className="relative">
+            <MapPinIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="text"
+              name="commune"
+              className={INPUT_WITH_ICON_CLASS}
+              value={commune}
+              onChange={(e) => setCommune(e.target.value)}
+            />
+          </div>
         </label>
       </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel optional>Latitude</FieldLabel>
-          <input
-            type="text"
-            inputMode="decimal"
-            name="latitude"
-            className={INPUT_CLASS}
-            value={latitude}
-            onChange={(e) => setLatitude(e.target.value)}
-            placeholder="5.359952"
-          />
+          <div className="relative">
+            <MapPinIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="text"
+              inputMode="decimal"
+              name="latitude"
+              className={INPUT_WITH_ICON_CLASS}
+              value={latitude}
+              onChange={(e) => setLatitude(e.target.value)}
+              placeholder="5.359952"
+            />
+          </div>
         </label>
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel optional>Longitude</FieldLabel>
-          <input
-            type="text"
-            inputMode="decimal"
-            name="longitude"
-            className={INPUT_CLASS}
-            value={longitude}
-            onChange={(e) => setLongitude(e.target.value)}
-            placeholder="-3.996643"
-          />
+          <div className="relative">
+            <MapPinIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="text"
+              inputMode="decimal"
+              name="longitude"
+              className={INPUT_WITH_ICON_CLASS}
+              value={longitude}
+              onChange={(e) => setLongitude(e.target.value)}
+              placeholder="-3.996643"
+            />
+          </div>
         </label>
       </div>
       {error ? (
@@ -207,9 +237,10 @@ export function SalonForm({ salon, onCancel, onSaved }: SalonFormProps) {
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          className="mt-1 inline-flex cursor-pointer items-center justify-center rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
+          className="mt-1 inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
           disabled={pending}
         >
+          {pending ? null : <CheckIcon className="shrink-0" />}
           {pending
             ? "Enregistrement…"
             : editing
@@ -219,10 +250,11 @@ export function SalonForm({ salon, onCancel, onSaved }: SalonFormProps) {
         {onCancel ? (
           <button
             type="button"
-            className="text-sm font-medium text-muted hover:text-foreground"
+            className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
             onClick={onCancel}
             disabled={pending}
           >
+            <XIcon className="shrink-0" />
             Annuler
           </button>
         ) : null}

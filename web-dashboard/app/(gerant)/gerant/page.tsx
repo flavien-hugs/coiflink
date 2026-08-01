@@ -65,7 +65,7 @@ export default async function GerantDashboardPage() {
 function Header({ today }: { today: string }) {
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Tableau de bord</h1>
+      <h1 className="font-serif text-2xl font-semibold tracking-tight text-ink">Tableau de bord</h1>
       <p className="mt-1 text-sm text-muted">
         Vos rendez-vous du jour ({today}), par statut.
       </p>

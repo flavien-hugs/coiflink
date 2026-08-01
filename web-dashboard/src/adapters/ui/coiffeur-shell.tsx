@@ -7,9 +7,10 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import { SITE_NAME } from "@/src/domain/site";
 import { displayRoleLabel, HAIRDRESSER_ROLE } from "@/src/domain/auth/role";
+import { BrandMark, Wordmark } from "./brand-mark";
 import { LogoutButton } from "./logout-button";
+import { NavSectionIcon } from "./nav-icons";
 
 export interface CoiffeurShellProps {
   userName: string;
@@ -26,15 +27,8 @@ export function CoiffeurShell({ userName, children }: CoiffeurShellProps) {
         <aside className="coiflink-sidebar-surface flex max-h-96 w-full shrink-0 flex-col overflow-hidden border-b border-sidebar-foreground/10 text-sidebar-foreground sm:max-h-none sm:w-72 sm:border-r sm:border-b-0">
           <div className="shrink-0 px-5 pt-5 pb-4">
             <div className="flex min-w-0 items-center gap-3">
-              <span
-                className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[#f3bd76] text-sm font-bold text-sidebar"
-                aria-hidden="true"
-              >
-                C
-              </span>
-              <span className="min-w-0 truncate text-xl font-bold tracking-tight">
-                {SITE_NAME}
-              </span>
+              <BrandMark className="size-9 shrink-0" />
+              <Wordmark className="min-w-0 truncate text-xl font-bold tracking-tight" />
             </div>
           </div>
 
@@ -53,8 +47,9 @@ export function CoiffeurShell({ userName, children }: CoiffeurShellProps) {
           >
             <Link
               href="/coiffeur/planning"
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/90 transition hover:bg-accent/15 hover:text-sidebar-foreground"
+              className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/90 transition hover:bg-accent/15 hover:text-sidebar-foreground"
             >
+              <NavSectionIcon sectionKey="planning" className="shrink-0" />
               Mon planning
             </Link>
           </nav>

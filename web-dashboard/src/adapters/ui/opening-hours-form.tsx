@@ -12,6 +12,7 @@
 import { useRouter } from "next/navigation";
 import { useMemo, useState, type FormEvent } from "react";
 
+import { CalendarIcon, CheckIcon } from "@/src/adapters/ui/action-icons";
 import { ExceptionsCalendar } from "@/src/adapters/ui/exceptions-calendar";
 import { WeeklyAgenda } from "@/src/adapters/ui/weekly-agenda";
 import {
@@ -86,6 +87,7 @@ export function OpeningHoursForm({
   const [exceptions, setExceptions] = useState<ExceptionalDay[]>(() =>
     initialExceptions(openingHours),
   );
+  const [showWeekly, setShowWeekly] = useState(false);
   const [showExceptions, setShowExceptions] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -94,6 +96,8 @@ export function OpeningHoursForm({
     const tz = openingHours?.timezone;
     return typeof tz === "string" ? tz : null;
   }, [openingHours]);
+
+  const openDaysCount = DAY_KEYS.filter((day) => (weekly[day]?.length ?? 0) > 0).length;
 
   function toggleDay(day: DayKey, open: boolean) {
     setWeekly((prev) => {
@@ -202,24 +206,49 @@ export function OpeningHoursForm({
   return (
     <form className="flex flex-col gap-6" onSubmit={onSubmit} noValidate>
       <div>
-        <h3 className="mb-3 text-sm font-semibold">Semaine type</h3>
-        <p className="mb-3 text-sm text-muted">
-          Glissez sur une colonne pour ajouter un créneau, glissez un créneau pour le
-          déplacer, cliquez dessus pour l&apos;ajuster précisément ou le supprimer.
-        </p>
-        <WeeklyAgenda
-          weekly={weekly}
-          onToggleDay={toggleDay}
-          onAddInterval={addIntervalAt}
-          onRemoveInterval={removeInterval}
-          onSetIntervalTimes={setIntervalTimes}
-        />
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="font-serif text-sm font-semibold text-ink">Semaine type</h3>
+            <p className="mt-0.5 text-sm text-muted">
+              {openDaysCount > 0
+                ? `${openDaysCount} jour${openDaysCount > 1 ? "s" : ""} ouvert${
+                    openDaysCount > 1 ? "s" : ""
+                  } sur ${DAY_KEYS.length}.`
+                : "Aucun jour configuré."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowWeekly((current) => !current)}
+            aria-expanded={showWeekly}
+            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:border-accent/40"
+          >
+            <CalendarIcon className="shrink-0" />
+            {showWeekly ? "Masquer le planning" : "Configurer"}
+          </button>
+        </div>
+
+        {showWeekly ? (
+          <div className="mt-4">
+            <p className="mb-3 text-sm text-muted">
+              Glissez sur une colonne pour ajouter un créneau, glissez un créneau pour le
+              déplacer, cliquez dessus pour l&apos;ajuster précisément ou le supprimer.
+            </p>
+            <WeeklyAgenda
+              weekly={weekly}
+              onToggleDay={toggleDay}
+              onAddInterval={addIntervalAt}
+              onRemoveInterval={removeInterval}
+              onSetIntervalTimes={setIntervalTimes}
+            />
+          </div>
+        ) : null}
       </div>
 
       <div>
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold">Jours exceptionnels</h3>
+            <h3 className="font-serif text-sm font-semibold text-ink">Jours exceptionnels</h3>
             <p className="mt-0.5 text-sm text-muted">
               {exceptions.length > 0
                 ? `${exceptions.length} jour${exceptions.length > 1 ? "s" : ""} configuré${
@@ -232,8 +261,9 @@ export function OpeningHoursForm({
             type="button"
             onClick={() => setShowExceptions((current) => !current)}
             aria-expanded={showExceptions}
-            className="inline-flex cursor-pointer items-center justify-center rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:border-accent/40"
+            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:border-accent/40"
           >
+            <CalendarIcon className="shrink-0" />
             {showExceptions ? "Masquer le calendrier" : "Configurer"}
           </button>
         </div>
@@ -260,9 +290,10 @@ export function OpeningHoursForm({
 
       <button
         type="submit"
-        className="inline-flex cursor-pointer items-center justify-center self-start rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
+        className="inline-flex cursor-pointer items-center justify-center gap-2 self-start rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
         disabled={pending}
       >
+        {pending ? null : <CheckIcon className="shrink-0" />}
         {pending ? "Enregistrement…" : "Enregistrer les horaires"}
       </button>
     </form>

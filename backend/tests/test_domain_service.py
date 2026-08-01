@@ -5,13 +5,16 @@ Couvre les règles de validation pures :
 - `validate_price` : requis, None/bool/float refusés, négatif, hors borne, > 2 décimales ;
 - `validate_duration` : requis, None/bool/float refusés, 0, négatif, > 24 h ;
 - `normalize_category` : None/vide → None, trop longue, trim, non-chaîne ;
-- `normalize_description` : None/vide → None, trim.
+- `normalize_description` : None/vide → None, trim ;
+- `validate_service_filter`/`ServiceFilter` : trim `q`, catégorie texte libre exacte,
+  plage de dates incohérente, message neutre, `is_empty`.
 
 Aucune base, aucun réseau — domaine pur.
 """
 
 from __future__ import annotations
 
+import datetime
 import decimal
 
 import pytest
@@ -19,18 +22,21 @@ import pytest
 from coiflink_api.domain.errors import (
     InvalidServiceCategory,
     InvalidServiceDuration,
+    InvalidServiceFilter,
     InvalidServiceName,
     InvalidServicePrice,
 )
 from coiflink_api.domain.service import (
     CATEGORY_MAX_LENGTH,
     SERVICE_NAME_MAX_LENGTH,
+    ServiceFilter,
     _DURATION_MAX_MINUTES,
     _PRICE_MAX,
     normalize_category,
     normalize_description,
     validate_duration,
     validate_price,
+    validate_service_filter,
     validate_service_name,
 )
 
@@ -275,3 +281,143 @@ class TestNormalizeDescription:
 
     def test_whitespace_trimmed(self) -> None:
         assert normalize_description("  Coupe.  ") == "Coupe."
+
+
+# ---------------------------------------------------------------------------
+# ServiceFilter.is_empty
+# ---------------------------------------------------------------------------
+
+
+class TestServiceFilterIsEmpty:
+    def test_default_filter_is_empty(self) -> None:
+        assert ServiceFilter().is_empty is True
+
+    def test_filter_with_q_is_not_empty(self) -> None:
+        assert ServiceFilter(q="coupe").is_empty is False
+
+    def test_filter_with_category_is_not_empty(self) -> None:
+        assert ServiceFilter(category="Coupe").is_empty is False
+
+    def test_filter_with_created_from_is_not_empty(self) -> None:
+        assert ServiceFilter(created_from=datetime.date(2026, 1, 1)).is_empty is False
+
+    def test_filter_with_created_to_is_not_empty(self) -> None:
+        assert ServiceFilter(created_to=datetime.date(2026, 1, 1)).is_empty is False
+
+
+# ---------------------------------------------------------------------------
+# validate_service_filter — q
+# ---------------------------------------------------------------------------
+
+
+class TestQFilter:
+    def test_none_returns_none(self) -> None:
+        assert validate_service_filter(q=None).q is None
+
+    def test_empty_string_returns_none(self) -> None:
+        assert validate_service_filter(q="").q is None
+
+    def test_whitespace_only_returns_none(self) -> None:
+        assert validate_service_filter(q="   ").q is None
+
+    def test_value_is_trimmed(self) -> None:
+        assert validate_service_filter(q="  coupe  ").q == "coupe"
+
+    def test_valid_value_returned_as_is(self) -> None:
+        assert validate_service_filter(q="coupe").q == "coupe"
+
+
+# ---------------------------------------------------------------------------
+# validate_service_filter — category (texte libre, égalité exacte)
+# ---------------------------------------------------------------------------
+
+
+class TestCategoryFilter:
+    def test_none_returns_none(self) -> None:
+        assert validate_service_filter(category=None).category is None
+
+    def test_empty_string_returns_none(self) -> None:
+        assert validate_service_filter(category="").category is None
+
+    def test_whitespace_only_returns_none(self) -> None:
+        assert validate_service_filter(category="   ").category is None
+
+    def test_value_is_trimmed(self) -> None:
+        assert validate_service_filter(category="  Coupe  ").category == "Coupe"
+
+    def test_any_free_text_value_accepted(self) -> None:
+        """Contrairement au genre des fiches clients, aucune énumération fermée."""
+        assert validate_service_filter(category="Nimporte quoi").category == "Nimporte quoi"
+
+    def test_case_is_preserved_not_normalized(self) -> None:
+        assert validate_service_filter(category="coupe").category == "coupe"
+
+
+# ---------------------------------------------------------------------------
+# validate_service_filter — plage de dates de création
+# ---------------------------------------------------------------------------
+
+
+class TestCreatedRangeFilter:
+    def test_no_bounds_returns_none_bounds(self) -> None:
+        result = validate_service_filter()
+        assert result.created_from is None
+        assert result.created_to is None
+        assert result.created_at_from is None
+        assert result.created_at_to is None
+
+    def test_created_from_alone_accepted(self) -> None:
+        result = validate_service_filter(created_from=datetime.date(2026, 1, 1))
+        assert result.created_from == datetime.date(2026, 1, 1)
+        assert result.created_at_from is not None
+        assert result.created_at_to is None
+
+    def test_created_to_alone_accepted(self) -> None:
+        result = validate_service_filter(created_to=datetime.date(2026, 1, 31))
+        assert result.created_to == datetime.date(2026, 1, 31)
+        assert result.created_at_to is not None
+
+    def test_equal_bounds_accepted(self) -> None:
+        day = datetime.date(2026, 3, 15)
+        result = validate_service_filter(created_from=day, created_to=day)
+        assert result.created_from == day
+        assert result.created_to == day
+
+    def test_ordered_range_accepted(self) -> None:
+        result = validate_service_filter(
+            created_from=datetime.date(2026, 3, 1), created_to=datetime.date(2026, 3, 31)
+        )
+        assert result.created_from == datetime.date(2026, 3, 1)
+        assert result.created_to == datetime.date(2026, 3, 31)
+
+    def test_created_from_after_created_to_raises(self) -> None:
+        with pytest.raises(InvalidServiceFilter):
+            validate_service_filter(
+                created_from=datetime.date(2026, 3, 31), created_to=datetime.date(2026, 3, 1)
+            )
+
+    def test_bounds_converted_to_utc_datetimes(self) -> None:
+        result = validate_service_filter(
+            created_from=datetime.date(2026, 3, 1), created_to=datetime.date(2026, 3, 1)
+        )
+        assert isinstance(result.created_at_from, datetime.datetime)
+        assert isinstance(result.created_at_to, datetime.datetime)
+        assert result.created_at_from < result.created_at_to
+
+
+# ---------------------------------------------------------------------------
+# validate_service_filter — message neutre (§11.3)
+# ---------------------------------------------------------------------------
+
+
+class TestServiceFilterNeutralMessage:
+    def test_invalid_range_message_does_not_repeat_dates(self) -> None:
+        try:
+            validate_service_filter(
+                created_from=datetime.date(2026, 3, 31), created_to=datetime.date(2026, 3, 1)
+            )
+        except InvalidServiceFilter as exc:
+            assert "2026-03-31" not in str(exc)
+            assert "2026-03-01" not in str(exc)
+        else:
+            pytest.fail("InvalidServiceFilter attendue")

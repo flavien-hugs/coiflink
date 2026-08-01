@@ -33,11 +33,16 @@ from dataclasses import dataclass
 
 from coiflink_api.domain.enums import Gender, values
 from coiflink_api.domain.errors import (
+    InvalidCustomerFilter,
     InvalidCustomerGender,
     InvalidCustomerName,
     InvalidCustomerNotes,
 )
 from coiflink_api.domain.phone import normalize_phone
+from coiflink_api.domain.time_window import (
+    day_end_utc as _day_end_utc,
+    day_start_utc as _day_start_utc,
+)
 
 # Borne du nom, alignée sur la colonne `String(255)` de `customer_profiles`.
 CUSTOMER_NAME_MAX_LENGTH = 255
@@ -176,6 +181,102 @@ class Customer:
     updated_at: datetime.datetime
 
 
+@dataclass(frozen=True)
+class CustomerFilter:
+    """Critères **validés** de filtrage de la liste des fiches clients.
+
+    Chaque champ est optionnel : `None` = « pas de contrainte ». Les critères se
+    combinent en **ET**. Cet objet est produit **uniquement** par
+    `validate_customer_filter` — un `CustomerFilter` en circulation est donc
+    toujours cohérent (genre dans l'énumération, plage de dates ordonnée).
+
+    `created_from`/`created_to` sont les jours civils saisis ; `created_at_from`/
+    `created_at_to` sont les bornes déjà converties en `datetime` UTC (miroir de
+    `TransactionFilter`), pour comparer directement à
+    `customer_profiles.created_at` sans que le dépôt ne connaisse le fuseau.
+    """
+
+    q: str | None = None
+    gender: str | None = None
+    created_from: datetime.date | None = None
+    created_to: datetime.date | None = None
+    created_at_from: datetime.datetime | None = None
+    created_at_to: datetime.datetime | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        """`True` si aucun critère n'est posé (liste complète du salon)."""
+
+        return (
+            self.q is None
+            and self.gender is None
+            and self.created_from is None
+            and self.created_to is None
+        )
+
+
+def _validate_filter_q(q: str | None) -> str | None:
+    """Valide la **recherche texte optionnelle** (nom) : trim, `""` → `None`."""
+
+    if q is None:
+        return None
+    if not isinstance(q, str):
+        raise InvalidCustomerFilter("Filtre de fiches clients invalide.")
+    cleaned = q.strip()
+    return cleaned or None
+
+
+def _validate_filter_gender(gender: str | None) -> str | None:
+    """Valide le **genre optionnel du filtre** : dans l'enum fermé, sinon erreur."""
+
+    if gender is None:
+        return None
+    if not isinstance(gender, str):
+        raise InvalidCustomerFilter("Filtre de fiches clients invalide.")
+    cleaned = gender.strip()
+    if not cleaned:
+        return None
+    if cleaned not in GENDER_VALUES:
+        raise InvalidCustomerFilter("Filtre de fiches clients invalide.")
+    return cleaned
+
+
+def validate_customer_filter(
+    *,
+    q: str | None = None,
+    gender: str | None = None,
+    created_from: datetime.date | None = None,
+    created_to: datetime.date | None = None,
+) -> CustomerFilter:
+    """Valide/normalise les critères de filtre → `CustomerFilter`.
+
+    Règles (toutes → `InvalidCustomerFilter`, message métier **neutre**) :
+
+    - **plage ordonnée** : `created_from ≤ created_to` ;
+    - **genre** dans l'énumération fermée `GENDER_VALUES` ;
+    - `None` (ou chaîne vide de genre/texte) = **pas de contrainte**.
+
+    Les bornes de date sont converties du jour civil `Africa/Abidjan` (UTC+0) vers
+    des `datetime` UTC inclusifs, exposés par `created_at_from`/`created_at_to`.
+    """
+
+    if created_from is not None and not isinstance(created_from, datetime.date):
+        raise InvalidCustomerFilter("Filtre de fiches clients invalide.")
+    if created_to is not None and not isinstance(created_to, datetime.date):
+        raise InvalidCustomerFilter("Filtre de fiches clients invalide.")
+    if created_from is not None and created_to is not None and created_from > created_to:
+        raise InvalidCustomerFilter("Filtre de fiches clients invalide.")
+
+    return CustomerFilter(
+        q=_validate_filter_q(q),
+        gender=_validate_filter_gender(gender),
+        created_from=created_from,
+        created_to=created_to,
+        created_at_from=_day_start_utc(created_from) if created_from is not None else None,
+        created_at_to=_day_end_utc(created_to) if created_to is not None else None,
+    )
+
+
 __all__ = [
     "CUSTOMER_NAME_MAX_LENGTH",
     "NOTES_MAX_LENGTH",
@@ -186,4 +287,6 @@ __all__ = [
     "normalize_notes",
     "CustomerToCreate",
     "Customer",
+    "CustomerFilter",
+    "validate_customer_filter",
 ]

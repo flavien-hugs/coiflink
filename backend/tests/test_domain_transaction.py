@@ -275,6 +275,33 @@ class TestPaymentMethod:
 
 
 # ---------------------------------------------------------------------------
+# Recherche texte (q) — nom client
+# ---------------------------------------------------------------------------
+
+
+class TestQFilter:
+    def test_q_trimmed_and_preserved(self) -> None:
+        f = validate_transaction_filter(q="  Aïcha  ")
+        assert f.q == "Aïcha"
+
+    def test_none_q_no_constraint(self) -> None:
+        f = validate_transaction_filter(q=None)
+        assert f.q is None
+
+    def test_empty_string_q_becomes_none(self) -> None:
+        f = validate_transaction_filter(q="")
+        assert f.q is None
+
+    def test_whitespace_only_q_becomes_none(self) -> None:
+        f = validate_transaction_filter(q="   ")
+        assert f.q is None
+
+    def test_is_empty_false_when_q_present(self) -> None:
+        f = validate_transaction_filter(q="Aïcha")
+        assert f.is_empty is False
+
+
+# ---------------------------------------------------------------------------
 # Champ client_id
 # ---------------------------------------------------------------------------
 
@@ -309,6 +336,7 @@ class TestCombinedFilter:
             amount_min=decimal.Decimal("100.00"),
             amount_max=decimal.Decimal("50000.00"),
             payment_method="MOBILE_MONEY_MANUAL",
+            q="Aïcha",
         )
         assert f.date_from == _DATE_A
         assert f.date_to == _DATE_B
@@ -316,6 +344,7 @@ class TestCombinedFilter:
         assert f.amount_min == decimal.Decimal("100.00")
         assert f.amount_max == decimal.Decimal("50000.00")
         assert f.payment_method == "MOBILE_MONEY_MANUAL"
+        assert f.q == "Aïcha"
         assert f.is_empty is False
 
     def test_combined_filter_not_empty(self) -> None:

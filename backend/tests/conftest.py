@@ -611,13 +611,28 @@ class FakeServiceRepository:
             return None
         return service
 
-    def list_for_salon(self, salon_id: uuid.UUID, *, include_inactive: bool = True):  # type: ignore[no-untyped-def]
+    def list_for_salon(self, salon_id: uuid.UUID, *, filter, include_inactive: bool = True):  # type: ignore[no-untyped-def]
         return tuple(
             s
             for s in self._services.values()
             if s.salon_id == salon_id  # type: ignore[union-attr]
             and (include_inactive or s.is_active)  # type: ignore[union-attr]
+            and self._matches(s, filter)
         )
+
+    @staticmethod
+    def _matches(s, filter) -> bool:  # type: ignore[no-untyped-def]
+        """Filtrage en mémoire **miroir** des clauses SQL (nom/catégorie/dates, ET)."""
+
+        if filter.created_at_from is not None and s.created_at < filter.created_at_from:  # type: ignore[union-attr]
+            return False
+        if filter.created_at_to is not None and s.created_at > filter.created_at_to:  # type: ignore[union-attr]
+            return False
+        if filter.category is not None and s.category != filter.category:  # type: ignore[union-attr]
+            return False
+        if filter.q is not None and filter.q.lower() not in s.name.lower():  # type: ignore[union-attr]
+            return False
+        return True
 
     def update(self, salon_id: uuid.UUID, service_id: uuid.UUID, changes):  # type: ignore[no-untyped-def]
         import dataclasses as _dc
@@ -1086,11 +1101,27 @@ class FakeCustomerRepository:
             if c.salon_id == salon_id  # type: ignore[union-attr]
         ]
 
-    def list_for_salon(self, salon_id: uuid.UUID, *, limit: int, offset: int):  # type: ignore[no-untyped-def]
-        return tuple(self._for_salon(salon_id)[offset : offset + limit])
+    def _matching(self, salon_id: uuid.UUID, filter) -> list:  # type: ignore[no-untyped-def]
+        """Filtrage en mémoire **miroir** des clauses SQL : salon + critères ET."""
 
-    def count_for_salon(self, salon_id: uuid.UUID) -> int:
-        return len(self._for_salon(salon_id))
+        result = []
+        for c in self._for_salon(salon_id):
+            if filter.created_at_from is not None and c.created_at < filter.created_at_from:  # type: ignore[union-attr]
+                continue
+            if filter.created_at_to is not None and c.created_at > filter.created_at_to:  # type: ignore[union-attr]
+                continue
+            if filter.gender is not None and c.gender != filter.gender:  # type: ignore[union-attr]
+                continue
+            if filter.q is not None and filter.q.lower() not in c.full_name.lower():  # type: ignore[union-attr]
+                continue
+            result.append(c)
+        return result
+
+    def list_for_salon(self, salon_id: uuid.UUID, *, filter, limit: int, offset: int):  # type: ignore[no-untyped-def]
+        return tuple(self._matching(salon_id, filter)[offset : offset + limit])
+
+    def count_for_salon(self, salon_id: uuid.UUID, *, filter) -> int:  # type: ignore[no-untyped-def]
+        return len(self._matching(salon_id, filter))
 
     def phone_exists(self, salon_id: uuid.UUID, phone: str) -> bool:
         return any(c.phone == phone for c in self._for_salon(salon_id))  # type: ignore[union-attr]
@@ -1253,6 +1284,10 @@ class FakePaymentRepository:
                 continue
             if filter.payment_method is not None and p.payment_method != filter.payment_method:
                 continue
+            if filter.q is not None:
+                name = self._client_names.get(p.client_id) or ""
+                if filter.q.lower() not in name.lower():
+                    continue
             result.append(p)
         return result
 

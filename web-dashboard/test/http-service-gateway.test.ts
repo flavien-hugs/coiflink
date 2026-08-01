@@ -138,6 +138,14 @@ describe("createHttpServiceGateway().list() — codes de statut", () => {
     expect(result).toEqual({ ok: false, reason: "forbidden" });
   });
 
+  it("422 → invalid (plage de dates incohérente)", async () => {
+    stubFetch(422, { detail: "Filtre de prestations invalide." });
+
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).list(SALON_ID);
+
+    expect(result).toEqual({ ok: false, reason: "invalid" });
+  });
+
   it("500 → unavailable", async () => {
     stubFetch(500, { detail: "Erreur serveur." });
 
@@ -152,6 +160,52 @@ describe("createHttpServiceGateway().list() — codes de statut", () => {
     const result = await createHttpServiceGateway({ accessToken: TOKEN }).list(SALON_ID);
 
     expect(result).toEqual({ ok: false, reason: "unavailable" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list — filtres (q, category, created_from, created_to)
+// ---------------------------------------------------------------------------
+
+describe("createHttpServiceGateway().list() — filtres", () => {
+  it("aucun filtre → aucun query param dans l'URL (hormis le chemin)", async () => {
+    const fetchMock = stubFetch(200, []);
+
+    await createHttpServiceGateway({ accessToken: TOKEN }).list(SALON_ID, {});
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).not.toContain("?");
+  });
+
+  it("filtre complet → q/category/created_from/created_to transmis en snake_case", async () => {
+    const fetchMock = stubFetch(200, []);
+
+    await createHttpServiceGateway({ accessToken: TOKEN }).list(SALON_ID, {
+      q: "Coupe",
+      category: "Coiffure",
+      createdFrom: "2026-01-01",
+      createdTo: "2026-01-31",
+    });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toContain("q=Coupe");
+    expect(url).toContain("category=Coiffure");
+    expect(url).toContain("created_from=2026-01-01");
+    expect(url).toContain("created_to=2026-01-31");
+  });
+
+  it("filtres vides/blancs → omis de l'URL", async () => {
+    const fetchMock = stubFetch(200, []);
+
+    await createHttpServiceGateway({ accessToken: TOKEN }).list(SALON_ID, {
+      q: "   ",
+      category: "",
+      createdFrom: "",
+      createdTo: "",
+    });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).not.toContain("?");
   });
 });
 

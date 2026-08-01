@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 
 import type { Role } from "@/src/domain/auth/role";
 import { DashboardSidebar } from "./dashboard-sidebar";
+import { DashboardTopbar } from "./dashboard-topbar";
 
 export interface DashboardShellProps {
   userName: string;
@@ -17,13 +18,17 @@ export function DashboardShell({ userName, userRole, children }: DashboardShellP
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden sm:flex-row">
-        <DashboardSidebar userName={userName} userRole={userRole} />
+        <DashboardSidebar userName={userName} />
 
-        <main className="coiflink-page-surface min-h-0 min-w-0 flex-1 overflow-y-auto p-6 sm:p-8">
-          <div className="mx-auto max-w-[1680px]">
-            {children}
-          </div>
-        </main>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <DashboardTopbar userRole={userRole} />
+
+          <main className="coiflink-page-surface min-h-0 min-w-0 flex-1 overflow-y-auto p-6 sm:p-8">
+            <div className="mx-auto max-w-[1680px]">
+              {children}
+            </div>
+          </main>
+        </div>
       </div>
     </div>
   );

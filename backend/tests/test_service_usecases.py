@@ -15,6 +15,8 @@ Couvre :
 
 from __future__ import annotations
 
+import dataclasses
+import datetime
 import decimal
 import uuid
 
@@ -36,6 +38,7 @@ from coiflink_api.domain.errors import (
     InvalidServicePrice,
     ServiceNotFound,
 )
+from coiflink_api.domain.service import ServiceFilter
 
 from .conftest import FakeAuditLog, FakeServiceRepository
 
@@ -54,6 +57,9 @@ _VALID_COMMAND = ServiceCommand(
     description="Coupe aux ciseaux.",
     category="Coupe",
 )
+
+# Filtre vide (pas de contrainte) — mirroir de `_NO_FILTER` des tests clients.
+_NO_FILTER = ServiceFilter()
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +209,7 @@ class TestCreateService:
 class TestListSalonServices:
     def test_empty_repository_returns_empty_tuple(self) -> None:
         repo = FakeServiceRepository()
-        result = ListSalonServices(repo).execute(_SALON_ID)
+        result = ListSalonServices(repo).execute(_SALON_ID, filter=_NO_FILTER)
         assert result == ()
 
     def test_returns_services_for_correct_salon(self) -> None:
@@ -212,7 +218,7 @@ class TestListSalonServices:
         CreateService(repo, audit).execute(
             _SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID
         )
-        result = ListSalonServices(repo).execute(_SALON_ID)
+        result = ListSalonServices(repo).execute(_SALON_ID, filter=_NO_FILTER)
         assert len(result) == 1
         assert result[0].salon_id == _SALON_ID
 
@@ -222,7 +228,7 @@ class TestListSalonServices:
         CreateService(repo, audit).execute(
             _SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID
         )
-        result = ListSalonServices(repo).execute(_OTHER_SALON_ID)
+        result = ListSalonServices(repo).execute(_OTHER_SALON_ID, filter=_NO_FILTER)
         assert result == ()
 
     def test_returns_multiple_services(self) -> None:
@@ -235,7 +241,7 @@ class TestListSalonServices:
         )
         CreateService(repo, audit).execute(_SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID)
         CreateService(repo, audit).execute(_SALON_ID, cmd2, actor_user_id=_ACTOR_ID)
-        result = ListSalonServices(repo).execute(_SALON_ID)
+        result = ListSalonServices(repo).execute(_SALON_ID, filter=_NO_FILTER)
         assert len(result) == 2
 
     def test_inactive_services_included_by_default(self) -> None:
@@ -247,7 +253,9 @@ class TestListSalonServices:
         DeactivateService(repo, audit).execute(
             _SALON_ID, service.id, actor_user_id=_ACTOR_ID
         )
-        result = ListSalonServices(repo).execute(_SALON_ID, include_inactive=True)
+        result = ListSalonServices(repo).execute(
+            _SALON_ID, filter=_NO_FILTER, include_inactive=True
+        )
         assert len(result) == 1
         assert result[0].is_active is False
 
@@ -260,7 +268,140 @@ class TestListSalonServices:
         DeactivateService(repo, audit).execute(
             _SALON_ID, service.id, actor_user_id=_ACTOR_ID
         )
-        result = ListSalonServices(repo).execute(_SALON_ID, include_inactive=False)
+        result = ListSalonServices(repo).execute(
+            _SALON_ID, filter=_NO_FILTER, include_inactive=False
+        )
+        assert result == ()
+
+
+# ---------------------------------------------------------------------------
+# ListSalonServices — filtres (q, catégorie, plage de dates)
+# ---------------------------------------------------------------------------
+
+
+def _set_created_at(
+    repo: FakeServiceRepository, service_id: uuid.UUID, created_at: datetime.datetime
+) -> None:
+    """Force `created_at` d'une prestation déjà créée (helper de test, filtre de dates)."""
+
+    current = repo._services[service_id]  # type: ignore[attr-defined]
+    repo._services[service_id] = dataclasses.replace(current, created_at=created_at)  # type: ignore[attr-defined]
+
+
+class TestListSalonServicesWithFilters:
+    def test_filter_q_matches_name_substring(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        CreateService(repo, audit).execute(_SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID)
+        CreateService(repo, audit).execute(
+            _SALON_ID,
+            ServiceCommand(name="Barbe", price=decimal.Decimal("2000.00"), duration_minutes=15),
+            actor_user_id=_ACTOR_ID,
+        )
+
+        result = ListSalonServices(repo).execute(
+            _SALON_ID, filter=ServiceFilter(q="coupe")
+        )
+        assert len(result) == 1
+        assert result[0].name == "Coupe homme"
+
+    def test_filter_category_exact_match(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        CreateService(repo, audit).execute(_SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID)
+        CreateService(repo, audit).execute(
+            _SALON_ID,
+            ServiceCommand(
+                name="Barbe",
+                price=decimal.Decimal("2000.00"),
+                duration_minutes=15,
+                category="Barbe",
+            ),
+            actor_user_id=_ACTOR_ID,
+        )
+
+        result = ListSalonServices(repo).execute(
+            _SALON_ID, filter=ServiceFilter(category="Coupe")
+        )
+        assert len(result) == 1
+        assert result[0].category == "Coupe"
+
+    def test_filter_category_is_case_sensitive_exact_match(self) -> None:
+        """La catégorie est comparée en **égalité exacte** — pas de tolérance de casse."""
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        CreateService(repo, audit).execute(_SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID)
+
+        result = ListSalonServices(repo).execute(
+            _SALON_ID, filter=ServiceFilter(category="coupe")
+        )
+        assert result == ()
+
+    def test_filter_date_range_includes_bounds(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = CreateService(repo, audit).execute(
+            _SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID
+        )
+        _set_created_at(repo, service.id, datetime.datetime(2026, 3, 15, tzinfo=datetime.timezone.utc))
+
+        from coiflink_api.domain.service import validate_service_filter
+
+        result = ListSalonServices(repo).execute(
+            _SALON_ID,
+            filter=validate_service_filter(
+                created_from=datetime.date(2026, 3, 1), created_to=datetime.date(2026, 3, 31)
+            ),
+        )
+        assert len(result) == 1
+
+    def test_filter_date_range_excludes_outside_bounds(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = CreateService(repo, audit).execute(
+            _SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID
+        )
+        _set_created_at(repo, service.id, datetime.datetime(2026, 4, 1, tzinfo=datetime.timezone.utc))
+
+        from coiflink_api.domain.service import validate_service_filter
+
+        result = ListSalonServices(repo).execute(
+            _SALON_ID,
+            filter=validate_service_filter(
+                created_from=datetime.date(2026, 3, 1), created_to=datetime.date(2026, 3, 31)
+            ),
+        )
+        assert result == ()
+
+    def test_filter_combined_q_and_category(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        CreateService(repo, audit).execute(_SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID)
+        CreateService(repo, audit).execute(
+            _SALON_ID,
+            ServiceCommand(
+                name="Coupe femme",
+                price=decimal.Decimal("6000.00"),
+                duration_minutes=45,
+                category="Barbe",
+            ),
+            actor_user_id=_ACTOR_ID,
+        )
+
+        result = ListSalonServices(repo).execute(
+            _SALON_ID, filter=ServiceFilter(q="coupe", category="Coupe")
+        )
+        assert len(result) == 1
+        assert result[0].name == "Coupe homme"
+
+    def test_filter_no_match_returns_empty(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        CreateService(repo, audit).execute(_SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID)
+
+        result = ListSalonServices(repo).execute(
+            _SALON_ID, filter=ServiceFilter(q="inexistant")
+        )
         assert result == ()
 
 

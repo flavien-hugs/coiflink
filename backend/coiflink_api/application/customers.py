@@ -34,6 +34,7 @@ from coiflink_api.application.ports.customer_repository import CustomerRepositor
 from coiflink_api.domain.audit import ENTITY_TYPE_CUSTOMER, AuditAction, AuditEntry
 from coiflink_api.domain.customer import (
     Customer,
+    CustomerFilter,
     CustomerToCreate,
     normalize_customer_phone,
     normalize_gender,
@@ -200,16 +201,23 @@ class ListSalonCustomers:
         self._repository = repository
 
     def execute(
-        self, salon_id: uuid.UUID, *, limit: int, offset: int
+        self,
+        salon_id: uuid.UUID,
+        *,
+        filter: CustomerFilter,
+        limit: int,
+        offset: int,
     ) -> tuple[tuple[Customer, ...], int]:
-        """Retourne `(page, total)` — les plus récentes d'abord.
+        """Retourne `(page, total)` **sous le filtre donné** — les plus récentes d'abord.
 
         Le total accompagne la page pour permettre une pagination correcte côté
         interface sans seconde requête.
         """
 
-        page = self._repository.list_for_salon(salon_id, limit=limit, offset=offset)
-        total = self._repository.count_for_salon(salon_id)
+        page = self._repository.list_for_salon(
+            salon_id, filter=filter, limit=limit, offset=offset
+        )
+        total = self._repository.count_for_salon(salon_id, filter=filter)
         return page, total
 
 

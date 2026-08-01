@@ -259,6 +259,50 @@ class TestListTransactionsFilterClientId:
 
 
 # ---------------------------------------------------------------------------
+# Recherche texte (q) — nom client
+# ---------------------------------------------------------------------------
+
+
+class TestListTransactionsFilterQ:
+    def test_q_matches_client_name_substring(self) -> None:
+        pa = _make_payment(client_id=_CLIENT_A)
+        pb = _make_payment(client_id=_CLIENT_B)
+        repo = FakePaymentRepository(
+            payments=[pa, pb],
+            client_names={_CLIENT_A: "Awa Koné", _CLIENT_B: "Fatou Diabaté"},
+        )
+        f = validate_transaction_filter(q="koné")
+        page, total = ListTransactions(repo).execute(
+            _SALON_ID, filter=f, limit=50, offset=0
+        )
+        assert total == 1
+        assert page[0].payment.client_id == _CLIENT_A
+
+    def test_q_no_match_returns_empty(self) -> None:
+        p = _make_payment(client_id=_CLIENT_A)
+        repo = FakePaymentRepository(
+            payments=[p], client_names={_CLIENT_A: "Awa Koné"}
+        )
+        f = validate_transaction_filter(q="Ibrahim")
+        page, total = ListTransactions(repo).execute(
+            _SALON_ID, filter=f, limit=50, offset=0
+        )
+        assert total == 0
+        assert page == ()
+
+    def test_q_excludes_payment_without_client_name(self) -> None:
+        """Sans nom résolu, un paiement ne peut pas correspondre à une recherche `q`."""
+        p = _make_payment(client_id=None)
+        repo = FakePaymentRepository(payments=[p])
+        f = validate_transaction_filter(q="Koné")
+        page, total = ListTransactions(repo).execute(
+            _SALON_ID, filter=f, limit=50, offset=0
+        )
+        assert total == 0
+        assert page == ()
+
+
+# ---------------------------------------------------------------------------
 # Filtre par date (via created_at_from/created_at_to)
 # ---------------------------------------------------------------------------
 

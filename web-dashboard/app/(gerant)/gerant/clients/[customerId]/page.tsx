@@ -18,6 +18,7 @@ import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { CustomerNoteForm } from "@/src/adapters/ui/customer-note-form";
 import { CustomerServiceStatsPanel } from "@/src/adapters/ui/customer-service-stats";
 import { CustomerVisitHistory } from "@/src/adapters/ui/customer-visit-history";
+import { Tabs } from "@/src/adapters/ui/tabs";
 import { genderLabel, type Customer } from "@/src/domain/customer/customer";
 import type { CustomerServiceStats } from "@/src/domain/customer/stats";
 import type { VisitHistory } from "@/src/domain/customer/visit";
@@ -86,12 +87,28 @@ export default async function CustomerDetailPage({
   return (
     <Shell>
       <CustomerHeader customer={customerResult.customer} />
-      <PrivateNote
-        salonId={salon.id}
-        customer={customerResult.customer}
+      <Tabs
+        ariaLabel="Sections de la fiche client"
+        items={[
+          {
+            key: "note",
+            label: "Note privée",
+            content: (
+              <PrivateNote salonId={salon.id} customer={customerResult.customer} />
+            ),
+          },
+          {
+            key: "history",
+            label: "Historique des visites",
+            content: <History history={historyResult.history} />,
+          },
+          {
+            key: "favourites",
+            label: "Prestations préférées",
+            content: <FavouriteServices stats={stats} />,
+          },
+        ]}
       />
-      <History history={historyResult.history} />
-      <FavouriteServices stats={stats} />
     </Shell>
   );
 }
@@ -113,7 +130,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 function CustomerHeader({ customer }: { customer: Customer }) {
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">{customer.fullName}</h1>
+      <h1 className="font-serif text-2xl font-semibold tracking-tight text-ink">{customer.fullName}</h1>
       <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted">
         <span>{customer.phone ?? "Téléphone non renseigné"}</span>
         <span>{genderLabel(customer.gender)}</span>
@@ -134,13 +151,10 @@ function PrivateNote({
 }) {
   return (
     <div className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-6 shadow-soft">
-      <div>
-        <h2 className="text-lg font-semibold">Note privée</h2>
-        <p className="mt-1 max-w-prose text-sm text-muted">
-          Préférences, allergies, habitudes — ajoutez ou modifiez une note interne
-          au salon. Elle n&apos;est jamais visible du client.
-        </p>
-      </div>
+      <p className="max-w-prose text-sm text-muted">
+        Préférences, allergies, habitudes — ajoutez ou modifiez une note interne
+        au salon. Elle n&apos;est jamais visible du client.
+      </p>
       <CustomerNoteForm
         salonId={salonId}
         customerId={customer.id}
@@ -153,13 +167,10 @@ function PrivateNote({
 function History({ history }: { history: VisitHistory }) {
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h2 className="text-lg font-semibold">Historique des visites</h2>
-        <p className="mt-1 max-w-prose text-sm text-muted">
-          Les rendez-vous terminés de ce client, du plus récent au plus ancien, avec
-          leurs prestations et montants.
-        </p>
-      </div>
+      <p className="max-w-prose text-sm text-muted">
+        Les rendez-vous terminés de ce client, du plus récent au plus ancien, avec
+        leurs prestations et montants.
+      </p>
       <CustomerVisitHistory history={history} />
     </div>
   );
@@ -168,13 +179,10 @@ function History({ history }: { history: VisitHistory }) {
 function FavouriteServices({ stats }: { stats: CustomerServiceStats | null }) {
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h2 className="text-lg font-semibold">Prestations préférées</h2>
-        <p className="mt-1 max-w-prose text-sm text-muted">
-          Les prestations les plus fréquentes de ce client, calculées sur ses
-          rendez-vous terminés, de la plus fréquente à la moins fréquente.
-        </p>
-      </div>
+      <p className="max-w-prose text-sm text-muted">
+        Les prestations les plus fréquentes de ce client, calculées sur ses
+        rendez-vous terminés, de la plus fréquente à la moins fréquente.
+      </p>
       <CustomerServiceStatsPanel stats={stats} />
     </div>
   );

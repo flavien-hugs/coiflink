@@ -631,6 +631,79 @@ class TestListServices:
 
 
 # ---------------------------------------------------------------------------
+# GET /salons/{salon_id}/services — filtres (q, catégorie, plage de dates)
+# ---------------------------------------------------------------------------
+
+
+class TestListServices200WithFilters:
+    def test_filter_q_matches_name_substring(
+        self, manager_client: TestClient
+    ) -> None:
+        manager_client.post(
+            _services_url(_SALON_ID),
+            json={**_VALID_BODY, "name": "Coupe homme"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        manager_client.post(
+            _services_url(_SALON_ID),
+            json={**_VALID_BODY, "name": "Barbe"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+
+        r = manager_client.get(
+            _services_url(_SALON_ID),
+            params={"q": "coupe"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        data = r.json()
+        assert len(data) == 1
+        assert data[0]["name"] == "Coupe homme"
+
+    def test_filter_category_exact_match(self, manager_client: TestClient) -> None:
+        manager_client.post(
+            _services_url(_SALON_ID),
+            json={**_VALID_BODY, "name": "Coupe homme", "category": "Coupe"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        manager_client.post(
+            _services_url(_SALON_ID),
+            json={**_VALID_BODY, "name": "Barbe", "category": "Barbe"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+
+        r = manager_client.get(
+            _services_url(_SALON_ID),
+            params={"category": "Coupe"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        data = r.json()
+        assert len(data) == 1
+        assert data[0]["category"] == "Coupe"
+
+    def test_created_from_gt_created_to_returns_422(
+        self, manager_client: TestClient
+    ) -> None:
+        r = manager_client.get(
+            _services_url(_SALON_ID),
+            params={"created_from": "2026-03-31", "created_to": "2026-03-01"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+
+    def test_422_message_does_not_repeat_invalid_value(
+        self, manager_client: TestClient
+    ) -> None:
+        r = manager_client.get(
+            _services_url(_SALON_ID),
+            params={"created_from": "2026-03-31", "created_to": "2026-03-01"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        detail = r.json().get("detail", "")
+        assert "2026-03-31" not in detail
+        assert "2026-03-01" not in detail
+
+
+# ---------------------------------------------------------------------------
 # GET /salons/{salon_id}/services/{service_id} — consultation
 # ---------------------------------------------------------------------------
 

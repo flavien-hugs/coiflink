@@ -15,6 +15,7 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
+import { CheckIcon, TrashIcon } from "@/src/adapters/ui/action-icons";
 import { FieldLabel } from "@/src/adapters/ui/field-label";
 import { NOTES_MAX_LENGTH, validateNote } from "@/src/domain/customer/customer";
 
@@ -127,20 +128,22 @@ export function CustomerNoteForm({
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          className="inline-flex cursor-pointer items-center justify-center rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
           disabled={pending}
         >
+          {pending ? null : <CheckIcon className="shrink-0" />}
           {pending ? "Enregistrement…" : "Enregistrer la note"}
         </button>
         <button
           type="button"
-          className="text-sm font-medium text-muted hover:text-foreground disabled:opacity-60"
+          className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground disabled:opacity-60"
           onClick={() => {
             setNotes("");
             void save("");
           }}
           disabled={pending || notes.trim().length === 0}
         >
+          <TrashIcon className="shrink-0" />
           Effacer
         </button>
       </div>

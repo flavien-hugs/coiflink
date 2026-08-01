@@ -30,18 +30,27 @@ Nettoyage : les données de test sont supprimées avant et après chaque test
 from __future__ import annotations
 
 import datetime
+import decimal
 import os
+import uuid
 from collections.abc import Generator
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from coiflink_api.adapters.outbound.persistence.session import get_engine
+from coiflink_api.adapters.outbound.persistence.service_repository import (
+    SqlServiceRepository,
+)
+from coiflink_api.adapters.outbound.persistence.session import (
+    get_engine,
+    get_sessionmaker,
+)
 from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenService
 from coiflink_api.adapters.outbound.security.login_rate_limiter_memory import (
     InMemoryLoginRateLimiter,
 )
+from coiflink_api.domain.service import ServiceFilter, validate_service_filter
 from coiflink_api.main import app as main_app
 
 # ─── Constantes ───────────────────────────────────────────────────────────────
@@ -200,6 +209,16 @@ def _services_url(salon_id: str) -> str:
 
 def _service_url(salon_id: str, service_id: str) -> str:
     return f"/salons/{salon_id}/services/{service_id}"
+
+
+def _setup_manager_salon(
+    client: TestClient, *, phone: str = _PHONE_A_LOCAL, name: str = _SALON_NAME_A
+) -> tuple[str, str]:
+    """Inscrit un gérant, se connecte, crée son salon. Retourne `(token, salon_id)`."""
+    _register_manager(client, phone=phone)
+    token = _login(client, phone=phone)
+    salon_id = _create_salon(client, token, name=name)
+    return token, salon_id
 
 
 def _count_audit_entries(service_id: str, action: str | None = None) -> int:
@@ -792,3 +811,176 @@ class TestServiceCrudE2E:
 
         resp = _e2e_client.get(_services_url(salon_id))
         assert resp.status_code == 401
+
+
+# ─── Groupe e2e : `SqlServiceRepository.list_for_salon` + `ServiceFilter` réel ──
+
+
+@pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
+class TestServiceRepositoryFilterE2E:
+    """Filtrage `list_for_salon` contre PostgreSQL réel (collation, échappement `LIKE`).
+
+    Appelle `SqlServiceRepository.list_for_salon` **directement** (une `Session`
+    réelle) — contourne le router pour exercer le chemin SQL du filtre : collation
+    `ILIKE` réelle, échappement des métacaractères `%`/`_` (`escape_like`), et
+    inclusivité des bornes de date converties en UTC.
+    """
+
+    def _create(
+        self,
+        session,  # type: ignore[no-untyped-def]
+        salon_id: uuid.UUID,
+        *,
+        name: str,
+        category: str | None = None,
+    ):
+        from coiflink_api.domain.service import ServiceToCreate
+
+        repository = SqlServiceRepository(session)
+        service = repository.create(
+            ServiceToCreate(
+                salon_id=salon_id,
+                name=name,
+                price=decimal.Decimal("5000.00"),
+                duration_minutes=30,
+                category=category,
+            )
+        )
+        session.commit()
+        return service
+
+    def test_ilike_matches_case_insensitive_substring(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """`q` recherche une sous-chaîne du nom, insensible à la casse (collation réelle)."""
+        _, salon = _setup_manager_salon(_e2e_client)
+        salon_id = uuid.UUID(salon)
+
+        sessionmaker_ = get_sessionmaker()
+        session = sessionmaker_()
+        try:
+            self._create(session, salon_id, name="Coupe Homme")
+            self._create(session, salon_id, name="Barbe")
+
+            repository = SqlServiceRepository(session)
+            result = repository.list_for_salon(
+                salon_id, filter=validate_service_filter(q="COUPE"), include_inactive=True
+            )
+        finally:
+            session.close()
+
+        assert len(result) == 1
+        assert result[0].name == "Coupe Homme"
+
+    def test_literal_percent_in_search_is_escaped(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Un `%` littéral dans `q` ne se comporte pas comme un joker `LIKE`.
+
+        Sans échappement, `%` matcherait n'importe quelle chaîne : une prestation
+        nommée « 50% réduction » doit être trouvée par une recherche `50%`
+        (traitée comme littéral) et une recherche `%` seule ne doit **pas**
+        retourner toutes les prestations du salon.
+        """
+        _, salon = _setup_manager_salon(_e2e_client)
+        salon_id = uuid.UUID(salon)
+
+        sessionmaker_ = get_sessionmaker()
+        session = sessionmaker_()
+        try:
+            self._create(session, salon_id, name="50% réduction")
+            self._create(session, salon_id, name="Coupe Homme")
+            self._create(session, salon_id, name="Barbe")
+
+            repository = SqlServiceRepository(session)
+            # Recherche du `%` littéral : ne matche QUE la prestation qui le contient.
+            literal_result = repository.list_for_salon(
+                salon_id, filter=validate_service_filter(q="50%"), include_inactive=True
+            )
+            # Une recherche `_` seule (joker `LIKE` d'un caractère) ne doit pas non
+            # plus se comporter comme un joker : aucune prestation ne contient un
+            # underscore littéral, donc aucun résultat.
+            underscore_result = repository.list_for_salon(
+                salon_id, filter=validate_service_filter(q="_"), include_inactive=True
+            )
+        finally:
+            session.close()
+
+        assert len(literal_result) == 1
+        assert literal_result[0].name == "50% réduction"
+        assert underscore_result == ()
+
+    def test_date_range_bounds_are_inclusive(self, _e2e_client: TestClient) -> None:
+        """`created_from`/`created_to` incluent le jour civil complet (bornes inclusives)."""
+        _, salon = _setup_manager_salon(_e2e_client)
+        salon_id = uuid.UUID(salon)
+
+        sessionmaker_ = get_sessionmaker()
+        session = sessionmaker_()
+        try:
+            service = self._create(session, salon_id, name="Coupe Homme")
+            created_day = service.created_at.date()
+
+            repository = SqlServiceRepository(session)
+            # Le jour exact de création (borne basse == borne haute) doit matcher.
+            same_day_result = repository.list_for_salon(
+                salon_id,
+                filter=validate_service_filter(
+                    created_from=created_day, created_to=created_day
+                ),
+                include_inactive=True,
+            )
+            # Un jour strictement avant ne doit rien retourner.
+            before_day = created_day - datetime.timedelta(days=1)
+            before_result = repository.list_for_salon(
+                salon_id,
+                filter=validate_service_filter(created_from=before_day, created_to=before_day),
+                include_inactive=True,
+            )
+        finally:
+            session.close()
+
+        assert len(same_day_result) == 1
+        assert same_day_result[0].id == service.id
+        assert before_result == ()
+
+    def test_category_exact_match_against_real_db(self, _e2e_client: TestClient) -> None:
+        """`category` est comparée en égalité exacte (aucune tolérance de casse en base)."""
+        _, salon = _setup_manager_salon(_e2e_client)
+        salon_id = uuid.UUID(salon)
+
+        sessionmaker_ = get_sessionmaker()
+        session = sessionmaker_()
+        try:
+            self._create(session, salon_id, name="Coupe Homme", category="Coupe")
+            self._create(session, salon_id, name="Barbe", category="Barbe")
+
+            repository = SqlServiceRepository(session)
+            result = repository.list_for_salon(
+                salon_id, filter=validate_service_filter(category="Coupe"), include_inactive=True
+            )
+        finally:
+            session.close()
+
+        assert len(result) == 1
+        assert result[0].category == "Coupe"
+
+    def test_no_filter_returns_all_salon_services(self, _e2e_client: TestClient) -> None:
+        """`ServiceFilter()` (vide) ne restreint rien — comportement inchangé (§scope)."""
+        _, salon = _setup_manager_salon(_e2e_client)
+        salon_id = uuid.UUID(salon)
+
+        sessionmaker_ = get_sessionmaker()
+        session = sessionmaker_()
+        try:
+            self._create(session, salon_id, name="Coupe Homme")
+            self._create(session, salon_id, name="Barbe")
+
+            repository = SqlServiceRepository(session)
+            result = repository.list_for_salon(
+                salon_id, filter=ServiceFilter(), include_inactive=True
+            )
+        finally:
+            session.close()
+
+        assert len(result) == 2

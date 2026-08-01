@@ -2,8 +2,9 @@
 // (hexagonal, ADR-0008), TypeScript pur, testable sans React. **Parité stricte**
 // avec le backend (`coiflink_api/domain/transaction.py`, US-5.2 #35) : la liste
 // filtrable des paiements d'un salon par **date, client, montant, mode de
-// paiement**. Le filtrage est **serveur** (clauses SQL) ; ce module se contente
-// de sérialiser les critères de filtre en query params et de projeter la réponse.
+// paiement, recherche libre (`q`)**. Le filtrage est **serveur** (clauses SQL) ;
+// ce module se contente de sérialiser les critères de filtre en query params et
+// de projeter la réponse.
 //
 // Une transaction est un `Payment` (montant **brut** en chaîne décimale, statut :
 // `ADJUSTED` signale une correction, cohérent avec le journal #34) enrichi du
@@ -47,6 +48,9 @@ export interface TransactionFilterInput {
   amountMin?: string | null;
   amountMax?: string | null;
   paymentMethod?: string | null;
+  // Recherche libre (nom du client lié, sous-chaîne insensible à la casse) ;
+  // résolue **serveur** (clause SQL), jamais en mémoire côté front.
+  q?: string | null;
 }
 
 // Page demandée (bornes de pagination), optionnelle.
@@ -93,6 +97,9 @@ export function serializeTransactionFilter(
   if (PAYMENT_METHOD_VALUES.includes(method as PaymentMethod)) {
     params.set("payment_method", method);
   }
+
+  const q = cleaned(filter.q);
+  if (q) params.set("q", q);
 
   if (page.limit != null) params.set("limit", String(page.limit));
   if (page.offset != null) params.set("offset", String(page.offset));

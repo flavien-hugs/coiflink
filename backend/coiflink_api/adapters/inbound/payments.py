@@ -505,6 +505,9 @@ def list_transactions(
     amount_min: Annotated[decimal.Decimal | None, Query(ge=0)] = None,
     amount_max: Annotated[decimal.Decimal | None, Query(ge=0)] = None,
     payment_method: Annotated[str | None, Query()] = None,
+    q: Annotated[
+        str | None, Query(description="Recherche par nom client (sous-chaîne)")
+    ] = None,
     limit: Annotated[
         int,
         Query(ge=PAYMENTS_LIMIT_MIN, le=PAYMENTS_LIMIT_MAX),
@@ -515,13 +518,14 @@ def list_transactions(
 
     Filtres **optionnels** combinés en **ET** : plage de dates inclusive
     (`date_from`/`date_to`, jour civil `Africa/Abidjan`), `client_id`, plage de
-    montants (`amount_min`/`amount_max`), `payment_method` (enum fermé). Les
-    critères deviennent des clauses `WHERE` SQL (filtrage **serveur**, garde de
-    coût §12.1) ; un filtre invalide → `422` (`InvalidTransactionFilter`), message
-    métier neutre. Isolation §11.2 en profondeur : jamais de transaction d'un
-    autre salon ; un `client_id` étranger → **liste vide** (aucun oracle). Lecture
-    seule : aucune écriture, aucun audit. Source de vérité `payments` : montant,
-    horodatage et auteur **concordent** avec la ligne `PAYMENT` du journal (#34).
+    montants (`amount_min`/`amount_max`), `payment_method` (enum fermé), `q`
+    (nom client, sous-chaîne insensible à la casse). Les critères deviennent des
+    clauses `WHERE` SQL (filtrage **serveur**, garde de coût §12.1) ; un filtre
+    invalide → `422` (`InvalidTransactionFilter`), message métier neutre.
+    Isolation §11.2 en profondeur : jamais de transaction d'un autre salon ; un
+    `client_id` étranger → **liste vide** (aucun oracle). Lecture seule : aucune
+    écriture, aucun audit. Source de vérité `payments` : montant, horodatage et
+    auteur **concordent** avec la ligne `PAYMENT` du journal (#34).
     """
 
     try:
@@ -532,6 +536,7 @@ def list_transactions(
             amount_min=amount_min,
             amount_max=amount_max,
             payment_method=payment_method,
+            q=q,
         )
     except _VALIDATION_ERRORS as exc:
         raise HTTPException(

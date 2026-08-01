@@ -14,6 +14,7 @@ import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { OpeningHoursForm } from "@/src/adapters/ui/opening-hours-form";
 import { SalonDetails as SalonDetailsCard } from "@/src/adapters/ui/salon-details";
 import { SalonForm } from "@/src/adapters/ui/salon-form";
+import { Tabs } from "@/src/adapters/ui/tabs";
 import { isBookable, type Salon } from "@/src/domain/salon/salon";
 
 export default async function ParametresPage() {
@@ -47,7 +48,7 @@ export default async function ParametresPage() {
 function Header() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Paramètres du salon</h1>
+      <h1 className="font-serif text-2xl font-semibold tracking-tight text-ink">Paramètres du salon</h1>
       <p className="mt-1 text-sm text-muted">
         Informations générales, localisation et photos de votre salon.
       </p>
@@ -91,17 +92,30 @@ function SalonDetails({ salon }: { salon: Salon }) {
         </div>
       ) : null}
 
-      <SalonDetailsCard salon={salon} />
-
-      <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
-        <h2 className="text-lg font-semibold">Horaires d&apos;ouverture</h2>
-        <p className="mt-1 mb-5 max-w-prose text-sm text-muted">
-          Définissez vos horaires par jour (avec pauses éventuelles), vos jours fermés
-          et vos jours exceptionnels. Enregistrer des horaires rend votre salon
-          réservable par les clients.
-        </p>
-        <OpeningHoursForm salonId={salon.id} openingHours={salon.openingHours} />
-      </div>
+      <Tabs
+        ariaLabel="Sections des paramètres du salon"
+        items={[
+          {
+            key: "info",
+            label: "Informations générales",
+            content: <SalonDetailsCard salon={salon} />,
+          },
+          {
+            key: "hours",
+            label: "Horaires d'ouverture",
+            content: (
+              <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
+                <p className="mb-5 max-w-prose text-sm text-muted">
+                  Définissez vos horaires par jour (avec pauses éventuelles), vos
+                  jours fermés et vos jours exceptionnels. Enregistrer des horaires
+                  rend votre salon réservable par les clients.
+                </p>
+                <OpeningHoursForm salonId={salon.id} openingHours={salon.openingHours} />
+              </div>
+            ),
+          },
+        ]}
+      />
     </div>
   );
 }

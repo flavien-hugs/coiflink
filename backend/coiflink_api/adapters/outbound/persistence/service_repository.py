@@ -20,13 +20,19 @@ désactiver la prestation d'un autre salon même si l'`id` est deviné (miroir d
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.errors import ServiceNotFound
-from coiflink_api.domain.service import Service, ServiceToCreate, ServiceUpdate
+from coiflink_api.domain.service import (
+    Service,
+    ServiceFilter,
+    ServiceToCreate,
+    ServiceUpdate,
+)
 
 
 class SqlServiceRepository:
@@ -60,13 +66,47 @@ class SqlServiceRepository:
         return _to_domain(row) if row is not None else None
 
     def list_for_salon(
-        self, salon_id: uuid.UUID, *, include_inactive: bool = True
+        self, salon_id: uuid.UUID, *, filter: ServiceFilter, include_inactive: bool = True
     ) -> tuple[Service, ...]:
-        stmt = select(models.Service).where(models.Service.salon_id == salon_id)
+        stmt = select(models.Service).where(*self._filter_clauses(salon_id, filter))
         if not include_inactive:
             stmt = stmt.where(models.Service.is_active.is_(True))
         stmt = stmt.order_by(models.Service.created_at.desc())
         return tuple(_to_domain(row) for row in self._session.scalars(stmt).all())
+
+    @staticmethod
+    def _filter_clauses(
+        salon_id: uuid.UUID, filter: ServiceFilter
+    ) -> Sequence[ColumnElement[bool]]:
+        """Clauses `WHERE` : `salon_id` inconditionnel + critères présents (ET).
+
+        Miroir de `SqlCustomerRepository._filter_clauses` — pas de `count`
+        associé ici, la liste des prestations n'est pas paginée (portée
+        volontairement hors périmètre).
+
+        `escape_like` est importé **localement** (et non en tête de module) :
+        `salon_catalog_repository` importe déjà `service_repository._to_domain`
+        (réutilisation du mapping ORM → domaine), un import de premier niveau dans
+        l'autre sens créerait un cycle d'import (les deux modules se référencent
+        avant que le symbole visé ne soit défini).
+        """
+
+        from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import (
+            escape_like,
+        )
+
+        clauses: list[ColumnElement[bool]] = [models.Service.salon_id == salon_id]
+        if filter.created_at_from is not None:
+            clauses.append(models.Service.created_at >= filter.created_at_from)
+        if filter.created_at_to is not None:
+            clauses.append(models.Service.created_at <= filter.created_at_to)
+        if filter.category is not None:
+            clauses.append(models.Service.category == filter.category)
+        if filter.q is not None:
+            clauses.append(
+                models.Service.name.ilike(f"%{escape_like(filter.q)}%", escape="\\")
+            )
+        return clauses
 
     def update(
         self, salon_id: uuid.UUID, service_id: uuid.UUID, changes: ServiceUpdate

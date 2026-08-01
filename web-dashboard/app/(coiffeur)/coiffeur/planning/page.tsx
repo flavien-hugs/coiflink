@@ -93,7 +93,7 @@ export default async function CoiffeurPlanningPage({
 function Header() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Mon planning</h1>
+      <h1 className="font-serif text-2xl font-semibold tracking-tight text-ink">Mon planning</h1>
       <p className="mt-1 text-sm text-muted">
         Les rendez-vous qui vous sont assignés, par jour, semaine ou mois — groupés par statut.
       </p>

@@ -33,6 +33,7 @@ from coiflink_api.application.customers import (
     UpdateCustomerNote,
 )
 from coiflink_api.domain.audit import AuditAction, AuditEntry, ENTITY_TYPE_CUSTOMER
+from coiflink_api.domain.customer import CustomerFilter
 from coiflink_api.domain.enums import AppointmentStatus
 from coiflink_api.domain.errors import (
     CustomerAlreadyExists,
@@ -62,6 +63,9 @@ _VALID_COMMAND = CustomerCommand(
 )
 
 _MIN_COMMAND = CustomerCommand(full_name="Awa Koné")
+
+# Filtre vide (pas de contrainte) — mirroir de `_NO_FILTER` des tests de transactions.
+_NO_FILTER = CustomerFilter()
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +341,7 @@ class TestGetCustomer:
 class TestListSalonCustomers:
     def test_empty_repository_returns_empty_page(self) -> None:
         repo = FakeCustomerRepository()
-        page, total = ListSalonCustomers(repo).execute(_SALON_ID, limit=50, offset=0)
+        page, total = ListSalonCustomers(repo).execute(_SALON_ID, filter=_NO_FILTER, limit=50, offset=0)
         assert page == ()
         assert total == 0
 
@@ -347,7 +351,7 @@ class TestListSalonCustomers:
         CreateCustomer(repo, audit).execute(
             _SALON_ID, _MIN_COMMAND, actor_user_id=_ACTOR_ID
         )
-        page, total = ListSalonCustomers(repo).execute(_SALON_ID, limit=50, offset=0)
+        page, total = ListSalonCustomers(repo).execute(_SALON_ID, filter=_NO_FILTER, limit=50, offset=0)
         assert len(page) == 1
         assert total == 1
         assert page[0].salon_id == _SALON_ID
@@ -360,7 +364,7 @@ class TestListSalonCustomers:
             _SALON_ID, _MIN_COMMAND, actor_user_id=_ACTOR_ID
         )
         page, total = ListSalonCustomers(repo).execute(
-            _OTHER_SALON_ID, limit=50, offset=0
+            _OTHER_SALON_ID, filter=_NO_FILTER, limit=50, offset=0
         )
         assert page == ()
         assert total == 0
@@ -373,7 +377,7 @@ class TestListSalonCustomers:
             CreateCustomer(repo, audit).execute(
                 _SALON_ID, cmd, actor_user_id=_ACTOR_ID
             )
-        page, total = ListSalonCustomers(repo).execute(_SALON_ID, limit=2, offset=0)
+        page, total = ListSalonCustomers(repo).execute(_SALON_ID, filter=_NO_FILTER, limit=2, offset=0)
         assert len(page) == 2
         assert total == 5
 
@@ -385,7 +389,7 @@ class TestListSalonCustomers:
             CreateCustomer(repo, audit).execute(
                 _SALON_ID, cmd, actor_user_id=_ACTOR_ID
             )
-        page, total = ListSalonCustomers(repo).execute(_SALON_ID, limit=50, offset=2)
+        page, total = ListSalonCustomers(repo).execute(_SALON_ID, filter=_NO_FILTER, limit=50, offset=2)
         assert len(page) == 1
         assert total == 3
 
@@ -401,8 +405,8 @@ class TestListSalonCustomers:
         CreateCustomer(repo, audit).execute(
             _OTHER_SALON_ID, CustomerCommand(full_name="C"), actor_user_id=_ACTOR_ID
         )
-        _, total_a = ListSalonCustomers(repo).execute(_SALON_ID, limit=50, offset=0)
-        _, total_b = ListSalonCustomers(repo).execute(_OTHER_SALON_ID, limit=50, offset=0)
+        _, total_a = ListSalonCustomers(repo).execute(_SALON_ID, filter=_NO_FILTER, limit=50, offset=0)
+        _, total_b = ListSalonCustomers(repo).execute(_OTHER_SALON_ID, filter=_NO_FILTER, limit=50, offset=0)
         assert total_a == 2
         assert total_b == 1
 

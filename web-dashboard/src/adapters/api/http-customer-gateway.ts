@@ -184,6 +184,14 @@ export function createHttpCustomerGateway(
       const query = new URLSearchParams();
       if (options.limit != null) query.set("limit", String(options.limit));
       if (options.offset != null) query.set("offset", String(options.offset));
+      const q = (options.q ?? "").trim();
+      if (q) query.set("q", q);
+      const gender = (options.gender ?? "").trim();
+      if (gender) query.set("gender", gender);
+      const createdFrom = (options.createdFrom ?? "").trim();
+      if (createdFrom) query.set("created_from", createdFrom);
+      const createdTo = (options.createdTo ?? "").trim();
+      if (createdTo) query.set("created_to", createdTo);
       const queryString = query.toString();
       const suffix = queryString ? `?${queryString}` : "";
 
@@ -210,6 +218,9 @@ export function createHttpCustomerGateway(
       }
       if (response.status === 403) {
         return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 422) {
+        return { ok: false, reason: "invalid" };
       }
       return { ok: false, reason: "unavailable" };
     },

@@ -648,6 +648,84 @@ class TestListCustomers:
 
 
 # ---------------------------------------------------------------------------
+# GET /salons/{salon_id}/customers — filtres (q, genre, plage de dates)
+# ---------------------------------------------------------------------------
+
+
+class TestListCustomers200WithFilters:
+    def test_filter_q_matches_name_substring(
+        self, manager_client: TestClient, customer_repo: FakeCustomerRepository, audit_log: FakeAuditLog
+    ) -> None:
+        from coiflink_api.application.customers import CreateCustomer, CustomerCommand
+
+        CreateCustomer(customer_repo, audit_log).execute(
+            _SALON_ID, CustomerCommand(full_name="Awa Koné"), actor_user_id=_MANAGER_ID
+        )
+        CreateCustomer(customer_repo, audit_log).execute(
+            _SALON_ID, CustomerCommand(full_name="Fatou Diabaté"), actor_user_id=_MANAGER_ID
+        )
+
+        r = manager_client.get(
+            _customers_url(_SALON_ID),
+            params={"q": "koné"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        data = r.json()
+        assert data["total"] == 1
+        assert data["items"][0]["full_name"] == "Awa Koné"
+
+    def test_filter_gender_exact_match(
+        self, manager_client: TestClient, customer_repo: FakeCustomerRepository, audit_log: FakeAuditLog
+    ) -> None:
+        from coiflink_api.application.customers import CreateCustomer, CustomerCommand
+
+        CreateCustomer(customer_repo, audit_log).execute(
+            _SALON_ID,
+            CustomerCommand(full_name="Awa Koné", gender="FEMALE"),
+            actor_user_id=_MANAGER_ID,
+        )
+        CreateCustomer(customer_repo, audit_log).execute(
+            _SALON_ID,
+            CustomerCommand(full_name="Ibrahim Touré", gender="MALE"),
+            actor_user_id=_MANAGER_ID,
+        )
+
+        r = manager_client.get(
+            _customers_url(_SALON_ID),
+            params={"gender": "FEMALE"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        data = r.json()
+        assert data["total"] == 1
+        assert data["items"][0]["gender"] == "FEMALE"
+
+    def test_unknown_gender_returns_422(self, manager_client: TestClient) -> None:
+        r = manager_client.get(
+            _customers_url(_SALON_ID),
+            params={"gender": "UNKNOWN"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+
+    def test_created_from_gt_created_to_returns_422(self, manager_client: TestClient) -> None:
+        r = manager_client.get(
+            _customers_url(_SALON_ID),
+            params={"created_from": "2026-03-31", "created_to": "2026-03-01"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+
+    def test_422_message_does_not_repeat_invalid_value(self, manager_client: TestClient) -> None:
+        r = manager_client.get(
+            _customers_url(_SALON_ID),
+            params={"gender": "UNKNOWN_GENDER_VALUE"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        detail = r.json().get("detail", "")
+        assert "UNKNOWN_GENDER_VALUE" not in detail
+
+
+# ---------------------------------------------------------------------------
 # GET /salons/{salon_id}/customers/{customer_id} — fiche individuelle
 # ---------------------------------------------------------------------------
 

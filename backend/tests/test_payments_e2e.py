@@ -24,7 +24,10 @@ Groupe TestListTransactionsE2E (PostgreSQL requis, US-5.2, #35) :
     Scénarios : isolation inter-salons, tri plus-récent-d'abord, filtres
     (mode/montant), résolution du `client_name` par jointure, pagination
     (`limit`/`offset`/`total` sous le même filtre), cohérence avec la ligne
-    `PAYMENT` du journal de caisse (#34).
+    `PAYMENT` du journal de caisse (#34) ; recherche texte `q` sur le nom client
+    (#40) : échappement `LIKE` d'un `%` littéral, `count_for_salon` cohérent avec
+    `list_for_salon` sous jointure `users` (régression du COUNT), exclusion d'un
+    paiement walk-in (`client_id=None`, aucun nom à comparer).
 
 Prérequis :
     cd backend
@@ -40,17 +43,25 @@ from __future__ import annotations
 import datetime
 import decimal
 import os
+import uuid
 from collections.abc import Generator
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from coiflink_api.adapters.outbound.persistence.session import get_engine
+from coiflink_api.adapters.outbound.persistence.payment_repository import (
+    SqlPaymentRepository,
+)
+from coiflink_api.adapters.outbound.persistence.session import (
+    get_engine,
+    get_sessionmaker,
+)
 from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenService
 from coiflink_api.adapters.outbound.security.login_rate_limiter_memory import (
     InMemoryLoginRateLimiter,
 )
+from coiflink_api.domain.transaction import validate_transaction_filter
 from coiflink_api.main import app as main_app
 
 # ─── Constantes ───────────────────────────────────────────────────────────────
@@ -65,6 +76,8 @@ _E2E_PHONE_PREFIX = "+225075999"
 _PHONE_A_LOCAL = "0759990001"   # gérant A — parcours principal
 _PHONE_B_LOCAL = "0759990002"   # gérant B — isolation inter-salons
 _PHONE_CLIENT_LOCAL = "0759990003"   # client — résolution client_name (US-5.2)
+_PHONE_CLIENT_Q_MATCH_LOCAL = "0759990004"  # client au nom portant un "%" littéral (#40)
+_PHONE_CLIENT_Q_OTHER_LOCAL = "0759990005"  # client au nom proche, sans "%" (contrôle négatif, #40)
 _PASSWORD = "payments-e2e-strong-password-2024"
 
 _SALON_NAME_A = "e2e-salon-payments-a"
@@ -200,6 +213,16 @@ def _register_client(client: TestClient, *, phone: str = _PHONE_CLIENT_LOCAL) ->
     resp = client.post(
         "/auth/register",
         json={"full_name": "Client E2E Paiements", "phone": phone, "password": _PASSWORD},
+    )
+    assert resp.status_code == 201, f"Inscription client échouée : {resp.text}"
+    return resp.json()["id"]
+
+
+def _register_named_client(client: TestClient, *, phone: str, full_name: str) -> str:
+    """Inscrit un compte client avec un `full_name` **personnalisé** (filtre `q`, #40)."""
+    resp = client.post(
+        "/auth/register",
+        json={"full_name": full_name, "phone": phone, "password": _PASSWORD},
     )
     assert resp.status_code == 201, f"Inscription client échouée : {resp.text}"
     return resp.json()["id"]
@@ -954,7 +977,146 @@ class TestListTransactionsE2E:
         assert decimal.Decimal(transaction["amount"]) == journal_entry["amount"]
         assert transaction["status"] == "VALIDATED"
 
-    # ── Parcours 7 : deny-by-default (ADR-0015) ───────────────────────────────
+    # ── Parcours 7 : recherche texte `q` — chemin SQL réel, jointure `users` (#40) ─
+
+    def _setup_q_filter_payments(
+        self, client: TestClient
+    ) -> tuple[str, str, str, str, str]:
+        """Monte gérant + salon + 3 paiements : client au nom "%", client proche, walk-in.
+
+        Retourne `(token, salon_id, matching_payment_id, other_payment_id,
+        walk_in_payment_id)`.
+        """
+        _register_manager(client)
+        token = _login(client)
+        salon_id = _create_salon(client, token)
+
+        matching_client_id = _register_named_client(
+            client, phone=_PHONE_CLIENT_Q_MATCH_LOCAL, full_name="Réduction 20% Camara"
+        )
+        other_client_id = _register_named_client(
+            client, phone=_PHONE_CLIENT_Q_OTHER_LOCAL, full_name="Session 20 ans Camara"
+        )
+
+        service_matching = _create_service(client, token, salon_id, price="1000.00")
+        service_other = _create_service(client, token, salon_id, price="2000.00")
+        service_walk_in = _create_service(client, token, salon_id, price="3000.00")
+
+        matching_payment_id = client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": "1000.00",
+                "payment_method": "CASH",
+                "service_id": service_matching,
+                "client_id": matching_client_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()["id"]
+        other_payment_id = client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": "2000.00",
+                "payment_method": "CASH",
+                "service_id": service_other,
+                "client_id": other_client_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()["id"]
+        # Paiement walk-in : aucun `client_id`, donc aucun nom à comparer sous `q`.
+        walk_in_payment_id = client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": "3000.00",
+                "payment_method": "CASH",
+                "service_id": service_walk_in,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()["id"]
+
+        return token, salon_id, matching_payment_id, other_payment_id, walk_in_payment_id
+
+    def test_q_filter_escapes_percent_literal_in_client_name(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """`q="20%"` ne matche que le nom contenant **littéralement** "20%" (échappement `LIKE`).
+
+        Sans `escape_like`, `%` serait un joker : le motif `%20%%` équivaudrait à
+        « contient 20 » et retournerait aussi « Session 20 ans Camara », qui ne
+        porte pourtant pas le `%`.
+        """
+        token, salon_id, matching_payment_id, other_payment_id, _walk_in = (
+            self._setup_q_filter_payments(_e2e_client)
+        )
+
+        page = _list_transactions(_e2e_client, token, salon_id, q="20%")
+
+        ids = [item["id"] for item in page["items"]]
+        assert ids == [matching_payment_id]
+        assert other_payment_id not in ids
+        assert page["items"][0]["client_name"] == "Réduction 20% Camara"
+
+    def test_count_for_salon_with_q_matches_list_length(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """`count_for_salon` sous `q` égale `len(list_for_salon(...))` (régression jointure du COUNT, #40).
+
+        Avant #40, `count_for_salon` ne joignait pas `users` : ajouter la clause `q`
+        (qui référence `User.full_name`) sans étendre la jointure du COUNT ferait
+        échouer la requête, ou — join mal posé — fausserait silencieusement le
+        total. Appel **direct** du dépôt (nouvelle `Session`) pour isoler
+        `SqlPaymentRepository` du routeur HTTP.
+        """
+        token, salon_id, matching_payment_id, other_payment_id, _walk_in = (
+            self._setup_q_filter_payments(_e2e_client)
+        )
+        salon_uuid = uuid.UUID(salon_id)
+        transaction_filter = validate_transaction_filter(q="Camara")
+
+        session = get_sessionmaker()()
+        try:
+            repository = SqlPaymentRepository(session)
+            results = repository.list_for_salon(
+                salon_uuid, filter=transaction_filter, limit=50, offset=0
+            )
+            total = repository.count_for_salon(salon_uuid, filter=transaction_filter)
+        finally:
+            session.close()
+
+        result_ids = {str(transaction.payment.id) for transaction in results}
+        assert result_ids == {matching_payment_id, other_payment_id}
+        assert total == len(results) == 2
+
+    def test_payment_without_client_excluded_when_q_filter_set(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Un paiement walk-in (`client_id=None`) n'a pas de nom à comparer → exclu sous `q`."""
+        token, salon_id, matching_payment_id, other_payment_id, walk_in_payment_id = (
+            self._setup_q_filter_payments(_e2e_client)
+        )
+        salon_uuid = uuid.UUID(salon_id)
+
+        session = get_sessionmaker()()
+        try:
+            repository = SqlPaymentRepository(session)
+            filtered = repository.list_for_salon(
+                salon_uuid,
+                filter=validate_transaction_filter(q="Camara"),
+                limit=50,
+                offset=0,
+            )
+            unfiltered_total = repository.count_for_salon(
+                salon_uuid, filter=validate_transaction_filter()
+            )
+        finally:
+            session.close()
+
+        filtered_ids = {str(transaction.payment.id) for transaction in filtered}
+        assert walk_in_payment_id not in filtered_ids
+        assert filtered_ids == {matching_payment_id, other_payment_id}
+        # Le total non filtré compte bien les 3 paiements, walk-in inclus.
+        assert unfiltered_total == 3
+
+    # ── Parcours 8 : deny-by-default (ADR-0015) ───────────────────────────────
 
     def test_no_token_returns_401(self, _e2e_client: TestClient) -> None:
         """GET sans jeton → 401 (deny-by-default, ADR-0015)."""

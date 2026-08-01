@@ -5,34 +5,18 @@
 
 import { useEffect, useState } from "react";
 
-import { displayRoleLabel, type Role } from "@/src/domain/auth/role";
-import { SITE_NAME } from "@/src/domain/site";
+import { BrandMark, Wordmark } from "./brand-mark";
+import { CollapseIcon } from "./nav-icons";
 import { LogoutButton } from "./logout-button";
 import { Nav } from "./nav";
 
 interface DashboardSidebarProps {
   userName: string;
-  userRole: Role;
 }
 
 const SIDEBAR_STORAGE_KEY = "coiflink.sidebar.collapsed";
 
-const ROLE_BADGE_CLASSES: Record<Role, string> = {
-  CLIENT: "border-palm/30 bg-palm/[0.15] text-sidebar-foreground",
-  HAIRDRESSER:
-    "border-terracotta/40 bg-terracotta/[0.15] text-sidebar-foreground",
-  MANAGER: "border-gold/50 bg-gold/20 text-sidebar-foreground",
-  ADMIN: "border-sidebar-foreground/20 bg-sidebar-foreground/10 text-sidebar-foreground",
-};
-
-const ROLE_DOT_CLASSES: Record<Role, string> = {
-  CLIENT: "bg-palm",
-  HAIRDRESSER: "bg-terracotta",
-  MANAGER: "bg-gold",
-  ADMIN: "bg-foreground",
-};
-
-export function DashboardSidebar({ userName, userRole }: DashboardSidebarProps) {
+export function DashboardSidebar({ userName }: DashboardSidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -60,8 +44,6 @@ export function DashboardSidebar({ userName, userRole }: DashboardSidebarProps) 
   }
 
   const initial = userName.trim().charAt(0).toUpperCase() || "?";
-  const roleLabel = displayRoleLabel(userRole);
-  const roleInitial = roleLabel.trim().charAt(0).toUpperCase() || "?";
   const toggleLabel = collapsed ? "Agrandir la sidebar" : "Réduire la sidebar";
 
   return (
@@ -73,52 +55,27 @@ export function DashboardSidebar({ userName, userRole }: DashboardSidebarProps) 
       <div className={`shrink-0 pt-5 pb-4 ${collapsed ? "px-3" : "px-5"}`}>
         <div className="flex min-w-0 items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-3">
-            <span
-              className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[#f3bd76] text-sm font-bold text-sidebar"
-              aria-hidden="true"
-            >
-              C
-            </span>
-            <span
+            <BrandMark className="size-9 shrink-0" />
+            <Wordmark
               className={`min-w-0 truncate text-xl font-bold tracking-tight ${
                 collapsed ? "sm:hidden" : ""
               }`}
-            >
-              {SITE_NAME}
-            </span>
+            />
           </div>
 
           <button
             type="button"
-            className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-sidebar-foreground/15 text-sm font-semibold text-sidebar-foreground/75 transition hover:border-accent/50 hover:bg-accent/15 hover:text-sidebar-foreground active:scale-[0.98]"
+            className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full border border-sidebar-foreground/15 text-sidebar-foreground/75 shadow-soft transition hover:border-accent/50 hover:bg-accent/15 hover:text-sidebar-foreground active:scale-[0.98]"
             aria-controls="dashboard-sidebar-nav"
             aria-label={toggleLabel}
             aria-pressed={collapsed}
             title={toggleLabel}
             onClick={toggleCollapsed}
           >
-            <span aria-hidden="true">{collapsed ? ">" : "<"}</span>
+            <CollapseIcon collapsed={collapsed} />
           </button>
         </div>
       </div>
-
-      <span
-        className={`inline-flex shrink-0 items-center rounded-full border text-xs font-semibold transition-[width,padding] duration-200 ease-out ${
-          collapsed
-            ? `mx-3 size-9 justify-center px-0 ${ROLE_BADGE_CLASSES[userRole]}`
-            : `mx-5 w-fit gap-1.5 px-2.5 py-1 ${ROLE_BADGE_CLASSES[userRole]}`
-        }`}
-        aria-label={`Type d'utilisateur : ${roleLabel}`}
-        title={roleLabel}
-      >
-        <span
-          className={`size-1.5 rounded-full ${ROLE_DOT_CLASSES[userRole]} ${
-            collapsed ? "hidden" : ""
-          }`}
-          aria-hidden="true"
-        />
-        <span aria-hidden="true">{collapsed ? roleInitial : roleLabel}</span>
-      </span>
 
       <div id="dashboard-sidebar-nav" className="min-h-0 flex-1 overflow-y-auto px-3 py-5">
         <Nav collapsed={collapsed} />

@@ -32,7 +32,7 @@ export default async function Home() {
           <span className="mx-auto text-xs font-medium tracking-[0.16em] text-accent uppercase lg:mx-0">
             Espace professionnel
           </span>
-          <h1 className="text-4xl font-semibold tracking-tight text-balance">{SITE_NAME}</h1>
+          <h1 className="font-serif text-4xl font-semibold tracking-tight text-balance text-ink">{SITE_NAME}</h1>
           <p className="text-muted">
             Le tableau de bord de gestion pour votre salon : rendez-vous, équipe et encaissements,
             au même endroit.

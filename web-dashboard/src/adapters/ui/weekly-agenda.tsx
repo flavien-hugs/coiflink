@@ -13,6 +13,7 @@
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { CheckIcon, TrashIcon, XIcon } from "@/src/adapters/ui/action-icons";
 import { Toggle } from "@/src/adapters/ui/toggle";
 import {
   DAY_KEYS,
@@ -422,7 +423,7 @@ function IntervalEditor({
         aria-labelledby="interval-editor-title"
         className="relative w-full max-w-sm rounded-2xl border border-border bg-surface p-5 shadow-elevated"
       >
-        <h3 id="interval-editor-title" className="text-base font-semibold">
+        <h3 id="interval-editor-title" className="font-serif text-base font-semibold text-ink">
           {index === null ? `Ajouter un créneau — ${dayLabel}` : `Modifier le créneau — ${dayLabel}`}
         </h3>
         <div className="mt-4 flex items-center gap-2">
@@ -452,24 +453,27 @@ function IntervalEditor({
             type="button"
             disabled={!valid}
             onClick={() => onSave({ start, end })}
-            className="inline-flex cursor-pointer items-center justify-center rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
+            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
           >
+            <CheckIcon className="shrink-0" />
             {index === null ? "Ajouter" : "Enregistrer"}
           </button>
           {onDelete ? (
             <button
               type="button"
               onClick={onDelete}
-              className="cursor-pointer text-sm font-medium text-muted hover:text-danger"
+              className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-danger"
             >
+              <TrashIcon className="shrink-0" />
               Supprimer
             </button>
           ) : null}
           <button
             type="button"
             onClick={onClose}
-            className="ml-auto cursor-pointer text-sm font-medium text-muted hover:text-foreground"
+            className="ml-auto inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
           >
+            <XIcon className="shrink-0" />
             Annuler
           </button>
         </div>

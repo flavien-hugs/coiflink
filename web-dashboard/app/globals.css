@@ -3,6 +3,7 @@
 
 @theme inline {
   --font-sans: var(--font-outfit), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: var(--font-fraunces), Georgia, "Times New Roman", serif;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
@@ -18,6 +19,9 @@
   --color-palm: var(--palm);
   --color-danger: var(--danger);
   --color-danger-foreground: var(--danger-foreground);
+  --color-ink: var(--ink);
+  --color-ink-foreground: var(--ink-foreground);
+  --color-nude: var(--nude);
   --shadow-soft: 0 1px 2px var(--shadow-tint), 0 8px 24px -12px var(--shadow-tint-strong);
   --shadow-elevated: 0 2px 4px var(--shadow-tint), 0 16px 40px -16px var(--shadow-tint-strong);
 }
@@ -28,9 +32,9 @@
   --muted: #8d7b67;
   --border: #e5d8c4;
   --surface: #fffefd;
-  --sidebar: #422c19;
-  --sidebar-foreground: #fbf2df;
-  --sidebar-muted: #c4aa7b;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #3a2717;
+  --sidebar-muted: #8d7b67;
   --accent: #c86a4a;
   --accent-foreground: #ffffff;
   --terracotta: #c86a4a;
@@ -38,6 +42,9 @@
   --palm: #3f5e3c;
   --danger: #a1213e;
   --danger-foreground: #ffffff;
+  --ink: #14100c;
+  --ink-foreground: #ffffff;
+  --nude: #ead9c4;
   --shadow-tint: rgb(31 24 17 / 6%);
   --shadow-tint-strong: rgb(31 24 17 / 16%);
 }
@@ -63,13 +70,15 @@ body {
 
 .coiflink-sidebar-surface {
   background-color: var(--sidebar);
+  box-shadow: 1px 0 0 var(--border);
+}
+
+@media (min-width: 40rem) {
+  .coiflink-sidebar-surface {
+    box-shadow: 1px 0 0 var(--border), 8px 0 32px -20px var(--shadow-tint-strong);
+  }
 }
 
 .coiflink-page-surface {
   background-color: var(--background);
-}
-
-.coiflink-page-surface h1 {
-  font-family: Georgia, "Times New Roman", serif;
-  letter-spacing: -0.02em;
 }

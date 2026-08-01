@@ -83,7 +83,7 @@ services:
   backend:
     build:
       context: ../backend
-    image: coiflink-backend:${IMAGE_TAG:-local}
+    # image: coiflink-backend:${IMAGE_TAG:-local}
     environment:
       # Secret : DSN PostgreSQL. Doit refléter les POSTGRES_* ci-dessus.
       DATABASE_URL: ${DATABASE_URL:?definir DATABASE_URL dans deploy/.env (voir deploy/.env.example)}
@@ -124,7 +124,7 @@ services:
   web:
     build:
       context: ../web-dashboard
-    image: coiflink-web:${IMAGE_TAG:-local}
+    # image: coiflink-web:${IMAGE_TAG:-local}
     environment:
       # Navigateur (hôte): le backend est publié sur localhost. Serveur Next
       # (dans CE conteneur, Route Handlers + Server Components) : le backend

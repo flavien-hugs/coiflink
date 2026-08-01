@@ -174,6 +174,78 @@ describe("createHttpCustomerGateway().list() — codes de statut", () => {
     const headers = init?.headers as Record<string, string>;
     expect(headers?.["Authorization"]).toBe(`Bearer ${TOKEN}`);
   });
+
+  it("422 → invalid (genre hors énumération ou plage de dates incohérente)", async () => {
+    stubFetch(422, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).list(SALON_ID, {
+      gender: "UNKNOWN",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("invalid");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list() — filtres (q, gender, created_from, created_to)
+// ---------------------------------------------------------------------------
+
+describe("createHttpCustomerGateway().list() — filtres", () => {
+  it("aucun filtre → aucun query param dans l'URL (hormis le chemin)", async () => {
+    const fetchMock = stubFetch(200, FAKE_PAGE_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).list(SALON_ID, {});
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).not.toContain("?");
+  });
+
+  it("filtre complet → q/gender/created_from/created_to transmis en snake_case", async () => {
+    const fetchMock = stubFetch(200, FAKE_PAGE_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).list(SALON_ID, {
+      q: "Awa",
+      gender: "FEMALE",
+      createdFrom: "2026-01-01",
+      createdTo: "2026-01-31",
+    });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toContain("q=Awa");
+    expect(url).toContain("gender=FEMALE");
+    expect(url).toContain("created_from=2026-01-01");
+    expect(url).toContain("created_to=2026-01-31");
+  });
+
+  it("filtres vides/blancs → omis de l'URL", async () => {
+    const fetchMock = stubFetch(200, FAKE_PAGE_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).list(SALON_ID, {
+      q: "   ",
+      gender: "",
+      createdFrom: "",
+      createdTo: "",
+    });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).not.toContain("?");
+  });
+
+  it("filtre combiné à limit/offset → tous les params cohabitent dans l'URL", async () => {
+    const fetchMock = stubFetch(200, FAKE_PAGE_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).list(SALON_ID, {
+      q: "Koné",
+      limit: 20,
+      offset: 40,
+    });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toContain("q=Kon%C3%A9");
+    expect(url).toContain("limit=20");
+    expect(url).toContain("offset=40");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ import type {
   ListServicesResult,
   MutateServiceResult,
   ServiceGateway,
+  ServiceListOptions,
 } from "@/src/application/ports/service-gateway";
 import type { Service, ServiceInput } from "@/src/domain/service/service";
 import { resolveApiBaseUrl } from "./config";
@@ -120,14 +121,29 @@ export function createHttpServiceGateway(
   }
 
   return {
-    async list(salonId: string): Promise<ListServicesResult> {
+    async list(
+      salonId: string,
+      options: ServiceListOptions = {},
+    ): Promise<ListServicesResult> {
       if (!deps.accessToken) {
         return { ok: false, reason: "unauthenticated" };
       }
 
+      const query = new URLSearchParams();
+      const q = (options.q ?? "").trim();
+      if (q) query.set("q", q);
+      const category = (options.category ?? "").trim();
+      if (category) query.set("category", category);
+      const createdFrom = (options.createdFrom ?? "").trim();
+      if (createdFrom) query.set("created_from", createdFrom);
+      const createdTo = (options.createdTo ?? "").trim();
+      if (createdTo) query.set("created_to", createdTo);
+      const queryString = query.toString();
+      const suffix = queryString ? `?${queryString}` : "";
+
       let response: Response;
       try {
-        response = await fetch(servicesUrl(salonId), {
+        response = await fetch(`${servicesUrl(salonId)}${suffix}`, {
           headers: { ...authHeader() },
           cache: "no-store",
         });
@@ -144,6 +160,9 @@ export function createHttpServiceGateway(
       }
       if (response.status === 403) {
         return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 422) {
+        return { ok: false, reason: "invalid" };
       }
       return { ok: false, reason: "unavailable" };
     },

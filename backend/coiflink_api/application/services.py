@@ -29,6 +29,7 @@ from coiflink_api.domain.audit import ENTITY_TYPE_SERVICE, AuditAction, AuditEnt
 from coiflink_api.domain.errors import ServiceNotFound
 from coiflink_api.domain.service import (
     Service,
+    ServiceFilter,
     ServiceToCreate,
     ServiceUpdate,
     normalize_category,
@@ -131,10 +132,14 @@ class ListSalonServices:
         self._repository = repository
 
     def execute(
-        self, salon_id: uuid.UUID, *, include_inactive: bool = True
+        self,
+        salon_id: uuid.UUID,
+        *,
+        filter: ServiceFilter,
+        include_inactive: bool = True,
     ) -> tuple[Service, ...]:
         return self._repository.list_for_salon(
-            salon_id, include_inactive=include_inactive
+            salon_id, filter=filter, include_inactive=include_inactive
         )
 
 

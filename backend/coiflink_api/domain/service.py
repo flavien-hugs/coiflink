@@ -28,8 +28,13 @@ from dataclasses import dataclass
 from coiflink_api.domain.errors import (
     InvalidServiceCategory,
     InvalidServiceDuration,
+    InvalidServiceFilter,
     InvalidServiceName,
     InvalidServicePrice,
+)
+from coiflink_api.domain.time_window import (
+    day_end_utc as _day_end_utc,
+    day_start_utc as _day_start_utc,
 )
 
 # Bornes du nom et de la catégorie (cohérentes avec `models.Service`).
@@ -200,6 +205,104 @@ class Service:
     updated_at: datetime.datetime
 
 
+@dataclass(frozen=True)
+class ServiceFilter:
+    """Critères **validés** de filtrage du catalogue de prestations.
+
+    Chaque champ est optionnel : `None` = « pas de contrainte ». Les critères se
+    combinent en **ET**. Cet objet est produit **uniquement** par
+    `validate_service_filter` — un `ServiceFilter` en circulation est donc
+    toujours cohérent (plage de dates ordonnée). Miroir de `CustomerFilter`, avec
+    une différence : `category` est un texte **libre** (pas d'énumération fermée,
+    cf. `normalize_category`) comparé en **égalité exacte**, pas devinée.
+
+    `created_from`/`created_to` sont les jours civils saisis ; `created_at_from`/
+    `created_at_to` sont les bornes déjà converties en `datetime` UTC (miroir de
+    `CustomerFilter`/`TransactionFilter`), pour comparer directement à
+    `services.created_at` sans que le dépôt ne connaisse le fuseau.
+    """
+
+    q: str | None = None
+    category: str | None = None
+    created_from: datetime.date | None = None
+    created_to: datetime.date | None = None
+    created_at_from: datetime.datetime | None = None
+    created_at_to: datetime.datetime | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        """`True` si aucun critère n'est posé (catalogue complet du salon)."""
+
+        return (
+            self.q is None
+            and self.category is None
+            and self.created_from is None
+            and self.created_to is None
+        )
+
+
+def _validate_filter_q(q: str | None) -> str | None:
+    """Valide la **recherche texte optionnelle** (nom) : trim, `""` → `None`."""
+
+    if q is None:
+        return None
+    if not isinstance(q, str):
+        raise InvalidServiceFilter("Filtre de prestations invalide.")
+    cleaned = q.strip()
+    return cleaned or None
+
+
+def _validate_filter_category(category: str | None) -> str | None:
+    """Valide la **catégorie optionnelle du filtre** : texte libre, trim, `""` → `None`.
+
+    Contrairement au genre des fiches clients, la catégorie n'est **pas** une
+    énumération fermée (cf. `normalize_category`) : aucune valeur n'est refusée
+    ici, seulement normalisée pour une comparaison d'égalité exacte cohérente.
+    """
+
+    if category is None:
+        return None
+    if not isinstance(category, str):
+        raise InvalidServiceFilter("Filtre de prestations invalide.")
+    cleaned = category.strip()
+    return cleaned or None
+
+
+def validate_service_filter(
+    *,
+    q: str | None = None,
+    category: str | None = None,
+    created_from: datetime.date | None = None,
+    created_to: datetime.date | None = None,
+) -> ServiceFilter:
+    """Valide/normalise les critères de filtre → `ServiceFilter`.
+
+    Règles (toutes → `InvalidServiceFilter`, message métier **neutre**) :
+
+    - **plage ordonnée** : `created_from ≤ created_to` ;
+    - `None` (ou chaîne vide de texte/catégorie) = **pas de contrainte**.
+
+    Les bornes de date sont converties du jour civil `Africa/Abidjan` (UTC+0) vers
+    des `datetime` UTC inclusifs, exposés par `created_at_from`/`created_at_to`.
+    """
+
+    if created_from is not None and not isinstance(created_from, datetime.date):
+        raise InvalidServiceFilter("Filtre de prestations invalide.")
+    if created_to is not None and not isinstance(created_to, datetime.date):
+        raise InvalidServiceFilter("Filtre de prestations invalide.")
+    if created_from is not None and created_to is not None and created_from > created_to:
+        raise InvalidServiceFilter("Filtre de prestations invalide.")
+
+    return ServiceFilter(
+        q=_validate_filter_q(q),
+        category=_validate_filter_category(category),
+        created_from=created_from,
+        created_to=created_to,
+        created_at_from=_day_start_utc(created_from) if created_from is not None else None,
+        created_at_to=_day_end_utc(created_to) if created_to is not None else None,
+    )
+
+
 __all__ = [
     "SERVICE_NAME_MAX_LENGTH",
     "CATEGORY_MAX_LENGTH",
@@ -211,4 +314,6 @@ __all__ = [
     "ServiceToCreate",
     "ServiceUpdate",
     "Service",
+    "ServiceFilter",
+    "validate_service_filter",
 ]

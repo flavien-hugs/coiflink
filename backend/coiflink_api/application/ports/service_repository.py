@@ -17,7 +17,12 @@ from __future__ import annotations
 import uuid
 from typing import Protocol
 
-from coiflink_api.domain.service import Service, ServiceToCreate, ServiceUpdate
+from coiflink_api.domain.service import (
+    Service,
+    ServiceFilter,
+    ServiceToCreate,
+    ServiceUpdate,
+)
 
 
 class ServiceRepository(Protocol):
@@ -38,12 +43,16 @@ class ServiceRepository(Protocol):
         ...
 
     def list_for_salon(
-        self, salon_id: uuid.UUID, *, include_inactive: bool = True
+        self, salon_id: uuid.UUID, *, filter: ServiceFilter, include_inactive: bool = True
     ) -> tuple[Service, ...]:
-        """Prestations du salon, les plus récentes d'abord.
+        """Prestations **filtrées** du salon, les plus récentes d'abord.
 
         `include_inactive=True` (défaut) renvoie actives **et** désactivées (vue
         gérant). Le futur catalogue client (#18) filtrera les actives seulement.
+        `filter` porte les critères optionnels (nom, catégorie, plage de dates de
+        création), combinés en **ET** avec `salon_id` et `include_inactive` —
+        aucune pagination ici (portée volontairement hors périmètre, la réponse
+        reste une liste complète, cf. `CustomerFilter` pour le pendant paginé).
         """
         ...
 

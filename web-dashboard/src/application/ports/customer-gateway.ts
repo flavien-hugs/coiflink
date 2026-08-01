@@ -13,9 +13,11 @@ import type { VisitHistory } from "@/src/domain/customer/visit";
 // dans ce salon), `forbidden` = `403` (rôle ≠ gérant ou salon hors périmètre),
 // `not-found` = `404` (fiche absente, portée validée), `unauthenticated` = `401`,
 // `unavailable` = `503`/panne réseau.
+// `invalid` = `422` (filtre de liste mal formé : genre hors énumération, ou
+// `created_from` postérieur à `created_to`).
 export type ListCustomersResult =
   | { ok: true; customers: Customer[]; total: number }
-  | { ok: false; reason: "forbidden" | "unauthenticated" | "unavailable" };
+  | { ok: false; reason: "invalid" | "forbidden" | "unauthenticated" | "unavailable" };
 
 export type CreateCustomerResult =
   | { ok: true; customer: Customer }
@@ -76,6 +78,14 @@ export type UpdateNoteResult =
 export interface CustomerListOptions {
   limit?: number;
   offset?: number;
+  // Filtres (US-4.1 bis) : recherche libre sur le nom, genre exact (énumération
+  // fermée) et plage de dates de création (`created_from`/`created_to`
+  // inclusives, ISO `YYYY-MM-DD`). Le backend reste l'autorité de validation ;
+  // un filtre invalide renvoie `422` (`ListCustomersResult.reason === "invalid"`).
+  q?: string;
+  gender?: string;
+  createdFrom?: string;
+  createdTo?: string;
 }
 
 export interface CustomerGateway {

@@ -7,6 +7,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { LogoutIcon } from "./nav-icons";
+
 interface LogoutButtonProps {
   compact?: boolean;
 }
@@ -32,8 +34,8 @@ export function LogoutButton({ compact = false }: LogoutButtonProps) {
       type="button"
       className={
         compact
-          ? "flex size-10 cursor-pointer items-center justify-center rounded-lg border border-sidebar-foreground/15 text-sm font-semibold text-sidebar-foreground/70 transition hover:border-accent/50 hover:bg-accent/15 hover:text-sidebar-foreground active:scale-[0.98] disabled:cursor-default disabled:opacity-60 disabled:hover:border-sidebar-foreground/15 disabled:hover:bg-transparent disabled:hover:text-sidebar-foreground/70"
-          : "w-full cursor-pointer rounded-lg border border-sidebar-foreground/15 px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:border-accent/50 hover:bg-accent/15 hover:text-sidebar-foreground active:scale-[0.98] disabled:cursor-default disabled:opacity-60 disabled:hover:border-sidebar-foreground/15 disabled:hover:bg-transparent disabled:hover:text-sidebar-foreground/70"
+          ? "flex size-10 cursor-pointer items-center justify-center rounded-lg border border-sidebar-foreground/15 text-sidebar-foreground/70 transition hover:border-accent/50 hover:bg-accent/15 hover:text-sidebar-foreground active:scale-[0.98] disabled:cursor-default disabled:opacity-60 disabled:hover:border-sidebar-foreground/15 disabled:hover:bg-transparent disabled:hover:text-sidebar-foreground/70"
+          : "flex w-full cursor-pointer items-center gap-2.5 rounded-lg border border-sidebar-foreground/15 px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:border-accent/50 hover:bg-accent/15 hover:text-sidebar-foreground active:scale-[0.98] disabled:cursor-default disabled:opacity-60 disabled:hover:border-sidebar-foreground/15 disabled:hover:bg-transparent disabled:hover:text-sidebar-foreground/70"
       }
       onClick={onLogout}
       disabled={pending}
@@ -42,13 +44,14 @@ export function LogoutButton({ compact = false }: LogoutButtonProps) {
     >
       {compact ? (
         <>
-          <span aria-hidden="true">{pending ? "..." : "↪"}</span>
+          <span aria-hidden="true">{pending ? "…" : <LogoutIcon />}</span>
           <span className="sr-only">{pending ? "Déconnexion…" : "Déconnexion"}</span>
         </>
-      ) : pending ? (
-        "Déconnexion…"
       ) : (
-        "Déconnexion"
+        <>
+          <LogoutIcon className="shrink-0" />
+          {pending ? "Déconnexion…" : "Déconnexion"}
+        </>
       )}
     </button>
   );

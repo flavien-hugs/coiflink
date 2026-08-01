@@ -10,11 +10,21 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
+import {
+  CheckIcon,
+  ClockIcon,
+  CoinsIcon,
+  ScissorsIcon,
+  TagIcon,
+  XIcon,
+} from "@/src/adapters/ui/action-icons";
 import { FieldLabel } from "@/src/adapters/ui/field-label";
 import { validateService, type Service } from "@/src/domain/service/service";
 
 const INPUT_CLASS =
   "rounded-lg border border-border bg-surface px-3 py-2.5 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
+const INPUT_WITH_ICON_CLASS =
+  "rounded-lg border border-border bg-surface py-2.5 pl-9 pr-3 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
 
 export interface ServiceFormProps {
   salonId: string;
@@ -112,57 +122,69 @@ export function ServiceForm({ salonId, service, onCancel, onSaved }: ServiceForm
     <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel required>Nom de la prestation</FieldLabel>
-        <input
-          type="text"
-          name="name"
-          className={INPUT_CLASS}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          maxLength={255}
-          required
-        />
+        <div className="relative">
+          <ScissorsIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            type="text"
+            name="name"
+            className={INPUT_WITH_ICON_CLASS}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={255}
+            required
+          />
+        </div>
       </label>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel required>Prix (FCFA)</FieldLabel>
-          <input
-            type="text"
-            inputMode="decimal"
-            name="price"
-            className={INPUT_CLASS}
-            value={price}
-            onChange={(e) => setPrice(e.target.value)}
-            placeholder="5000.00"
-            required
-          />
+          <div className="relative">
+            <CoinsIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="text"
+              inputMode="decimal"
+              name="price"
+              className={INPUT_WITH_ICON_CLASS}
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              placeholder="5000.00"
+              required
+            />
+          </div>
         </label>
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel required>Durée (minutes)</FieldLabel>
-          <input
-            type="number"
-            inputMode="numeric"
-            name="durationMinutes"
-            className={INPUT_CLASS}
-            value={durationMinutes}
-            onChange={(e) => setDurationMinutes(e.target.value)}
-            min={1}
-            max={1440}
-            placeholder="30"
-            required
-          />
+          <div className="relative">
+            <ClockIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="number"
+              inputMode="numeric"
+              name="durationMinutes"
+              className={INPUT_WITH_ICON_CLASS}
+              value={durationMinutes}
+              onChange={(e) => setDurationMinutes(e.target.value)}
+              min={1}
+              max={1440}
+              placeholder="30"
+              required
+            />
+          </div>
         </label>
       </div>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel optional>Catégorie</FieldLabel>
-        <input
-          type="text"
-          name="category"
-          className={INPUT_CLASS}
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
-          maxLength={128}
-          placeholder="Coupe"
-        />
+        <div className="relative">
+          <TagIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            type="text"
+            name="category"
+            className={INPUT_WITH_ICON_CLASS}
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            maxLength={128}
+            placeholder="Coupe"
+          />
+        </div>
       </label>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel optional>Description</FieldLabel>
@@ -185,9 +207,10 @@ export function ServiceForm({ salonId, service, onCancel, onSaved }: ServiceForm
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          className="inline-flex cursor-pointer items-center justify-center rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
           disabled={pending}
         >
+          {pending ? null : <CheckIcon className="shrink-0" />}
           {pending
             ? "Enregistrement…"
             : editing
@@ -197,10 +220,11 @@ export function ServiceForm({ salonId, service, onCancel, onSaved }: ServiceForm
         {onCancel ? (
           <button
             type="button"
-            className="text-sm font-medium text-muted hover:text-foreground"
+            className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
             onClick={onCancel}
             disabled={pending}
           >
+            <XIcon className="shrink-0" />
             Annuler
           </button>
         ) : null}

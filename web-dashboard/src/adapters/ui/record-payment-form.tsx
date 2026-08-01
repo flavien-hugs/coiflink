@@ -14,7 +14,9 @@
 import { useRouter } from "next/navigation";
 import { useMemo, useState, type FormEvent } from "react";
 
+import { CheckIcon, CoinsIcon, HashIcon, XIcon } from "@/src/adapters/ui/action-icons";
 import { FieldLabel } from "@/src/adapters/ui/field-label";
+import { SearchableSelect } from "@/src/adapters/ui/searchable-select";
 import {
   PAYMENT_METHOD_OPTIONS,
   REFERENCE_MAX_LENGTH,
@@ -24,8 +26,8 @@ import {
 } from "@/src/domain/payments/payment";
 import type { Service } from "@/src/domain/service/service";
 
-const INPUT_CLASS =
-  "rounded-lg border border-border bg-surface px-3 py-2.5 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
+const INPUT_WITH_ICON_CLASS =
+  "rounded-lg border border-border bg-surface py-2.5 pl-9 pr-3 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
 
 export interface RecordPaymentFormProps {
   salonId: string;
@@ -47,6 +49,10 @@ export function RecordPaymentForm({
   const selectedService = useMemo(
     () => services.find((service) => service.id === serviceId) ?? null,
     [services, serviceId],
+  );
+  const serviceOptions = useMemo(
+    () => services.map((service) => ({ value: service.id, label: `${service.name} — ${formatXof(service.price)}` })),
+    [services],
   );
   const [amount, setAmount] = useState(services[0]?.price ?? "");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
@@ -148,38 +154,37 @@ export function RecordPaymentForm({
 
   return (
     <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
-      <label className="flex flex-col gap-1.5 text-sm font-medium">
+      <div className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel required>Prestation à encaisser</FieldLabel>
-        <select
-          name="serviceId"
-          className={`${INPUT_CLASS} cursor-pointer`}
+        <SearchableSelect
+          ariaLabel="Prestation à encaisser"
           value={serviceId}
-          onChange={(e) => onSelectService(e.target.value)}
-          required
-        >
-          {services.map((service) => (
-            <option key={service.id} value={service.id}>
-              {service.name} — {formatXof(service.price)}
-            </option>
-          ))}
-        </select>
-      </label>
+          options={serviceOptions}
+          onChange={onSelectService}
+          placeholder="Sélectionner une prestation"
+          searchPlaceholder="Rechercher une prestation"
+          emptyLabel="Aucune prestation trouvée"
+        />
+      </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel required>Montant (FCFA)</FieldLabel>
-          <input
-            type="text"
-            inputMode="decimal"
-            name="amount"
-            className={INPUT_CLASS}
-            value={amount}
-            onChange={(e) => {
-              setAmount(e.target.value);
-              setError(null);
-              setSuccess(false);
-            }}
-            required
-          />
+          <div className="relative">
+            <CoinsIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="text"
+              inputMode="decimal"
+              name="amount"
+              className={INPUT_WITH_ICON_CLASS}
+              value={amount}
+              onChange={(e) => {
+                setAmount(e.target.value);
+                setError(null);
+                setSuccess(false);
+              }}
+              required
+            />
+          </div>
           {selectedService ? (
             <span className="text-xs font-normal text-muted">
               Prix attendu : {formatXof(selectedService.price)} — le montant doit
@@ -187,33 +192,33 @@ export function RecordPaymentForm({
             </span>
           ) : null}
         </label>
-        <label className="flex flex-col gap-1.5 text-sm font-medium">
+        <div className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel required>Mode de paiement</FieldLabel>
-          <select
-            name="paymentMethod"
-            className={`${INPUT_CLASS} cursor-pointer`}
+          <SearchableSelect
+            ariaLabel="Mode de paiement"
             value={paymentMethod}
-            onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-          >
-            {PAYMENT_METHOD_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+            options={PAYMENT_METHOD_OPTIONS}
+            onChange={(next) => setPaymentMethod(next as PaymentMethod)}
+            placeholder="Sélectionner un mode"
+            searchPlaceholder="Rechercher un mode"
+            emptyLabel="Aucun mode trouvé"
+          />
+        </div>
       </div>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel optional>Référence</FieldLabel>
-        <input
-          type="text"
-          name="reference"
-          className={INPUT_CLASS}
-          value={reference}
-          onChange={(e) => setReference(e.target.value)}
-          maxLength={REFERENCE_MAX_LENGTH}
-          placeholder="Numéro de reçu, transaction Mobile Money…"
-        />
+        <div className="relative">
+          <HashIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            type="text"
+            name="reference"
+            className={INPUT_WITH_ICON_CLASS}
+            value={reference}
+            onChange={(e) => setReference(e.target.value)}
+            maxLength={REFERENCE_MAX_LENGTH}
+            placeholder="Numéro de reçu, transaction Mobile Money…"
+          />
+        </div>
       </label>
       {error ? (
         <p
@@ -234,18 +239,20 @@ export function RecordPaymentForm({
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          className="inline-flex cursor-pointer items-center justify-center rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
           disabled={pending}
         >
+          {pending ? null : <CheckIcon className="shrink-0" />}
           {pending ? "Enregistrement…" : "Enregistrer le paiement"}
         </button>
         {onCancel ? (
           <button
             type="button"
-            className="text-sm font-medium text-muted hover:text-foreground"
+            className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
             onClick={onCancel}
             disabled={pending}
           >
+            <XIcon className="shrink-0" />
             Annuler
           </button>
         ) : null}

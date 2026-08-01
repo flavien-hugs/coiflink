@@ -1,6 +1,8 @@
 // Prestations du salon — adapter entrant + composition root (Server Component,
 // #17). Charge **côté serveur** (jeton du cookie httpOnly, jamais exposé au
-// navigateur, invariant #14) le salon du gérant puis ses prestations :
+// navigateur, invariant #14) le salon du gérant puis ses prestations,
+// **filtrables côté serveur** (nom/catégorie/plage de dates de création via
+// `searchParams`, même patron que Clients #28 / Encaissements #35) :
 //   - aucun salon → invite à créer d'abord le salon (Paramètres, #15) ;
 //   - un salon    → catalogue filtrable + drawer d'ajout/modification.
 // La modification et la désactivation sont journalisées §11.4 côté backend.
@@ -13,10 +15,27 @@ import Link from "next/link";
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { createHttpServiceGateway } from "@/src/adapters/api/http-service-gateway";
+import type { ServiceListOptions } from "@/src/application/ports/service-gateway";
 import { ServiceList } from "@/src/adapters/ui/service-list";
-import type { Service } from "@/src/domain/service/service";
 
-export default async function PrestationsPage() {
+type SearchParams = Record<string, string | string[] | undefined>;
+
+function one(raw: string | string[] | undefined): string {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return (value ?? "").trim();
+}
+
+export default async function PrestationsPage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParams>;
+}) {
+  const params = await searchParams;
+  const q = one(params.q);
+  const category = one(params.category);
+  const createdFrom = one(params.created_from);
+  const createdTo = one(params.created_to);
+
   const { accessToken } = await createCookieSessionStore().read();
   const salonsResult = await createHttpSalonGateway({ accessToken }).list();
 
@@ -39,12 +58,20 @@ export default async function PrestationsPage() {
     );
   }
 
-  const servicesResult = await createHttpServiceGateway({ accessToken }).list(salon.id);
+  const options: ServiceListOptions = { q, category, createdFrom, createdTo };
+  const servicesResult = await createHttpServiceGateway({ accessToken }).list(
+    salon.id,
+    options,
+  );
   if (!servicesResult.ok) {
     return (
       <section className="flex flex-col gap-6">
         <Header />
-        <ErrorPanel />
+        {servicesResult.reason === "invalid" ? (
+          <InvalidFilterPanel />
+        ) : (
+          <ErrorPanel />
+        )}
       </section>
     );
   }
@@ -52,7 +79,14 @@ export default async function PrestationsPage() {
   return (
     <section className="flex flex-col gap-6">
       <Header />
-      <Catalogue salonId={salon.id} services={servicesResult.services} />
+      <ServiceList
+        salonId={salon.id}
+        services={servicesResult.services}
+        q={q}
+        category={category}
+        createdFrom={createdFrom}
+        createdTo={createdTo}
+      />
     </section>
   );
 }
@@ -60,7 +94,7 @@ export default async function PrestationsPage() {
 function Header() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Prestations</h1>
+      <h1 className="font-serif text-2xl font-semibold tracking-tight text-ink">Prestations</h1>
       <p className="mt-1 text-sm text-muted">
         Composez le catalogue de votre salon : nom, durée, prix, catégorie.
       </p>
@@ -79,6 +113,17 @@ function ErrorPanel() {
   );
 }
 
+function InvalidFilterPanel() {
+  return (
+    <div
+      className="rounded-2xl border border-danger/25 bg-danger/10 p-6 text-sm text-danger"
+      role="alert"
+    >
+      Les filtres saisis sont invalides. Vérifiez la plage de dates.
+    </div>
+  );
+}
+
 function NoSalonPanel() {
   return (
     <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
@@ -93,21 +138,6 @@ function NoSalonPanel() {
       >
         Aller aux paramètres
       </Link>
-    </div>
-  );
-}
-
-function Catalogue({ salonId, services }: { salonId: string; services: Service[] }) {
-  return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <h2 className="text-lg font-semibold">Catalogue</h2>
-        <p className="mt-1 max-w-prose text-sm text-muted">
-          Vos prestations actives et désactivées. Une prestation désactivée n&apos;est
-          plus proposée à la réservation mais reste dans l&apos;historique.
-        </p>
-      </div>
-      <ServiceList salonId={salonId} services={services} />
     </div>
   );
 }

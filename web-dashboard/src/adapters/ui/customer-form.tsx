@@ -14,7 +14,9 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
+import { CheckIcon, PersonIcon, PhoneIcon, XIcon } from "@/src/adapters/ui/action-icons";
 import { FieldLabel } from "@/src/adapters/ui/field-label";
+import { SearchableSelect } from "@/src/adapters/ui/searchable-select";
 import {
   CUSTOMER_NAME_MAX_LENGTH,
   GENDER_OPTIONS,
@@ -24,6 +26,8 @@ import {
 
 const INPUT_CLASS =
   "rounded-lg border border-border bg-surface px-3 py-2.5 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
+const INPUT_WITH_ICON_CLASS =
+  "rounded-lg border border-border bg-surface py-2.5 pl-9 pr-3 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
 
 export interface CustomerFormProps {
   salonId: string;
@@ -112,47 +116,50 @@ export function CustomerForm({ salonId, onCancel, onSaved }: CustomerFormProps) 
     <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel required>Nom du client</FieldLabel>
-        <input
-          type="text"
-          name="fullName"
-          className={INPUT_CLASS}
-          value={fullName}
-          onChange={(e) => setFullName(e.target.value)}
-          maxLength={CUSTOMER_NAME_MAX_LENGTH}
-          required
-        />
+        <div className="relative">
+          <PersonIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            type="text"
+            name="fullName"
+            className={INPUT_WITH_ICON_CLASS}
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            maxLength={CUSTOMER_NAME_MAX_LENGTH}
+            required
+          />
+        </div>
       </label>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel optional>Téléphone</FieldLabel>
-          <input
-            type="tel"
-            inputMode="tel"
-            name="phone"
-            className={INPUT_CLASS}
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="07 00 00 00 00"
-          />
+          <div className="relative">
+            <PhoneIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="tel"
+              inputMode="tel"
+              name="phone"
+              className={INPUT_WITH_ICON_CLASS}
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="07 00 00 00 00"
+            />
+          </div>
           <span className="text-xs font-normal text-muted">
             Recommandé : il permet de retrouver la fiche et d&apos;y rattacher les visites.
           </span>
         </label>
-        <label className="flex flex-col gap-1.5 text-sm font-medium">
+        <div className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel optional>Genre</FieldLabel>
-          <select
-            name="gender"
-            className={`${INPUT_CLASS} cursor-pointer`}
+          <SearchableSelect
+            ariaLabel="Genre"
             value={gender}
-            onChange={(e) => setGender(e.target.value)}
-          >
-            {GENDER_OPTIONS.map((option) => (
-              <option key={option.value || "unset"} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+            options={GENDER_OPTIONS}
+            onChange={setGender}
+            placeholder="Non renseigné"
+            searchPlaceholder="Rechercher un genre"
+            emptyLabel="Aucun genre trouvé"
+          />
+        </div>
       </div>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel optional>Notes internes</FieldLabel>
@@ -180,18 +187,20 @@ export function CustomerForm({ salonId, onCancel, onSaved }: CustomerFormProps) 
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          className="inline-flex cursor-pointer items-center justify-center rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
           disabled={pending}
         >
+          {pending ? null : <CheckIcon className="shrink-0" />}
           {pending ? "Enregistrement…" : "Créer la fiche client"}
         </button>
         {onCancel ? (
           <button
             type="button"
-            className="text-sm font-medium text-muted hover:text-foreground"
+            className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
             onClick={onCancel}
             disabled={pending}
           >
+            <XIcon className="shrink-0" />
             Annuler
           </button>
         ) : null}

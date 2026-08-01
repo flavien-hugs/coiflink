@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 
+import { PencilIcon, XIcon } from "@/src/adapters/ui/action-icons";
 import { SalonForm } from "@/src/adapters/ui/salon-form";
 import type { Salon } from "@/src/domain/salon/salon";
 
@@ -17,20 +18,21 @@ export function SalonDetails({ salon }: { salon: Salon }) {
     <div className="rounded-2xl border border-border bg-surface p-6 shadow-soft">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">{salon.name}</h2>
+          <h2 className="font-serif text-lg font-semibold text-ink">{salon.name}</h2>
           {salon.description ? (
             <p className="mt-1 max-w-prose text-sm text-muted">{salon.description}</p>
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span className="rounded-full bg-foreground/5 px-2.5 py-1 text-xs font-medium tracking-wide uppercase">
+          <span className="rounded-full bg-nude/50 px-2.5 py-1 text-xs font-medium tracking-wide uppercase">
             {salon.status}
           </span>
           <button
             type="button"
-            className="cursor-pointer rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted transition hover:border-accent/40 hover:text-foreground"
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted transition hover:border-accent/40 hover:text-foreground"
             onClick={() => setEditing(true)}
           >
+            <PencilIcon className="shrink-0" />
             Modifier
           </button>
         </div>
@@ -103,16 +105,17 @@ function EditDrawer({
       >
         <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
           <div>
-            <h2 id="salon-drawer-title" className="text-xl font-semibold">
+            <h2 id="salon-drawer-title" className="font-serif text-xl font-semibold text-ink">
               Modifier le salon
             </h2>
             <p className="mt-1 text-sm text-muted">Le nom du salon est obligatoire.</p>
           </div>
           <button
             type="button"
-            className="cursor-pointer rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted transition hover:border-accent/40 hover:text-foreground"
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted transition hover:border-accent/40 hover:text-foreground"
             onClick={onClose}
           >
+            <XIcon className="shrink-0" />
             Fermer
           </button>
         </div>

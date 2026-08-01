@@ -29,11 +29,12 @@ Session** que l'écriture (atomicité). Aucun chemin n'est ajouté à
 
 from __future__ import annotations
 
+import datetime
 import decimal
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -61,13 +62,14 @@ from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.errors import (
     InvalidServiceCategory,
     InvalidServiceDuration,
+    InvalidServiceFilter,
     InvalidServiceName,
     InvalidServicePrice,
     ServiceNotFound,
 )
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
-from coiflink_api.domain.service import Service
+from coiflink_api.domain.service import Service, validate_service_filter
 
 router = APIRouter(prefix="/salons", tags=["services"])
 
@@ -215,10 +217,11 @@ def create_service(
 @router.get(
     "/{salon_id}/services",
     response_model=list[ServiceResponse],
-    summary="Lister les prestations d'un salon (actives et désactivées)",
+    summary="Lister/filtrer les prestations d'un salon (actives et désactivées)",
     responses={
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {"description": "Filtre invalide : plage de dates incohérente"},
     },
 )
 def list_services(
@@ -228,10 +231,36 @@ def list_services(
     _principal: Annotated[
         Principal, Depends(require_permission(Permission.SERVICE_READ))
     ],
+    q: Annotated[
+        str | None, Query(description="Recherche par nom (sous-chaîne)")
+    ] = None,
+    category: Annotated[str | None, Query()] = None,
+    created_from: Annotated[datetime.date | None, Query()] = None,
+    created_to: Annotated[datetime.date | None, Query()] = None,
 ) -> list[ServiceResponse]:
-    """Liste les prestations du salon (vue gérant : actives **et** désactivées)."""
+    """Liste **filtrable** des prestations du salon (vue gérant : actives **et** désactivées).
 
-    services = ListSalonServices(repository).execute(salon_id, include_inactive=True)
+    Filtres **optionnels** combinés en **ET** : `q` (nom, sous-chaîne insensible à
+    la casse), `category` (texte libre, égalité exacte), plage de dates de
+    création inclusive (`created_from`/`created_to`, jour civil `Africa/Abidjan`).
+    Les critères deviennent des clauses `WHERE` SQL (filtrage **serveur**) ; un
+    filtre invalide → `422` (`InvalidServiceFilter`), message neutre. Pas de
+    pagination ici (portée volontairement hors périmètre) : la réponse reste une
+    liste complète, comme avant l'ajout du filtrage.
+    """
+
+    try:
+        service_filter = validate_service_filter(
+            q=q, category=category, created_from=created_from, created_to=created_to
+        )
+    except InvalidServiceFilter as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    services = ListSalonServices(repository).execute(
+        salon_id, filter=service_filter, include_inactive=True
+    )
     return [_service_response(service) for service in services]
 
 

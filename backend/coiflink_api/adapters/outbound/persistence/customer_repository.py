@@ -25,13 +25,17 @@ défense en profondeur derrière `require_salon_scope`.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
-from coiflink_api.domain.customer import Customer, CustomerToCreate
+from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import (
+    escape_like,
+)
+from coiflink_api.domain.customer import Customer, CustomerFilter, CustomerToCreate
 from coiflink_api.domain.errors import CustomerAlreadyExists, CustomerNotFound
 from coiflink_api.domain.visit import CustomerVisit, VisitService, visit_total
 
@@ -90,13 +94,18 @@ class SqlCustomerRepository:
         return _to_domain(row) if row is not None else None
 
     def list_for_salon(
-        self, salon_id: uuid.UUID, *, limit: int, offset: int
+        self,
+        salon_id: uuid.UUID,
+        *,
+        filter: CustomerFilter,
+        limit: int,
+        offset: int,
     ) -> tuple[Customer, ...]:
-        """Page de fiches du salon, les plus récentes d'abord (bornes appliquées en SQL)."""
+        """Page **filtrée** de fiches du salon, les plus récentes d'abord (SQL)."""
 
         stmt = (
             select(models.CustomerProfile)
-            .where(models.CustomerProfile.salon_id == salon_id)
+            .where(*self._filter_clauses(salon_id, filter))
             .order_by(
                 models.CustomerProfile.created_at.desc(),
                 models.CustomerProfile.id.desc(),
@@ -106,11 +115,40 @@ class SqlCustomerRepository:
         )
         return tuple(_to_domain(row) for row in self._session.scalars(stmt).all())
 
-    def count_for_salon(self, salon_id: uuid.UUID) -> int:
-        stmt = select(func.count()).select_from(models.CustomerProfile).where(
-            models.CustomerProfile.salon_id == salon_id
+    def count_for_salon(self, salon_id: uuid.UUID, *, filter: CustomerFilter) -> int:
+        """Nombre total de fiches du salon **sous le même filtre** (pagination)."""
+
+        stmt = (
+            select(func.count())
+            .select_from(models.CustomerProfile)
+            .where(*self._filter_clauses(salon_id, filter))
         )
         return int(self._session.scalar(stmt) or 0)
+
+    @staticmethod
+    def _filter_clauses(
+        salon_id: uuid.UUID, filter: CustomerFilter
+    ) -> Sequence[ColumnElement[bool]]:
+        """Clauses `WHERE` : `salon_id` inconditionnel + critères présents (ET).
+
+        Partagées **à l'identique** par `list_for_salon` et `count_for_salon` pour
+        que le `total` corresponde exactement à la page (miroir `SqlPaymentRepository`).
+        """
+
+        clauses: list[ColumnElement[bool]] = [models.CustomerProfile.salon_id == salon_id]
+        if filter.created_at_from is not None:
+            clauses.append(models.CustomerProfile.created_at >= filter.created_at_from)
+        if filter.created_at_to is not None:
+            clauses.append(models.CustomerProfile.created_at <= filter.created_at_to)
+        if filter.gender is not None:
+            clauses.append(models.CustomerProfile.gender == filter.gender)
+        if filter.q is not None:
+            clauses.append(
+                models.CustomerProfile.full_name.ilike(
+                    f"%{escape_like(filter.q)}%", escape="\\"
+                )
+            )
+        return clauses
 
     def phone_exists(self, salon_id: uuid.UUID, phone: str) -> bool:
         """Pré-contrôle d'unicité `(salon_id, phone)` — la garantie reste l'index base."""

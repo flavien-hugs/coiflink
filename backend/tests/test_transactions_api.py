@@ -326,6 +326,39 @@ class TestListTransactions200WithFilters:
         data = r.json()
         assert data["total"] == 1
 
+    def test_filter_q_matches_client_name(
+        self, manager_client: TestClient, payment_repo: FakePaymentRepository
+    ) -> None:
+        pa = _make_payment(client_id=_LINKED_CLIENT_ID)
+        pb = _make_payment(client_id=None)
+        payment_repo._payments[pa.id] = pa
+        payment_repo._payments[pb.id] = pb
+        payment_repo._client_names[_LINKED_CLIENT_ID] = "Awa Koné"
+
+        r = manager_client.get(
+            _payments_url(_SALON_ID),
+            params={"q": "koné"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        data = r.json()
+        assert data["total"] == 1
+        assert data["items"][0]["client_id"] == str(_LINKED_CLIENT_ID)
+
+    def test_filter_q_no_match_returns_empty(
+        self, manager_client: TestClient, payment_repo: FakePaymentRepository
+    ) -> None:
+        p = _make_payment(client_id=_LINKED_CLIENT_ID)
+        payment_repo._payments[p.id] = p
+        payment_repo._client_names[_LINKED_CLIENT_ID] = "Awa Koné"
+
+        r = manager_client.get(
+            _payments_url(_SALON_ID),
+            params={"q": "Ibrahim"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        data = r.json()
+        assert data["total"] == 0
+
 
 # ---------------------------------------------------------------------------
 # 200 — combinaison de filtres

@@ -9,9 +9,23 @@ import type { Service, ServiceInput } from "@/src/domain/service/service";
 // validation backend, `forbidden` = `403` (rôle ≠ gérant ou salon hors
 // périmètre), `not-found` = `404` (prestation absente, portée validée),
 // `unauthenticated` = `401`, `unavailable` = `503`/panne réseau.
+// `invalid` = `422` (filtre de liste mal formé : `created_from` postérieur à
+// `created_to`).
 export type ListServicesResult =
   | { ok: true; services: Service[] }
-  | { ok: false; reason: "forbidden" | "unauthenticated" | "unavailable" };
+  | { ok: false; reason: "invalid" | "forbidden" | "unauthenticated" | "unavailable" };
+
+// Filtres **optionnels** de `GET /salons/{id}/services` (#39 bis), combinés en
+// ET côté backend : `q` (nom, sous-chaîne insensible à la casse), `category`
+// (texte libre, égalité exacte), plage de dates de création inclusive
+// (`createdFrom`/`createdTo`, ISO `YYYY-MM-DD`). Pas de pagination : la
+// réponse reste une liste complète (filtrée), jamais une page.
+export interface ServiceListOptions {
+  q?: string;
+  category?: string;
+  createdFrom?: string;
+  createdTo?: string;
+}
 
 export type MutateServiceResult =
   | { ok: true; service: Service }
@@ -28,8 +42,9 @@ export type DeactivateServiceResult =
     };
 
 export interface ServiceGateway {
-  // Proxifie `GET /salons/{id}/services` (actives et désactivées, vue gérant).
-  list(salonId: string): Promise<ListServicesResult>;
+  // Proxifie `GET /salons/{id}/services` (actives et désactivées, vue gérant),
+  // filtrable via `options` (`q`/`category`/`createdFrom`/`createdTo`).
+  list(salonId: string, options?: ServiceListOptions): Promise<ListServicesResult>;
   // Proxifie `POST /salons/{id}/services` ; renvoie la prestation créée.
   create(salonId: string, input: ServiceInput): Promise<MutateServiceResult>;
   // Proxifie `PUT /salons/{id}/services/{serviceId}` (remplacement) ; renvoie la prestation.

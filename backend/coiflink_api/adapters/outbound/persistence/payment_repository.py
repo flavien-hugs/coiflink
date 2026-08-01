@@ -26,6 +26,9 @@ from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
+from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import (
+    escape_like,
+)
 from coiflink_api.domain.discrepancy import (
     COMPLETED_STATUS,
     PAID_PAYMENT_STATUSES,
@@ -135,6 +138,7 @@ class SqlPaymentRepository:
         stmt = (
             select(func.count())
             .select_from(models.Payment)
+            .outerjoin(models.User, models.User.id == models.Payment.client_id)
             .where(*self._filter_clauses(salon_id, filter))
         )
         return int(self._session.scalar(stmt) or 0)
@@ -146,7 +150,9 @@ class SqlPaymentRepository:
         """Clauses `WHERE` : `salon_id` inconditionnel + critères présents (ET).
 
         Partagées **à l'identique** par `list_for_salon` et `count_for_salon` pour
-        que le `total` corresponde exactement à la page.
+        que le `total` corresponde exactement à la page. La clause `q` suppose la
+        jointure `models.User` déjà présente dans les deux requêtes appelantes
+        (`outerjoin` sur `client_id`, relation 1:1 — ne multiplie jamais les lignes).
         """
 
         clauses: list[ColumnElement[bool]] = [models.Payment.salon_id == salon_id]
@@ -162,6 +168,10 @@ class SqlPaymentRepository:
             clauses.append(models.Payment.amount <= filter.amount_max)
         if filter.payment_method is not None:
             clauses.append(models.Payment.payment_method == filter.payment_method)
+        if filter.q is not None:
+            clauses.append(
+                models.User.full_name.ilike(f"%{escape_like(filter.q)}%", escape="\\")
+            )
         return clauses
 
     def list_completed_without_payment(

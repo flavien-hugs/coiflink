@@ -395,6 +395,27 @@ class InvalidPlatformSummaryFilter(DomainError):
     """
 
 
+class InvalidCustomerFilter(DomainError):
+    """Un critère de filtrage de la liste des fiches clients est invalide.
+
+    Levée par `domain/customer.py::validate_customer_filter` quand la plage de
+    dates de création est incohérente (`created_from > created_to`) ou que le
+    genre ne fait pas partie de l'énumération fermée `GENDER_VALUES`. Message
+    **neutre** — il ne reprend **jamais** la valeur saisie (§11.3). L'adapter
+    entrant la traduit en `422`.
+    """
+
+
+class InvalidServiceFilter(DomainError):
+    """Un critère de filtrage du catalogue de prestations est invalide.
+
+    Levée par `domain/service.py::validate_service_filter` quand la plage de
+    dates de création est incohérente (`created_from > created_to`). Message
+    **neutre** — il ne reprend **jamais** la valeur saisie (§11.3). L'adapter
+    entrant la traduit en `422`.
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -491,6 +512,8 @@ __all__ = [
     "InvalidTransactionFilter",
     "InvalidDiscrepancyFilter",
     "InvalidPlatformSummaryFilter",
+    "InvalidCustomerFilter",
+    "InvalidServiceFilter",
     "SlotAlreadyBooked",
     "SlotUnavailable",
     "SalonNotBookable",

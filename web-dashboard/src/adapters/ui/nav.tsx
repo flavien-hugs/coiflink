@@ -9,20 +9,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { DASHBOARD_SECTION_GROUPS } from "@/src/domain/navigation/sections";
+import { NavSectionIcon } from "./nav-icons";
 
 interface NavProps {
   collapsed?: boolean;
 }
-
-const COMPACT_SECTION_LABELS: Record<string, string> = {
-  dashboard: "TB",
-  planning: "PL",
-  clients: "CL",
-  prestations: "PR",
-  encaissements: "EN",
-  employes: "EM",
-  parametres: "PA",
-};
 
 export function Nav({ collapsed = false }: NavProps) {
   const pathname = usePathname();
@@ -59,26 +50,26 @@ export function Nav({ collapsed = false }: NavProps) {
               ) : null}
               <ul className="flex flex-col gap-1">
                 {group.sections.map((section) => {
-                  const compactLabel = COMPACT_SECTION_LABELS[section.key] ?? section.label.slice(0, 2);
-
                   if (section.status === "coming-soon") {
                     return (
                       <li key={section.key}>
                         <span
                           className={
                             collapsed
-                              ? "relative mx-auto flex size-10 cursor-default items-center justify-center rounded-lg text-xs font-semibold text-sidebar-foreground/50"
+                              ? "relative mx-auto flex size-10 cursor-default items-center justify-center rounded-lg text-sidebar-foreground/40"
                               : "flex min-h-10 cursor-default items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/60"
                           }
                           aria-disabled="true"
                           aria-label={`${section.label} : à venir`}
                           title={`${section.label} : à venir`}
                         >
-                          <span
-                            className={collapsed ? "" : "min-w-0 truncate"}
-                            aria-hidden={collapsed}
-                          >
-                            {collapsed ? compactLabel : section.label}
+                          <span className="flex min-w-0 items-center gap-2.5">
+                            <NavSectionIcon sectionKey={section.key} className="shrink-0" />
+                            <span
+                              className={collapsed ? "sr-only" : "min-w-0 truncate"}
+                            >
+                              {section.label}
+                            </span>
                           </span>
                           {collapsed ? (
                             <span
@@ -103,21 +94,21 @@ export function Nav({ collapsed = false }: NavProps) {
                         className={
                           collapsed
                             ? isActive
-                              ? "mx-auto flex size-10 items-center justify-center rounded-lg bg-accent text-xs font-semibold text-accent-foreground shadow-soft"
-                              : "mx-auto flex size-10 items-center justify-center rounded-lg text-xs font-semibold text-sidebar-foreground/70 transition hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground"
+                              ? "mx-auto flex size-10 items-center justify-center rounded-lg bg-accent/15 text-accent ring-2 ring-accent/40"
+                              : "mx-auto flex size-10 items-center justify-center rounded-lg text-sidebar-foreground/70 transition hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground"
                             : isActive
-                              ? "flex min-h-10 items-center rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground shadow-soft"
-                              : "flex min-h-10 items-center rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground"
+                              ? "flex min-h-10 items-center gap-2.5 rounded-lg border-l-2 border-gold bg-accent/10 pl-2.5 pr-3 py-2 text-sm font-semibold text-ink"
+                              : "flex min-h-10 items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground"
                         }
                         aria-current={isActive ? "page" : undefined}
                         aria-label={collapsed ? section.label : undefined}
                         title={section.label}
                       >
+                        <NavSectionIcon sectionKey={section.key} className="shrink-0" />
                         <span
-                          className={collapsed ? "" : "min-w-0 truncate"}
-                          aria-hidden={collapsed}
+                          className={collapsed ? "sr-only" : "min-w-0 truncate"}
                         >
-                          {collapsed ? compactLabel : section.label}
+                          {section.label}
                         </span>
                       </Link>
                     </li>

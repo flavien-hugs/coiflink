@@ -116,7 +116,7 @@ export default async function PlanningPage({
 function Header() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Planning</h1>
+      <h1 className="font-serif text-2xl font-semibold tracking-tight text-ink">Planning</h1>
       <p className="mt-1 text-sm text-muted">
         Les rendez-vous de votre salon, par jour, semaine ou mois — groupés par statut.
       </p>

@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 from typing import Protocol
 
-from coiflink_api.domain.customer import Customer, CustomerToCreate
+from coiflink_api.domain.customer import Customer, CustomerFilter, CustomerToCreate
 from coiflink_api.domain.visit import CustomerVisit
 
 # Bornes de pagination de la liste (garde de coût §12.1 — patron catalogue #18).
@@ -49,13 +49,27 @@ class CustomerRepository(Protocol):
         ...
 
     def list_for_salon(
-        self, salon_id: uuid.UUID, *, limit: int, offset: int
+        self,
+        salon_id: uuid.UUID,
+        *,
+        filter: CustomerFilter,
+        limit: int,
+        offset: int,
     ) -> tuple[Customer, ...]:
-        """Page de fiches du salon, les plus récentes d'abord (`limit`/`offset` en SQL)."""
+        """Page **filtrée** de fiches du salon, les plus récentes d'abord.
+
+        Filtre `salon_id` **inconditionnel** (isolation §11.2) + clauses de filtre
+        **conditionnelles** (nom/genre/date de création, combinées en ET), tri
+        `created_at DESC, id DESC`, bornes en SQL (garde de coût §12.1).
+        """
         ...
 
-    def count_for_salon(self, salon_id: uuid.UUID) -> int:
-        """Nombre total de fiches du salon (total de pagination)."""
+    def count_for_salon(self, salon_id: uuid.UUID, *, filter: CustomerFilter) -> int:
+        """Nombre total de fiches du salon **sous le même filtre** (pagination).
+
+        Applique **exactement** les mêmes clauses que `list_for_salon` pour un
+        `total` cohérent avec la page.
+        """
         ...
 
     def phone_exists(self, salon_id: uuid.UUID, phone: str) -> bool:

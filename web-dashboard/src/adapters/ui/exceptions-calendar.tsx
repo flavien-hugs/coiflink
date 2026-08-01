@@ -3,12 +3,14 @@
 // Mini calendrier mensuel des jours exceptionnels — adapter UI (hexagonal,
 // ADR-0008). Remplace la liste plate de jours exceptionnels par une grille de
 // mois navigable : un point marque les dates déjà configurées (rouge = fermé,
-// accent = horaire ponctuel), cliquer une date ouvre son éditeur en dessous
-// (fermé toute la journée, ou un créneau ponctuel — même portée qu'avant, un
-// seul intervalle par jour exceptionnel).
+// accent = horaire ponctuel), cliquer une date ouvre son éditeur dans une
+// **modale** (fermé toute la journée, ou un créneau ponctuel — même portée
+// qu'avant, un seul intervalle par jour exceptionnel).
 
-import { useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import { useEffect, useMemo, useState } from "react";
 
+import { CheckIcon, TrashIcon, XIcon } from "@/src/adapters/ui/action-icons";
 import { Toggle } from "@/src/adapters/ui/toggle";
 import {
   buildMonthGrid,
@@ -39,14 +41,6 @@ function todayIso(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
     now.getDate(),
   ).padStart(2, "0")}`;
-}
-
-// Cet éditeur est rendu **dans** le `<form>` horaires (contrairement au
-// popover portalé de `WeeklyAgenda`) : Entrée dans un input `time` soumettrait
-// sinon prématurément tout le formulaire avant que la modification ne soit
-// appliquée via « Enregistrer ».
-function preventEnterSubmit(event: React.KeyboardEvent<HTMLInputElement>): void {
-  if (event.key === "Enter") event.preventDefault();
 }
 
 function formatDateLong(iso: string): string {
@@ -200,80 +194,101 @@ function ExceptionEditor({
 
   const valid = closed || slot.end > slot.start;
 
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-5 shadow-soft">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h3 className="text-sm font-semibold capitalize">{formatDateLong(date)}</h3>
-          <p className="mt-0.5 text-xs text-muted">
-            Jour exceptionnel — fermeture ou horaires ponctuels.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="cursor-pointer text-sm font-medium text-muted hover:text-foreground"
-        >
-          Fermer
-        </button>
-      </div>
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
 
-      <div className="mt-4 flex items-center gap-2 text-sm">
-        <Toggle
-          checked={closed}
-          onChange={setClosed}
-          label={`${date} — ${closed ? "fermé" : "ouvert"}`}
-        />
-        <span>Fermé toute la journée</span>
-      </div>
-
-      {!closed ? (
-        <div className="mt-3 flex items-center gap-2">
-          <input
-            type="time"
-            value={slot.start}
-            onChange={(event) => setSlot({ ...slot, start: event.target.value })}
-            onKeyDown={preventEnterSubmit}
-            className={INPUT_CLASS}
-            aria-label="Horaire exceptionnel — début"
-          />
-          <span className="text-muted">–</span>
-          <input
-            type="time"
-            value={slot.end}
-            onChange={(event) => setSlot({ ...slot, end: event.target.value })}
-            onKeyDown={preventEnterSubmit}
-            className={INPUT_CLASS}
-            aria-label="Horaire exceptionnel — fin"
-          />
-        </div>
-      ) : null}
-
-      {!valid ? (
-        <p className="mt-2 text-sm text-danger" role="alert">
-          L&apos;heure de fin doit être après l&apos;heure de début.
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        className="absolute inset-0 cursor-default bg-foreground/35"
+        aria-label="Fermer"
+        onClick={onClose}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="exception-editor-title"
+        className="relative w-full max-w-sm rounded-2xl border border-border bg-surface p-5 shadow-elevated"
+      >
+        <h3 id="exception-editor-title" className="font-serif text-base font-semibold text-ink capitalize">
+          {formatDateLong(date)}
+        </h3>
+        <p className="mt-0.5 text-xs text-muted">
+          Jour exceptionnel — fermeture ou horaires ponctuels.
         </p>
-      ) : null}
 
-      <div className="mt-4 flex items-center gap-3">
-        <button
-          type="button"
-          disabled={!valid}
-          onClick={() => onSave({ closed, intervals: closed ? [] : [slot] })}
-          className="inline-flex cursor-pointer items-center justify-center rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
-        >
-          Enregistrer
-        </button>
-        {onDelete ? (
+        <div className="mt-4 flex items-center gap-2 text-sm">
+          <Toggle
+            checked={closed}
+            onChange={setClosed}
+            label={`${date} — ${closed ? "fermé" : "ouvert"}`}
+          />
+          <span>Fermé toute la journée</span>
+        </div>
+
+        {!closed ? (
+          <div className="mt-3 flex items-center gap-2">
+            <input
+              type="time"
+              value={slot.start}
+              onChange={(event) => setSlot({ ...slot, start: event.target.value })}
+              className={INPUT_CLASS}
+              aria-label="Horaire exceptionnel — début"
+            />
+            <span className="text-muted">–</span>
+            <input
+              type="time"
+              value={slot.end}
+              onChange={(event) => setSlot({ ...slot, end: event.target.value })}
+              className={INPUT_CLASS}
+              aria-label="Horaire exceptionnel — fin"
+            />
+          </div>
+        ) : null}
+
+        {!valid ? (
+          <p className="mt-2 text-sm text-danger" role="alert">
+            L&apos;heure de fin doit être après l&apos;heure de début.
+          </p>
+        ) : null}
+
+        <div className="mt-4 flex items-center gap-3">
           <button
             type="button"
-            onClick={onDelete}
-            className="cursor-pointer text-sm font-medium text-muted hover:text-danger"
+            disabled={!valid}
+            onClick={() => onSave({ closed, intervals: closed ? [] : [slot] })}
+            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-soft"
           >
-            Supprimer
+            <CheckIcon className="shrink-0" />
+            Enregistrer
           </button>
-        ) : null}
+          {onDelete ? (
+            <button
+              type="button"
+              onClick={onDelete}
+              className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-danger"
+            >
+              <TrashIcon className="shrink-0" />
+              Supprimer
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-auto inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
+          >
+            <XIcon className="shrink-0" />
+            Annuler
+          </button>
+        </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

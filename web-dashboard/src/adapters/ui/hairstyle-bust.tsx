@@ -4,6 +4,8 @@
 // diversité des textures et styles (afro, box braids, locs, bob, bouclé) sans
 // dépendre d'un jeu d'illustrations externe.
 
+import type { CSSProperties } from "react";
+
 export type Hairstyle = "afro" | "braids" | "bob" | "curly" | "locs";
 
 export const HAIRSTYLES: { key: Hairstyle; label: string }[] = [
@@ -79,11 +81,12 @@ function HairShape({ hair }: { hair: Hairstyle }) {
 export interface HairstyleBustProps {
   hair: Hairstyle;
   className?: string;
+  style?: CSSProperties;
 }
 
-export function HairstyleBust({ hair, className }: HairstyleBustProps) {
+export function HairstyleBust({ hair, className, style }: HairstyleBustProps) {
   return (
-    <svg viewBox="0 0 100 100" className={className} aria-hidden="true">
+    <svg viewBox="0 0 100 100" className={className} style={style} aria-hidden="true">
       <g fill="var(--color-accent)">
         <HairShape hair={hair} />
         <path d={SHOULDERS_PATH} />

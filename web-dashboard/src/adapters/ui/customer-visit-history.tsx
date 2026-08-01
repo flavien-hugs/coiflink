@@ -68,6 +68,7 @@ function VisitTable({ visits }: { visits: CustomerVisit[] }) {
         <table className="w-full min-w-200 text-left text-sm">
           <thead className="bg-background/70 text-xs font-semibold text-muted">
             <tr>
+              <th className="w-12 px-4 py-3">#</th>
               <th className="px-4 py-3">Date</th>
               <th className="px-4 py-3">Créneau</th>
               <th className="px-4 py-3">Prestations</th>
@@ -75,8 +76,9 @@ function VisitTable({ visits }: { visits: CustomerVisit[] }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-border bg-surface">
-            {visits.map((visit) => (
+            {visits.map((visit, index) => (
               <tr key={visit.appointmentId} className="align-top">
+                <td className="px-4 py-3 font-medium text-muted">{index + 1}</td>
                 <td className="whitespace-nowrap px-4 py-3 font-medium">
                   {formatVisitDate(visit.date)}
                 </td>

@@ -41,6 +41,14 @@ révision `0005` (via le proxy `op` d'Alembic, sans toucher la table de version 
 les autres révisions) : aucune erreur `op.f()` / double-préfixage, l'index partiel
 et le `CHECK` réapparaissent, `head` restauré en `finally`.
 
+**F. `CustomerFilter` — chemin SQL réel (#40)** — `SqlCustomerRepository.list_for_salon`/
+`count_for_salon` exercés directement contre PostgreSQL : un `%` littéral dans `q`
+est **échappé** (traité comme caractère du nom, jamais comme joker `LIKE`, sinon un
+nom ne portant que la sous-chaîne numérique sans le `%` serait aussi retourné) ;
+`count_for_salon` reste cohérent avec la page filtrée ; filtrage par genre exact ;
+plage `created_from`/`created_to` **inclusive** aux deux bornes contre une vraie
+colonne `TIMESTAMP` ; l'isolation par salon tient sous filtre.
+
 Prérequis :
     cd backend
     DATABASE_URL=postgresql://user:pwd@host/db alembic upgrade head
@@ -78,7 +86,7 @@ from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenSe
 from coiflink_api.adapters.outbound.security.login_rate_limiter_memory import (
     InMemoryLoginRateLimiter,
 )
-from coiflink_api.domain.customer import CustomerToCreate
+from coiflink_api.domain.customer import CustomerToCreate, validate_customer_filter
 from coiflink_api.domain.errors import CustomerAlreadyExists
 from coiflink_api.main import app as main_app
 
@@ -432,6 +440,22 @@ def _count_profiles(salon_id: str, phone: str) -> int:
             ),
             {"sid": salon_id, "phone": phone},
         ).scalar_one()
+
+
+def _set_customer_created_at(customer_id: str, created_at: datetime.datetime) -> None:
+    """Force `created_at` d'une fiche (bloc F) : seul moyen de contrôler une borne exacte.
+
+    `created_at` est généré côté serveur à l'insertion (`server_default`) ; le
+    filtrage par plage de dates (§ bloc F) ne peut être testé de façon fiable aux
+    **bornes exactes** qu'en fixant la valeur directement en base.
+    """
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(
+            text("UPDATE customer_profiles SET created_at = :created_at WHERE id = :cid"),
+            {"created_at": created_at, "cid": customer_id},
+        )
+        conn.commit()
 
 
 def _fetch_audit_rows(salon_id: str, action: str) -> list[dict]:
@@ -950,3 +974,159 @@ class TestMigration0005RoundTripE2E:
             # `head` restauré quoi qu'il arrive (idempotent si déjà à `head`).
             restore = _run_alembic("upgrade", "head")
             assert restore.returncode == 0, f"restauration head échouée : {restore.stderr}"
+
+
+# ─── F. Filtres CustomerFilter — chemin SQL réel (#40) ───────────────────────
+
+
+@pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
+class TestCustomerFilterSqlE2E:
+    """`SqlCustomerRepository.list_for_salon`/`count_for_salon` contre PostgreSQL réel.
+
+    Les tests unitaires/cas d'usage (dépôts *fakes*) ne peuvent couvrir ni la
+    collation `ILIKE` réelle, ni l'échappement effectif de `%`/`_` par
+    `escape_like`, ni le comportement d'inclusivité d'une plage de dates contre une
+    vraie colonne `TIMESTAMP`. Ces tests appellent le dépôt **directement**
+    (nouvelle `Session`), comme le bloc B, pour isoler `SqlCustomerRepository` du
+    routeur HTTP.
+    """
+
+    def test_percent_literal_is_escaped_not_treated_as_wildcard(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """`q="50%"` ne matche que le nom contenant **littéralement** "50%" (§ échappement `LIKE`).
+
+        Sans `escape_like`, `%` serait un joker : le motif `%50%%` équivaudrait à
+        « contient 50 » et retournerait aussi une fiche qui porte "50" **sans** le
+        `%` — la fiche « Anniversaire 50 ans Koné » ci-dessous.
+        """
+        token, salon = _setup_manager_salon(_e2e_client)
+        salon_uuid = uuid.UUID(salon)
+        _create_customer(_e2e_client, token, salon, full_name="Réduction 50% Koné")
+        _create_customer(_e2e_client, token, salon, full_name="Anniversaire 50 ans Koné")
+        _create_customer(_e2e_client, token, salon, full_name="Awa Koné")
+
+        session = get_sessionmaker()()
+        try:
+            results = SqlCustomerRepository(session).list_for_salon(
+                salon_uuid,
+                filter=validate_customer_filter(q="50%"),
+                limit=50,
+                offset=0,
+            )
+        finally:
+            session.close()
+
+        assert len(results) == 1
+        assert results[0].full_name == "Réduction 50% Koné"
+
+    def test_count_for_salon_matches_filtered_page(self, _e2e_client: TestClient) -> None:
+        """`count_for_salon` sous le même filtre `q` égale la taille de la page."""
+        token, salon = _setup_manager_salon(_e2e_client)
+        salon_uuid = uuid.UUID(salon)
+        _create_customer(_e2e_client, token, salon, full_name="Réduction 50% Koné")
+        _create_customer(_e2e_client, token, salon, full_name="Anniversaire 50 ans Koné")
+        _create_customer(_e2e_client, token, salon, full_name="Ibrahim Traoré")
+        filter_ = validate_customer_filter(q="Koné")
+
+        session = get_sessionmaker()()
+        try:
+            repository = SqlCustomerRepository(session)
+            results = repository.list_for_salon(
+                salon_uuid, filter=filter_, limit=50, offset=0
+            )
+            total = repository.count_for_salon(salon_uuid, filter=filter_)
+        finally:
+            session.close()
+
+        assert total == len(results) == 2
+
+    def test_gender_exact_match_filtering(self, _e2e_client: TestClient) -> None:
+        """`gender="FEMALE"` ne retourne que les fiches portant exactement cette valeur."""
+        token, salon = _setup_manager_salon(_e2e_client)
+        salon_uuid = uuid.UUID(salon)
+        female_id = _create_customer(
+            _e2e_client, token, salon, full_name="Awa Koné", gender="FEMALE"
+        )["id"]
+        _create_customer(
+            _e2e_client, token, salon, full_name="Ibrahim Traoré", gender="MALE"
+        )
+        _create_customer(
+            _e2e_client, token, salon, full_name="Sana Ouattara", gender="OTHER"
+        )
+
+        session = get_sessionmaker()()
+        try:
+            results = SqlCustomerRepository(session).list_for_salon(
+                salon_uuid,
+                filter=validate_customer_filter(gender="FEMALE"),
+                limit=50,
+                offset=0,
+            )
+        finally:
+            session.close()
+
+        assert {str(c.id) for c in results} == {female_id}
+        assert all(c.gender == "FEMALE" for c in results)
+
+    def test_created_at_range_filter_inclusive_at_both_bounds(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """`created_from`/`created_to` incluent les deux **bornes exactes** du jour civil."""
+        token, salon = _setup_manager_salon(_e2e_client)
+        salon_uuid = uuid.UUID(salon)
+        target_day = datetime.date(2026, 3, 15)
+        start_of_day = datetime.datetime.combine(
+            target_day, datetime.time.min, tzinfo=datetime.timezone.utc
+        )
+        end_of_day = datetime.datetime.combine(
+            target_day, datetime.time(23, 59, 59, 999999), tzinfo=datetime.timezone.utc
+        )
+        just_before = start_of_day - datetime.timedelta(microseconds=1)
+
+        at_start_id = _create_customer(_e2e_client, token, salon, full_name="Fiche Borne Début")["id"]
+        at_end_id = _create_customer(_e2e_client, token, salon, full_name="Fiche Borne Fin")["id"]
+        outside_id = _create_customer(_e2e_client, token, salon, full_name="Fiche Hors Plage")["id"]
+        _set_customer_created_at(at_start_id, start_of_day)
+        _set_customer_created_at(at_end_id, end_of_day)
+        _set_customer_created_at(outside_id, just_before)
+
+        session = get_sessionmaker()()
+        try:
+            results = SqlCustomerRepository(session).list_for_salon(
+                salon_uuid,
+                filter=validate_customer_filter(
+                    created_from=target_day, created_to=target_day
+                ),
+                limit=50,
+                offset=0,
+            )
+        finally:
+            session.close()
+
+        result_ids = {str(c.id) for c in results}
+        assert result_ids == {at_start_id, at_end_id}
+        assert outside_id not in result_ids
+
+    def test_isolation_holds_under_filter(self, _e2e_client: TestClient) -> None:
+        """Une fiche d'un autre salon matchant le même `q` n'apparaît jamais."""
+        token_a, salon_a = _setup_manager_salon(_e2e_client)
+        token_b, salon_b = _setup_manager_salon(
+            _e2e_client, phone=_PHONE_B_LOCAL, name=_SALON_NAME_B
+        )
+        _create_customer(_e2e_client, token_a, salon_a, full_name="Awa Koné")
+        _create_customer(_e2e_client, token_b, salon_b, full_name="Awa Koné")
+
+        session = get_sessionmaker()()
+        try:
+            results = SqlCustomerRepository(session).list_for_salon(
+                uuid.UUID(salon_a),
+                filter=validate_customer_filter(q="Awa"),
+                limit=50,
+                offset=0,
+            )
+        finally:
+            session.close()
+
+        assert len(results) == 1
+        assert results[0].salon_id == uuid.UUID(salon_a)

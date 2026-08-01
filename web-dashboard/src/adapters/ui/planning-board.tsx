@@ -16,8 +16,11 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 
+import { CheckIcon, ClockIcon, RefreshIcon, XIcon } from "@/src/adapters/ui/action-icons";
+import { EmptyState } from "@/src/adapters/ui/empty-state";
+import { SalonToolIcon } from "@/src/adapters/ui/salon-tool-icons";
 import {
   APPOINTMENT_STATUSES,
   availableActions,
@@ -50,9 +53,20 @@ const VIEW_LABELS: Record<PlanningView, string> = {
 
 const ACTION_TONE_CLASSES: Record<ActionTone, string> = {
   primary:
-    "bg-accent text-accent-foreground hover:-translate-y-0.5 hover:shadow-soft",
-  neutral: "border border-border text-foreground hover:border-accent/40",
-  danger: "border border-danger/30 text-danger hover:bg-danger/10",
+    "bg-accent text-accent-foreground shadow-soft hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0",
+  neutral:
+    "border border-border bg-surface text-foreground hover:border-accent/40",
+  danger:
+    "border border-danger/30 bg-surface text-danger hover:border-danger/50 hover:bg-danger/10",
+};
+
+// Icône par statut cible — miroir visuel de la machine à états #25 : confirmer/
+// terminer (coche), refuser/annuler (croix), absent (horloge, RDV non honoré).
+const ACTION_TARGET_ICONS: Partial<Record<AppointmentStatus, ComponentType<{ className?: string }>>> = {
+  CONFIRMED: CheckIcon,
+  COMPLETED: CheckIcon,
+  CANCELLED: XIcon,
+  NO_SHOW: ClockIcon,
 };
 
 function pad2(value: number): string {
@@ -214,6 +228,7 @@ export function PlanningBoard({
         activeSet={activeSet}
         filtered={statuses.length > 0}
         toggleStatusHref={toggleStatusHref}
+        resetHref={planningHref({ statuses: [] })}
       />
 
       {error ? (
@@ -328,14 +343,16 @@ function Legend({
   activeSet,
   filtered,
   toggleStatusHref,
+  resetHref,
 }: {
   counts: Record<AppointmentStatus, number>;
   activeSet: Set<AppointmentStatus>;
   filtered: boolean;
   toggleStatusHref: (status: AppointmentStatus) => string;
+  resetHref: string;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-surface p-2.5 shadow-soft">
       {APPOINTMENT_STATUSES.map((status) => {
         const active = activeSet.has(status);
         return (
@@ -345,8 +362,8 @@ function Legend({
             aria-pressed={active}
             className={
               active
-                ? `inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_STYLES[status].badge}`
-                : "inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs font-medium text-muted opacity-60 transition hover:opacity-100"
+                ? `inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition hover:-translate-y-0.5 ${STATUS_STYLES[status].badge}`
+                : "inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted opacity-60 transition hover:opacity-100"
             }
             title={
               active ? "Masquer ce statut" : "Afficher ce statut"
@@ -357,12 +374,24 @@ function Legend({
               aria-hidden="true"
             />
             {STATUS_LABELS_FR[status]}
-            <span className="tabular-nums">{counts[status]}</span>
+            <span
+              className={`inline-flex min-w-5 items-center justify-center rounded-full px-1 text-[0.7rem] font-bold tabular-nums ${
+                active ? "bg-foreground/10" : ""
+              }`}
+            >
+              {counts[status]}
+            </span>
           </Link>
         );
       })}
       {filtered ? (
-        <span className="text-xs text-muted">Filtre actif</span>
+        <Link
+          href={resetHref}
+          className="ml-auto inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-accent hover:underline"
+        >
+          <RefreshIcon className="shrink-0" />
+          Réinitialiser
+        </Link>
       ) : null}
     </div>
   );
@@ -380,7 +409,7 @@ function DayView({
   readOnly: boolean;
 }) {
   if (appointments.length === 0) {
-    return <EmptyState />;
+    return <PlanningEmptyState />;
   }
 
   const groups = groupByStatus(appointments).filter((group) => group.count > 0);
@@ -388,18 +417,22 @@ function DayView({
   return (
     <div className="flex flex-col gap-5">
       {groups.map((group) => (
-        <div key={group.status} className="flex flex-col gap-2">
-          <div className="flex items-center gap-2">
+        <div key={group.status} className="flex flex-col gap-3">
+          <div className="flex items-center gap-2 border-b border-border pb-2">
             <span
               className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${STATUS_STYLES[group.status].badge}`}
             >
+              <span
+                className={`size-1.5 rounded-full ${STATUS_STYLES[group.status].dot}`}
+                aria-hidden="true"
+              />
               {STATUS_LABELS_FR[group.status]}
             </span>
-            <span className="text-xs text-muted tabular-nums">
+            <span className="text-xs font-medium text-muted tabular-nums">
               {group.count} rendez-vous
             </span>
           </div>
-          <ul className="flex flex-col gap-2">
+          <ul className="flex flex-col gap-2.5">
             {group.appointments.map((appointment) => (
               <AppointmentCard
                 key={appointment.id}
@@ -430,21 +463,22 @@ function AppointmentCard({
   // Lecture seule (coiffeur #27) : aucune action de statut n'est proposée.
   const actions = readOnly ? [] : availableActions(appointment.status);
   return (
-    <li className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-4 shadow-soft sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex items-start gap-3">
+    <li className="flex flex-col gap-4 rounded-2xl border border-border bg-surface p-5 shadow-soft transition hover:shadow-elevated sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-stretch gap-3.5">
         <span
-          className={`mt-1 size-2.5 shrink-0 rounded-full ${STATUS_STYLES[appointment.status].dot}`}
+          className={`w-1 shrink-0 rounded-full ${STATUS_STYLES[appointment.status].dot}`}
           aria-hidden="true"
         />
         <div>
-          <div className="font-semibold tabular-nums">
+          <div className="flex items-center gap-1.5 font-semibold tabular-nums">
+            <ClockIcon className="shrink-0 text-muted" />
             {formatTime(appointment.startTime)} – {formatTime(appointment.endTime)}
           </div>
-          <p className="mt-0.5 text-sm text-muted">
+          <p className="mt-1 text-sm text-muted">
             {clientLabel(appointment.clientId)} · {serviceLabel(appointment.services.length)}
           </p>
           {appointment.clientNote ? (
-            <p className="mt-1 line-clamp-2 text-sm text-muted">
+            <p className="mt-2 line-clamp-2 rounded-lg bg-background/60 px-2.5 py-1.5 text-sm text-muted">
               « {appointment.clientNote} »
             </p>
           ) : null}
@@ -452,18 +486,22 @@ function AppointmentCard({
       </div>
 
       {actions.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {actions.map((action) => (
-            <button
-              key={action.target}
-              type="button"
-              disabled={pending}
-              onClick={() => onAction(appointment.id, action.target)}
-              className={`inline-flex h-9 items-center justify-center rounded-lg px-3 text-sm font-medium transition disabled:opacity-60 ${ACTION_TONE_CLASSES[action.tone]}`}
-            >
-              {pending ? "…" : action.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap gap-2 sm:shrink-0">
+          {actions.map((action) => {
+            const ActionIcon = ACTION_TARGET_ICONS[action.target];
+            return (
+              <button
+                key={action.target}
+                type="button"
+                disabled={pending}
+                onClick={() => onAction(appointment.id, action.target)}
+                className={`inline-flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-3.5 text-sm font-semibold transition disabled:cursor-default disabled:opacity-60 ${ACTION_TONE_CLASSES[action.tone]}`}
+              >
+                {pending ? null : ActionIcon ? <ActionIcon className="shrink-0" /> : null}
+                {pending ? "…" : action.label}
+              </button>
+            );
+          })}
         </div>
       ) : null}
     </li>
@@ -596,10 +634,13 @@ function MonthView({
   );
 }
 
-function EmptyState() {
+function PlanningEmptyState() {
   return (
-    <div className="rounded-2xl border border-border bg-surface p-10 text-center text-sm text-muted shadow-soft">
-      Aucun rendez-vous pour cette période.
+    <div className="rounded-2xl border border-border bg-surface shadow-soft">
+      <EmptyState
+        icon={<SalonToolIcon tool="scissors" className="size-7" />}
+        title="Aucun rendez-vous pour cette période."
+      />
     </div>
   );
 }

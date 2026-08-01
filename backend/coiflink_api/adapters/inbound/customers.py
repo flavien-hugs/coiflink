@@ -71,10 +71,12 @@ from coiflink_api.domain.customer import (
     GENDER_VALUES,
     NOTES_MAX_LENGTH,
     Customer,
+    validate_customer_filter,
 )
 from coiflink_api.domain.errors import (
     CustomerAlreadyExists,
     CustomerNotFound,
+    InvalidCustomerFilter,
     InvalidCustomerGender,
     InvalidCustomerName,
     InvalidCustomerNotes,
@@ -409,10 +411,15 @@ def create_customer(
 @router.get(
     "/{salon_id}/customers",
     response_model=CustomerPageResponse,
-    summary="Lister les fiches clients du salon (paginé, plus récentes d'abord)",
+    summary="Lister/filtrer les fiches clients du salon (paginé, plus récentes d'abord)",
     responses={
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {
+            "description": (
+                "Filtre invalide : plage de dates incohérente ou genre hors énumération"
+            )
+        },
     },
 )
 def list_customers(
@@ -422,15 +429,37 @@ def list_customers(
     _principal: Annotated[
         Principal, Depends(require_permission(Permission.CUSTOMER_MANAGE))
     ],
+    q: Annotated[
+        str | None, Query(description="Recherche par nom (sous-chaîne)")
+    ] = None,
+    gender: Annotated[str | None, Query()] = None,
+    created_from: Annotated[datetime.date | None, Query()] = None,
+    created_to: Annotated[datetime.date | None, Query()] = None,
     limit: int = Query(
         default=CUSTOMER_LIMIT_DEFAULT, ge=CUSTOMER_LIMIT_MIN, le=CUSTOMER_LIMIT_MAX
     ),
     offset: int = Query(default=0, ge=0),
 ) -> CustomerPageResponse:
-    """Liste **seulement** les fiches du salon de la portée (isolation §11.2)."""
+    """Liste **filtrable** des fiches du salon de la portée (isolation §11.2).
+
+    Filtres **optionnels** combinés en **ET** : `q` (nom, sous-chaîne insensible à
+    la casse), `gender` (enum fermé), plage de dates de création inclusive
+    (`created_from`/`created_to`, jour civil `Africa/Abidjan`). Les critères
+    deviennent des clauses `WHERE` SQL (filtrage **serveur**, garde de coût
+    §12.1) ; un filtre invalide → `422` (`InvalidCustomerFilter`), message neutre.
+    """
+
+    try:
+        customer_filter = validate_customer_filter(
+            q=q, gender=gender, created_from=created_from, created_to=created_to
+        )
+    except InvalidCustomerFilter as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
     page, total = ListSalonCustomers(repository).execute(
-        salon_id, limit=limit, offset=offset
+        salon_id, filter=customer_filter, limit=limit, offset=offset
     )
     return CustomerPageResponse(
         items=[_customer_response(customer) for customer in page],

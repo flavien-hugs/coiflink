@@ -90,6 +90,7 @@ class TransactionFilter:
     amount_min: decimal.Decimal | None = None
     amount_max: decimal.Decimal | None = None
     payment_method: str | None = None
+    q: str | None = None
     created_at_from: datetime.datetime | None = None
     created_at_to: datetime.datetime | None = None
 
@@ -104,6 +105,7 @@ class TransactionFilter:
             and self.amount_min is None
             and self.amount_max is None
             and self.payment_method is None
+            and self.q is None
         )
 
 
@@ -148,6 +150,17 @@ def _validate_method(method: str | None) -> str | None:
     return cleaned
 
 
+def _validate_q(q: str | None) -> str | None:
+    """Valide la **recherche texte optionnelle** (nom client) : trim, `""` → `None`."""
+
+    if q is None:
+        return None
+    if not isinstance(q, str):
+        raise InvalidTransactionFilter("Filtre de transactions invalide.")
+    cleaned = q.strip()
+    return cleaned or None
+
+
 def validate_transaction_filter(
     *,
     date_from: datetime.date | None = None,
@@ -156,6 +169,7 @@ def validate_transaction_filter(
     amount_min: decimal.Decimal | int | None = None,
     amount_max: decimal.Decimal | int | None = None,
     payment_method: str | None = None,
+    q: str | None = None,
 ) -> TransactionFilter:
     """Valide/normalise les critères de filtre → `TransactionFilter` (US-5.2, #35).
 
@@ -165,7 +179,9 @@ def validate_transaction_filter(
     - **montants** bornés `[0, AMOUNT_MAX]`, ≤ 2 décimales, en `Decimal` (jamais
       un flottant) ;
     - **mode de paiement** dans l'énumération fermée `PaymentMethod` ;
-    - `None` (ou chaîne vide de mode) = **pas de contrainte**.
+    - **recherche texte** (`q`) : sous-chaîne du **nom client** (`ILIKE`, §11.3
+      aucune autre colonne PII n'est recherchée) ;
+    - `None` (ou chaîne vide de mode/texte) = **pas de contrainte**.
 
     Les bornes de date sont converties du jour civil `Africa/Abidjan` (UTC+0) vers
     des `datetime` UTC inclusifs, exposés par `created_at_from`/`created_at_to`.
@@ -184,6 +200,7 @@ def validate_transaction_filter(
         raise InvalidTransactionFilter("Filtre de transactions invalide.")
 
     method = _validate_method(payment_method)
+    cleaned_q = _validate_q(q)
 
     return TransactionFilter(
         date_from=date_from,
@@ -192,6 +209,7 @@ def validate_transaction_filter(
         amount_min=min_amount,
         amount_max=max_amount,
         payment_method=method,
+        q=cleaned_q,
         created_at_from=_day_start_utc(date_from) if date_from is not None else None,
         created_at_to=_day_end_utc(date_to) if date_to is not None else None,
     )

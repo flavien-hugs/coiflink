@@ -1,32 +1,35 @@
 "use client";
 
 // Tableau de configuration des prestations — adapter UI (hexagonal, ADR-0008).
-// Filtre, trie et ouvre l'ajout/modification dans un drawer droit. Les mutations
-// passent par les Route Handlers BFF, le backend reste l'autorité.
+// Fusionne recherche + filtres + tableau (même patron que `CustomerList`/
+// `TransactionHistory`) : recherche libre (nom), catégorie et plage de dates de
+// création sont des filtres **serveur**, soumis explicitement (pas de
+// live/debounce) — la soumission met à jour les `searchParams` de la page
+// (nouveau rendu serveur, relecture de la source de vérité
+// `/salons/{id}/services`). Le tri (`SortDirectionToggle`, création la plus
+// récente/ancienne d'abord) reste **client**, sur la page déjà reçue : il ne
+// change que l'ordre, jamais l'ensemble des lignes incluses. Ouvre l'ajout/
+// modification dans un drawer droit. Les mutations passent par les Route
+// Handlers BFF, le backend reste l'autorité.
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState, useTransition, type FormEvent } from "react";
 
-import { SearchableSelect, SearchIcon } from "@/src/adapters/ui/searchable-select";
+import { CheckIcon, FilterIcon, PencilIcon, PlusIcon, RefreshIcon, TrashIcon, XIcon } from "@/src/adapters/ui/action-icons";
+import { EmptyState } from "@/src/adapters/ui/empty-state";
+import { SalonToolIcon } from "@/src/adapters/ui/salon-tool-icons";
+import { SearchIcon } from "@/src/adapters/ui/searchable-select";
 import { ServiceForm } from "@/src/adapters/ui/service-form";
-import {
-  filterAndSortServices,
-  hasInvalidServiceDateRange,
-  type ServiceSortDirection,
-  type ServiceSortKey,
-} from "@/src/domain/service/service-listing";
+import { SortDirectionToggle, type SortDirection } from "@/src/adapters/ui/sort-direction-toggle";
+import { hasInvalidServiceDateRange } from "@/src/domain/service/service-listing";
 import type { Service } from "@/src/domain/service/service";
 
 const COMPACT_INPUT_CLASS =
   "h-10 rounded-lg border border-border bg-surface px-3 text-sm text-foreground outline-none transition placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
 
-const SORT_OPTIONS: { value: ServiceSortKey; label: string }[] = [
-  { value: "createdAt", label: "Date de création" },
-  { value: "name", label: "Nom" },
-  { value: "category", label: "Catégorie" },
-  { value: "price", label: "Prix" },
-  { value: "duration", label: "Durée" },
-];
+const PRESTATIONS_BASE_PATH = "/gerant/prestations";
+
+const COLLATOR = new Intl.Collator("fr-FR", { numeric: true, sensitivity: "base" });
 
 type DrawerState =
   | { mode: "create" }
@@ -54,39 +57,85 @@ function formatDate(value: string): string {
   }).format(date);
 }
 
+function timestamp(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+// Tri pur (ordre uniquement) de la liste **déjà filtrée par le serveur** — ne
+// change jamais l'ensemble des lignes incluses, seulement leur ordre
+// (création la plus récente/ancienne d'abord).
+function sortServicesByCreatedAt(
+  services: readonly Service[],
+  direction: SortDirection,
+): Service[] {
+  const factor = direction === "asc" ? 1 : -1;
+  return [...services].sort((a, b) => {
+    const primary = timestamp(a.createdAt) - timestamp(b.createdAt);
+    if (primary !== 0) return primary * factor;
+    return COLLATOR.compare(a.name, b.name);
+  });
+}
+
+export interface ServiceListProps {
+  salonId: string;
+  services: Service[];
+  // Valeurs courantes (lues des `searchParams` côté serveur), pré-remplies.
+  q: string;
+  category: string;
+  createdFrom: string;
+  createdTo: string;
+}
+
 export function ServiceList({
   salonId,
   services,
-}: {
-  salonId: string;
-  services: Service[];
-}) {
+  q,
+  category,
+  createdFrom,
+  createdTo,
+}: ServiceListProps) {
   const router = useRouter();
+  const [isRefreshing, startRefresh] = useTransition();
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [sortKey, setSortKey] = useState<ServiceSortKey>("createdAt");
-  const [sortDirection, setSortDirection] = useState<ServiceSortDirection>("desc");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [values, setValues] = useState({ q, category, createdFrom, createdTo });
 
-  const dateRangeInvalid = hasInvalidServiceDateRange(startDate, endDate);
-  const filteredServices = useMemo(
-    () =>
-      filterAndSortServices(services, {
-        search,
-        startDate,
-        endDate,
-        sortKey,
-        sortDirection,
-      }),
-    [endDate, search, services, sortDirection, sortKey, startDate],
-  );
+  const sorted = sortServicesByCreatedAt(services, sortDirection);
+  const dateRangeInvalid = hasInvalidServiceDateRange(values.createdFrom, values.createdTo);
+  const hasActiveFilters =
+    q.trim().length > 0 || category.trim().length > 0 || createdFrom !== "" || createdTo !== "";
 
   const activeCount = services.filter((service) => service.isActive).length;
   const inactiveCount = services.length - activeCount;
-  const hasFilters = Boolean(search.trim() || startDate || endDate);
+
+  function set(key: keyof typeof values, value: string) {
+    setValues((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const params = new URLSearchParams();
+    if (values.q.trim()) params.set("q", values.q.trim());
+    if (values.category.trim()) params.set("category", values.category.trim());
+    if (values.createdFrom) params.set("created_from", values.createdFrom);
+    if (values.createdTo) params.set("created_to", values.createdTo);
+    const query = params.toString();
+    router.push(query ? `${PRESTATIONS_BASE_PATH}?${query}` : PRESTATIONS_BASE_PATH);
+  }
+
+  function onReset() {
+    setValues({ q: "", category: "", createdFrom: "", createdTo: "" });
+    router.push(PRESTATIONS_BASE_PATH);
+  }
+
+  function onRefresh() {
+    startRefresh(() => {
+      router.refresh();
+    });
+  }
 
   async function onToggleActive(service: Service) {
     setError(null);
@@ -120,7 +169,7 @@ export function ServiceList({
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2 text-sm text-muted">
-          <span className="rounded-full bg-foreground/5 px-2.5 py-1">
+          <span className="rounded-full bg-nude/50 px-2.5 py-1">
             {services.length} prestation{services.length > 1 ? "s" : ""}
           </span>
           <span className="rounded-full bg-palm/10 px-2.5 py-1 text-palm">
@@ -133,40 +182,43 @@ export function ServiceList({
 
         <button
           type="button"
-          className="inline-flex h-10 cursor-pointer items-center justify-center rounded-lg bg-accent px-4 text-sm font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0"
+          className="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-4 text-sm font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0"
           onClick={() => {
             setError(null);
             setDrawer({ mode: "create" });
           }}
         >
+          <PlusIcon className="shrink-0" />
           Ajouter une prestation
         </button>
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-soft">
         <div className="flex flex-col gap-2 border-b border-border px-4 py-3 xl:flex-row xl:items-center">
-          <div className="relative flex-1">
-            <SearchIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-            <input
-              type="search"
-              aria-label="Rechercher une prestation"
-              className={`${COMPACT_INPUT_CLASS} w-full pl-9`}
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Nom, catégorie, description"
-            />
-          </div>
+          <form
+            onSubmit={onSubmit}
+            aria-label="Filtres des prestations"
+            className="flex flex-1 flex-wrap items-center gap-2"
+          >
+            <div className="relative flex-1">
+              <SearchIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <input
+                type="search"
+                aria-label="Rechercher une prestation"
+                className={`${COMPACT_INPUT_CLASS} w-full pl-9`}
+                value={values.q}
+                onChange={(event) => set("q", event.target.value)}
+                placeholder="Nom de la prestation"
+              />
+            </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <SearchableSelect
-              ariaLabel="Trier par"
-              className="w-48"
-              value={sortKey}
-              options={SORT_OPTIONS}
-              onChange={(next) => setSortKey(next as ServiceSortKey)}
-              placeholder="Trier par"
-              searchPlaceholder="Rechercher un tri"
-              emptyLabel="Aucun tri trouvé"
+            <input
+              type="text"
+              aria-label="Filtrer par catégorie"
+              className={`${COMPACT_INPUT_CLASS} w-full sm:w-44`}
+              value={values.category}
+              onChange={(event) => set("category", event.target.value)}
+              placeholder="Catégorie"
             />
 
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
@@ -175,8 +227,8 @@ export function ServiceList({
                 aria-label="Créée depuis"
                 title="Créée depuis"
                 className={`${COMPACT_INPUT_CLASS} min-w-0 cursor-pointer`}
-                value={startDate}
-                onChange={(event) => setStartDate(event.target.value)}
+                value={values.createdFrom}
+                onChange={(event) => set("createdFrom", event.target.value)}
               />
               <span className="text-xs text-muted" aria-hidden="true">
                 →
@@ -186,17 +238,46 @@ export function ServiceList({
                 aria-label="Créée jusqu'à"
                 title="Créée jusqu'à"
                 className={`${COMPACT_INPUT_CLASS} min-w-0 cursor-pointer`}
-                value={endDate}
-                onChange={(event) => setEndDate(event.target.value)}
+                value={values.createdTo}
+                onChange={(event) => set("createdTo", event.target.value)}
               />
             </div>
 
+            <button
+              type="submit"
+              className="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-4 text-sm font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0"
+            >
+              <FilterIcon className="shrink-0" />
+              Filtrer
+            </button>
+            <button
+              type="button"
+              onClick={onReset}
+              className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
+            >
+              <RefreshIcon className="shrink-0" />
+              Réinitialiser
+            </button>
+          </form>
+
+          <div className="flex flex-wrap items-center gap-2">
             <SortDirectionToggle
               direction={sortDirection}
               onToggle={() =>
                 setSortDirection((current) => (current === "asc" ? "desc" : "asc"))
               }
             />
+
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={isRefreshing}
+              aria-label="Actualiser la liste"
+              title="Actualiser la liste"
+              className="inline-flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border bg-surface text-muted transition hover:border-accent/40 hover:text-foreground disabled:cursor-default disabled:opacity-60"
+            >
+              <RefreshIcon className={`shrink-0 ${isRefreshing ? "animate-spin" : ""}`} />
+            </button>
           </div>
         </div>
 
@@ -226,6 +307,7 @@ export function ServiceList({
           <table className="w-full min-w-230 text-left text-sm">
             <thead className="bg-background/70 text-xs font-semibold text-muted">
               <tr>
+                <th className="w-12 px-4 py-3">#</th>
                 <th className="px-4 py-3">Prestation</th>
                 <th className="px-4 py-3">Catégorie</th>
                 <th className="px-4 py-3">Prix</th>
@@ -236,8 +318,9 @@ export function ServiceList({
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-surface">
-              {filteredServices.map((service) => (
+              {sorted.map((service, index) => (
                 <tr key={service.id} className="align-top">
+                  <td className="px-4 py-3 font-medium text-muted">{index + 1}</td>
                   <td className="max-w-[320px] px-4 py-3">
                     <div className="font-semibold">{service.name}</div>
                     {service.description ? (
@@ -263,24 +346,30 @@ export function ServiceList({
                     <div className="flex justify-end gap-3">
                       <button
                         type="button"
-                        className="text-sm font-medium text-accent hover:underline"
+                        className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-accent hover:underline"
                         onClick={() => {
                           setError(null);
                           setDrawer({ mode: "edit", service });
                         }}
                       >
+                        <PencilIcon className="shrink-0" />
                         Modifier
                       </button>
                       <button
                         type="button"
                         className={
                           service.isActive
-                            ? "text-sm font-medium text-muted hover:text-danger disabled:opacity-60"
-                            : "text-sm font-medium text-palm hover:underline disabled:opacity-60"
+                            ? "inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-danger disabled:opacity-60"
+                            : "inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-palm hover:underline disabled:opacity-60"
                         }
                         onClick={() => onToggleActive(service)}
                         disabled={pendingId === service.id}
                       >
+                        {pendingId === service.id ? null : service.isActive ? (
+                          <TrashIcon className="shrink-0" />
+                        ) : (
+                          <CheckIcon className="shrink-0" />
+                        )}
                         {pendingId === service.id
                           ? "…"
                           : service.isActive
@@ -291,14 +380,17 @@ export function ServiceList({
                   </td>
                 </tr>
               ))}
-              {filteredServices.length === 0 ? (
+              {sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-muted">
-                    {services.length === 0
-                      ? "Aucune prestation pour le moment."
-                      : hasFilters
-                        ? "Aucune prestation ne correspond aux filtres."
-                        : "Aucune prestation à afficher."}
+                  <td colSpan={8}>
+                    <EmptyState
+                      icon={<SalonToolIcon tool="bottle" className="size-7" />}
+                      title={
+                        hasActiveFilters
+                          ? "Aucune prestation ne correspond aux filtres."
+                          : "Aucune prestation pour le moment."
+                      }
+                    />
                   </td>
                 </tr>
               ) : null}
@@ -313,58 +405,6 @@ export function ServiceList({
         onClose={() => setDrawer(null)}
       />
     </div>
-  );
-}
-
-function SortDirectionToggle({
-  direction,
-  onToggle,
-}: {
-  direction: ServiceSortDirection;
-  onToggle: () => void;
-}) {
-  const ascending = direction === "asc";
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-label={`Trier par ordre ${ascending ? "décroissant" : "croissant"}`}
-      title={`Ordre ${ascending ? "croissant" : "décroissant"}`}
-      className="inline-flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border bg-surface text-muted transition hover:border-accent/40 hover:text-foreground"
-    >
-      <SortDirectionIcon ascending={ascending} />
-    </button>
-  );
-}
-
-function SortDirectionIcon({ ascending }: { ascending: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.6}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="size-4"
-      aria-hidden="true"
-    >
-      {ascending ? (
-        <>
-          <path d="M6 12h4" />
-          <path d="M6 8h7" />
-          <path d="M6 16h2" />
-          <path d="m14 6 3 3.5M17 6l3 3.5M17 6v8" />
-        </>
-      ) : (
-        <>
-          <path d="M6 4h2" />
-          <path d="M6 8h7" />
-          <path d="M6 12h4" />
-          <path d="m14 18 3-3.5M17 18l3-3.5M17 18V6" />
-        </>
-      )}
-    </svg>
   );
 }
 
@@ -409,7 +449,7 @@ function ServiceDrawer({
       >
         <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
           <div>
-            <h2 id="service-drawer-title" className="text-xl font-semibold">
+            <h2 id="service-drawer-title" className="font-serif text-xl font-semibold text-ink">
               {title}
             </h2>
             <p className="mt-1 text-sm text-muted">
@@ -418,9 +458,10 @@ function ServiceDrawer({
           </div>
           <button
             type="button"
-            className="cursor-pointer rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted transition hover:border-accent/40 hover:text-foreground"
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted transition hover:border-accent/40 hover:text-foreground"
             onClick={onClose}
           >
+            <XIcon className="shrink-0" />
             Fermer
           </button>
         </div>
