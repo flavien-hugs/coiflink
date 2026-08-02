@@ -1060,6 +1060,70 @@ curl -G "$API/salons/$SALON_ID/revenue/summary" \
 }
 ```
 
+## Prestations les plus demandées (US-6.3, #41)
+
+Le gérant **connaît ses prestations les plus demandées** : `GET /salons/{salon_id}/service-demand` renvoie
+les prestations du salon **classées par volume et par revenu** (deux ordres, **mêmes** entrées). La route
+est **protégée** par `STATS_READ_SALON` (§4.1, **seul le `MANAGER`**) + portée salon (`require_salon_scope`)
+; c'est le **troisième** usage de `STATS_READ_SALON` après le décompte RDV du jour (US-6.1, #39) et le CA
+(US-6.2, #40). **Lecture pure** (aucune écriture, aucun audit §11.4) ; rien n'entre dans
+`PUBLIC_ROUTE_PATHS` — une donnée d'exploitation salon n'est jamais publique. Le segment `service-demand`
+est **distinct** de `/{salon_id}/services/{service_id}` (aucun littéral parsé comme un `service_id`).
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/service-demand` | `STATS_READ_SALON` + portée | `200` deux classements \| `401` \| `403` \| `422` bornes mal formées/incohérentes | *(aucun — lecture)* |
+
+Le classement est **dérivé en lecture** des RDV **réalisés** (`COMPLETED`, imposé serveur — « réalisées
+uniquement ») : par prestation, `volume` = **nombre d'occurrences** (`COUNT`) et `revenue` = **somme des
+`price_at_booking`** (prix **figés** à la réservation, XOF, `Decimal` en chaîne `NUMERIC(12,2)`). Le calcul
+est **en base** (`GROUP BY service_id`, jointure `appointment_services`/`services` par la composite
+`(salon_id, service_id)`, index `ix_appointments_salon_id` + `ix_appointment_services_service_id`), sans
+rapatrier de ligne : la réponse ne porte **que** des libellés, des compteurs, des montants, la période et la
+devise (§11.3) — **aucune** PII (`client_id`, `appointment_id`, ligne de RDV/paiement). Le tri des deux
+classements (par volume décroissant, par revenu décroissant, départages déterministes) est une **fonction
+pure du domaine** (`domain/service_demand.py`). Une prestation **désactivée** (`is_active = false`) présente
+dans un RDV réalisé reste **nommée** (le classement reflète l'**historique réalisé**, pas le catalogue
+courant). Un salon **sans RDV réalisé** → classements **vides** (état vide légitime, ≠ erreur).
+
+Les bornes `date_from`/`date_to` (jour civil `Africa/Abidjan`) sont **optionnelles** — absentes = **toute
+l'histoire** ; une seule fournie laisse l'autre borne ouverte ; `date_to < date_from` → `422`.
+
+> **Revenu par prestation ≠ CA du salon (#40).** Ce revenu (valeur des prestations réalisées, somme des
+> `price_at_booking` des RDV `COMPLETED`) mesure une grandeur **différente** du CA #40 (dérivé du **journal
+> de caisse net** — paiements réellement encaissés, net des `ADJUSTMENT`) : un RDV `COMPLETED` non payé
+> compte ici mais pas dans le CA #40 ; une correction (#34) baisse le CA #40 mais pas ce revenu. Les
+> `payments` d'un RDV multi-prestations n'étant pas ventilés par prestation, `price_at_booking` est la
+> **seule** source d'un revenu **par prestation** (base déjà utilisée par #31).
+
+```bash
+# Prestations les plus demandées du salon, tout l'historique → 200
+curl -G "$API/salons/$SALON_ID/service-demand" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Sur une fenêtre de dates (Africa/Abidjan) → 200
+curl -G "$API/salons/$SALON_ID/service-demand" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  --data-urlencode "date_from=2026-08-01" \
+  --data-urlencode "date_to=2026-08-31"
+```
+
+```json
+{
+  "currency": "XOF",
+  "date_from": null,
+  "date_to": null,
+  "by_volume": [
+    { "service_id": "…", "name": "Coupe homme", "volume": 42, "revenue": "210000.00" },
+    { "service_id": "…", "name": "Barbe",        "volume": 30, "revenue": "60000.00"  }
+  ],
+  "by_revenue": [
+    { "service_id": "…", "name": "Coupe homme", "volume": 42, "revenue": "210000.00" },
+    { "service_id": "…", "name": "Tresses",      "volume": 12, "revenue": "180000.00" }
+  ]
+}
+```
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

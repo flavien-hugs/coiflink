@@ -324,7 +324,15 @@ du **montant net** du journal de caisse (#34 : somme signée des lignes `PAYMENT
 corrigé le fait **baisser**) ; **« annulés exclus »** (§8.1) est vrai **par construction** (un RDV `CANCELLED`
 n'a ni paiement ni ligne de journal). Calcul **en base** (`SUM` sur intervalle indexé), **sans écriture, sans
 migration ni PII** (§11.3) — la réponse ne porte que des montants, des dates et la devise. Le dashboard
-`/gerant` affiche les **tuiles CA Jour/Semaine/Mois** (FCFA) **sous** le décompte RDV du jour.
+`/gerant` affiche les **tuiles CA Jour/Semaine/Mois** (FCFA) **sous** le décompte RDV du jour. Les
+**prestations les plus demandées** (#41, US-6.3) sont livrées : `GET /salons/{salon_id}/service-demand`
+renvoie les prestations du salon **classées par volume et par revenu** (deux ordres, mêmes entrées) —
+permission `STATS_READ_SALON` (**troisième** consommateur) + portée salon (§11.2). Le classement dérive des
+RDV **`COMPLETED`** : par prestation, le **volume** (nombre d'occurrences) et le **revenu** (somme des
+`price_at_booking` figés, XOF) ; une grandeur **distincte** du CA #40 (journal de caisse net). Calcul **en
+base** (`GROUP BY service_id`), **sans écriture, sans migration ni PII** — la réponse ne porte que des
+libellés de prestation, des compteurs, des montants et la période. Le dashboard `/gerant` ajoute un panneau
+**« Prestations les plus demandées »** (bascule Volume/Revenu) **sous** les tuiles CA.
 
 ---
 

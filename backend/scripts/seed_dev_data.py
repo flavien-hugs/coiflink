@@ -2,18 +2,26 @@
 
 Peuple une instance **locale** (API + base) via le contrat HTTP réel (aucun
 contournement du domaine : mots de passe hachés par le parcours d'inscription
-normal, `owner_id`/`role` imposés côté serveur comme en production). Seules
-trois exceptions ciblées passent par une requête SQL directe, faute d'endpoint
-HTTP pour ces réglages à ce stade du produit :
+normal, `owner_id`/`role` imposés côté serveur comme en production). Quatre
+exceptions ciblées passent par une requête SQL directe, faute d'endpoint HTTP
+pour ces réglages à ce stade du produit :
 - suspendre un compte (aucun endpoint d'administration des comptes encore) ;
 - fixer des horaires d'ouverture (`opening_hours`, différé à une issue
   ultérieure) pour démontrer l'état « réservable » (§8.3) d'un salon ;
 - promouvoir un compte `ADMIN` (aucun endpoint d'inscription `ADMIN`, PRD §9.1 —
   le compte est d'abord inscrit `CLIENT` par l'API, puis promu par SQL, comme
-  dans les tests e2e de la supervision plateforme, #37).
+  dans les tests e2e de la supervision plateforme, #37) ;
+- insérer des RDV de démo avec un créneau/statut contrôlés (aucune API cliente
+  ne permet de forcer un RDV `COMPLETED`/`CANCELLED`/`NO_SHOW` passé sans
+  simuler tout le parcours de réservation + gestion de statut — même
+  contournement ciblé que les suites e2e du dashboard, #39/#41). Les
+  **paiements**, eux, passent par l'API réelle (`POST /payments`) : c'est ce qui
+  peuple le journal de caisse et donc le chiffre d'affaires (#40).
 
 Idempotent : un numéro déjà enregistré (409) est traité comme « déjà présent »
-et le script continue plutôt que d'échouer.
+et le script continue plutôt que d'échouer. L'activité de démo (RDV/paiements)
+n'est semée qu'une fois par salon — si des RDV existent déjà pour le salon
+d'Aïcha, cette étape est simplement ignorée au lieu d'accumuler des doublons.
 
 Usage (backend/) :
     uvicorn coiflink_api.main:app --reload &   # ou via docker compose
@@ -26,6 +34,7 @@ Variables d'environnement :
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import sys
@@ -133,6 +142,134 @@ def _set_opening_hours_by_owner_phone(phone: str) -> None:
         conn.commit()
 
 
+def _user_id_by_phone(phone: str) -> str:
+    """Résout l'id d'un compte déjà inscrit par son numéro (idempotence des reruns)."""
+
+    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM users WHERE phone = %s", (normalize_phone(phone),))
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError(f"Utilisateur introuvable pour {phone!r} (inscription échouée ?)")
+        return str(row[0])
+
+
+def _ensure_service(
+    client: httpx.Client, token: str, salon_id: str, *, name: str, price: str, duration_minutes: int
+) -> str:
+    """Crée une prestation si aucune du même nom n'existe déjà pour ce salon (idempotent).
+
+    `POST /salons/{id}/services` n'impose aucune unicité de nom : sans ce
+    contrôle préalable, relancer le script dupliquerait les prestations à
+    chaque exécution.
+    """
+
+    auth = {"Authorization": f"Bearer {token}"}
+    existing = client.get(f"/salons/{salon_id}/services", headers=auth)
+    existing.raise_for_status()
+    for service in existing.json():
+        if service["name"] == name:
+            print(f"  = prestation déjà présente : {name}")
+            return service["id"]
+
+    resp = client.post(
+        f"/salons/{salon_id}/services",
+        headers=auth,
+        json={"name": name, "price": price, "duration_minutes": duration_minutes},
+    )
+    resp.raise_for_status()
+    print(f"  + prestation créée : {name} ({price} FCFA)")
+    return resp.json()["id"]
+
+
+def _salon_appointment_count(salon_id: str) -> int:
+    """Compte les RDV déjà enregistrés pour ce salon (garde d'idempotence de l'activité de démo)."""
+
+    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM appointments WHERE salon_id = %s", (salon_id,))
+        return int(cur.fetchone()[0])
+
+
+def _end_time(start_time: str, duration_minutes: int) -> str:
+    """Calcule l'heure de fin (`HH:MM:SS`) à partir d'une heure de début et d'une durée."""
+
+    start = datetime.datetime.combine(datetime.date.today(), datetime.time.fromisoformat(start_time))
+    return (start + datetime.timedelta(minutes=duration_minutes)).time().isoformat()
+
+
+def _seed_appointment(
+    *,
+    salon_id: str,
+    client_id: str,
+    hairdresser_id: str,
+    service_id: str,
+    price: str,
+    day: datetime.date,
+    start_time: str,
+    duration_minutes: int,
+    status: str,
+) -> str:
+    """Insère directement en base un RDV démo (statut/jour/prix contrôlés) avec sa prestation.
+
+    Aucune API cliente ne permet de créer un RDV `COMPLETED`/`CANCELLED`/`NO_SHOW`
+    sans simuler tout le parcours réservation + transition de statut — bypass
+    ciblé, hors flux client, miroir du patron des suites e2e du dashboard
+    (`test_daily_summary_e2e.py` #39, `test_service_demand_e2e.py` #41).
+    L'exclusion de créneau (`ex_appointments_hairdresser_slot`) ne s'applique
+    qu'aux statuts `PENDING`/`CONFIRMED` : les horaires ci-dessous les espacent
+    pour éviter tout conflit, les autres statuts ne sont de toute façon jamais
+    concernés par cette contrainte.
+    """
+
+    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO appointments "
+            "(salon_id, client_id, hairdresser_id, appointment_date, start_time, end_time, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                salon_id,
+                client_id,
+                hairdresser_id,
+                day,
+                start_time,
+                _end_time(start_time, duration_minutes),
+                status,
+            ),
+        )
+        appointment_id = str(cur.fetchone()[0])
+        cur.execute(
+            "INSERT INTO appointment_services (salon_id, appointment_id, service_id, price_at_booking) "
+            "VALUES (%s, %s, %s, %s)",
+            (salon_id, appointment_id, service_id, price),
+        )
+        conn.commit()
+    return appointment_id
+
+
+def _record_payment_for_appointment(
+    client: httpx.Client,
+    token: str,
+    salon_id: str,
+    *,
+    appointment_id: str,
+    amount: str,
+    client_id: str,
+) -> None:
+    """Encaisse un RDV `COMPLETED` via l'API réelle (le journal de caisse pilote le CA, #40)."""
+
+    resp = client.post(
+        f"/salons/{salon_id}/payments",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "amount": amount,
+            "payment_method": "CASH",
+            "appointment_id": appointment_id,
+            "client_id": client_id,
+        },
+    )
+    resp.raise_for_status()
+    print(f"  + paiement encaissé : {amount} FCFA (RDV {appointment_id})")
+
+
 def main() -> int:
     if not DATABASE_URL:
         print("error: DATABASE_URL est requis (SQL direct pour suspension/horaires).", file=sys.stderr)
@@ -160,6 +297,82 @@ def main() -> int:
 
         print("\nEmployé du salon d'Aïcha")
         _create_employee(client, token_aicha, salon_id, full_name="Awa Bamba", phone="0701121314")
+        hairdresser_id = _user_id_by_phone("0701121314")
+
+        print("\nPrestations du salon d'Aïcha")
+        service_coupe = _ensure_service(
+            client, token_aicha, salon_id, name="Coupe & Brushing", price="5000.00", duration_minutes=45
+        )
+        service_tresses = _ensure_service(
+            client, token_aicha, salon_id, name="Tresses", price="15000.00", duration_minutes=120
+        )
+        service_soin = _ensure_service(
+            client, token_aicha, salon_id, name="Soin capillaire", price="8000.00", duration_minutes=60
+        )
+        service_coloration = _ensure_service(
+            client, token_aicha, salon_id, name="Coloration", price="12000.00", duration_minutes=90
+        )
+
+        print("\nCliente du salon d'Aïcha (historique de RDV pour peupler le dashboard, #39/#40/#41)")
+        client_id = (
+            _register(client, "/auth/register", full_name="Koffi N'Guessan", phone="0702030405")
+            or _user_id_by_phone("0702030405")
+        )
+
+        if _salon_appointment_count(salon_id) > 0:
+            print("  = activité déjà présente (RDV/paiements) — seed ignoré")
+        else:
+            today = datetime.date.today()
+            completed: list[tuple[str, str]] = []  # (appointment_id, montant)
+
+            def _seed(
+                *, day: datetime.date, start_time: str, duration_minutes: int, status: str,
+                service_id: str, price: str,
+            ) -> None:
+                appointment_id = _seed_appointment(
+                    salon_id=salon_id,
+                    client_id=client_id,
+                    hairdresser_id=hairdresser_id,
+                    service_id=service_id,
+                    price=price,
+                    day=day,
+                    start_time=start_time,
+                    duration_minutes=duration_minutes,
+                    status=status,
+                )
+                if status == "COMPLETED":
+                    completed.append((appointment_id, price))
+
+            print("  RDV du jour (statuts variés, US-6.1 #39)")
+            _seed(day=today, start_time="09:00", duration_minutes=45, status="CONFIRMED",
+                  service_id=service_coupe, price="5000.00")
+            _seed(day=today, start_time="10:00", duration_minutes=120, status="CONFIRMED",
+                  service_id=service_tresses, price="15000.00")
+            _seed(day=today, start_time="12:30", duration_minutes=60, status="PENDING",
+                  service_id=service_soin, price="8000.00")
+            _seed(day=today, start_time="13:30", duration_minutes=90, status="COMPLETED",
+                  service_id=service_coloration, price="12000.00")
+            _seed(day=today, start_time="15:00", duration_minutes=45, status="CANCELLED",
+                  service_id=service_coupe, price="5000.00")
+            _seed(day=today, start_time="16:00", duration_minutes=60, status="NO_SHOW",
+                  service_id=service_soin, price="8000.00")
+
+            print("  Historique réalisé (prestations les plus demandées, US-6.3 #41)")
+            _seed(day=today - datetime.timedelta(days=1), start_time="10:00", duration_minutes=45,
+                  status="COMPLETED", service_id=service_coupe, price="5000.00")
+            _seed(day=today - datetime.timedelta(days=2), start_time="10:00", duration_minutes=45,
+                  status="COMPLETED", service_id=service_coupe, price="5000.00")
+            _seed(day=today - datetime.timedelta(days=3), start_time="10:00", duration_minutes=120,
+                  status="COMPLETED", service_id=service_tresses, price="15000.00")
+            _seed(day=today - datetime.timedelta(days=10), start_time="10:00", duration_minutes=60,
+                  status="COMPLETED", service_id=service_soin, price="8000.00")
+
+            print("  Encaissement des RDV terminés (chiffre d'affaires, US-6.2 #40)")
+            for appointment_id, amount in completed:
+                _record_payment_for_appointment(
+                    client, token_aicha, salon_id,
+                    appointment_id=appointment_id, amount=amount, client_id=client_id,
+                )
 
         print("\nFatou (aucun salon — formulaire de création à tester)")
         # Volontairement : pas d'appel _ensure_salon ici.
@@ -178,10 +391,11 @@ def main() -> int:
     print("Comptes de démo — mot de passe commun :", DEV_PASSWORD)
     print("=" * 72)
     rows = [
-        ("Aïcha Koné", "0701020304", "MANAGER", "ACTIVE", "salon réservable"),
+        ("Aïcha Koné", "0701020304", "MANAGER", "ACTIVE", "salon réservable, dashboard peuplé (#39/#40/#41)"),
         ("Fatou Diabaté", "0705060708", "MANAGER", "ACTIVE", "sans salon"),
         ("Ibrahim Touré", "0709101112", "MANAGER", "SUSPENDED", "connexion refusée (401 générique)"),
         ("Awa Bamba", "0701121314", "HAIRDRESSER", "ACTIVE", "refus de rôle sur /gerant"),
+        ("Koffi N'Guessan", "0702030405", "CLIENT", "ACTIVE", "historique de RDV chez Aïcha"),
         ("Mariam Sanogo", "0705161718", "CLIENT", "ACTIVE", "refus de rôle sur /gerant"),
         ("Adama Ouattara", "0700112233", "ADMIN", "ACTIVE", "supervision plateforme /admin"),
     ]

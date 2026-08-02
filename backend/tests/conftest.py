@@ -776,6 +776,9 @@ class FakeAppointmentRepository:
         self.status_changes: list = []
         self.assignments: list = []
         self.booked_slots_calls: list = []
+        # Résultats configurables pour `demand_by_service` (US-6.3 #41).
+        self.demand_results: tuple = ()
+        self.demand_by_service_calls: list[dict] = []
         self._appointments: dict = {}
         for appt in (appointments or []):
             self._appointments[appt.id] = appt
@@ -1035,6 +1038,26 @@ class FakeAppointmentRepository:
             if appt.salon_id == salon_id and appt.date == day:
                 counts[appt.status] = counts.get(appt.status, 0) + 1
         return counts
+
+    def demand_by_service(  # type: ignore[no-untyped-def]
+        self, salon_id, *, statuses, date_from=None, date_to=None
+    ):
+        """Retourne `demand_results` (préconfiguré) et enregistre l'appel (#41).
+
+        Le fake ne ré-agrège pas depuis `_appointments` : les tests configurent
+        `demand_results` directement pour éviter de construire un dataset complet
+        d'`Appointment`/`BookedService`. L'isolation SQL réelle est testée en e2e.
+        Les arguments sont tracés dans `demand_by_service_calls` pour assertions.
+        """
+        self.demand_by_service_calls.append(
+            {
+                "salon_id": salon_id,
+                "statuses": statuses,
+                "date_from": date_from,
+                "date_to": date_to,
+            }
+        )
+        return self.demand_results
 
 
 class FakeCustomerRepository:
