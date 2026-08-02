@@ -40,7 +40,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | --- | --- | --- |
 | `/` | publique | accueil neutre ; **aiguillage par rôle** si session valide (`MANAGER` → `/gerant`, `HAIRDRESSER` → `/coiffeur/planning`, #27) |
 | `/login` | publique | point d'entrée de session (formulaire minimal) |
-| `/gerant` | **protégée** | `MANAGER` actif — tableau de bord : **RDV du jour** par statut (#39) puis **chiffre d'affaires** jour/semaine/mois (#40) |
+| `/gerant` | **protégée** | `MANAGER` actif — tableau de bord : **RDV du jour** par statut (#39), **chiffre d'affaires** jour/semaine/mois (#40) puis **prestations les plus demandées** (#41) |
 | `/gerant/parametres` | **protégée** | `MANAGER` — création/consultation du salon (#15) |
 | `/gerant/prestations` | **protégée** | `MANAGER` — catalogue et gestion des prestations (#17) |
 | `/gerant/planning` | **protégée** | `MANAGER` — planning du salon, jour/semaine/mois (#26) |
@@ -88,7 +88,7 @@ backend) qui autorise l'affichage. Le front traite le JWT en **opaque** (il ne l
 `401` est traité comme « session expirée → redirection » ; le rafraîchissement transparent via
 `POST /auth/refresh` est un **suivi** (hors #14).
 
-### Tableau de bord — RDV du jour & chiffre d'affaires (#39/#40)
+### Tableau de bord — RDV du jour, chiffre d'affaires & prestations demandées (#39/#40/#41)
 
 La page **`/gerant`** (Server Component) charge **côté serveur** (jeton du cookie httpOnly, jamais
 exposé au navigateur, invariant #14) le salon du gérant puis, pour ce salon :
@@ -97,14 +97,22 @@ exposé au navigateur, invariant #14) le salon du gérant puis, pour ce salon :
   #39, via `GET /salons/{id}/appointments/daily-summary`) ;
 - **sous** elles, les **tuiles chiffre d'affaires** — **Jour · Semaine · Mois** (US-6.2, #40, via
   `GET /salons/{id}/revenue/summary`), chacune affichant le total formaté en **FCFA** et, en légende,
-  la plage de dates de la période (semaine **lundi → dimanche**, mois civil).
+  la plage de dates de la période (semaine **lundi → dimanche**, mois civil) ;
+- **sous** elles, le panneau **« Prestations les plus demandées »** (US-6.3, #41, via
+  `GET /salons/{id}/service-demand`) : un classement des prestations du salon avec une **bascule Volume /
+  Revenu** (deux ordres, mêmes entrées), chaque ligne portant « rang · nom · **×N fois** · montant
+  **FCFA** » (top affiché, reste résumé).
 
-Le backend reste **l'autorité des chiffres** (décompte `GROUP BY status` et CA `SUM` calculés en base,
-CA **net des corrections** #34, « annulés exclus » §8.1 par construction) : les composants ne font que
-**présenter** des compteurs et des montants (portés en **chaîne décimale**, `NUMERIC(12,2)`, jamais un
-flottant JS). Réponses **sans PII** (§11.3). Un salon **sans activité** → tuiles à `0` (état vide
-légitime, ≠ erreur) ; une **erreur backend** (ou l'absence de salon) affiche le panneau/l'invite
-correspondant. Aucun Route Handler BFF ajouté : fetch serveur direct (patron du planning).
+Le backend reste **l'autorité des chiffres ET de l'ordre** (décompte `GROUP BY status`, CA `SUM` net des
+corrections #34, classement `GROUP BY service_id` — tous calculés en base ; « annulés exclus » §8.1 par
+construction) : les composants ne font que **présenter** compteurs et montants (portés en **chaîne
+décimale**, `NUMERIC(12,2)`, jamais un flottant JS) et **basculer** entre deux listes déjà triées (jamais
+de re-tri côté front). Réponses **sans PII** (§11.3). Un salon **sans activité** → tuiles à `0` /
+classements **vides** (« Aucune prestation réalisée sur la période ») — état vide légitime, ≠ erreur. Une
+erreur backend sur les RDV/CA (ou l'absence de salon) affiche le panneau/l'invite correspondant ; une
+panne du **seul** panneau prestations **dégrade localement** (message neutre) sans casser la page. Aucun
+Route Handler BFF ajouté : fetch serveur direct (patron du planning), via `http-stats-gateway` (étendu
+d'une méthode `serviceDemand`).
 
 ### Paramètres — création & consultation du salon (#15)
 

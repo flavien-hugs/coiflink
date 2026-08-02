@@ -172,11 +172,14 @@ app.include_router(receipts_router)
 # aucune écriture, aucun audit. Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` :
 # la supervision financière n'est jamais publique.
 app.include_router(admin_router)
-# Statistiques salon (#40, US-6.2) : GET /salons/{id}/revenue/summary — chiffre
-# d'affaires du salon sur trois périodes (jour/semaine/mois), lecture salon-scopée
-# réservée au MANAGER (STATS_READ_SALON, deuxième consommateur après #39) + portée
-# salon (isolation §11.2). Le CA dérive du **montant net** du journal de caisse (#34 :
-# somme signée PAYMENT/ADJUSTMENT) ; « annulés exclus » (§8.1) par construction. Router
-# stats dédié (séparé de la caisse), lecture pure : aucune écriture, aucun audit, aucune
-# PII (§11.3). Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` : le CA n'est jamais public.
+# Statistiques salon (#40, US-6.2 ; #41, US-6.3) : router stats dédié réservé au
+# MANAGER (STATS_READ_SALON) + portée salon (isolation §11.2). Deux endpoints :
+#   - GET /salons/{id}/revenue/summary — chiffre d'affaires du salon sur trois périodes
+#     (jour/semaine/mois) ; le CA dérive du **montant net** du journal de caisse (#34 :
+#     somme signée PAYMENT/ADJUSTMENT), « annulés exclus » (§8.1) par construction ;
+#   - GET /salons/{id}/service-demand — prestations les plus demandées, classées par
+#     volume (RDV COMPLETED) et par revenu (somme des price_at_booking figés).
+# STATS_READ_SALON a donc trois consommateurs (#39 RDV du jour, #40 CA, #41 demande).
+# Lecture pure : aucune écriture, aucun audit, aucune PII (§11.3). Rien n'est ajouté à
+# `security.PUBLIC_ROUTE_PATHS` : une donnée d'exploitation salon n'est jamais publique.
 app.include_router(stats_router)

@@ -26,6 +26,7 @@ from coiflink_api.domain.appointment import (
     AppointmentUpdate,
 )
 from coiflink_api.domain.availability import SlotRange
+from coiflink_api.domain.service_demand import ServiceDemand
 
 
 class AppointmentRepository(Protocol):
@@ -224,6 +225,37 @@ class AppointmentRepository(Protocol):
         défense en profondeur de la garde HTTP `require_salon_scope` : la lecture ne
         peut jamais compter un RDV d'un autre salon. L'index `ix_appointments_salon_id
         (salon_id, appointment_date)` couvre le filtre.
+        """
+        ...
+
+    def demand_by_service(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        statuses: tuple[str, ...],
+        date_from: datetime.date | None = None,
+        date_to: datetime.date | None = None,
+    ) -> tuple[ServiceDemand, ...]:
+        """Agrège, **par prestation**, le volume et le revenu du salon (US-6.3 #41).
+
+        Renvoie un `ServiceDemand` par `service_id` réalisé : `volume` = `COUNT` des
+        lignes `appointment_services`, `revenue` = `COALESCE(SUM(price_at_booking), 0)`
+        (prix **figés**, `Decimal` quantifié au centime `NUMERIC(12,2)`), `name` =
+        libellé courant (`services.name`, joint par la composite `(salon_id,
+        service_id)` — appartenance salon garantie, résoluble même si la prestation est
+        soft-deletée). Ne comptent que les RDV dont `status ∈ statuses` (le cas d'usage
+        impose `REVENUE_STATUSES` — « réalisées uniquement ») et, si des bornes sont
+        fournies, dont `appointment_date` est dans `[date_from, date_to]` **inclus**
+        (une borne `None` reste ouverte).
+
+        La lecture **agrège en base** (`GROUP BY service_id`) et ne rapatrie **aucune**
+        ligne de RDV/paiement ni PII (pas de `client_id`, `appointment_id`) — seulement
+        `(service_id, name, volume, revenue)` par prestation (§11.3). L'**ordre n'est
+        pas garanti** : le domaine (`rank_service_demand`) ordonne. L'isolation §11.2
+        est imposée **en SQL** (`WHERE appointments.salon_id = :salon_id`), en défense
+        en profondeur de la garde HTTP : jamais une prestation d'un autre salon. Les
+        index `ix_appointments_salon_id (salon_id, appointment_date)` et
+        `ix_appointment_services_service_id` couvrent la requête. Lecture pure.
         """
         ...
 

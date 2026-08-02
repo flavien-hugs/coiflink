@@ -17,6 +17,7 @@ est **relevée telle quelle** — jamais masquée.
 from __future__ import annotations
 
 import datetime
+import decimal
 import uuid
 from collections.abc import Mapping
 
@@ -39,6 +40,11 @@ from coiflink_api.domain.errors import (
     InvalidAppointmentTransition,
     SlotAlreadyBooked,
 )
+from coiflink_api.domain.service_demand import ServiceDemand
+
+# Précision de quantification des montants agrégés : le centime (miroir de la
+# colonne `NUMERIC(12,2)`), en `Decimal` — jamais un flottant.
+_AMOUNT_QUANTUM = decimal.Decimal("0.01")
 
 # Statuts « actifs » au sens de l'exclusion base (un RDV annulé/absent n'occupe
 # plus le créneau) — miroir de la clause `WHERE` de `ex_appointments_hairdresser_slot`.
@@ -470,6 +476,69 @@ class SqlAppointmentRepository:
             .group_by(models.Appointment.status)
         ).all()
         return {status: count for status, count in rows}
+
+    def demand_by_service(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        statuses: tuple[str, ...],
+        date_from: datetime.date | None = None,
+        date_to: datetime.date | None = None,
+    ) -> tuple[ServiceDemand, ...]:
+        """Agrège volume + revenu **par prestation** du salon (US-6.3 #41).
+
+        `GROUP BY service_id` en base : `COUNT(*)` = volume (occurrences réalisées),
+        `COALESCE(SUM(price_at_booking), 0)` = revenu (prix figés). Joint
+        `appointment_services` → `appointments` (statut/salon/date) puis `services` par
+        la **composite** `(salon_id, service_id)` (appartenance salon du libellé,
+        résoluble même soft-deleté). L'isolation §11.2 est ré-affirmée **en SQL**
+        (`WHERE appointments.salon_id`) ; le filtre `status IN statuses`
+        (`REVENUE_STATUSES` côté cas d'usage) exclut « annulés » par construction. La
+        lecture ne rapatrie **aucune** ligne ni PII — seulement les tuples agrégés.
+        Ordre **non garanti** (le domaine ordonne). Les index `ix_appointments_salon_id`
+        et `ix_appointment_services_service_id` couvrent la requête. Lecture pure
+        (aucun `flush`).
+        """
+
+        stmt = (
+            select(
+                models.AppointmentService.service_id,
+                models.Service.name,
+                func.count().label("volume"),
+                func.coalesce(
+                    func.sum(models.AppointmentService.price_at_booking), 0
+                ).label("revenue"),
+            )
+            .join(
+                models.Appointment,
+                models.Appointment.id == models.AppointmentService.appointment_id,
+            )
+            .join(
+                models.Service,
+                (models.Service.id == models.AppointmentService.service_id)
+                & (models.Service.salon_id == models.AppointmentService.salon_id),
+            )
+            .where(
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.status.in_(statuses),
+            )
+            .group_by(models.AppointmentService.service_id, models.Service.name)
+        )
+        if date_from is not None:
+            stmt = stmt.where(models.Appointment.appointment_date >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(models.Appointment.appointment_date <= date_to)
+
+        rows = self._session.execute(stmt).all()
+        return tuple(
+            ServiceDemand(
+                service_id=row.service_id,
+                name=row.name,
+                volume=int(row.volume),
+                revenue=decimal.Decimal(row.revenue or 0).quantize(_AMOUNT_QUANTUM),
+            )
+            for row in rows
+        )
 
     def _load_services(
         self, appointment_id: uuid.UUID
