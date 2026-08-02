@@ -29,6 +29,7 @@ from coiflink_api.adapters.inbound.receipts import router as receipts_router
 from coiflink_api.adapters.inbound.salons import router as salons_router
 from coiflink_api.adapters.inbound.security import require_authenticated
 from coiflink_api.adapters.inbound.services import router as services_router
+from coiflink_api.adapters.inbound.stats import router as stats_router
 from coiflink_api.adapters.outbound.notifications.otp_sender_stub import (
     StubOtpSender,
 )
@@ -171,3 +172,11 @@ app.include_router(receipts_router)
 # aucune écriture, aucun audit. Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` :
 # la supervision financière n'est jamais publique.
 app.include_router(admin_router)
+# Statistiques salon (#40, US-6.2) : GET /salons/{id}/revenue/summary — chiffre
+# d'affaires du salon sur trois périodes (jour/semaine/mois), lecture salon-scopée
+# réservée au MANAGER (STATS_READ_SALON, deuxième consommateur après #39) + portée
+# salon (isolation §11.2). Le CA dérive du **montant net** du journal de caisse (#34 :
+# somme signée PAYMENT/ADJUSTMENT) ; « annulés exclus » (§8.1) par construction. Router
+# stats dédié (séparé de la caisse), lecture pure : aucune écriture, aucun audit, aucune
+# PII (§11.3). Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` : le CA n'est jamais public.
+app.include_router(stats_router)

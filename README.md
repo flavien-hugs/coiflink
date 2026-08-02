@@ -312,6 +312,19 @@ salon et prestations figées), **générée** et **récupérable** dès l'enregi
 principal.id` imposé serveur ; reçu d'un tiers/inexistant → `404` neutre), **sans écriture, sans migration
 ni PII tierce**. La **remise proactive** (push/SMS) reste différée en M5 (Épic 7, ADR-0006) : #38 **génère**
 un reçu, il n'**envoie** rien (voir [ADR-0030](./docs/adr/0030-recu-numerique-remise-differee.md)).
+**M5 est amorcé** avec le **tableau de bord gérant** (Épic 6). Le **décompte des RDV du jour par statut**
+(#39, US-6.1) est livré : `GET /salons/{salon_id}/appointments/daily-summary` renvoie, pour un jour civil
+`Africa/Abidjan`, le nombre de RDV par statut (calcul `GROUP BY status` en base, sans PII), rendu en tuiles
+**Total/Confirmés/Annulés/Terminés/Absents** sur `/gerant` — première mise en service de la permission
+`STATS_READ_SALON` (§4.1, **seul le `MANAGER`**). Le **chiffre d'affaires jour/semaine/mois** (#40, US-6.2)
+est livré : `GET /salons/{salon_id}/revenue/summary` renvoie, pour une **date de référence**, le CA du salon
+sur **trois périodes** (le **jour**, la **semaine** civile **lundi → dimanche** et le **mois** civil qui la
+contiennent) — permission `STATS_READ_SALON` (**deuxième** consommateur) + portée salon (§11.2). Le CA dérive
+du **montant net** du journal de caisse (#34 : somme signée des lignes `PAYMENT`/`ADJUSTMENT`, un paiement
+corrigé le fait **baisser**) ; **« annulés exclus »** (§8.1) est vrai **par construction** (un RDV `CANCELLED`
+n'a ni paiement ni ligne de journal). Calcul **en base** (`SUM` sur intervalle indexé), **sans écriture, sans
+migration ni PII** (§11.3) — la réponse ne porte que des montants, des dates et la devise. Le dashboard
+`/gerant` affiche les **tuiles CA Jour/Semaine/Mois** (FCFA) **sous** le décompte RDV du jour.
 
 ---
 

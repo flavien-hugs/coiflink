@@ -1016,6 +1016,50 @@ curl -G "$API/me/receipts" -H "Authorization: Bearer $CLIENT_ACCESS_TOKEN"
 curl "$API/me/receipts/$PAYMENT_ID" -H "Authorization: Bearer $CLIENT_ACCESS_TOKEN"
 ```
 
+## Chiffre d'affaires jour/semaine/mois (US-6.2, #40)
+
+Le gérant **voit ses revenus** : `GET /salons/{salon_id}/revenue/summary` renvoie, pour une **date de
+référence** (jour civil `Africa/Abidjan`, défaut = aujourd'hui), le chiffre d'affaires du salon sur
+**trois périodes** — le **jour**, la **semaine** civile (**lundi → dimanche**) et le **mois** civil qui la
+contiennent. La route est **protégée** par `STATS_READ_SALON` (§4.1, **seul le `MANAGER`**) + portée
+salon (`require_salon_scope`) ; c'est le **deuxième** usage de `STATS_READ_SALON` après le décompte RDV
+du jour (US-6.1, #39). **Lecture pure** (aucune écriture, aucun audit §11.4) ; rien n'entre dans
+`PUBLIC_ROUTE_PATHS` — une donnée financière n'est jamais publique.
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/revenue/summary` | `STATS_READ_SALON` + portée | `200` CA (3 périodes) \| `401` \| `403` \| `422` `date` mal formée | *(aucun — lecture)* |
+
+Le CA dérive de la **même source de vérité** que les autres lectures financières — le **journal de
+caisse** (#34) : la **somme signée** des lignes `PAYMENT`/`ADJUSTMENT`, donc **nette des corrections** (un
+paiement corrigé fait **baisser** le CA, comme le « montant net » de #37). C'est bien un CA **« calculé à
+partir des paiements »** (AC #40) ; **« annulés exclus »** (§8.1) est vrai **par construction** — un RDV
+`CANCELLED` n'a ni paiement ni ligne de journal, donc **aucune** contribution. Le calcul est **en base**
+(`SUM` sur un intervalle couvert par l'index `ix_cash_journal_salon_id (salon_id, created_at)`), sans
+rapatrier de ligne : la réponse ne porte **que** des montants (`Decimal` en chaîne, `NUMERIC(12,2)`), des
+dates et la devise (§11.3). Un salon **sans activité** → totaux à `0.00` (état vide légitime, ≠ erreur).
+
+```bash
+# CA du salon à la date du jour (Africa/Abidjan) → 200
+curl -G "$API/salons/$SALON_ID/revenue/summary" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# CA pour une date de référence explicite (semaine/mois dérivés côté serveur) → 200
+curl -G "$API/salons/$SALON_ID/revenue/summary" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  --data-urlencode "date=2026-08-02"
+```
+
+```json
+{
+  "reference_date": "2026-08-02",
+  "currency": "XOF",
+  "day":   { "date_from": "2026-08-02", "date_to": "2026-08-02", "total": "35000.00" },
+  "week":  { "date_from": "2026-07-27", "date_to": "2026-08-02", "total": "210000.00" },
+  "month": { "date_from": "2026-08-01", "date_to": "2026-08-31", "total": "185000.00" }
+}
+```
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

@@ -24,6 +24,8 @@ jamais son téléphone, son e-mail ni son condensat.
 
 from __future__ import annotations
 
+import datetime
+import decimal
 import uuid
 
 from sqlalchemy import func, select
@@ -31,7 +33,21 @@ from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.cash_journal import CashJournalEntry, CashJournalToAppend
+from coiflink_api.domain.enums import CashOperationType
 from coiflink_api.domain.payment import DEFAULT_CURRENCY
+
+# Précision de quantification du CA agrégé : le centime (miroir de `NUMERIC(12,2)`),
+# pour rester en `Decimal` (jamais un flottant), comme `SqlPlatformTransactionRepository`.
+_AMOUNT_QUANTUM = decimal.Decimal("0.01")
+
+# Types d'opération qui **sont** du chiffre d'affaires : un paiement (`PAYMENT`) et
+# sa correction éventuelle (`ADJUSTMENT`, delta signé). Le CA est ainsi **net des
+# corrections** (#34), en cohérence avec le « montant net » de #37. Les autres types
+# (`REFUND`/`CASH_OPENING`/`CASH_CLOSING`) ne sont pas du CA — et n'existent pas au MVP.
+_REVENUE_OPERATION_TYPES = (
+    CashOperationType.PAYMENT.value,
+    CashOperationType.ADJUSTMENT.value,
+)
 
 
 class SqlCashJournalEntryRepository:
@@ -92,6 +108,33 @@ class SqlCashJournalEntryRepository:
             .where(models.CashJournal.salon_id == salon_id)
         )
         return int(self._session.scalar(stmt) or 0)
+
+    def net_revenue_between(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        created_at_from: datetime.datetime,
+        created_at_to: datetime.datetime,
+    ) -> decimal.Decimal:
+        """Somme **signée** du CA du salon sur `[created_at_from, created_at_to]` (US-6.2, #40).
+
+        Somme `cash_journal.amount` des lignes `PAYMENT`/`ADJUSTMENT` du salon dont
+        `created_at` est dans l'intervalle **inclus** — CA **net des corrections**
+        (#34), miroir de `SqlPlatformTransactionRepository`. Isolation §11.2
+        **réaffirmée en SQL** (`WHERE salon_id`). L'agrégat est calculé **en base**
+        (`SUM`, jamais en mémoire), couvert par l'index
+        `ix_cash_journal_salon_id (salon_id, created_at)`. Lecture pure : aucun
+        `flush`. `Decimal("0.00")` si aucune ligne.
+        """
+
+        stmt = select(func.coalesce(func.sum(models.CashJournal.amount), 0)).where(
+            models.CashJournal.salon_id == salon_id,
+            models.CashJournal.created_at >= created_at_from,
+            models.CashJournal.created_at <= created_at_to,
+            models.CashJournal.operation_type.in_(_REVENUE_OPERATION_TYPES),
+        )
+        total = self._session.scalar(stmt) or 0
+        return decimal.Decimal(total).quantize(_AMOUNT_QUANTUM)
 
     def _full_name(self, user_id: uuid.UUID) -> str | None:
         """Résout le seul `full_name` de l'auteur (jamais d'autre donnée §11.3)."""
