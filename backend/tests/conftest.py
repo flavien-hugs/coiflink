@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import decimal
 import uuid
 from typing import Union
 
@@ -1374,9 +1375,7 @@ class FakeCashJournalRepository:
         Les tests qui ont besoin de valeurs configurables définissent leur propre
         fake plus spécialisé (`FakeRevenueCashJournalRepository`).
         """
-        import decimal as _decimal
-
-        return _decimal.Decimal("0.00")
+        return decimal.Decimal("0.00")
 
 
 class FakeReceiptRepository:
