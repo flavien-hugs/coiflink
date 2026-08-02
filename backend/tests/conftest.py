@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import decimal
 import uuid
 from typing import Union
 
@@ -1361,6 +1362,20 @@ class FakeCashJournalRepository:
 
     def count_for_salon(self, salon_id: uuid.UUID) -> int:
         return sum(1 for e in self._entries if e.salon_id == salon_id)
+
+    def net_revenue_between(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        created_at_from: datetime.datetime,
+        created_at_to: datetime.datetime,
+    ) -> "decimal.Decimal":
+        """Somme signée du CA sur l'intervalle (fake : retourne 0.00 par défaut).
+
+        Les tests qui ont besoin de valeurs configurables définissent leur propre
+        fake plus spécialisé (`FakeRevenueCashJournalRepository`).
+        """
+        return decimal.Decimal("0.00")
 
 
 class FakeReceiptRepository:

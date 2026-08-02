@@ -19,6 +19,8 @@ que la transaction liée appartient au même salon).
 
 from __future__ import annotations
 
+import datetime
+import decimal
 import uuid
 from typing import Protocol
 
@@ -56,6 +58,30 @@ class CashJournalRepository(Protocol):
 
     def count_for_salon(self, salon_id: uuid.UUID) -> int:
         """Nombre total d'opérations du salon (total de pagination)."""
+        ...
+
+    def net_revenue_between(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        created_at_from: datetime.datetime,
+        created_at_to: datetime.datetime,
+    ) -> decimal.Decimal:
+        """Somme **signée** du CA du salon sur `[created_at_from, created_at_to]` (US-6.2, #40).
+
+        Renvoie la somme des `cash_journal.amount` du salon dont `created_at` est
+        dans l'intervalle **inclus**, **restreinte aux opérations `PAYMENT` /
+        `ADJUSTMENT`** : le CA est **net des corrections** (#34) — un paiement
+        corrigé fait baisser le total (parité « montant net » de #37). Les autres
+        types (`REFUND`/`CASH_OPENING`/`CASH_CLOSING`) ne sont pas du chiffre
+        d'affaires et n'existent pas au MVP.
+
+        Isolation §11.2 **imposée en SQL** (`WHERE salon_id = :salon_id`), défense en
+        profondeur de `require_salon_scope`. Lecture pure (aucun `flush`) : agrégat
+        calculé **en base**, sans rapatrier de ligne ni de PII. `Decimal` quantifié
+        au centime (`NUMERIC(12,2)`, jamais un flottant) ; `Decimal("0.00")` si aucune
+        ligne dans l'intervalle.
+        """
         ...
 
 

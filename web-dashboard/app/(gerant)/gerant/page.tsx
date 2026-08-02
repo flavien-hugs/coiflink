@@ -1,19 +1,22 @@
-// Dashboard gérant — **RDV du jour par statut** (Server Component, US-6.1 #39).
-// Charge **côté serveur** (jeton du cookie httpOnly, jamais exposé au navigateur,
-// invariant #14) le salon du gérant puis le décompte du jour du salon :
+// Dashboard gérant — **RDV du jour** (US-6.1 #39) + **chiffre d'affaires** (US-6.2
+// #40) — Server Component. Charge **côté serveur** (jeton du cookie httpOnly, jamais
+// exposé au navigateur, invariant #14) le salon du gérant puis, pour ce salon :
 //   - aucun salon → invite à créer d'abord le salon (Paramètres, #15) ;
-//   - un salon    → tuiles KPI Total/Confirmés/Annulés/Terminés/Absents (0 si vide).
-// Le décompte est calculé **en base** côté backend (`GROUP BY status`) : la réponse
-// ne porte que des compteurs entiers et la date (§11.3), aucune PII. Chaque rendu
-// relit la **source de vérité** backend (fetch serveur direct, patron du planning) ;
-// aucun Route Handler BFF nécessaire.
+//   - un salon    → tuiles RDV Total/Confirmés/Annulés/Terminés/Absents (#39), puis,
+//                   **sous** elles, les tuiles CA Jour/Semaine/Mois (#40) — 0 si vide.
+// Décompte et CA sont calculés **en base** côté backend (`GROUP BY status` / `SUM`) :
+// les réponses ne portent que des compteurs, des montants (chaînes décimales), des
+// dates et une devise (§11.3), aucune PII. Chaque rendu relit la **source de vérité**
+// backend (fetch serveur direct, patron du planning) ; aucun Route Handler BFF.
 
 import Link from "next/link";
 
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
 import { createHttpAppointmentGateway } from "@/src/adapters/api/http-appointment-gateway";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
+import { createHttpStatsGateway } from "@/src/adapters/api/http-stats-gateway";
 import { DailySummaryTiles } from "@/src/adapters/ui/daily-summary-tiles";
+import { RevenueTiles } from "@/src/adapters/ui/revenue-tiles";
 import { todayIso } from "@/src/domain/appointment/planning-view";
 
 export default async function GerantDashboardPage() {
@@ -54,10 +57,26 @@ export default async function GerantDashboardPage() {
     );
   }
 
+  // CA jour/semaine/mois du salon (#40), même jeton serveur, même date de référence.
+  const revenue = await createHttpStatsGateway({ accessToken }).revenueSummary(
+    salon.id,
+    today,
+  );
+
+  if (!revenue.ok) {
+    return (
+      <section className="flex flex-col gap-6">
+        <Header today={today} />
+        <ErrorPanel />
+      </section>
+    );
+  }
+
   return (
     <section className="flex flex-col gap-6">
       <Header today={today} />
       <DailySummaryTiles summary={result.summary} />
+      <RevenueTiles summary={revenue.summary} />
     </section>
   );
 }
