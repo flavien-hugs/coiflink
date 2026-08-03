@@ -23,12 +23,22 @@ isolation §11.2) :
   et **inactifs** (vus avant, silencieux sur la période) — voir
   `application/client_segments.py`.
 
+- **`GET /salons/{salon_id}/hairdresser-performance`** — performance des coiffeurs
+  (US-6.5, #43), garde `STATS_READ_SALON`. Renvoie, pour une **période** optionnelle
+  (`date_from`/`date_to`, absents = mois civil courant), **une ligne par coiffeur**
+  assigné à ≥ 1 RDV du salon sur la période : **prestations réalisées** (occurrences
+  des RDV `COMPLETED`), **CA généré** (net `cash_journal` **attribué** via `payments →
+  appointments.hairdresser_id`, cohérent avec la caisse) et **taux d'annulation** (RDV
+  `CANCELLED` / RDV assignés). Prestations & taux dérivent **du planning**, le CA **de
+  la caisse** — voir `application/hairdresser_performance.py`. **Seul** endpoint stats
+  **nominatif** : il émet le `hairdresser_id` + le **nom d'affichage** de l'employé
+  (`users.full_name`, convention #34), jamais son contact.
+
 **Router `stats` dédié (spec §Open Questions 6).** Cette surface porte la permission
 `STATS_READ_SALON` (statistiques du salon), distincte de la caisse
-(`PAYMENT_RECORD`/`CASH_JOURNAL_READ`, servie par `payments.py`) : les séparer prépare
-l'Épic 6 (performance des coiffeurs #43…). `STATS_READ_SALON` a désormais **quatre**
-consommateurs : RDV du jour (#39), CA (#40), prestations les plus demandées (#41) et
-clients actifs (#42).
+(`PAYMENT_RECORD`/`CASH_JOURNAL_READ`, servie par `payments.py`). `STATS_READ_SALON` a
+désormais **cinq** consommateurs : RDV du jour (#39), CA (#40), prestations les plus
+demandées (#41), clients actifs (#42) et performance des coiffeurs (#43).
 
 **Non-PII (§11.3), lecture pure.** Les réponses ne portent **que** des montants
 (`Decimal` en chaîne), des compteurs, des libellés de prestation, des dates et une
@@ -67,10 +77,17 @@ from coiflink_api.application.ports.cash_journal_repository import (
     CashJournalRepository,
 )
 from coiflink_api.application.client_segments import SummarizeActiveClients
+from coiflink_api.application.hairdresser_performance import (
+    SummarizeHairdresserPerformance,
+)
 from coiflink_api.application.revenue import SummarizeRevenue
 from coiflink_api.application.service_demand import SummarizeServiceDemand
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.client_segments import ClientSegments
+from coiflink_api.domain.hairdresser_performance import (
+    HairdresserPerformance,
+    HairdresserPerformanceReport,
+)
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
 from coiflink_api.domain.revenue import (
@@ -175,6 +192,48 @@ class ClientSegmentsResponse(BaseModel):
     active: int = Field(examples=[39])
 
 
+class HairdresserPerformanceItemResponse(BaseModel):
+    """Performance d'**un** coiffeur du salon sur la période (US-6.5, #43).
+
+    `hairdresser_id` + `hairdresser_name` = identité **d'affichage** de l'employé
+    (`users.full_name`, convention #34) — **seul** champ nominatif autorisé, jamais son
+    contact (`phone`/`email`/`role`). `services_completed` = occurrences de prestations
+    réalisées (RDV `COMPLETED`) ; `revenue` = CA net **attribué** (net `cash_journal`
+    via `payments → appointments.hairdresser_id`), `Decimal` sérialisé en **chaîne**
+    (`NUMERIC(12,2)`, jamais un flottant) ; `cancelled_count` / `total_count` = RDV
+    annulés / total assignés ; `cancellation_rate` = `cancelled_count / total_count`,
+    `Decimal` en **chaîne** ∈ `[0, 1]` (`"0.0000"` si `total_count == 0`). **Aucune
+    PII client** (pas de `client_id`/`appointment_id`).
+    """
+
+    hairdresser_id: uuid.UUID = Field(examples=["7c9e6679-7425-40de-944b-e07fc1f90ae7"])
+    hairdresser_name: str = Field(examples=["Awa Koné"])
+    services_completed: int = Field(examples=[58])
+    revenue: decimal.Decimal = Field(examples=["290000.00"])
+    cancelled_count: int = Field(examples=[3])
+    total_count: int = Field(examples=[64])
+    cancellation_rate: decimal.Decimal = Field(examples=["0.0469"])
+
+
+class HairdresserPerformanceResponse(BaseModel):
+    """Performance des coiffeurs du salon sur une période (US-6.5, #43).
+
+    `hairdressers` = **une entrée par coiffeur** assigné à ≥ 1 RDV du salon sur la
+    période, triée par ordre **déterministe** (CA décroissant, puis prestations, puis
+    nom — autorité serveur). `date_from`/`date_to` échoient la période résolue ;
+    `currency` la devise (XOF). Ne porte **que** des identifiants/nom d'affichage
+    d'employé, des compteurs, des montants (chaînes décimales), un taux (chaîne
+    décimale) et des dates (§11.3) : **jamais** de PII client ni de contact employé.
+    Liste **vide** si aucun coiffeur assigné sur la période (état normal, pas une
+    erreur).
+    """
+
+    currency: str = Field(examples=["XOF"])
+    date_from: datetime.date = Field(examples=["2026-08-01"])
+    date_to: datetime.date = Field(examples=["2026-08-31"])
+    hairdressers: list[HairdresserPerformanceItemResponse]
+
+
 # --------------------------------------------------------------------------- #
 # Injection de dépendances (surchargeable en test via `app.dependency_overrides`).
 # --------------------------------------------------------------------------- #
@@ -259,6 +318,38 @@ def _active_clients_response(
         recurring=segments.recurring,
         inactive=segments.inactive,
         active=segments.active,
+    )
+
+
+def _hairdresser_performance_item(
+    entry: HairdresserPerformance,
+) -> HairdresserPerformanceItemResponse:
+    return HairdresserPerformanceItemResponse(
+        hairdresser_id=entry.hairdresser_id,
+        hairdresser_name=entry.name,
+        services_completed=entry.services_completed,
+        revenue=entry.revenue,
+        cancelled_count=entry.cancelled_count,
+        total_count=entry.total_count,
+        cancellation_rate=entry.cancellation_rate,
+    )
+
+
+def _hairdresser_performance_response(
+    report: HairdresserPerformanceReport,
+    *,
+    date_from: datetime.date,
+    date_to: datetime.date,
+) -> HairdresserPerformanceResponse:
+    # Les bornes échoient la période **résolue** par la route (défaut mois courant) —
+    # on les passe explicitement (symétrie `_active_clients_response`).
+    return HairdresserPerformanceResponse(
+        currency=report.currency,
+        date_from=date_from,
+        date_to=date_to,
+        hairdressers=[
+            _hairdresser_performance_item(entry) for entry in report.entries
+        ],
     )
 
 
@@ -444,6 +535,86 @@ def get_active_clients(
     )
     return _active_clients_response(
         segments, date_from=date_from, date_to=date_to
+    )
+
+
+@router.get(
+    "/{salon_id}/hairdresser-performance",
+    response_model=HairdresserPerformanceResponse,
+    summary="Performance des coiffeurs du salon : prestations, CA, taux d'annulation (US-6.5 §6)",
+    responses={
+        200: {"description": "Performance par coiffeur du salon sur la période"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {"description": "`date_from`/`date_to` mal formé ou incohérent"},
+    },
+)
+def get_hairdresser_performance(
+    salon_id: uuid.UUID,
+    appointment_repo: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    cash_journal_repo: Annotated[
+        CashJournalRepository, Depends(get_cash_journal_repository)
+    ],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.STATS_READ_SALON))
+    ],
+    date_from: Annotated[
+        datetime.date | None,
+        Query(description="Premier jour inclus (AAAA-MM-JJ) ; absent = mois courant"),
+    ] = None,
+    date_to: Annotated[
+        datetime.date | None,
+        Query(description="Dernier jour inclus (AAAA-MM-JJ) ; absent = mois courant"),
+    ] = None,
+) -> HairdresserPerformanceResponse:
+    """Performance des coiffeurs du salon : prestations, CA, taux d'annulation (#43).
+
+    Route **salon-scopée** (`require_salon_scope` + `STATS_READ_SALON`, **cinquième**
+    consommateur de cette permission `MANAGER` après #39/#40/#41/#42) : le `salon_id`
+    vient du chemin, et les dépôts refiltrent `salon_id` en SQL (défense en profondeur
+    §11.2). Un salon hors périmètre est un `403` **indiscernable** (aucun oracle). Le
+    segment `hairdresser-performance` est **distinct** des autres routes
+    `/{salon_id}/…` (`employees`, `customers`, `services/{service_id}`, `payments`,
+    `revenue/summary`, `service-demand`, `active-clients`) : aucun littéral n'est parsé
+    comme un UUID.
+
+    Les bornes `date_from`/`date_to` (jour civil `Africa/Abidjan`, convention #21) sont
+    **optionnelles** : absentes (ou une seule fournie), la période est **résolue** au
+    **mois civil courant** (`month_bounds(_today())`, symétrie #42) ; `date_to <
+    date_from` → `422` (garde explicite, patron `get_active_clients`) ; une date mal
+    formée → `422` (FastAPI). Pour chaque coiffeur assigné à ≥ 1 RDV du salon sur la
+    période, la réponse porte les **prestations réalisées** (occurrences des RDV
+    `COMPLETED`, imposé serveur §8.1), le **CA généré** (net `cash_journal` **attribué**
+    via `payments → appointments.hairdresser_id`, net des corrections #34) et le **taux
+    d'annulation** (RDV `CANCELLED` / RDV assignés) — prestations & taux depuis le
+    **planning**, CA depuis la **caisse**. Les agrégats sont calculés **en base**
+    (`GROUP BY hairdresser_id`) : la réponse ne porte que l'identité **d'affichage** de
+    l'employé (`hairdresser_id` + nom, jamais son contact), des compteurs, des montants,
+    un taux et des dates (§11.3), aucune PII client. Un salon **sans coiffeur assigné**
+    → liste vide (état vide légitime, ≠ erreur). Lecture pure : aucune écriture, aucun
+    audit.
+    """
+
+    if date_from is not None and date_to is not None and date_to < date_from:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La date de fin précède la date de début.",
+        )
+    if date_from is None or date_to is None:
+        # Défaut = mois civil courant (les deux bornes ensemble), symétrie #42.
+        date_from, date_to = month_bounds(_today())
+    report = SummarizeHairdresserPerformance(
+        appointment_repo, cash_journal_repo
+    ).execute(
+        salon_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return _hairdresser_performance_response(
+        report, date_from=date_from, date_to=date_to
     )
 
 

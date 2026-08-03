@@ -27,6 +27,7 @@ from coiflink_api.domain.appointment import (
 )
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.client_segments import ClientVisitProfile
+from coiflink_api.domain.hairdresser_performance import HairdresserActivityCounts
 from coiflink_api.domain.service_demand import ServiceDemand
 
 
@@ -287,6 +288,45 @@ class AppointmentRepository(Protocol):
         pas garanti** (le domaine `classify_client_segments` compte, il n'ordonne pas).
         L'index `ix_appointments_salon_id (salon_id, appointment_date)` couvre la
         requête. Lecture pure (aucun `flush`, aucun audit).
+        """
+        ...
+
+    def performance_by_hairdresser(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+        completed_statuses: tuple[str, ...],
+        cancelled_statuses: tuple[str, ...],
+    ) -> tuple[HairdresserActivityCounts, ...]:
+        """Agrège, **par coiffeur**, les compteurs de planning du salon (US-6.5 #43).
+
+        Renvoie un `HairdresserActivityCounts` par `hairdresser_id` **assigné**
+        (`hairdresser_id IS NOT NULL`) à au moins un RDV du salon dont
+        `appointment_date` est dans `[date_from, date_to]` **inclus** :
+        `services_completed` = `COUNT` des lignes `appointment_services` des RDV dont
+        `status ∈ completed_statuses` (le cas d'usage impose `REVENUE_STATUSES` —
+        occurrences **réalisées**) ; `cancelled_count` = `COUNT(*) FILTER (WHERE
+        status ∈ cancelled_statuses)` (le cas d'usage impose `CANCELLED_STATUSES`) ;
+        `total_count` = `COUNT(*)` (**tous** statuts assignés sur la période) ; `name`
+        = `users.full_name` (join, **nom d'affichage seul** — jamais téléphone/e-mail,
+        §11.3). Les statuts sont **décidés serveur**, jamais soumis par l'appelant.
+
+        Le comptage des occurrences (`appointment_services`) est **séparé** de celui
+        des RDV (`COUNT(*)` / filtres) pour **ne pas sur-compter** `total_count` /
+        `cancelled_count` (qui comptent des **RDV**) via le join `appointment_services`
+        (spec §Open Questions 6). La lecture **agrège en base** (`GROUP BY
+        hairdresser_id`) et ne rapatrie **aucune** ligne de RDV ni PII **client** —
+        seulement des compteurs et le nom d'affichage de l'employé. **Ne renvoie pas**
+        le CA (le cas d'usage y adjoint le net de la caisse — voir
+        `CashJournalRepository.net_revenue_by_hairdresser`). L'**ordre n'est pas
+        garanti** : le domaine (`rank_hairdresser_performance`) ordonne. L'isolation
+        §11.2 est imposée **en SQL** (`WHERE appointments.salon_id = :salon_id`), en
+        défense en profondeur de la garde HTTP : jamais un coiffeur d'un autre salon ;
+        un même compte membre de deux salons est mesuré **par salon**. L'index
+        `ix_appointments_salon_id (salon_id, appointment_date)` couvre le filtre.
+        Lecture pure (aucun `flush`, aucun audit).
         """
         ...
 

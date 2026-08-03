@@ -12,6 +12,7 @@
 
 import type {
   ActiveClientsResult,
+  HairdresserPerformanceResult,
   RevenueSummaryResult,
   ServiceDemandResult,
   StatsGateway,
@@ -22,6 +23,10 @@ import type {
   ServiceDemandItem,
   ServiceDemandRanking,
 } from "@/src/domain/payments/service-demand";
+import type {
+  HairdresserPerformanceItem,
+  HairdresserPerformanceReport,
+} from "@/src/domain/stats/hairdresser-performance";
 import { resolveApiBaseUrl } from "./config";
 
 // Forme du corps `RevenuePeriodResponse` renvoyé par le backend (#40).
@@ -129,6 +134,59 @@ function toClientSegments(payload: ClientSegmentsPayload): ClientSegments {
   };
 }
 
+// Forme d'une entrée `HairdresserPerformanceItemResponse` renvoyée par le backend (#43).
+interface HairdresserPerformanceItemPayload {
+  hairdresser_id: string;
+  hairdresser_name: string;
+  services_completed: number;
+  revenue: string | number;
+  cancelled_count: number;
+  total_count: number;
+  cancellation_rate: string | number;
+}
+
+// Forme du corps `HairdresserPerformanceResponse` renvoyé par le backend (#43).
+interface HairdresserPerformancePayload {
+  currency: string;
+  date_from: string;
+  date_to: string;
+  hairdressers: HairdresserPerformanceItemPayload[];
+}
+
+// Projette une entrée backend (snake_case) sur le type de domaine (camelCase). Le
+// revenu et le taux sont coercés en **chaîne** pour préserver la précision
+// (`NUMERIC(12,2)` / taux ∈ [0, 1]) ; les compteurs restent des entiers. Le seul champ
+// nominatif est `hairdresserName` (nom d'affichage) — aucune PII client.
+function toHairdresserPerformanceItem(
+  payload: HairdresserPerformanceItemPayload,
+): HairdresserPerformanceItem {
+  return {
+    hairdresserId: payload.hairdresser_id,
+    hairdresserName: payload.hairdresser_name,
+    servicesCompleted: Number(payload.services_completed),
+    revenue: String(payload.revenue),
+    cancelledCount: Number(payload.cancelled_count),
+    totalCount: Number(payload.total_count),
+    cancellationRate: String(payload.cancellation_rate),
+  };
+}
+
+// Mapping **défensif** : une liste absente/malformée est traitée comme vide plutôt que
+// de casser le tableau de bord (le backend reste autoritatif — l'ordre n'est jamais
+// recalculé côté front).
+function toHairdresserPerformanceReport(
+  payload: HairdresserPerformancePayload,
+): HairdresserPerformanceReport {
+  return {
+    currency: payload.currency,
+    dateFrom: payload.date_from,
+    dateTo: payload.date_to,
+    hairdressers: Array.isArray(payload.hairdressers)
+      ? payload.hairdressers.map(toHairdresserPerformanceItem)
+      : [],
+  };
+}
+
 export interface HttpStatsGatewayDeps {
   // Jeton d'accès courant (lu du cookie de session par la composition root).
   accessToken?: string | null;
@@ -169,6 +227,20 @@ export function createHttpStatsGateway(
     dateToIso?: string,
   ): string => {
     const base = `${resolveApiBaseUrl()}/salons/${encodeURIComponent(salonId)}/active-clients`;
+    // `date_from`/`date_to` optionnels : absents, le backend applique le mois courant.
+    const params = new URLSearchParams();
+    if (dateFromIso) params.set("date_from", dateFromIso);
+    if (dateToIso) params.set("date_to", dateToIso);
+    const query = params.toString();
+    return query ? `${base}?${query}` : base;
+  };
+
+  const hairdresserPerformanceUrl = (
+    salonId: string,
+    dateFromIso?: string,
+    dateToIso?: string,
+  ): string => {
+    const base = `${resolveApiBaseUrl()}/salons/${encodeURIComponent(salonId)}/hairdresser-performance`;
     // `date_from`/`date_to` optionnels : absents, le backend applique le mois courant.
     const params = new URLSearchParams();
     if (dateFromIso) params.set("date_from", dateFromIso);
@@ -268,6 +340,42 @@ export function createHttpStatsGateway(
       if (response.status === 200) {
         const payload = (await response.json()) as ClientSegmentsPayload;
         return { ok: true, segments: toClientSegments(payload) };
+      }
+      if (response.status === 401) return { ok: false, reason: "unauthenticated" };
+      if (response.status === 403) return { ok: false, reason: "forbidden" };
+      if (response.status === 422) return { ok: false, reason: "invalid" };
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async hairdresserPerformance(
+      salonId: string,
+      dateFromIso?: string,
+      dateToIso?: string,
+    ): Promise<HairdresserPerformanceResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      // Lecture **côté serveur Next**, jeton du cookie httpOnly (jamais exposé au
+      // navigateur ni journalisé, invariant #14). La réponse ne porte que des
+      // identités **d'affichage** d'employé, des compteurs, des montants/taux (chaînes
+      // décimales) et des dates — aucune PII client, aucun contact employé.
+      let response: Response;
+      try {
+        response = await fetch(
+          hairdresserPerformanceUrl(salonId, dateFromIso, dateToIso),
+          {
+            headers: { ...authHeader() },
+            cache: "no-store",
+          },
+        );
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as HairdresserPerformancePayload;
+        return { ok: true, report: toHairdresserPerformanceReport(payload) };
       }
       if (response.status === 401) return { ok: false, reason: "unauthenticated" };
       if (response.status === 403) return { ok: false, reason: "forbidden" };

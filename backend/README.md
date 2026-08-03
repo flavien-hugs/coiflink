@@ -1185,6 +1185,92 @@ curl -G "$API/salons/$SALON_ID/active-clients" \
 }
 ```
 
+## Performance des coiffeurs — prestations, CA, taux d'annulation (US-6.5, #43)
+
+Le gérant **mesure la performance de ses coiffeurs** : `GET /salons/{salon_id}/hairdresser-performance`
+renvoie, pour une période, **une ligne par coiffeur** assigné à ≥ 1 RDV du salon, portant les **prestations
+réalisées**, le **CA généré** et le **taux d'annulation**. La route est **protégée** par `STATS_READ_SALON`
+(§4.1, **seul le `MANAGER`**) + portée salon (`require_salon_scope`) ; c'est le **cinquième** usage de
+`STATS_READ_SALON` après le décompte RDV du jour (US-6.1, #39), le CA (US-6.2, #40), les prestations les
+plus demandées (US-6.3, #41) et les clients actifs (US-6.4, #42). **Lecture pure** (aucune écriture, aucun
+audit §11.4) ; rien n'entre dans `PUBLIC_ROUTE_PATHS` — une donnée d'exploitation salon n'est jamais
+publique. Le segment `hairdresser-performance` est **distinct** des autres routes `/{salon_id}/…` (aucun
+littéral n'est parsé comme un UUID).
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/hairdresser-performance` | `STATS_READ_SALON` + portée | `200` une ligne/coiffeur \| `401` \| `403` \| `422` bornes mal formées/incohérentes | *(aucun — lecture)* |
+
+**Trois indicateurs, deux sources autoritaires.** Prestations réalisées et taux d'annulation dérivent **du
+planning** (`appointments` assignés — même source que #26/#27/#39) ; le CA dérive **de la caisse** (net
+`cash_journal` — même source que #40/#34). Chaque indicateur est ainsi **cohérent avec son autorité** (le
+critère d'acceptation #43) :
+
+- **`services_completed`** — occurrences des prestations réalisées : `COUNT` des lignes
+  `appointment_services` des RDV **`COMPLETED`** assignés au coiffeur (mêmes « occurrences » que le volume
+  #41, filtrées par `hairdresser_id`) ;
+- **`revenue`** — CA net **attribué** au coiffeur : somme signée des lignes `cash_journal`
+  `PAYMENT`/`ADJUSTMENT`, attribuée par la chaîne `cash_journal → payments.appointment_id →
+  appointments.hairdresser_id`, **net des corrections** (#34) — un `ADJUSTMENT` fait **baisser** le CA du
+  coiffeur ;
+- **`cancellation_rate`** — taux d'annulation : `cancelled_count / total_count` (`Decimal`, `"0.0000"` si
+  `total_count == 0`), exposé **avec** ses deux compteurs bruts (`cancelled_count` = RDV `CANCELLED`,
+  `total_count` = **tous** les RDV assignés sur la période). Un `NO_SHOW` (**absence**) ne compte **pas**
+  comme annulation (statut distinct).
+
+Les statuts (`COMPLETED`, `CANCELLED`) sont **décidés serveur**, jamais soumis par l'appelant. Le calcul est
+**en base** (deux `GROUP BY hairdresser_id`, index `ix_appointments_salon_id` / `ix_cash_journal_salon_id`),
+sans rapatrier de ligne : la réponse ne porte **que** l'identité **d'affichage** de l'employé
+(`hairdresser_id` + `hairdresser_name` = `users.full_name`, convention #34), des compteurs, des montants
+(`Decimal` en chaîne), un taux (`Decimal` en chaîne) et des dates — **jamais** de PII **client**
+(`client_id`, `appointment_id`) ni de **contact employé** (`phone`/`email`/`role`). Le calcul du taux et
+l'ordre du classement (CA décroissant, puis prestations, puis nom) sont une **fonction pure du domaine**
+(`domain/hairdresser_performance.py`). Un salon **sans coiffeur assigné** sur la période → liste **vide**
+(état vide légitime, ≠ erreur).
+
+Les bornes `date_from`/`date_to` (jour civil `Africa/Abidjan`) sont **optionnelles** — absentes (ou une
+seule fournie) = **mois civil courant** (résolu serveur, `month_bounds`, symétrie #42) ; `date_to <
+date_from` → `422`.
+
+> **Écarts de couverture assumés.** Le CA d'#43 est **attribué par RDV** : les paiements **sans RDV**
+> (prestation directe, `appointment_id IS NULL`) et les RDV **non assignés** (`hairdresser_id IS NULL`) sont
+> **inattribuables** et **exclus** des lignes coiffeur — la somme des CA par coiffeur peut donc **différer**
+> du CA salon #40. Le CA est en outre borné par `appointment_date` (axe **planning**, pas
+> `cash_journal.created_at`), ce qui **aligne les trois indicateurs sur la même période**. La liste des
+> coiffeurs dérive **du planning** : un coiffeur avec du CA mais aucun RDV assigné dans la fenêtre n'apparaît
+> pas. Voir [ADR-0031](../docs/adr/0031-performance-des-coiffeurs.md).
+
+```bash
+# Performance des coiffeurs, mois civil courant (défaut) → 200
+curl -G "$API/salons/$SALON_ID/hairdresser-performance" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Sur une fenêtre de dates explicite (Africa/Abidjan) → 200
+curl -G "$API/salons/$SALON_ID/hairdresser-performance" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  --data-urlencode "date_from=2026-08-01" \
+  --data-urlencode "date_to=2026-08-31"
+```
+
+```json
+{
+  "currency": "XOF",
+  "date_from": "2026-08-01",
+  "date_to": "2026-08-31",
+  "hairdressers": [
+    {
+      "hairdresser_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "hairdresser_name": "Awa Koné",
+      "services_completed": 58,
+      "revenue": "290000.00",
+      "cancelled_count": 3,
+      "total_count": 64,
+      "cancellation_rate": "0.0469"
+    }
+  ]
+}
+```
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
