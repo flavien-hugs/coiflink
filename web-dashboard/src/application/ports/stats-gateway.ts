@@ -5,6 +5,7 @@
 // les prestations les plus demandées (`GET /salons/{id}/service-demand`, US-6.3 #41).
 // Implémenté par un adapter dans `src/adapters/api/`.
 
+import type { ClientSegments } from "@/src/domain/customer/segments";
 import type { RevenueSummary } from "@/src/domain/payments/revenue";
 import type { ServiceDemandRanking } from "@/src/domain/payments/service-demand";
 
@@ -29,6 +30,16 @@ export type ServiceDemandResult =
       reason: "forbidden" | "unauthenticated" | "invalid" | "unavailable";
     };
 
+// Segmentation des clients (#42) : mêmes motifs génériques. `invalid` = `422`
+// (bornes de période mal formées/incohérentes), `forbidden` = `403`,
+// `unauthenticated` = `401`, `unavailable` = `503`/panne réseau.
+export type ActiveClientsResult =
+  | { ok: true; segments: ClientSegments }
+  | {
+      ok: false;
+      reason: "forbidden" | "unauthenticated" | "invalid" | "unavailable";
+    };
+
 export interface StatsGateway {
   // Proxifie `GET /salons/{id}/revenue/summary?date` (#40) : le CA du salon sur les
   // trois périodes (jour/semaine/mois). `dateIso` optionnel (défaut backend =
@@ -43,4 +54,13 @@ export interface StatsGateway {
     dateFromIso?: string,
     dateToIso?: string,
   ): Promise<ServiceDemandResult>;
+
+  // Proxifie `GET /salons/{id}/active-clients?date_from&date_to` (#42) : la
+  // répartition des clients du salon en nouveaux / récurrents / inactifs.
+  // `dateFromIso`/`dateToIso` optionnels (absents = mois civil courant côté backend).
+  activeClients(
+    salonId: string,
+    dateFromIso?: string,
+    dateToIso?: string,
+  ): Promise<ActiveClientsResult>;
 }

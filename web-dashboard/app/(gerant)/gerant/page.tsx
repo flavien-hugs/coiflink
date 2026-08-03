@@ -19,6 +19,7 @@ import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-stor
 import { createHttpAppointmentGateway } from "@/src/adapters/api/http-appointment-gateway";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { createHttpStatsGateway } from "@/src/adapters/api/http-stats-gateway";
+import { ActiveClientsPanel } from "@/src/adapters/ui/active-clients-panel";
 import { DailySummaryTiles } from "@/src/adapters/ui/daily-summary-tiles";
 import { RevenueTiles } from "@/src/adapters/ui/revenue-tiles";
 import { ServiceDemandPanel } from "@/src/adapters/ui/service-demand-panel";
@@ -80,12 +81,18 @@ export default async function GerantDashboardPage() {
   // dégrade localement (`ranking = null`) tandis que RDV + CA restent affichés.
   const demand = await statsGateway.serviceDemand(salon.id);
 
+  // Clients actifs (#42) : segmentation nouveaux/récurrents/inactifs sur le **mois
+  // civil courant** (défaut backend, pas de bornes fournies). Comme #41, un échec
+  // **dégrade localement** (`segments = null`) sans casser le reste du tableau de bord.
+  const segments = await statsGateway.activeClients(salon.id);
+
   return (
     <section className="flex flex-col gap-6">
       <Header today={today} />
       <DailySummaryTiles summary={result.summary} />
       <RevenueTiles summary={revenue.summary} />
       <ServiceDemandPanel ranking={demand.ok ? demand.ranking : null} />
+      <ActiveClientsPanel segments={segments.ok ? segments.segments : null} />
     </section>
   );
 }

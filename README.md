@@ -332,7 +332,15 @@ RDV **`COMPLETED`** : par prestation, le **volume** (nombre d'occurrences) et le
 `price_at_booking` figés, XOF) ; une grandeur **distincte** du CA #40 (journal de caisse net). Calcul **en
 base** (`GROUP BY service_id`), **sans écriture, sans migration ni PII** — la réponse ne porte que des
 libellés de prestation, des compteurs, des montants et la période. Le dashboard `/gerant` ajoute un panneau
-**« Prestations les plus demandées »** (bascule Volume/Revenu) **sous** les tuiles CA.
+**« Prestations les plus demandées »** (bascule Volume/Revenu) **sous** les tuiles CA. Les **clients actifs**
+(#42, US-6.4) sont livrés : `GET /salons/{salon_id}/active-clients` **segmente les clients du salon** sur une
+période (défaut = mois civil courant) en **trois compteurs** — **nouveaux** (première visite sur la période),
+**récurrents** (vus dans la période **et** avant) et **inactifs** (vus avant, silencieux sur la période) —
+permission `STATS_READ_SALON` (**quatrième** consommateur) + portée salon (§11.2). La segmentation dérive des
+**comptes** ayant des RDV **`COMPLETED`** (une « visite », #29 ; une fiche walk-in sans compte ne pèse pas) ;
+calcul **en base** (`GROUP BY client_id`, `client_id` **jamais émis**), **sans écriture, sans migration ni
+PII** — la réponse ne porte que des compteurs et des dates. Le dashboard `/gerant` ajoute un panneau
+**« Clients actifs »** (Nouveaux/Récurrents/Inactifs) **sous** les prestations les plus demandées.
 
 ---
 
