@@ -199,6 +199,17 @@ def counts_towards_revenue(status: str) -> bool:
     return status in REVENUE_STATUSES
 
 
+# Statuts comptés au **numérateur du taux d'annulation** (§6 Épic 6, US-6.5, #43).
+# Un RDV `CANCELLED` (annulation gérant/client) pèse au taux d'annulation d'un
+# coiffeur ; un `NO_SHOW` (**absence**, statut distinct) n'y compte **pas** — annuler
+# et ne pas se présenter sont deux évènements métier différents (spec §Open
+# Questions 5, un éventuel « taux d'absence » reste un suivi séparé). Nommé
+# distinctement de `REVENUE_STATUSES` : « réalisé » (`COMPLETED`) et « annulé »
+# (`CANCELLED`) sont deux décisions métier séparées, **imposées côté serveur** par le
+# cas d'usage — jamais un statut soumis par l'appelant.
+CANCELLED_STATUSES: tuple[str, ...] = (AppointmentStatus.CANCELLED.value,)
+
+
 # Statuts exposés par l'**historique client** (§6 Épic 4, US-4.4, #30). Un client ne
 # voit que ses RDV **réalisés** (`COMPLETED`) et **rien d'autre** — c'est l'unique
 # critère d'acceptation de #30. Ce jeu est **décidé serveur** : la route d'historique
@@ -374,6 +385,7 @@ __all__ = [
     "normalize_cancellation_reason",
     "REVENUE_STATUSES",
     "counts_towards_revenue",
+    "CANCELLED_STATUSES",
     "CLIENT_HISTORY_STATUSES",
     "TERMINAL_STATUSES",
     "ALLOWED_STATUS_TRANSITIONS",

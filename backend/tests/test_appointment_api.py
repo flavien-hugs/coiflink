@@ -87,7 +87,7 @@ _SERVICE_ID = uuid.UUID("44444444-0000-0000-0000-000000000004")
 _OPENING_HOURS_DICT = to_jsonb(
     parse_opening_hours({"weekly": {"mon": [{"start": "09:00", "end": "17:00"}]}})
 )
-_DATE = "2026-08-03"  # lundi
+_DATE = "2026-08-10"  # lundi
 _AVAIL_URL = f"/catalog/salons/{_SALON_ID}/availability"
 _BOOK_URL = f"/salons/{_SALON_ID}/appointments"
 _MODIFY_APPT_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")
@@ -276,12 +276,12 @@ class TestGetAvailability:
 
     def test_booked_slot_absent_from_response(self) -> None:
         booked_slot = SlotRange(
-            date=datetime.date(2026, 8, 3),
+            date=datetime.date(2026, 8, 10),
             start=datetime.time(9, 0),
             end=datetime.time(10, 0),
         )
         appts = FakeAppointmentRepository(
-            booked={(_SALON_ID, None, datetime.date(2026, 8, 3)): [booked_slot]}
+            booked={(_SALON_ID, None, datetime.date(2026, 8, 10)): [booked_slot]}
         )
         resp = _client(appts=appts).get(self._url())
         slots = resp.json()["slots"]
@@ -527,7 +527,7 @@ class TestGetAvailabilityExtra:
     def test_closed_day_returns_200_empty_slots(self) -> None:
         # Mardi — hors des horaires (lundi uniquement) : réponse 200 + liste vide,
         # pas 404 ni 409.
-        tuesday = "2026-08-04"
+        tuesday = "2026-08-11"
         resp = _client().get(f"{_AVAIL_URL}?date={tuesday}&service_id={_SERVICE_ID}")
         assert resp.status_code == 200
         assert resp.json()["slots"] == []
@@ -545,12 +545,12 @@ class TestGetAvailabilityExtra:
         # dans la disponibilité du coiffeur B.
         other_hairdresser = uuid.UUID("88888888-0000-0000-0000-000000000008")
         booked = SlotRange(
-            date=datetime.date(2026, 8, 3),
+            date=datetime.date(2026, 8, 10),
             start=datetime.time(9, 0),
             end=datetime.time(10, 0),
         )
         appts = FakeAppointmentRepository(
-            booked={(_SALON_ID, _HAIRDRESSER_ID, datetime.date(2026, 8, 3)): [booked]}
+            booked={(_SALON_ID, _HAIRDRESSER_ID, datetime.date(2026, 8, 10)): [booked]}
         )
         url = (
             f"{_AVAIL_URL}?date={_DATE}&service_id={_SERVICE_ID}"

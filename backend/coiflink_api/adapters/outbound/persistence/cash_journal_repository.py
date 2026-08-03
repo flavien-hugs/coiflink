@@ -27,6 +27,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import uuid
+from collections.abc import Mapping
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -135,6 +136,60 @@ class SqlCashJournalEntryRepository:
         )
         total = self._session.scalar(stmt) or 0
         return decimal.Decimal(total).quantize(_AMOUNT_QUANTUM)
+
+    def net_revenue_by_hairdresser(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> Mapping[uuid.UUID, decimal.Decimal]:
+        """CA net **attribué par coiffeur** du salon sur une période (US-6.5, #43).
+
+        Variante attribuée de `net_revenue_between` : somme **signée** des lignes
+        `cash_journal` `PAYMENT`/`ADJUSTMENT` du salon, jointes au `payment`
+        (`transaction_id → payments.id`) puis au RDV (`payments.appointment_id →
+        appointments.id`), filtrées `appointments.hairdresser_id IS NOT NULL` et
+        `appointments.appointment_date ∈ [date_from, date_to]` **inclus**,
+        `GROUP BY appointments.hairdresser_id`. CA **net des corrections** (#34) : un
+        `ADJUSTMENT` fait baisser le total du coiffeur.
+
+        L'**attribution par le RDV** (join `payments.appointment_id`) porte le
+        `hairdresser_id` **et** la borne `appointment_date` (axe **planning**, pas
+        `cash_journal.created_at`) : le CA partage la période des prestations/annulations.
+        Les lignes **sans `transaction_id`** ou dont le paiement n'a **pas** de RDV
+        assigné (prestation directe, `appointment_id IS NULL`) sont **exclues** par les
+        joins (inattribuables). Isolation §11.2 **réaffirmée en SQL**
+        (`WHERE cash_journal.salon_id`), couverte par `ix_cash_journal_salon_id`.
+        Lecture pure (aucun `flush`) ; renvoie `{hairdresser_id: Decimal}` quantifié au
+        centime — **aucune** PII (ni `client_id`, ni `reference`, ni `recorded_by`).
+        """
+
+        stmt = (
+            select(
+                models.Appointment.hairdresser_id,
+                func.coalesce(func.sum(models.CashJournal.amount), 0).label("net"),
+            )
+            .join(
+                models.Payment,
+                models.Payment.id == models.CashJournal.transaction_id,
+            )
+            .join(
+                models.Appointment,
+                models.Appointment.id == models.Payment.appointment_id,
+            )
+            .where(
+                models.CashJournal.salon_id == salon_id,
+                models.CashJournal.operation_type.in_(_REVENUE_OPERATION_TYPES),
+                models.Appointment.hairdresser_id.is_not(None),
+                models.Appointment.appointment_date.between(date_from, date_to),
+            )
+            .group_by(models.Appointment.hairdresser_id)
+        )
+        return {
+            row.hairdresser_id: decimal.Decimal(row.net or 0).quantize(_AMOUNT_QUANTUM)
+            for row in self._session.execute(stmt).all()
+        }
 
     def _full_name(self, user_id: uuid.UUID) -> str | None:
         """Résout le seul `full_name` de l'auteur (jamais d'autre donnée §11.3)."""

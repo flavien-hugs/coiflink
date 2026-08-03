@@ -106,20 +106,27 @@ exposé au navigateur, invariant #14) le salon du gérant puis, pour ce salon :
   la segmentation des clients du salon sur le **mois civil courant** (défaut backend) en **trois
   compteurs** — **Nouveaux** (première visite sur la période) · **Récurrents** (déjà venus, revenus sur
   la période) · **Inactifs** (sans visite sur la période) — plus un total « actifs » (nouveaux +
-  récurrents).
+  récurrents) ;
+- **sous** lui, le panneau **« Performance des coiffeurs »** (US-6.5, #43, via
+  `GET /salons/{id}/hairdresser-performance`) : **une ligne par coiffeur** assigné à ≥ 1 RDV du salon sur
+  le **mois civil courant** (défaut backend), portant **Coiffeur** (nom d'affichage) · **Prestations**
+  réalisées (« ×N ») · **CA généré** (**FCFA**) · **Taux d'annulation** (pourcentage + « annulés / total »).
+  Prestations & taux dérivent du **planning**, le CA de la **caisse** (net attribué par RDV).
 
 Le backend reste **l'autorité des chiffres ET de l'ordre** (décompte `GROUP BY status`, CA `SUM` net des
-corrections #34, classement `GROUP BY service_id`, segmentation `GROUP BY client_id` — tous calculés en
-base ; « annulés exclus » §8.1 par construction) : les composants ne font que **présenter** compteurs et
-montants (portés en **chaîne décimale**, `NUMERIC(12,2)`, jamais un flottant JS) et **basculer** entre deux
-listes déjà triées (jamais de re-tri côté front). Réponses **sans PII** (§11.3) — la segmentation ne porte
-**que** des compteurs et des dates (aucun `client_id`, nom). Un salon **sans activité** → tuiles à `0` /
-classements **vides** (« Aucune prestation réalisée sur la période ») / compteurs à `0` (« Aucun client
-réalisé sur la période ») — état vide légitime, ≠ erreur. Une erreur backend sur les RDV/CA (ou l'absence
-de salon) affiche le panneau/l'invite correspondant ; une panne du **seul** panneau prestations **ou**
-clients actifs **dégrade localement** (message neutre) sans casser la page. Aucun Route Handler BFF
-ajouté : fetch serveur direct (patron du planning), via `http-stats-gateway` (étendu des méthodes
-`serviceDemand` et `activeClients`).
+corrections #34, classement `GROUP BY service_id`, segmentation `GROUP BY client_id`, performance
+`GROUP BY hairdresser_id` — tous calculés en base ; « annulés exclus » §8.1 par construction) : les
+composants ne font que **présenter** compteurs et montants (portés en **chaîne décimale**, `NUMERIC(12,2)`,
+jamais un flottant JS) et **basculer** entre deux listes déjà triées (jamais de re-tri côté front). Réponses
+**sans PII client** (§11.3) — la performance des coiffeurs émet le **seul** nom d'affichage de l'employé
+(`users.full_name`, convention #34), jamais son contact ni aucun `client_id`. Un salon **sans activité** →
+tuiles à `0` / classements **vides** (« Aucune prestation réalisée sur la période ») / compteurs à `0`
+(« Aucun client réalisé sur la période ») / performance **vide** (« Aucun coiffeur assigné sur la période »)
+— état vide légitime, ≠ erreur. Une erreur backend sur les RDV/CA (ou l'absence de salon) affiche le
+panneau/l'invite correspondant ; une panne du **seul** panneau prestations, clients actifs **ou**
+performance des coiffeurs **dégrade localement** (message neutre) sans casser la page. Aucun Route Handler
+BFF ajouté : fetch serveur direct (patron du planning), via `http-stats-gateway` (étendu des méthodes
+`serviceDemand`, `activeClients` et `hairdresserPerformance`).
 
 ### Paramètres — création & consultation du salon (#15)
 

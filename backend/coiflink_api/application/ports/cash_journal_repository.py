@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import uuid
+from collections.abc import Mapping
 from typing import Protocol
 
 from coiflink_api.domain.cash_journal import CashJournalEntry, CashJournalToAppend
@@ -81,6 +82,39 @@ class CashJournalRepository(Protocol):
         calculé **en base**, sans rapatrier de ligne ni de PII. `Decimal` quantifié
         au centime (`NUMERIC(12,2)`, jamais un flottant) ; `Decimal("0.00")` si aucune
         ligne dans l'intervalle.
+        """
+        ...
+
+    def net_revenue_by_hairdresser(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> Mapping[uuid.UUID, decimal.Decimal]:
+        """CA net **attribué par coiffeur** du salon sur une période (US-6.5, #43).
+
+        Variante **attribuée** de `net_revenue_between` : renvoie
+        `{hairdresser_id: net_amount}` — somme **signée** des lignes `cash_journal`
+        `PAYMENT`/`ADJUSTMENT` du salon dont le `payment` référence un `appointment`
+        **assigné** (`hairdresser_id IS NOT NULL`) dont `appointment_date` est dans
+        `[date_from, date_to]` **inclus**, `GROUP BY appointments.hairdresser_id`. Le
+        CA est **net des corrections** (#34) — un paiement corrigé fait **baisser** le
+        total du coiffeur (parité « montant net » de #40/#37).
+
+        **Attribution par le RDV** : le join `cash_journal → payments.appointment_id →
+        appointments` porte le `hairdresser_id` **et** la borne `appointment_date`
+        (axe **planning**, pas `cash_journal.created_at`) — ce qui aligne le CA sur la
+        **même période** que les prestations/annulations. Les paiements **sans RDV**
+        (`appointment_id IS NULL`, prestation directe) ou liés à un RDV **non assigné**
+        sont **exclus** (inattribuables) par les joins ; la somme des CA par coiffeur
+        peut donc différer du CA salon #40 (résidu documenté). Isolation §11.2
+        **imposée en SQL** (`WHERE cash_journal.salon_id = :salon_id`), en défense en
+        profondeur de `require_salon_scope`. `Decimal` quantifié au centime. **Ne
+        renvoie aucune PII** (ni `client_id`, ni `reference`, ni `recorded_by`, ni
+        ligne de paiement) — seulement `(hairdresser_id, montant)`. Lecture pure
+        (aucun `flush`). Un coiffeur sans CA attribué est **absent** de la map (le cas
+        d'usage retombe sur `0.00`).
         """
         ...
 

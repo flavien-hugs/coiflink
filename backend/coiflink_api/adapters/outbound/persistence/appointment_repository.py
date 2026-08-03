@@ -41,6 +41,7 @@ from coiflink_api.domain.errors import (
     InvalidAppointmentTransition,
     SlotAlreadyBooked,
 )
+from coiflink_api.domain.hairdresser_performance import HairdresserActivityCounts
 from coiflink_api.domain.service_demand import ServiceDemand
 
 # Précision de quantification des montants agrégés : le centime (miroir de la
@@ -605,6 +606,95 @@ class SqlAppointmentRepository:
                 visits_before=int(row.visits_before),
             )
             for row in rows
+        )
+
+    def performance_by_hairdresser(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+        completed_statuses: tuple[str, ...],
+        cancelled_statuses: tuple[str, ...],
+    ) -> tuple[HairdresserActivityCounts, ...]:
+        """Agrège les compteurs de planning **par coiffeur** du salon (US-6.5 #43).
+
+        Deux agrégats **séparés** `GROUP BY hairdresser_id` pour ne **pas sur-compter**
+        (spec §Open Questions 6) :
+
+        1. sur `appointments` (join `users` pour le nom) : `COUNT(*)` = `total_count`
+           (tous statuts assignés), `SUM(CASE …)` = `cancelled_count` (RDV dont
+           `status ∈ cancelled_statuses`) ;
+        2. sur `appointment_services` (join `appointments`, filtré `status ∈
+           completed_statuses`) : `COUNT` = `services_completed` (occurrences
+           **réalisées**), mappé par `hairdresser_id` (défaut `0`).
+
+        L'isolation §11.2 est ré-affirmée **en SQL** (`WHERE appointments.salon_id`) et
+        `hairdresser_id IS NOT NULL` exclut les RDV non assignés. La lecture ne
+        rapatrie **aucune** ligne ni PII **client** — seulement les tuples agrégés + le
+        nom d'affichage de l'employé (`users.full_name`, jamais téléphone/e-mail).
+        Ordre **non garanti** (le domaine ordonne). L'index `ix_appointments_salon_id`
+        couvre le filtre. Lecture pure (aucun `flush`).
+        """
+
+        cancelled = func.sum(
+            case(
+                (models.Appointment.status.in_(cancelled_statuses), 1),
+                else_=0,
+            )
+        )
+        counts_stmt = (
+            select(
+                models.Appointment.hairdresser_id,
+                models.User.full_name,
+                func.count().label("total_count"),
+                func.coalesce(cancelled, 0).label("cancelled_count"),
+            )
+            .join(models.User, models.User.id == models.Appointment.hairdresser_id)
+            .where(
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.hairdresser_id.is_not(None),
+                models.Appointment.appointment_date.between(date_from, date_to),
+            )
+            .group_by(models.Appointment.hairdresser_id, models.User.full_name)
+        )
+
+        # `services_completed` = occurrences de prestations réalisées (lignes
+        # `appointment_services` des RDV `COMPLETED`) — comptées **séparément** pour ne
+        # pas gonfler les comptes de RDV via le join un-à-plusieurs.
+        services_stmt = (
+            select(
+                models.Appointment.hairdresser_id,
+                func.count().label("services_completed"),
+            )
+            .join(
+                models.AppointmentService,
+                models.AppointmentService.appointment_id == models.Appointment.id,
+            )
+            .where(
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.hairdresser_id.is_not(None),
+                models.Appointment.status.in_(completed_statuses),
+                models.Appointment.appointment_date.between(date_from, date_to),
+            )
+            .group_by(models.Appointment.hairdresser_id)
+        )
+        services_by_hairdresser = {
+            row.hairdresser_id: int(row.services_completed)
+            for row in self._session.execute(services_stmt).all()
+        }
+
+        return tuple(
+            HairdresserActivityCounts(
+                hairdresser_id=row.hairdresser_id,
+                name=row.full_name,
+                services_completed=services_by_hairdresser.get(
+                    row.hairdresser_id, 0
+                ),
+                cancelled_count=int(row.cancelled_count),
+                total_count=int(row.total_count),
+            )
+            for row in self._session.execute(counts_stmt).all()
         )
 
     def _load_services(

@@ -340,7 +340,19 @@ permission `STATS_READ_SALON` (**quatrième** consommateur) + portée salon (§1
 **comptes** ayant des RDV **`COMPLETED`** (une « visite », #29 ; une fiche walk-in sans compte ne pèse pas) ;
 calcul **en base** (`GROUP BY client_id`, `client_id` **jamais émis**), **sans écriture, sans migration ni
 PII** — la réponse ne porte que des compteurs et des dates. Le dashboard `/gerant` ajoute un panneau
-**« Clients actifs »** (Nouveaux/Récurrents/Inactifs) **sous** les prestations les plus demandées.
+**« Clients actifs »** (Nouveaux/Récurrents/Inactifs) **sous** les prestations les plus demandées. La
+**performance des coiffeurs** (#43, US-6.5) est livrée : `GET /salons/{salon_id}/hairdresser-performance`
+renvoie, pour une période (défaut = mois civil courant), **une ligne par coiffeur** assigné à ≥ 1 RDV du
+salon — **prestations réalisées** (occurrences des RDV `COMPLETED`), **CA généré** et **taux d'annulation**
+(RDV `CANCELLED` / RDV assignés) — permission `STATS_READ_SALON` (**cinquième** consommateur) + portée salon
+(§11.2). Chaque indicateur est **cohérent avec son autorité** (critère d'acceptation) : prestations & taux
+dérivent **du planning** (`appointments` assignés), le CA dérive **de la caisse** (net `cash_journal`
+**attribué** via `payments → appointments.hairdresser_id`, net des corrections #34). Calcul **en base**
+(deux `GROUP BY hairdresser_id`), **sans écriture, sans migration** ; c'est le **seul** KPI stats
+**nominatif** — il émet le nom d'affichage de l'employé (`users.full_name`, convention #34), **jamais** son
+contact ni aucune PII client (§11.3, voir
+[ADR-0031](./docs/adr/0031-performance-des-coiffeurs.md)). Le dashboard `/gerant` ajoute un panneau
+**« Performance des coiffeurs »** (une ligne par coiffeur) **sous** les clients actifs.
 
 ---
 

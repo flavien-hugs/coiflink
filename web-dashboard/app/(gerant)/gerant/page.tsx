@@ -1,5 +1,6 @@
 // Dashboard gérant — **RDV du jour** (US-6.1 #39) + **chiffre d'affaires** (US-6.2
-// #40) + **prestations les plus demandées** (US-6.3 #41) — Server Component. Charge
+// #40) + **prestations les plus demandées** (US-6.3 #41) + **clients actifs** (US-6.4
+// #42) + **performance des coiffeurs** (US-6.5 #43) — Server Component. Charge
 // **côté serveur** (jeton du cookie httpOnly, jamais exposé au navigateur, invariant
 // #14) le salon du gérant puis, pour ce salon :
 //   - aucun salon → invite à créer d'abord le salon (Paramètres, #15) ;
@@ -21,6 +22,7 @@ import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { createHttpStatsGateway } from "@/src/adapters/api/http-stats-gateway";
 import { ActiveClientsPanel } from "@/src/adapters/ui/active-clients-panel";
 import { DailySummaryTiles } from "@/src/adapters/ui/daily-summary-tiles";
+import { HairdresserPerformancePanel } from "@/src/adapters/ui/hairdresser-performance-panel";
 import { RevenueTiles } from "@/src/adapters/ui/revenue-tiles";
 import { ServiceDemandPanel } from "@/src/adapters/ui/service-demand-panel";
 import { todayIso } from "@/src/domain/appointment/planning-view";
@@ -86,6 +88,11 @@ export default async function GerantDashboardPage() {
   // **dégrade localement** (`segments = null`) sans casser le reste du tableau de bord.
   const segments = await statsGateway.activeClients(salon.id);
 
+  // Performance des coiffeurs (#43) : prestations réalisées, CA généré, taux
+  // d'annulation par coiffeur sur le **mois civil courant** (défaut backend). Comme
+  // #41/#42, un échec **dégrade localement** (`report = null`) sans casser la page.
+  const performance = await statsGateway.hairdresserPerformance(salon.id);
+
   return (
     <section className="flex flex-col gap-6">
       <Header today={today} />
@@ -93,6 +100,9 @@ export default async function GerantDashboardPage() {
       <RevenueTiles summary={revenue.summary} />
       <ServiceDemandPanel ranking={demand.ok ? demand.ranking : null} />
       <ActiveClientsPanel segments={segments.ok ? segments.segments : null} />
+      <HairdresserPerformancePanel
+        report={performance.ok ? performance.report : null}
+      />
     </section>
   );
 }

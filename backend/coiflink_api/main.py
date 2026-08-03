@@ -172,18 +172,22 @@ app.include_router(receipts_router)
 # aucune écriture, aucun audit. Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` :
 # la supervision financière n'est jamais publique.
 app.include_router(admin_router)
-# Statistiques salon (#40, US-6.2 ; #41, US-6.3 ; #42, US-6.4) : router stats dédié
-# réservé au MANAGER (STATS_READ_SALON) + portée salon (isolation §11.2). Trois
-# endpoints :
+# Statistiques salon (#40, US-6.2 ; #41, US-6.3 ; #42, US-6.4 ; #43, US-6.5) : router
+# stats dédié réservé au MANAGER (STATS_READ_SALON) + portée salon (isolation §11.2).
+# Cinq endpoints :
 #   - GET /salons/{id}/revenue/summary — chiffre d'affaires du salon sur trois périodes
 #     (jour/semaine/mois) ; le CA dérive du **montant net** du journal de caisse (#34 :
 #     somme signée PAYMENT/ADJUSTMENT), « annulés exclus » (§8.1) par construction ;
 #   - GET /salons/{id}/service-demand — prestations les plus demandées, classées par
 #     volume (RDV COMPLETED) et par revenu (somme des price_at_booking figés) ;
 #   - GET /salons/{id}/active-clients — segmentation des clients (nouveaux/récurrents/
-#     inactifs) sur une période, agrégée par client (GROUP BY client_id jamais émis).
-# STATS_READ_SALON a donc quatre consommateurs (#39 RDV du jour, #40 CA, #41 demande,
-# #42 clients actifs). Lecture pure : aucune écriture, aucun audit, aucune PII (§11.3).
-# Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` : une donnée d'exploitation salon
-# n'est jamais publique.
+#     inactifs) sur une période, agrégée par client (GROUP BY client_id jamais émis) ;
+#   - GET /salons/{id}/hairdresser-performance — performance par coiffeur : prestations
+#     réalisées + taux d'annulation (planning), CA généré (caisse nette **attribuée**
+#     via payments → appointments.hairdresser_id). Seul endpoint stats **nominatif**
+#     (nom d'affichage employé, jamais son contact).
+# STATS_READ_SALON a donc cinq consommateurs (#39 RDV du jour, #40 CA, #41 demande,
+# #42 clients actifs, #43 performance des coiffeurs). Lecture pure : aucune écriture,
+# aucun audit, aucune PII (§11.3). Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` :
+# une donnée d'exploitation salon n'est jamais publique.
 app.include_router(stats_router)

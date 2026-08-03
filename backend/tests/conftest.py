@@ -782,6 +782,9 @@ class FakeAppointmentRepository:
         # Résultats configurables pour `segment_active_clients` (US-6.4 #42).
         self.segment_results: tuple = ()
         self.segment_active_clients_calls: list[dict] = []
+        # Résultats configurables pour `performance_by_hairdresser` (US-6.5 #43).
+        self.performance_results: tuple = ()
+        self.performance_by_hairdresser_calls: list[dict] = []
         self._appointments: dict = {}
         for appt in (appointments or []):
             self._appointments[appt.id] = appt
@@ -1080,6 +1083,34 @@ class FakeAppointmentRepository:
             }
         )
         return self.segment_results
+
+    def performance_by_hairdresser(  # type: ignore[no-untyped-def]
+        self,
+        salon_id,
+        *,
+        date_from,
+        date_to,
+        completed_statuses,
+        cancelled_statuses,
+    ):
+        """Retourne `performance_results` (préconfiguré) et enregistre l'appel (#43).
+
+        Le fake ne ré-agrège pas depuis `_appointments` : les tests configurent
+        `performance_results` (tuple de `HairdresserActivityCounts`) directement.
+        L'isolation SQL réelle et le non-sur-comptage sont testés en e2e. Les arguments
+        (dont `completed_statuses`/`cancelled_statuses` imposés serveur) sont tracés
+        dans `performance_by_hairdresser_calls` pour assertions.
+        """
+        self.performance_by_hairdresser_calls.append(
+            {
+                "salon_id": salon_id,
+                "date_from": date_from,
+                "date_to": date_to,
+                "completed_statuses": completed_statuses,
+                "cancelled_statuses": cancelled_statuses,
+            }
+        )
+        return self.performance_results
 
 
 class FakeCustomerRepository:
@@ -1380,6 +1411,9 @@ class FakeCashJournalRepository:
     def __init__(self) -> None:
         self._entries: list = []
         self.appended: list = []
+        # CA net attribué par coiffeur, préconfigurable (US-6.5 #43) — `{uuid: Decimal}`.
+        self.net_by_hairdresser: dict = {}
+        self.net_revenue_by_hairdresser_calls: list[dict] = []
 
     def append(self, entry):  # type: ignore[no-untyped-def]
         from coiflink_api.domain.cash_journal import CashJournalEntry
@@ -1421,6 +1455,25 @@ class FakeCashJournalRepository:
         fake plus spécialisé (`FakeRevenueCashJournalRepository`).
         """
         return decimal.Decimal("0.00")
+
+    def net_revenue_by_hairdresser(  # type: ignore[no-untyped-def]
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ):
+        """CA net attribué par coiffeur (fake : `net_by_hairdresser` préconfiguré, #43).
+
+        Enregistre l'appel (les tests vérifient les bornes transmises) et renvoie la
+        map `{hairdresser_id: Decimal}` préconfigurée — vide par défaut (un coiffeur
+        sans CA attribué retombe sur `0.00` côté cas d'usage). L'attribution SQL réelle
+        (`payments → appointments.hairdresser_id`) est testée en e2e.
+        """
+        self.net_revenue_by_hairdresser_calls.append(
+            {"salon_id": salon_id, "date_from": date_from, "date_to": date_to}
+        )
+        return dict(self.net_by_hairdresser)
 
 
 class FakeReceiptRepository:
