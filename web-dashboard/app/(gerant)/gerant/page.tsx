@@ -6,13 +6,15 @@
 //   - aucun salon → invite à créer d'abord le salon (Paramètres, #15) ;
 //   - un salon    → tuiles RDV Total/Confirmés/Annulés/Terminés/Absents (#39), puis,
 //                   **sous** elles, les tuiles CA Jour/Semaine/Mois (#40) — 0 si vide —
-//                   puis le panneau « Prestations les plus demandées » (#41).
-// Décompte, CA et demande sont calculés **en base** côté backend (`GROUP BY` / `SUM`) :
-// les réponses ne portent que des compteurs, des montants (chaînes décimales), des
-// libellés, des dates et une devise (§11.3), aucune PII. Chaque rendu relit la **source
-// de vérité** backend (fetch serveur direct, patron du planning) ; aucun Route Handler
-// BFF. Une panne du panneau #41 **dégrade localement** (message neutre) sans casser la
-// page — les tuiles RDV + CA restent lisibles (spec §Open Questions 6, patron #31).
+//                   puis les panneaux « Prestations les plus demandées » (#41),
+//                   « Clients actifs » (#42) et « Performance des coiffeurs » (#43).
+// Décompte, CA et KPI dérivés sont calculés **en base** côté backend (`GROUP BY` /
+// `SUM`) : les réponses ne portent que des compteurs, des montants (chaînes
+// décimales), des libellés/noms d'affichage, des dates et une devise (§11.3), aucune
+// PII client. Chaque rendu relit la **source de vérité** backend (fetch serveur
+// direct, patron du planning) ; aucun Route Handler BFF. Une panne d'un panneau
+// #41/#42/#43 **dégrade localement** (message neutre) sans casser la page — les
+// tuiles RDV + CA restent lisibles (spec §Open Questions 6, patron #31).
 
 import Link from "next/link";
 
