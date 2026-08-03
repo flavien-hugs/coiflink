@@ -779,6 +779,9 @@ class FakeAppointmentRepository:
         # Résultats configurables pour `demand_by_service` (US-6.3 #41).
         self.demand_results: tuple = ()
         self.demand_by_service_calls: list[dict] = []
+        # Résultats configurables pour `segment_active_clients` (US-6.4 #42).
+        self.segment_results: tuple = ()
+        self.segment_active_clients_calls: list[dict] = []
         self._appointments: dict = {}
         for appt in (appointments or []):
             self._appointments[appt.id] = appt
@@ -1058,6 +1061,25 @@ class FakeAppointmentRepository:
             }
         )
         return self.demand_results
+
+    def segment_active_clients(  # type: ignore[no-untyped-def]
+        self, salon_id, *, statuses, date_from, date_to
+    ):
+        """Retourne `segment_results` (préconfiguré) et enregistre l'appel (#42).
+
+        Le fake ne ré-agrège pas depuis `_appointments` : les tests configurent
+        `segment_results` directement. L'isolation SQL réelle est testée en e2e.
+        Les arguments sont tracés dans `segment_active_clients_calls` pour assertions.
+        """
+        self.segment_active_clients_calls.append(
+            {
+                "salon_id": salon_id,
+                "statuses": statuses,
+                "date_from": date_from,
+                "date_to": date_to,
+            }
+        )
+        return self.segment_results
 
 
 class FakeCustomerRepository:

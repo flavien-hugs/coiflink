@@ -1124,6 +1124,67 @@ curl -G "$API/salons/$SALON_ID/service-demand" \
 }
 ```
 
+## Clients actifs — nouveaux / récurrents / inactifs (US-6.4, #42)
+
+Le gérant **segmente ses clients** sur une période : `GET /salons/{salon_id}/active-clients` renvoie la
+répartition des clients du salon en **trois compteurs** — **nouveaux**, **récurrents** et **inactifs**. La
+route est **protégée** par `STATS_READ_SALON` (§4.1, **seul le `MANAGER`**) + portée salon
+(`require_salon_scope`) ; c'est le **quatrième** usage de `STATS_READ_SALON` après le décompte RDV du jour
+(US-6.1, #39), le CA (US-6.2, #40) et les prestations les plus demandées (US-6.3, #41). **Lecture pure**
+(aucune écriture, aucun audit §11.4) ; rien n'entre dans `PUBLIC_ROUTE_PATHS` — une donnée d'exploitation
+salon n'est jamais publique. Le segment `active-clients` est **distinct** de `/{salon_id}/customers/…`
+(router `customers.py`, permission `CUSTOMER_MANAGE`, fiche-scopé) : il reste sous `STATS_READ_SALON`.
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/active-clients` | `STATS_READ_SALON` + portée | `200` trois compteurs \| `401` \| `403` \| `422` bornes mal formées/incohérentes | *(aucun — lecture)* |
+
+La segmentation est **dérivée en lecture** des **comptes ayant des RDV réalisés** (`COMPLETED`, imposé
+serveur — « réalisées uniquement », une « visite » au sens de #29). Relativement à la période
+`[date_from, date_to]`, un client est **nouveau** si sa **première** visite au salon tombe dans la période,
+**récurrent** s'il a été vu **dans** la période **et** **avant**, **inactif** s'il a été vu **avant** mais
+pas dans la période. Les trois segments sont **mutuellement exclusifs** ; `active = new + recurring` (clients
+vus sur la période) est exposé pour éviter un recalcul côté front. Le calcul est **en base**
+(`GROUP BY client_id`, `MIN(appointment_date)` + deux `SUM(CASE …)` filtrés, index
+`ix_appointments_salon_id`), sans rapatrier de ligne ni le `client_id` (**groupé mais jamais sélectionné**) :
+la réponse ne porte **que** des compteurs et des dates (§11.3) — **aucune** PII (`client_id`,
+`appointment_id`, nom, téléphone, ligne de RDV). La règle de classification est une **fonction pure du
+domaine** (`domain/client_segments.py`). Un salon **sans RDV réalisé** sur la période → compteurs à `0`
+(état vide légitime, ≠ erreur).
+
+Les bornes `date_from`/`date_to` (jour civil `Africa/Abidjan`) sont **optionnelles** — absentes (ou une
+seule fournie) = **mois civil courant** (résolu serveur, `month_bounds`, symétrie #40) ; `date_to <
+date_from` → `422`.
+
+> **Segmentation par compte, pas par fiche.** #42 segmente les **comptes** qui réservent
+> (`appointments.client_id`), seule source portant des visites réelles. Une **fiche walk-in sans compte**
+> (`customer_profiles.user_id = NULL`, #28) n'apparaît dans aucun segment — elle ne se relie à aucun RDV
+> (point dur hérité de #29). #42 ne renvoie **que** des compteurs : la consultation nominative d'un client
+> reste la **fiche** (#28/#29/#31, permission `CUSTOMER_MANAGE`), jamais ce KPI.
+
+```bash
+# Clients actifs du salon, mois civil courant (défaut) → 200
+curl -G "$API/salons/$SALON_ID/active-clients" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Sur une fenêtre de dates explicite (Africa/Abidjan) → 200
+curl -G "$API/salons/$SALON_ID/active-clients" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  --data-urlencode "date_from=2026-08-01" \
+  --data-urlencode "date_to=2026-08-31"
+```
+
+```json
+{
+  "date_from": "2026-08-01",
+  "date_to": "2026-08-31",
+  "new": 12,
+  "recurring": 27,
+  "inactive": 8,
+  "active": 39
+}
+```
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

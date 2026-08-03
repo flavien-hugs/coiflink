@@ -40,7 +40,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | --- | --- | --- |
 | `/` | publique | accueil neutre ; **aiguillage par rôle** si session valide (`MANAGER` → `/gerant`, `HAIRDRESSER` → `/coiffeur/planning`, #27) |
 | `/login` | publique | point d'entrée de session (formulaire minimal) |
-| `/gerant` | **protégée** | `MANAGER` actif — tableau de bord : **RDV du jour** par statut (#39), **chiffre d'affaires** jour/semaine/mois (#40) puis **prestations les plus demandées** (#41) |
+| `/gerant` | **protégée** | `MANAGER` actif — tableau de bord : **RDV du jour** par statut (#39), **chiffre d'affaires** jour/semaine/mois (#40), **prestations les plus demandées** (#41) puis **clients actifs** (nouveaux/récurrents/inactifs, #42) |
 | `/gerant/parametres` | **protégée** | `MANAGER` — création/consultation du salon (#15) |
 | `/gerant/prestations` | **protégée** | `MANAGER` — catalogue et gestion des prestations (#17) |
 | `/gerant/planning` | **protégée** | `MANAGER` — planning du salon, jour/semaine/mois (#26) |
@@ -88,7 +88,7 @@ backend) qui autorise l'affichage. Le front traite le JWT en **opaque** (il ne l
 `401` est traité comme « session expirée → redirection » ; le rafraîchissement transparent via
 `POST /auth/refresh` est un **suivi** (hors #14).
 
-### Tableau de bord — RDV du jour, chiffre d'affaires & prestations demandées (#39/#40/#41)
+### Tableau de bord — RDV du jour, chiffre d'affaires, prestations demandées & clients actifs (#39/#40/#41/#42)
 
 La page **`/gerant`** (Server Component) charge **côté serveur** (jeton du cookie httpOnly, jamais
 exposé au navigateur, invariant #14) le salon du gérant puis, pour ce salon :
@@ -101,18 +101,25 @@ exposé au navigateur, invariant #14) le salon du gérant puis, pour ce salon :
 - **sous** elles, le panneau **« Prestations les plus demandées »** (US-6.3, #41, via
   `GET /salons/{id}/service-demand`) : un classement des prestations du salon avec une **bascule Volume /
   Revenu** (deux ordres, mêmes entrées), chaque ligne portant « rang · nom · **×N fois** · montant
-  **FCFA** » (top affiché, reste résumé).
+  **FCFA** » (top affiché, reste résumé) ;
+- **sous** lui, le panneau **« Clients actifs »** (US-6.4, #42, via `GET /salons/{id}/active-clients`) :
+  la segmentation des clients du salon sur le **mois civil courant** (défaut backend) en **trois
+  compteurs** — **Nouveaux** (première visite sur la période) · **Récurrents** (déjà venus, revenus sur
+  la période) · **Inactifs** (sans visite sur la période) — plus un total « actifs » (nouveaux +
+  récurrents).
 
 Le backend reste **l'autorité des chiffres ET de l'ordre** (décompte `GROUP BY status`, CA `SUM` net des
-corrections #34, classement `GROUP BY service_id` — tous calculés en base ; « annulés exclus » §8.1 par
-construction) : les composants ne font que **présenter** compteurs et montants (portés en **chaîne
-décimale**, `NUMERIC(12,2)`, jamais un flottant JS) et **basculer** entre deux listes déjà triées (jamais
-de re-tri côté front). Réponses **sans PII** (§11.3). Un salon **sans activité** → tuiles à `0` /
-classements **vides** (« Aucune prestation réalisée sur la période ») — état vide légitime, ≠ erreur. Une
-erreur backend sur les RDV/CA (ou l'absence de salon) affiche le panneau/l'invite correspondant ; une
-panne du **seul** panneau prestations **dégrade localement** (message neutre) sans casser la page. Aucun
-Route Handler BFF ajouté : fetch serveur direct (patron du planning), via `http-stats-gateway` (étendu
-d'une méthode `serviceDemand`).
+corrections #34, classement `GROUP BY service_id`, segmentation `GROUP BY client_id` — tous calculés en
+base ; « annulés exclus » §8.1 par construction) : les composants ne font que **présenter** compteurs et
+montants (portés en **chaîne décimale**, `NUMERIC(12,2)`, jamais un flottant JS) et **basculer** entre deux
+listes déjà triées (jamais de re-tri côté front). Réponses **sans PII** (§11.3) — la segmentation ne porte
+**que** des compteurs et des dates (aucun `client_id`, nom). Un salon **sans activité** → tuiles à `0` /
+classements **vides** (« Aucune prestation réalisée sur la période ») / compteurs à `0` (« Aucun client
+réalisé sur la période ») — état vide légitime, ≠ erreur. Une erreur backend sur les RDV/CA (ou l'absence
+de salon) affiche le panneau/l'invite correspondant ; une panne du **seul** panneau prestations **ou**
+clients actifs **dégrade localement** (message neutre) sans casser la page. Aucun Route Handler BFF
+ajouté : fetch serveur direct (patron du planning), via `http-stats-gateway` (étendu des méthodes
+`serviceDemand` et `activeClients`).
 
 ### Paramètres — création & consultation du salon (#15)
 
