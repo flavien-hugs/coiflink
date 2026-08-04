@@ -164,13 +164,19 @@ app.include_router(payments_router)
 # n'envoie rien. Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` : un reçu
 # financier n'est jamais public.
 app.include_router(receipts_router)
-# Supervision agrégée des transactions (#37, US-5.6) : GET /admin/transactions/summary
-# — lecture **plateforme** réservée à l'ADMIN (STATS_READ_PLATFORM), agrégats par
-# salon (compteurs + montant NET via le journal de caisse #34) **sans PII de
-# paiement** (§11.3). Router plateforme (non salon-scopé) : la garde de permission
-# suffit (l'admin voit tous les salons), pas de require_salon_scope. Lecture pure :
-# aucune écriture, aucun audit. Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` :
-# la supervision financière n'est jamais publique.
+# Supervision plateforme admin (#37, US-5.6 ; #44, US-6.6) : router plateforme (non
+# salon-scopé) réservé à l'ADMIN (STATS_READ_PLATFORM). Deux endpoints :
+#   - GET /admin/transactions/summary — agrégats de transactions **par salon**
+#     (compteurs + montant NET via le journal de caisse #34) **sans PII de paiement** ;
+#   - GET /admin/kpis — KPI **globaux** consolidés de la plateforme (US-6.6, #44) :
+#     salons inscrits/actifs, clients inscrits, RDV (total + mois courant), revenus
+#     plateforme (net cumulé + mois courant via cash_journal). Instantané unique de
+#     scalaires globaux, **aucune** identité d'entité (§11.3, plus fort que #37) ;
+#     KPI « abonnements » volontairement absent (aucun modèle SaaS, ADR-0032).
+# STATS_READ_PLATFORM a donc **deux** consommateurs (#37 supervision, #44 KPI globaux).
+# La garde de permission suffit (l'admin voit tous les salons), pas de
+# require_salon_scope. Lecture pure : aucune écriture, aucun audit. Rien n'est ajouté à
+# `security.PUBLIC_ROUTE_PATHS` : la supervision plateforme n'est jamais publique.
 app.include_router(admin_router)
 # Statistiques salon (#40, US-6.2 ; #41, US-6.3 ; #42, US-6.4 ; #43, US-6.5) : router
 # stats dédié réservé au MANAGER (STATS_READ_SALON) + portée salon (isolation §11.2).

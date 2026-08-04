@@ -352,7 +352,25 @@ dérivent **du planning** (`appointments` assignés), le CA dérive **de la cais
 **nominatif** — il émet le nom d'affichage de l'employé (`users.full_name`, convention #34), **jamais** son
 contact ni aucune PII client (§11.3, voir
 [ADR-0031](./docs/adr/0031-performance-des-coiffeurs.md)). Le dashboard `/gerant` ajoute un panneau
-**« Performance des coiffeurs »** (une ligne par coiffeur) **sous** les clients actifs.
+**« Performance des coiffeurs »** (une ligne par coiffeur) **sous** les clients actifs. Les **KPI
+globaux de la plateforme** (#44, US-6.6) sont livrés côté backend : `GET /admin/kpis` renvoie un
+**instantané unique** (non paginé) de **scalaires globaux consolidés** sur toute la plateforme —
+**salons inscrits** (`salons_total`) et **actifs** (`salons_active`), **clients inscrits**
+(`clients_total`, comptes `CLIENT` uniquement), **rendez-vous** (`appointments_total` = **volume créé,
+tous statuts** ; `appointments_this_month` = RDV du mois civil courant sur `appointment_date`) et
+**revenus plateforme** (`revenue_total` + `revenue_this_month`) — permission `STATS_READ_PLATFORM`
+(**deuxième** consommateur après #37, **seul l'admin**), lecture **plateforme** (inter-entités, sans
+`require_salon_scope`). Le **revenu** dérive de la même source de vérité que le journal de caisse (#34 :
+somme signée des lignes `cash_journal`, un paiement corrigé fait baisser le net) — c'est le **flux net
+encaissé par les salons**, **pas** un revenu d'abonnement. La fenêtre mensuelle réutilise
+`month_bounds` (#40) ; `reference_date` optionnel (défaut = jour courant `Africa/Abidjan`). Calcul **en
+base** (`COUNT`/`SUM`, garde de coût §12.1), **sans écriture, sans migration ni audit** ; **non-PII
+renforcée** (§11.3) — la réponse ne porte que des scalaires globaux, **aucune** identité d'entité (ni
+`salon_id`, `salon_name`, `client_id`, `owner_id`), contrairement à #37. Le **KPI « abonnements »** du
+backlog est **volontairement absent** : aucun modèle de données d'abonnement/facturation n'existe (épic
+distinct, hors M5) — aucun nombre n'est inventé, `salons_active` couvre le besoin au libellé près (voir
+[ADR-0032](./docs/adr/0032-kpi-globaux-plateforme-admin.md)). La zone web `/admin` n'existe pas encore
+(livraison **backend-first**, comme #37).
 
 ---
 
