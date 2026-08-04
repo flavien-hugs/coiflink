@@ -354,6 +354,24 @@ class TestBookAppointment:
         )
         assert resp.status_code == 201
 
+    def test_valid_booking_enqueues_one_confirmation_notification(self) -> None:
+        # US-7.1 (#45) : une réservation réussie émet **une** confirmation
+        # `CONFIRMATION`/`PENDING`, rattachée au RDV créé — couvert en détail par
+        # `TestBookAppointmentNotification` (cas d'usage), affirmé ici au niveau API
+        # pour fermer l'écart relevé par la revue de la PR #132.
+        notif = FakeNotificationRepository()
+        resp = _client(notifications=notif).post(
+            _BOOK_URL, json=_valid_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 201
+        appointment_id = resp.json()["id"]
+        assert len(notif.enqueued) == 1
+        notification = notif.enqueued[0]
+        assert notification.type == "CONFIRMATION"
+        assert notification.status == "PENDING"
+        assert str(notification.appointment_id) == appointment_id
+        assert str(notification.user_id) == str(_CLIENT_ID)
+
     def test_response_contains_appointment_fields(self) -> None:
         resp = _client().post(
             _BOOK_URL, json=_valid_body(), headers=_auth_header()
