@@ -66,6 +66,9 @@ from coiflink_api.adapters.outbound.persistence.appointment_repository import (
     SqlAppointmentRepository,
 )
 from coiflink_api.adapters.outbound.persistence.audit_log_repository import SqlAuditLog
+from coiflink_api.adapters.outbound.persistence.notification_repository import (
+    SqlNotificationRepository,
+)
 from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import (
     SqlSalonCatalogRepository,
 )
@@ -86,6 +89,9 @@ from coiflink_api.application.appointments import (
 )
 from coiflink_api.application.ports.appointment_repository import AppointmentRepository
 from coiflink_api.application.ports.audit_log import AuditLog
+from coiflink_api.application.ports.notification_repository import (
+    NotificationRepository,
+)
 from coiflink_api.application.ports.salon_catalog_repository import (
     SalonCatalogRepository,
 )
@@ -314,6 +320,20 @@ def get_audit_log(
     return SqlAuditLog(session)
 
 
+def get_notification_repository(
+    session: Annotated[Session, Depends(get_session)],
+) -> NotificationRepository:
+    """Écriture des notifications adossée à la **même** session (atomicité, #45).
+
+    FastAPI met en cache `get_session` par requête : le dépôt de rendez-vous et le
+    dépôt de notifications partagent donc la **même** `Session`, d'où le commit/
+    rollback conjoint de la création du RDV et de sa confirmation (US-7.1, §8.4/§11.4,
+    patron `get_audit_log`).
+    """
+
+    return SqlNotificationRepository(session)
+
+
 def _now() -> datetime.datetime:
     """Instant courant **naïf** dans le repère Africa/Abidjan (UTC+0, cf. schéma)."""
 
@@ -435,6 +455,9 @@ def book_appointment(
         AppointmentRepository, Depends(get_appointment_repository)
     ],
     scope: Annotated[SalonScopeRepository, Depends(get_salon_scope_repository)],
+    notifications: Annotated[
+        NotificationRepository, Depends(get_notification_repository)
+    ],
     principal: Annotated[
         Principal, Depends(require_permission(Permission.APPOINTMENT_BOOK))
     ],
@@ -444,7 +467,10 @@ def book_appointment(
     Le `salon_id` vient du chemin, le `client_id` du `Principal` — jamais du corps.
     En cas de course concurrente sur le même créneau/coiffeur, la contrainte
     d'exclusion base tranche : **une seule** insertion aboutit, l'autre reçoit un
-    `409` (`SlotAlreadyBooked`).
+    `409` (`SlotAlreadyBooked`). À la création, une confirmation `CONFIRMATION` est
+    **émise/tracée** dans la table `notifications` (§8.4/§11.4, US-7.1 #45), **même**
+    unité de travail que le RDV ; la **remise réelle** (push/SMS) reste différée M5+
+    (ADR-0006) — rien n'est envoyé, le contrat de réponse (`201`) est inchangé.
     """
 
     command = BookingCommand(
@@ -455,9 +481,9 @@ def book_appointment(
         client_note=payload.client_note,
     )
     try:
-        appointment = BookAppointment(catalog, appointments, scope).execute(
-            salon_id, principal.id, command, now=_now()
-        )
+        appointment = BookAppointment(
+            catalog, appointments, scope, notifications
+        ).execute(salon_id, principal.id, command, now=_now())
     except AppointmentServiceRequired as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)

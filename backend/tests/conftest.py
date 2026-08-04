@@ -741,6 +741,22 @@ class FakeAuditLog:
         self.recorded.append(entry)
 
 
+class FakeNotificationRepository:
+    """Dépôt de notifications en mémoire (US-7.1, #45).
+
+    Implémente le port `NotificationRepository` sans I/O réelle. `enqueued` accumule
+    les `NotificationToCreate` émises pour vérifier qu'une confirmation part **à la
+    création** d'un RDV (et **aucune** en cas d'échec). N'expose **aucune** lecture
+    (pas d'endpoint client au périmètre #45) et ne journalise **rien** (ADR-0006).
+    """
+
+    def __init__(self) -> None:
+        self.enqueued: list = []
+
+    def enqueue(self, notification) -> None:  # type: ignore[no-untyped-def]
+        self.enqueued.append(notification)
+
+
 class FakeAppointmentRepository:
     """Dépôt de rendez-vous en mémoire (US-3.7, #21 / US-3.2, #23).
 
@@ -1252,6 +1268,11 @@ def fake_salon_catalog_repository() -> "FakeSalonCatalogRepository":
 @pytest.fixture()
 def fake_appointment_repository() -> "FakeAppointmentRepository":
     return FakeAppointmentRepository()
+
+
+@pytest.fixture()
+def fake_notification_repository() -> "FakeNotificationRepository":
+    return FakeNotificationRepository()
 
 
 class FakePaymentRepository:

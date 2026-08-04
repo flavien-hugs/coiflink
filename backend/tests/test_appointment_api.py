@@ -32,6 +32,7 @@ from coiflink_api.adapters.inbound.appointments import (
     get_appointment_repository,
     get_audit_log,
     get_catalog_repository,
+    get_notification_repository,
 )
 from coiflink_api.domain.appointment import (
     Appointment as AppointmentEntity,
@@ -57,6 +58,7 @@ from .conftest import (
     FakeAppointmentRepository,
     FakeAuditLog,
     FakeAuthUserRepository,
+    FakeNotificationRepository,
     FakeSalonCatalogRepository,
     FakeSalonScopeRepository,
     TEST_JWT_SECRET,
@@ -163,6 +165,7 @@ def _teardown_overrides() -> Generator[None, None, None]:
     app.dependency_overrides.pop(get_appointment_repository, None)
     app.dependency_overrides.pop(get_catalog_repository, None)
     app.dependency_overrides.pop(get_audit_log, None)
+    app.dependency_overrides.pop(get_notification_repository, None)
     app.dependency_overrides.pop(get_user_repository, None)
     app.dependency_overrides.pop(get_access_policy, None)
     app.dependency_overrides.pop(get_salon_scope_repository, None)
@@ -183,6 +186,7 @@ def _client(
     catalog: FakeSalonCatalogRepository | None = None,
     appts: FakeAppointmentRepository | None = None,
     scope: FakeSalonScopeRepository | None = None,
+    notifications: FakeNotificationRepository | None = None,
 ) -> TestClient:
     cat = catalog if catalog is not None else _catalog()
     ap = appts if appts is not None else FakeAppointmentRepository()
@@ -192,9 +196,14 @@ def _client(
         if scope is not None
         else FakeSalonScopeRepository({_HAIRDRESSER_ID: frozenset({_SALON_ID})})
     )
+    # Confirmation de RDV (#45) : dépôt de notifications en mémoire (aucune I/O). Sans
+    # cette surcharge, la réservation résoudrait le vrai `SqlNotificationRepository`
+    # (session réelle) — le fake garde le chemin `POST` hors base.
+    notif = notifications if notifications is not None else FakeNotificationRepository()
     app.dependency_overrides[get_catalog_repository] = lambda: cat
     app.dependency_overrides[get_appointment_repository] = lambda: ap
     app.dependency_overrides[get_salon_scope_repository] = lambda: sc
+    app.dependency_overrides[get_notification_repository] = lambda: notif
     app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(FakeSalonScopeRepository())
     return TestClient(app)

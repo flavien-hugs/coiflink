@@ -370,7 +370,18 @@ renforcée** (§11.3) — la réponse ne porte que des scalaires globaux, **aucu
 backlog est **volontairement absent** : aucun modèle de données d'abonnement/facturation n'existe (épic
 distinct, hors M5) — aucun nombre n'est inventé, `salons_active` couvre le besoin au libellé près (voir
 [ADR-0032](./docs/adr/0032-kpi-globaux-plateforme-admin.md)). La zone web `/admin` n'existe pas encore
-(livraison **backend-first**, comme #37).
+(livraison **backend-first**, comme #37). La **notification de confirmation de RDV** (#45, US-7.1) est
+livrée côté backend : à la **création d'un RDV** (`POST /salons/{salon_id}/appointments`, #21), une
+confirmation `CONFIRMATION` est **émise/tracée** dans la table `notifications` (`user_id` client,
+`salon_id`, `appointment_id`, canal résolu « selon disponibilité », `status=PENDING`) **dans la même
+unité de travail** que la réservation — première écriture applicative dans `notifications`, satisfaisant
+le traçage de la notification critique (§8.4/§11.4) **sans** migration (l'enum `CONFIRMATION` existe
+depuis la migration `0001`). Le canal est résolu par une fonction pure **PUSH → SMS → IN_APP**
+(WhatsApp exclu, V2) ; au MVP, faute de registre de jetons d'appareil, le canal effectif est **SMS**.
+La **remise proactive** (push/SMS via file Redis) reste **différée M5+** (Épic 7,
+[ADR-0006](./docs/adr/0006-notifications-fcm-sms.md)) : #45 **émet/trace** la confirmation, il n'**envoie**
+rien (`sent_at` reste `NULL`) — cohérent avec la non-remise du reçu #38 (ADR-0030), voir
+[ADR-0033](./docs/adr/0033-notification-confirmation-rdv.md).
 
 ---
 
