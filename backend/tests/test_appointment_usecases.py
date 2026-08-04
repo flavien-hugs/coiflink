@@ -478,13 +478,30 @@ class TestBookAppointmentNotification:
 
     # --- Émission sur réservation valide -----------------------------------
 
-    def test_valid_booking_enqueues_exactly_one_notification(self) -> None:
+    def test_valid_booking_enqueues_confirmation_plus_reminders(self) -> None:
+        # Sans `now` explicite, `BookAppointment` traite l'absence de référence
+        # temporelle comme « aucun filtrage par le passé » (parité `is_offered`) :
+        # les 3 rappels (`REMINDER_OFFSETS`) sont donc tous planifiés, en plus de
+        # la confirmation (#45) — soit 4 notifications au total.
         catalog = _bookable_catalog()
         notifs = FakeNotificationRepository()
         self._uc(catalog, notifications=notifs).execute(
             _SALON_ID, _CLIENT_ID, _valid_command()
         )
-        assert len(notifs.enqueued) == 1
+        assert len(notifs.enqueued) == 4
+
+    def test_valid_booking_enqueues_exactly_one_confirmation(self) -> None:
+        from coiflink_api.domain.enums import NotificationType
+
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        confirmations = [
+            n for n in notifs.enqueued if n.type == NotificationType.CONFIRMATION.value
+        ]
+        assert len(confirmations) == 1
 
     def test_notification_type_is_confirmation(self) -> None:
         from coiflink_api.domain.enums import NotificationType
@@ -653,6 +670,156 @@ class TestBookAppointmentNotification:
 
 
 # ---------------------------------------------------------------------------
+# BookAppointment — rappels planifiés (US-7.2, #46)
+# ---------------------------------------------------------------------------
+
+
+class TestBookAppointmentReminder:
+    """Vérifie que des rappels `REMINDER` sont planifiés à la réservation, un par
+    échéance encore future, et **aucun** en cas d'échec (§8.4, atomicité)."""
+
+    _APPOINTMENT_START = datetime.datetime(2026, 8, 3, 9, 0)  # _DATE + 09:00
+
+    def _uc(
+        self,
+        catalog: FakeSalonCatalogRepository,
+        appts: FakeAppointmentRepository | None = None,
+        scope: FakeSalonScopeRepository | None = None,
+        notifications: FakeNotificationRepository | None = None,
+    ) -> BookAppointment:
+        return BookAppointment(
+            catalog,
+            appts or FakeAppointmentRepository(),
+            scope if scope is not None else _scope(),
+            notifications or FakeNotificationRepository(),
+        )
+
+    def _reminders(self, notifs: FakeNotificationRepository) -> list:
+        from coiflink_api.domain.enums import NotificationType
+
+        return [n for n in notifs.enqueued if n.type == NotificationType.REMINDER.value]
+
+    def test_far_future_booking_plans_three_reminders(self) -> None:
+        # RDV réservé bien plus de 24h à l'avance : les 3 offsets sont futurs.
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        now = self._APPOINTMENT_START - datetime.timedelta(days=2)
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command(), now=now
+        )
+        assert len(self._reminders(notifs)) == 3
+
+    def test_reminder_status_is_pending(self) -> None:
+        from coiflink_api.domain.enums import NotificationStatus
+
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        now = self._APPOINTMENT_START - datetime.timedelta(days=2)
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command(), now=now
+        )
+        assert all(
+            r.status == NotificationStatus.PENDING.value for r in self._reminders(notifs)
+        )
+
+    def test_reminder_scheduled_for_matches_offsets(self) -> None:
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        now = self._APPOINTMENT_START - datetime.timedelta(days=2)
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command(), now=now
+        )
+        due_dates = sorted(r.scheduled_for for r in self._reminders(notifs))
+        expected = sorted(
+            [
+                self._APPOINTMENT_START - datetime.timedelta(hours=24),
+                self._APPOINTMENT_START - datetime.timedelta(hours=2),
+                self._APPOINTMENT_START - datetime.timedelta(minutes=30),
+            ]
+        )
+        assert due_dates == expected
+
+    def test_reminder_linked_to_client_salon_and_appointment(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository()
+        notifs = FakeNotificationRepository()
+        now = self._APPOINTMENT_START - datetime.timedelta(days=2)
+        result = self._uc(catalog, appts, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command(), now=now
+        )
+        for reminder in self._reminders(notifs):
+            assert reminder.user_id == _CLIENT_ID
+            assert reminder.salon_id == _SALON_ID
+            assert reminder.appointment_id == result.id
+
+    def test_reminder_channel_matches_confirmation_channel(self) -> None:
+        from coiflink_api.domain.enums import NotificationChannel
+
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        now = self._APPOINTMENT_START - datetime.timedelta(days=2)
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command(), now=now
+        )
+        assert all(
+            r.channel == NotificationChannel.SMS.value for r in self._reminders(notifs)
+        )
+
+    def test_reminder_title_and_message_are_templated_no_pii(self) -> None:
+        from coiflink_api.domain.notification import REMINDER_MESSAGE, REMINDER_TITLE
+
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        now = self._APPOINTMENT_START - datetime.timedelta(days=2)
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command(), now=now
+        )
+        for reminder in self._reminders(notifs):
+            assert reminder.title == REMINDER_TITLE
+            assert reminder.message == REMINDER_MESSAGE
+            assert "+" not in reminder.title
+            assert "+" not in reminder.message
+
+    def test_booking_close_to_slot_plans_fewer_reminders(self) -> None:
+        # Réservé 90 min à l'avance : seul l'offset `30 min` est encore futur.
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        now = self._APPOINTMENT_START - datetime.timedelta(minutes=90)
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command(), now=now
+        )
+        reminders = self._reminders(notifs)
+        assert len(reminders) == 1
+        assert reminders[0].scheduled_for == self._APPOINTMENT_START - datetime.timedelta(
+            minutes=30
+        )
+
+    def test_booking_immediately_before_slot_plans_no_reminder(self) -> None:
+        # Réservé 10 min à l'avance : aucun offset (24h/2h/30min) n'est encore futur.
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        now = self._APPOINTMENT_START - datetime.timedelta(minutes=10)
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command(), now=now
+        )
+        assert self._reminders(notifs) == []
+        # La confirmation, elle, part toujours (#45, inchangé).
+        assert len(notifs.enqueued) == 1
+
+    # --- Atomicité : pas de rappel sur échec (§8.4) -------------------------
+
+    def test_race_condition_no_reminder_enqueued(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(raise_conflict=True)
+        notifs = FakeNotificationRepository()
+        with pytest.raises(SlotAlreadyBooked):
+            self._uc(catalog, appts, notifications=notifs).execute(
+                _SALON_ID, _CLIENT_ID, _valid_command()
+            )
+        assert notifs.enqueued == []
+
+
+# ---------------------------------------------------------------------------
 # CheckAvailability — cas supplémentaires
 # ---------------------------------------------------------------------------
 
@@ -753,12 +920,14 @@ class TestModifyAppointment:
         appts: FakeAppointmentRepository | None = None,
         scope: FakeSalonScopeRepository | None = None,
         audit_log: FakeAuditLog | None = None,
+        notifications: FakeNotificationRepository | None = None,
     ) -> ModifyAppointment:
         return ModifyAppointment(
             catalog if catalog is not None else _bookable_catalog(),
             appts if appts is not None else FakeAppointmentRepository(),
             scope if scope is not None else _scope(),
             audit_log if audit_log is not None else FakeAuditLog(),
+            notifications if notifications is not None else FakeNotificationRepository(),
         )
 
     # --- Propriété / appartenance ----------------------------------------
@@ -1088,6 +1257,64 @@ class TestModifyAppointment:
                 _APPT_ID, _CLIENT_ID, _valid_modify_command()
             )
 
+    # --- Rappels re-planifiés sur modification (US-7.2, #46) ----------------
+
+    def test_modify_cancels_pending_reminders_exactly_once(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        self._uc(catalog=catalog, appts=appts, notifications=notifs).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command(start_time=datetime.time(11, 0))
+        )
+        assert notifs.cancel_calls == [_APPT_ID]
+
+    def test_modify_reschedules_reminders_to_new_slot(self) -> None:
+        from coiflink_api.domain.enums import NotificationType
+
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        now = datetime.datetime(2026, 8, 1, 0, 0)  # bien avant le nouveau créneau
+        self._uc(catalog=catalog, appts=appts, notifications=notifs).execute(
+            _APPT_ID,
+            _CLIENT_ID,
+            _valid_modify_command(start_time=datetime.time(11, 0)),
+            now=now,
+        )
+        new_start = datetime.datetime(2026, 8, 3, 11, 0)
+        reminders = [
+            n for n in notifs.enqueued if n.type == NotificationType.REMINDER.value
+        ]
+        assert len(reminders) == 3
+        assert sorted(r.scheduled_for for r in reminders) == sorted(
+            new_start - offset
+            for offset in (
+                datetime.timedelta(hours=24),
+                datetime.timedelta(hours=2),
+                datetime.timedelta(minutes=30),
+            )
+        )
+
+    def test_modify_close_to_new_slot_plans_fewer_reminders(self) -> None:
+        from coiflink_api.domain.enums import NotificationType
+
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        new_start = datetime.datetime(2026, 8, 3, 11, 0)
+        now = new_start - datetime.timedelta(minutes=90)
+        self._uc(catalog=catalog, appts=appts, notifications=notifs).execute(
+            _APPT_ID,
+            _CLIENT_ID,
+            _valid_modify_command(start_time=datetime.time(11, 0)),
+            now=now,
+        )
+        reminders = [
+            n for n in notifs.enqueued if n.type == NotificationType.REMINDER.value
+        ]
+        assert len(reminders) == 1
+        assert reminders[0].scheduled_for == new_start - datetime.timedelta(minutes=30)
+
 
 # ---------------------------------------------------------------------------
 # ListMyAppointments (US-3.2, #23)
@@ -1145,10 +1372,12 @@ class TestCancelAppointment:
         self,
         appts: FakeAppointmentRepository | None = None,
         audit_log: FakeAuditLog | None = None,
+        notifications: FakeNotificationRepository | None = None,
     ) -> CancelAppointment:
         return CancelAppointment(
             appts if appts is not None else FakeAppointmentRepository(),
             audit_log if audit_log is not None else FakeAuditLog(),
+            notifications if notifications is not None else FakeNotificationRepository(),
         )
 
     # --- Propriété / appartenance ------------------------------------------
@@ -1351,6 +1580,55 @@ class TestCancelAppointment:
         with pytest.raises(AppointmentNotCancellable):
             self._uc(appts=appts).execute(_APPT_ID, _CLIENT_ID)
 
+    # --- Annulation des rappels (US-7.2, #46, AC) ---------------------------
+
+    def test_cancel_calls_cancel_pending_for_appointment_exactly_once(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(_APPT_ID, _CLIENT_ID)
+        assert notifs.cancel_calls == [_APPT_ID]
+
+    def test_cancel_marks_pending_reminders_cancelled(self) -> None:
+        from coiflink_api.domain.enums import NotificationStatus, NotificationType
+        from coiflink_api.domain.notification import NotificationToCreate
+
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        notifs.enqueued.append(
+            NotificationToCreate(
+                type=NotificationType.REMINDER.value,
+                channel="SMS",
+                title="Rappel de rendez-vous",
+                message="Vous avez un rendez-vous à venir.",
+                user_id=_CLIENT_ID,
+                salon_id=_SALON_ID,
+                appointment_id=_APPT_ID,
+                scheduled_for=datetime.datetime(2026, 8, 2, 9, 0),
+            )
+        )
+        self._uc(appts=appts, notifications=notifs).execute(_APPT_ID, _CLIENT_ID)
+        assert notifs.enqueued[0].status == NotificationStatus.CANCELLED.value
+
+    def test_not_owned_does_not_cancel_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_id=_CLIENT_ID)]
+        )
+        notifs = FakeNotificationRepository()
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts, notifications=notifs).execute(
+                _APPT_ID, _OTHER_CLIENT_ID
+            )
+        assert notifs.cancel_calls == []
+
+    def test_not_cancellable_does_not_cancel_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        notifs = FakeNotificationRepository()
+        with pytest.raises(AppointmentNotCancellable):
+            self._uc(appts=appts, notifications=notifs).execute(_APPT_ID, _CLIENT_ID)
+        assert notifs.cancel_calls == []
+
 
 # ---------------------------------------------------------------------------
 # SetAppointmentStatus (US-3.4, #25)
@@ -1364,10 +1642,12 @@ class TestSetAppointmentStatus:
         self,
         appts: FakeAppointmentRepository | None = None,
         audit_log: FakeAuditLog | None = None,
+        notifications: FakeNotificationRepository | None = None,
     ) -> SetAppointmentStatus:
         return SetAppointmentStatus(
             appts if appts is not None else FakeAppointmentRepository(),
             audit_log if audit_log is not None else FakeAuditLog(),
+            notifications if notifications is not None else FakeNotificationRepository(),
         )
 
     # --- RDV introuvable / hors salon (§11.2) --------------------------------
@@ -1614,6 +1894,59 @@ class TestSetAppointmentStatus:
         metadata = audit.recorded[0].metadata
         for value in metadata.values():
             assert "Motif confidentiel" not in str(value)
+
+    # --- Annulation des rappels — uniquement sur → CANCELLED (US-7.2, #46) --
+
+    def test_refusal_cancels_pending_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "CANCELLED"
+        )
+        assert notifs.cancel_calls == [_APPT_ID]
+
+    def test_confirmation_does_not_cancel_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "CONFIRMED"
+        )
+        assert notifs.cancel_calls == []
+
+    def test_completed_does_not_cancel_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CONFIRMED")]
+        )
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "COMPLETED"
+        )
+        assert notifs.cancel_calls == []
+
+    def test_no_show_does_not_cancel_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CONFIRMED")]
+        )
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "NO_SHOW"
+        )
+        assert notifs.cancel_calls == []
+
+    def test_invalid_transition_does_not_cancel_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CANCELLED")]
+        )
+        notifs = FakeNotificationRepository()
+        with pytest.raises(InvalidAppointmentTransition):
+            self._uc(appts=appts, notifications=notifs).execute(
+                _APPT_ID, _SALON_ID, _MANAGER_ID, "CONFIRMED"
+            )
+        assert notifs.cancel_calls == []
 
 
 # ---------------------------------------------------------------------------

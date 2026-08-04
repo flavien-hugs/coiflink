@@ -1,16 +1,20 @@
-"""Tests unitaires — domaine `notification.py` (US-7.1, #45).
+"""Tests unitaires — domaine `notification.py` (US-7.1 #45, US-7.2 #46).
 
 Couvre les fonctions et dataclasses pures sans I/O :
 
 - `ChannelAvailability` : valeurs par défaut, immuabilité ;
-- `resolve_confirmation_channel` : priorité PUSH → SMS → IN_APP, déterminisme ;
+- `resolve_notification_channel` (+ alias `resolve_confirmation_channel`) : priorité
+  PUSH → SMS → IN_APP, déterminisme ;
 - `build_confirmation_notification` : champs attendus, status PENDING, aucune PII ;
+- `compute_reminder_schedules` : échéances futures, filtre du passé, déterminisme ;
+- `build_reminder_notifications` : champs attendus, `scheduled_for`, aucune PII ;
 - `NotificationToCreate` : immuabilité, status par défaut, aucune PII portée.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import uuid
 
 import pytest
@@ -23,10 +27,16 @@ from coiflink_api.domain.enums import (
 from coiflink_api.domain.notification import (
     CONFIRMATION_MESSAGE,
     CONFIRMATION_TITLE,
+    REMINDER_MESSAGE,
+    REMINDER_OFFSETS,
+    REMINDER_TITLE,
     ChannelAvailability,
     NotificationToCreate,
     build_confirmation_notification,
+    build_reminder_notifications,
+    compute_reminder_schedules,
     resolve_confirmation_channel,
+    resolve_notification_channel,
 )
 
 # ---------------------------------------------------------------------------
@@ -36,6 +46,7 @@ from coiflink_api.domain.notification import (
 _CLIENT_ID = uuid.UUID("22222222-0000-0000-0000-000000000002")
 _SALON_ID = uuid.UUID("11111111-0000-0000-0000-000000000001")
 _APPOINTMENT_ID = uuid.UUID("aaaaaa00-0000-0000-0000-000000000001")
+_APPOINTMENT_START = datetime.datetime(2026, 8, 10, 9, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +125,11 @@ class TestResolveConfirmationChannel:
     def test_deterministic_same_input_same_output(self) -> None:
         avail = ChannelAvailability(has_phone=True)
         assert resolve_confirmation_channel(avail) == resolve_confirmation_channel(avail)
+
+    def test_confirmation_channel_is_alias_of_notification_channel(self) -> None:
+        # #46 généralise `resolve_confirmation_channel` en `resolve_notification_channel` ;
+        # l'ancien nom reste un alias rétrocompatible (même fonction).
+        assert resolve_confirmation_channel is resolve_notification_channel
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +276,175 @@ class TestNotificationToCreate:
             message="M",
         )
         assert n.appointment_id is None
+
+    def test_scheduled_for_defaults_to_none(self) -> None:
+        # `None` = confirmation (à remettre au plus tôt, #45, inchangé).
+        n = NotificationToCreate(
+            type="X",
+            channel="Y",
+            title="T",
+            message="M",
+        )
+        assert n.scheduled_for is None
+
+
+# ---------------------------------------------------------------------------
+# compute_reminder_schedules (US-7.2, #46)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeReminderSchedules:
+    def test_far_future_appointment_yields_three_offsets(self) -> None:
+        now = _APPOINTMENT_START - datetime.timedelta(days=2)
+        due = compute_reminder_schedules(_APPOINTMENT_START, now=now)
+        assert len(due) == 3
+
+    def test_offsets_match_appointment_start_minus_offset(self) -> None:
+        now = _APPOINTMENT_START - datetime.timedelta(days=2)
+        due = compute_reminder_schedules(_APPOINTMENT_START, now=now)
+        expected = {
+            _APPOINTMENT_START - offset for offset in REMINDER_OFFSETS
+        }
+        assert set(due) == expected
+
+    def test_order_follows_offsets_declaration(self) -> None:
+        # `REMINDER_OFFSETS` est ordonné 24h → 2h → 30min : les échéances renvoyées
+        # suivent le même ordre (du plus lointain au plus proche).
+        now = _APPOINTMENT_START - datetime.timedelta(days=2)
+        due = compute_reminder_schedules(_APPOINTMENT_START, now=now)
+        assert list(due) == sorted(due)
+
+    def test_past_offset_excluded(self) -> None:
+        # Réservé 90 min à l'avance : seul l'offset 30 min est encore futur.
+        now = _APPOINTMENT_START - datetime.timedelta(minutes=90)
+        due = compute_reminder_schedules(_APPOINTMENT_START, now=now)
+        assert due == (_APPOINTMENT_START - datetime.timedelta(minutes=30),)
+
+    def test_all_offsets_past_yields_empty_tuple(self) -> None:
+        # Réservé 10 min à l'avance : aucun offset (24h/2h/30min) n'est encore futur.
+        now = _APPOINTMENT_START - datetime.timedelta(minutes=10)
+        due = compute_reminder_schedules(_APPOINTMENT_START, now=now)
+        assert due == ()
+
+    def test_offset_exactly_at_now_is_excluded(self) -> None:
+        # Filtre strict (`> now`, pas `>=`) : une échéance égale à `now` n'est pas
+        # « encore » future.
+        now = _APPOINTMENT_START - datetime.timedelta(minutes=30)
+        due = compute_reminder_schedules(
+            _APPOINTMENT_START, now=now, offsets=(datetime.timedelta(minutes=30),)
+        )
+        assert due == ()
+
+    def test_deterministic_same_input_same_output(self) -> None:
+        now = _APPOINTMENT_START - datetime.timedelta(days=2)
+        assert compute_reminder_schedules(_APPOINTMENT_START, now=now) == (
+            compute_reminder_schedules(_APPOINTMENT_START, now=now)
+        )
+
+    def test_custom_offsets_are_honored(self) -> None:
+        now = _APPOINTMENT_START - datetime.timedelta(days=2)
+        custom = (datetime.timedelta(hours=1),)
+        due = compute_reminder_schedules(_APPOINTMENT_START, now=now, offsets=custom)
+        assert due == (_APPOINTMENT_START - datetime.timedelta(hours=1),)
+
+
+# ---------------------------------------------------------------------------
+# build_reminder_notifications (US-7.2, #46)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildReminderNotifications:
+    _NOW = _APPOINTMENT_START - datetime.timedelta(days=2)
+
+    def _build(
+        self,
+        *,
+        client_id: uuid.UUID = _CLIENT_ID,
+        salon_id: uuid.UUID = _SALON_ID,
+        appointment_id: uuid.UUID = _APPOINTMENT_ID,
+        appointment_start: datetime.datetime = _APPOINTMENT_START,
+        channel: str = NotificationChannel.SMS.value,
+        now: datetime.datetime | None = None,
+    ) -> tuple[NotificationToCreate, ...]:
+        return build_reminder_notifications(
+            client_id=client_id,
+            salon_id=salon_id,
+            appointment_id=appointment_id,
+            appointment_start=appointment_start,
+            channel=channel,
+            now=now if now is not None else self._NOW,
+        )
+
+    def test_one_reminder_per_future_offset(self) -> None:
+        reminders = self._build()
+        assert len(reminders) == 3
+
+    def test_type_is_reminder(self) -> None:
+        for reminder in self._build():
+            assert reminder.type == NotificationType.REMINDER.value
+
+    def test_status_is_pending(self) -> None:
+        for reminder in self._build():
+            assert reminder.status == NotificationStatus.PENDING.value
+
+    def test_user_id_is_client_id(self) -> None:
+        for reminder in self._build():
+            assert reminder.user_id == _CLIENT_ID
+
+    def test_salon_id_is_set(self) -> None:
+        for reminder in self._build():
+            assert reminder.salon_id == _SALON_ID
+
+    def test_appointment_id_is_set(self) -> None:
+        for reminder in self._build():
+            assert reminder.appointment_id == _APPOINTMENT_ID
+
+    def test_scheduled_for_matches_computed_schedules(self) -> None:
+        reminders = self._build()
+        expected = set(
+            compute_reminder_schedules(_APPOINTMENT_START, now=self._NOW)
+        )
+        assert {r.scheduled_for for r in reminders} == expected
+
+    def test_channel_is_forwarded(self) -> None:
+        for channel in [
+            NotificationChannel.PUSH.value,
+            NotificationChannel.SMS.value,
+            NotificationChannel.IN_APP.value,
+        ]:
+            reminders = self._build(channel=channel)
+            assert all(r.channel == channel for r in reminders)
+
+    def test_title_is_template_constant(self) -> None:
+        for reminder in self._build():
+            assert reminder.title == REMINDER_TITLE
+
+    def test_message_is_template_constant(self) -> None:
+        for reminder in self._build():
+            assert reminder.message == REMINDER_MESSAGE
+
+    def test_title_contains_no_pii(self) -> None:
+        for reminder in self._build():
+            assert "+" not in reminder.title
+            assert not any(c.isdigit() for c in reminder.title)
+
+    def test_message_contains_no_pii(self) -> None:
+        for reminder in self._build():
+            assert "+" not in reminder.message
+
+    def test_result_is_immutable(self) -> None:
+        reminder = self._build()[0]
+        with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
+            reminder.status = "SENT"  # type: ignore[misc]
+
+    def test_close_appointment_yields_fewer_reminders(self) -> None:
+        now = _APPOINTMENT_START - datetime.timedelta(minutes=90)
+        reminders = self._build(now=now)
+        assert len(reminders) == 1
+        assert reminders[0].scheduled_for == _APPOINTMENT_START - datetime.timedelta(
+            minutes=30
+        )
+
+    def test_immediate_appointment_yields_no_reminder(self) -> None:
+        now = _APPOINTMENT_START - datetime.timedelta(minutes=10)
+        assert self._build(now=now) == ()

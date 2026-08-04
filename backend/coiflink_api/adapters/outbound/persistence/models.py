@@ -567,6 +567,12 @@ class Notification(Base):
     sent_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Échéance d'un **rappel** (US-7.2, #46, migration `0006`) : `NULL` = à remettre
+    # au plus tôt (confirmation #45, inchangée) ; non-`NULL` = à remettre à partir
+    # de cette date (rappel `24h`/`2h`/`30min` avant le RDV).
+    scheduled_for: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = _created_at()
 
     __table_args__ = (
@@ -587,6 +593,11 @@ class Notification(Base):
         enum_check("status", enums.NotificationStatus, name="status"),
         Index("ix_notifications_user_id", "user_id"),
         Index("ix_notifications_salon_id", "salon_id", "created_at"),
+        Index(
+            "ix_notifications_due",
+            "scheduled_for",
+            postgresql_where=text("status = 'PENDING'"),
+        ),
     )
 
 

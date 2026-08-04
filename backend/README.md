@@ -1299,15 +1299,63 @@ sollicité, aucun appel réseau externe n'entre dans le chemin de requête (budg
 du message. Le worker de remise (futur) résoudra `user_id → users.phone` **à l'envoi** : le numéro n'est
 **jamais** copié dans `notifications`.
 
-**Périmètre strict** : #45 notifie **le client**, **à la création** uniquement. La notification au salon
-(US-7.3, #47), les rappels (US-7.2, #46) et les notifications d'annulation/modification (US-7.4, #48)
-sont **hors périmètre** — `ModifyAppointment`/`CancelAppointment`/`SetAppointmentStatus` n'émettent
-**aucune** confirmation.
+**Périmètre strict** : #45 notifie **le client**, **à la création** uniquement, avec une **confirmation**.
+Les **rappels** (US-7.2, #46) sont couverts par la section suivante. La notification au salon (US-7.3,
+#47) et les notifications d'annulation/modification poussées au client (US-7.4, #48) restent **hors
+périmètre** — `ModifyAppointment`/`CancelAppointment`/`SetAppointmentStatus` n'émettent **aucune**
+confirmation.
 
 | Déclencheur | Écriture `notifications` | Canal (MVP) | Statut | Remise |
 | --- | --- | --- | --- | --- |
 | `POST /salons/{salon_id}/appointments` réussi (`201`) | 1 ligne `CONFIRMATION` (client + salon + RDV) | `SMS` | `PENDING` | différée M5+ (aucune) |
 | Réservation échouée (`404`/`409`/`422`) | **aucune** (rollback conjoint) | — | — | — |
+
+## Notifications — rappel automatique avant RDV (US-7.2, #46 — [ADR-0034](../docs/adr/0034-rappel-automatique-avant-rdv.md))
+
+À la **création d'un rendez-vous**, en plus de la confirmation (#45), `BookAppointment` **planifie**
+jusqu'à **3 rappels** : une ligne `notifications` (`type = REMINDER`, `status = PENDING`,
+`scheduled_for = début_du_RDV − offset`) par échéance **encore future** parmi `24h`/`2h`/`30min` avant
+le début du RDV — une échéance déjà passée au moment de la réservation n'est **pas** planifiée (aucun
+rappel « en retard » à la création). Les rappels sont écrits via le **même** port `NotificationRepository`
+(`enqueue`), dans la **même** unité de travail que le RDV et la confirmation — committés/rollbackés
+**ensemble**. Le canal est le **même** que la confirmation (fonction pure généralisée
+`resolve_notification_channel`, PUSH → SMS → IN_APP, effectif **SMS** au MVP). **Migration `0006`**
+requise : colonne `notifications.scheduled_for TIMESTAMPTZ NULL` (`NULL` = confirmation, non-`NULL` =
+rappel) + statut `NotificationStatus.CANCELLED`.
+
+**Annulation liée au cycle de vie du RDV (AC).** « L'annulation du RDV annule le rappel » : à
+l'**annulation client** (`POST /appointments/{id}/cancellation`, #24) et au **refus gérant**
+(`POST /salons/{salon_id}/appointments/{id}/status` `→ CANCELLED`, #25), tous les rappels `PENDING` du
+RDV sont **annulés** — marqués `CANCELLED` (trace conservée, pas de suppression) via
+`cancel_pending_for_appointment(appointment_id)`, dans la **même** unité de travail que le changement de
+statut. Les transitions `CONFIRMED`/`COMPLETED`/`NO_SHOW` n'annulent **aucun** rappel (leur échéance est
+déjà passée ; le futur worker ne remet pas un rappel en retard).
+
+**Re-planification sur modification.** `PATCH /appointments/{id}` (#23) déplaçant le RDV **annule** les
+rappels `PENDING` existants puis les **recrée** sur le nouveau créneau (même unité de travail) — évite
+des rappels périmés pointant l'ancien horaire.
+
+**Non-remise assumée** ([ADR-0006](../docs/adr/0006-notifications-fcm-sms.md)). Comme #45, #46
+**planifie/annule** ; il n'**envoie** rien — `status` reste `PENDING` ou passe à `CANCELLED`, `sent_at`
+reste `NULL`. L'ordonnanceur et le worker de remise (qui interrogeront les lignes `REMINDER` `PENDING`
+dont `scheduled_for <= now`) relèvent du **M5+** ; aucun appel réseau externe n'entre dans le chemin de
+requête (§12.1).
+
+**Non-fuite de PII** (§11.3). Les lignes `REMINDER` ne portent que des identifiants opaques, un
+`scheduled_for` (horodatage, non-PII) et un `title`/`message` templatés neutres (« Rappel de
+rendez-vous » / « Vous avez un rendez-vous à venir. ») — jamais le téléphone ni le nom du client.
+
+**Contrat HTTP inchangé** : `POST /salons/{salon_id}/appointments` (`201`),
+`POST /appointments/{id}/cancellation` (`200`), `POST .../status` (`200`) et
+`PATCH /appointments/{id}` (`200`) renvoient des réponses **inchangées** ; aucune route ajoutée, aucune
+route de lecture des rappels, rien dans `PUBLIC_ROUTE_PATHS`.
+
+| Déclencheur | Écriture `notifications` | Statut résultant |
+| --- | --- | --- |
+| Réservation réussie (`201`) | jusqu'à 3 lignes `REMINDER` (échéances futures) | `PENDING` |
+| Annulation client / refus gérant (`200`) | rappels `PENDING` du RDV | `CANCELLED` |
+| Modification (`PATCH`, `200`) | anciens rappels annulés + nouveaux planifiés | `CANCELLED` puis `PENDING` |
+| Confirmation / terminé / absence (`CONFIRMED`/`COMPLETED`/`NO_SHOW`) | **aucune** | inchangé |
 
 ## Configuration
 
@@ -1448,7 +1496,7 @@ erDiagram
 | **`customer_profiles`** | `salon_id→salons`, `user_id?→users`, `full_name`, `phone?`, `gender?`, `notes?`, `last_visit_at?`, `total_visits` | FK `salon_id`/`user_id` ; `uq_customer_profiles_salon_user (salon_id, user_id) WHERE user_id IS NOT NULL` ; **`uq_customer_profiles_salon_phone (salon_id, phone) WHERE phone IS NOT NULL`** (#28) ; CHECK `total_visits >= 0`, `gender` ; index `salon_id` |
 | **`payments`** | `salon_id→salons`, `appointment_id?`, `service_id?`, `client_id?→users`, `amount`, `currency`, `payment_method`, `status`, `recorded_by→users`, `reference?` | FK `salon_id`/`recorded_by` NOT NULL (§8.2) ; FK composites vers RDV/prestation ; **CHECK `appointment_id IS NOT NULL OR service_id IS NOT NULL`** (§8.2) ; CHECK `amount >= 0`, `payment_method`, `status` ; index `(salon_id, created_at)`, `appointment_id` |
 | **`cash_journal`** *(append-only)* | `salon_id→salons`, `transaction_id?→payments`, `operation_type`, `amount`, `performed_by→users`, `description?` | FK `salon_id`/`performed_by` NOT NULL ; `created_at` horodaté (§8.2) ; CHECK `operation_type` ; index `(salon_id, created_at)` |
-| **`notifications`** | `user_id?→users`, `salon_id?→salons`, `appointment_id?→appointments`, `type`, `channel`, `title`, `message`, `status`, `sent_at?` | CHECK `type`/`channel`/`status` ; index `user_id`, `(salon_id, created_at)` |
+| **`notifications`** | `user_id?→users`, `salon_id?→salons`, `appointment_id?→appointments`, `type`, `channel`, `title`, `message`, `status` (dont `CANCELLED`, #46), `sent_at?`, `scheduled_for?` (rappel, #46) | CHECK `type`/`channel`/`status` ; index `user_id`, `(salon_id, created_at)`, partiel `(scheduled_for) WHERE status='PENDING'` |
 
 ### Contraintes clés métier
 

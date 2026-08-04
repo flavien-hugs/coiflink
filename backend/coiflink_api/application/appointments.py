@@ -61,7 +61,8 @@ from coiflink_api.domain.availability import (
 from coiflink_api.domain.notification import (
     ChannelAvailability,
     build_confirmation_notification,
-    resolve_confirmation_channel,
+    build_reminder_notifications,
+    resolve_notification_channel,
 )
 from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
 from coiflink_api.domain.enums import AppointmentStatus, Role
@@ -228,9 +229,9 @@ class BookAppointment:
     Séquence : valider `≥ 1` prestation → refuser un salon non réservable → charger
     les prestations actives (durée + prix figé) → calculer la fenêtre horaire →
     défense en profondeur `is_offered` → `repository.create(...)` → **émettre la
-    confirmation** (US-7.1, #45). En cas de course concurrente, l'INSERT perd sur la
-    contrainte d'exclusion et le dépôt lève `SlotAlreadyBooked` (rollback complet —
-    RDV + jonctions + confirmation).
+    confirmation** (US-7.1, #45) → **planifier les rappels** (US-7.2, #46). En cas de
+    course concurrente, l'INSERT perd sur la contrainte d'exclusion et le dépôt lève
+    `SlotAlreadyBooked` (rollback complet — RDV + jonctions + confirmation + rappels).
 
     **Confirmation à la réservation (US-7.1, #45)** — « à la création d'un RDV, une
     confirmation est émise » est une **règle métier**, portée ici : après l'INSERT
@@ -241,6 +242,14 @@ class BookAppointment:
     ADR-0006) : #45 **n'achemine rien** (aucun appel FCM/SMS ; `sent_at` reste `NULL`,
     budget de latence §12.1 préservé). Le canal est résolu « selon disponibilité »
     (PUSH → SMS → IN_APP) — au MVP, faute de registre de jetons, c'est **SMS**.
+
+    **Rappels planifiés à la réservation (US-7.2, #46)** — après la confirmation, une
+    ligne `notifications` (`type = REMINDER`, `status = PENDING`, `scheduled_for`) est
+    persistée **par échéance encore future** (`24h`/`2h`/`30min` avant le début du
+    RDV) via le même port, même `Session`. Ces lignes **sont** les rappels planifiés
+    exigés par §8.4 et **la file** du futur worker de remise (M5+) ; aucune n'est
+    **envoyée** ici (`sent_at` reste `NULL`). `CancelAppointment`/`SetAppointmentStatus`
+    les **annulent** si le RDV l'est (AC #46).
     """
 
     def __init__(
@@ -315,14 +324,35 @@ class BookAppointment:
         # supposée sans accès base supplémentaire). Ligne `PENDING` : #45 **émet/trace**
         # la confirmation sans l'**acheminer** (remise réelle différée M5+, ADR-0006).
         availability = ChannelAvailability(has_push_token=False, has_phone=True)
+        channel = resolve_notification_channel(availability)
         self._notifications.enqueue(
             build_confirmation_notification(
                 client_id=client_id,
                 salon_id=salon_id,
                 appointment_id=appointment.id,
-                channel=resolve_confirmation_channel(availability),
+                channel=channel,
             )
         )
+
+        # Rappels (US-7.2, #46) : planifiés dans la **même** unité de travail, un par
+        # échéance (`24h`/`2h`/`30min` avant le début du RDV) encore **future** au
+        # moment de la réservation — une échéance déjà passée n'est pas planifiée
+        # (aucun rappel « en retard » à la création). `now` absent (`None`) équivaut à
+        # « aucune référence temporelle connue » : toutes les échéances sont alors
+        # considérées futures (cohérent avec `is_offered`, qui traite `now=None` comme
+        # « ne pas filtrer par le passé »). Mêmes garanties que la confirmation :
+        # aucun envoi réel, `status=PENDING`, `sent_at=NULL` (ADR-0006).
+        appointment_start = datetime.datetime.combine(command.date, command.start_time)
+        reminder_now = now if now is not None else datetime.datetime.min
+        for reminder in build_reminder_notifications(
+            client_id=client_id,
+            salon_id=salon_id,
+            appointment_id=appointment.id,
+            appointment_start=appointment_start,
+            channel=channel,
+            now=reminder_now,
+        ):
+            self._notifications.enqueue(reminder)
         return appointment
 
 
@@ -388,8 +418,15 @@ class ModifyAppointment:
     terminé/terminal) → re-valider la cible (salon réservable §8.3, coiffeur du
     salon, prestations actives, fenêtre) → `is_offered` en **excluant le RDV
     lui-même** du calcul → `update` transactionnel (l'exclusion base arbitre les
-    courses, l'UPDATE conditionnel ré-affirme le verrou) → audit `APPOINTMENT_UPDATED`
-    (métadonnées neutres). Le `salon_id` provient **du RDV chargé**, jamais du corps.
+    courses, l'UPDATE conditionnel ré-affirme le verrou) → **re-planifier les
+    rappels** (US-7.2, #46) → audit `APPOINTMENT_UPDATED` (métadonnées neutres). Le
+    `salon_id` provient **du RDV chargé**, jamais du corps.
+
+    **Re-planification des rappels (US-7.2, #46)** — un RDV déplacé laisse, sans
+    action, des rappels `PENDING` pointant l'ancien créneau. Après l'`update` réussi,
+    les rappels `PENDING` existants sont **annulés** (`cancel_pending_for_appointment`)
+    puis **recréés** sur la nouvelle date/heure (`build_reminder_notifications`),
+    même `Session` — cohérent avec l'annulation liée au cycle de vie (#24/#25).
     """
 
     def __init__(
@@ -398,11 +435,13 @@ class ModifyAppointment:
         appointment_repository: AppointmentRepository,
         scope_repository: SalonScopeRepository,
         audit_log: AuditLog,
+        notification_repository: NotificationRepository,
     ) -> None:
         self._catalog = catalog_repository
         self._appointments = appointment_repository
         self._scope = scope_repository
         self._audit_log = audit_log
+        self._notifications = notification_repository
 
     def execute(
         self,
@@ -467,6 +506,26 @@ class ModifyAppointment:
         )
         changed = _changed_appointment_fields(current, changes)
         updated = self._appointments.update(appointment_id, changes)
+
+        # Rappels (US-7.2, #46) : le créneau a changé — annuler les rappels `PENDING`
+        # existants (pointant l'ancien créneau) puis re-planifier sur le nouveau,
+        # même `Session` que l'`update`. Un rappel déjà `SENT`/`CANCELLED` n'est pas
+        # ré-annulé (l'UPDATE cible `status = PENDING`).
+        self._notifications.cancel_pending_for_appointment(appointment_id)
+        appointment_start = datetime.datetime.combine(command.date, command.start_time)
+        reminder_now = now if now is not None else datetime.datetime.min
+        availability = ChannelAvailability(has_push_token=False, has_phone=True)
+        channel = resolve_notification_channel(availability)
+        for reminder in build_reminder_notifications(
+            client_id=client_id,
+            salon_id=current.salon_id,
+            appointment_id=appointment_id,
+            appointment_start=appointment_start,
+            channel=channel,
+            now=reminder_now,
+        ):
+            self._notifications.enqueue(reminder)
+
         # Audit §11.4 dans la **même** unité de travail que l'écriture (patron #20) :
         # métadonnées **neutres** (noms de champs uniquement, jamais de valeur).
         self._audit_log.record(
@@ -492,8 +551,9 @@ class CancelAppointment:
     le RDV **du client** (`AppointmentNotFound` si inexistant ou d'autrui —
     indiscernables, aucun oracle §11.2) → **verrou d'état** (`AppointmentNotCancellable`
     si terminé/terminal/déjà annulé) → `cancel` transactionnel (UPDATE conditionnel sur
-    statut actif, ré-affirme le verrou — garde TOCTOU) → audit `APPOINTMENT_CANCELLED`
-    **neutre** dans la **même** unité de travail.
+    statut actif, ré-affirme le verrou — garde TOCTOU) → **annuler les rappels**
+    (US-7.2, #46) → audit `APPOINTMENT_CANCELLED` **neutre** dans la **même** unité
+    de travail.
 
     N'exige **ni** catalogue **ni** portée : l'annulation ne re-valide **pas** la
     disponibilité et **reste possible même si le salon est devenu non réservable/
@@ -504,15 +564,23 @@ class CancelAppointment:
     **persisté** sur la ligne du RDV mais **jamais** journalisé — les métadonnées
     d'audit ne portent qu'un booléen neutre `reason_provided` (le *fait* qu'un motif
     ait été fourni n'est pas une PII ; son **contenu**, si — donc jamais tracé).
+
+    **Annulation des rappels (US-7.2, #46, AC)** — « l'annulation du RDV annule le
+    rappel » : après l'annulation réussie du RDV, les rappels `PENDING` de ce RDV sont
+    **annulés** (`cancel_pending_for_appointment`, marqués `CANCELLED`) dans la
+    **même** `Session` — un RDV annulé ne laisse **aucun** rappel `PENDING` derrière
+    lui. Un RDV déjà terminal (`AppointmentNotCancellable`) n'atteint jamais ce point.
     """
 
     def __init__(
         self,
         appointment_repository: AppointmentRepository,
         audit_log: AuditLog,
+        notification_repository: NotificationRepository,
     ) -> None:
         self._appointments = appointment_repository
         self._audit_log = audit_log
+        self._notifications = notification_repository
 
     def execute(
         self,
@@ -538,6 +606,9 @@ class CancelAppointment:
         updated = self._appointments.cancel(
             appointment_id, reason=normalized_reason
         )
+        # Rappels (US-7.2, #46, AC) : annule les rappels `PENDING` de ce RDV, même
+        # unité de travail que l'annulation — aucun rappel ne survit à un RDV annulé.
+        self._notifications.cancel_pending_for_appointment(appointment_id)
         # Audit §11.4 dans la **même** unité de travail que l'écriture (patron #20/#23) :
         # métadonnées **neutres** — jamais le texte du motif ni de PII.
         self._audit_log.record(
@@ -574,15 +645,24 @@ class SetAppointmentStatus:
     états). Un **motif** optionnel n'est **persisté** que sur `→ CANCELLED`
     (normalisé) et **jamais** journalisé — les métadonnées ne portent que les
     **valeurs d'énumération** `from`/`to` (non-PII, patron #24).
+
+    **Annulation des rappels sur refus gérant (US-7.2, #46, AC)** — **uniquement**
+    quand `target_status == CANCELLED` (refus gérant), les rappels `PENDING` du RDV
+    sont **annulés** (`cancel_pending_for_appointment`) dans la **même** `Session`.
+    Les autres transitions (`CONFIRMED`, `COMPLETED`, `NO_SHOW`) n'annulent **rien** :
+    un RDV `COMPLETED`/`NO_SHOW` a des rappels dont l'échéance est déjà passée, que le
+    futur worker de remise ne remettra pas (il re-vérifiera le statut à l'envoi).
     """
 
     def __init__(
         self,
         appointment_repository: AppointmentRepository,
         audit_log: AuditLog,
+        notification_repository: NotificationRepository,
     ) -> None:
         self._appointments = appointment_repository
         self._audit_log = audit_log
+        self._notifications = notification_repository
 
     def execute(
         self,
@@ -617,6 +697,11 @@ class SetAppointmentStatus:
             target=target_status,
             reason=normalized_reason,
         )
+        # Rappels (US-7.2, #46, AC) : refus gérant (`→ CANCELLED`) uniquement — annule
+        # les rappels `PENDING` de ce RDV, même unité de travail que le changement de
+        # statut. Les autres transitions n'y touchent pas.
+        if target_status == AppointmentStatus.CANCELLED.value:
+            self._notifications.cancel_pending_for_appointment(appointment_id)
         # Audit §11.4 dans la **même** unité de travail que l'écriture (patron #20) :
         # métadonnées **neutres** — valeurs d'énumération de statut, jamais de PII.
         self._audit_log.record(

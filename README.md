@@ -381,7 +381,17 @@ depuis la migration `0001`). Le canal est résolu par une fonction pure **PUSH �
 La **remise proactive** (push/SMS via file Redis) reste **différée M5+** (Épic 7,
 [ADR-0006](./docs/adr/0006-notifications-fcm-sms.md)) : #45 **émet/trace** la confirmation, il n'**envoie**
 rien (`sent_at` reste `NULL`) — cohérent avec la non-remise du reçu #38 (ADR-0030), voir
-[ADR-0033](./docs/adr/0033-notification-confirmation-rdv.md).
+[ADR-0033](./docs/adr/0033-notification-confirmation-rdv.md). Le **rappel automatique avant RDV** (#46,
+US-7.2) est livré à la suite : à la création d'un RDV, `BookAppointment` **planifie** jusqu'à **3 rappels**
+`REMINDER` `PENDING` (`scheduled_for = début − 24h/2h/30min`, une ligne par échéance encore future) dans
+`notifications`, **même unité de travail** que la réservation — **migration `0006`** requise (colonne
+`scheduled_for` + statut `NotificationStatus.CANCELLED`, absents du schéma initial). L'**annulation du
+RDV annule ses rappels** (§8.4/§11.4, AC) : annulation client (#24) et refus gérant (#25) marquent
+`CANCELLED` les rappels `PENDING` du RDV, dans la même transaction que le changement de statut ; une
+**modification** (#23) les **re-planifie** sur le nouveau créneau. Comme #45, la **remise proactive**
+(push/SMS) et l'**ordonnanceur** qui interrogera les rappels dus restent **différés M5+** (ADR-0006) —
+rien n'est réellement envoyé, `sent_at` reste `NULL`, voir
+[ADR-0034](./docs/adr/0034-rappel-automatique-avant-rdv.md).
 
 ---
 

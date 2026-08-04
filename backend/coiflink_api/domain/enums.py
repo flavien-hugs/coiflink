@@ -133,12 +133,18 @@ class NotificationChannel(_StrEnum):
 
 @unique
 class NotificationStatus(_StrEnum):
-    """Statut d'acheminement d'une notification."""
+    """Statut d'acheminement d'une notification.
+
+    `CANCELLED` (US-7.2, #46) marque un rappel qui ne partira jamais parce que le
+    RDV auquel il se rattache a été annulé — la ligne est **conservée** (trace
+    §8.4/§11.4) plutôt que supprimée.
+    """
 
     PENDING = "PENDING"
     SENT = "SENT"
     FAILED = "FAILED"
     READ = "READ"
+    CANCELLED = "CANCELLED"
 
 
 def values(enum_cls: type[_StrEnum]) -> tuple[str, ...]:
