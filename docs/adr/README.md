@@ -45,6 +45,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0030](./0030-recu-numerique-remise-differee.md) | Reçu numérique de paiement (client) — projection en lecture `PAYMENT_READ_OWN`, remise proactive différée M5 | Accepté | #38 |
 | [0031](./0031-performance-des-coiffeurs.md) | Performance des coiffeurs — lecture `STATS_READ_SALON`, CA net **attribué par RDV** (caisse), émission maîtrisée de l'identité employé | Accepté | #43 |
 | [0032](./0032-kpi-globaux-plateforme-admin.md) | KPI globaux plateforme (admin) — instantané consolidé `STATS_READ_PLATFORM`, revenu net via `cash_journal`, report du KPI abonnements (aucun modèle), non-PII renforcée | Accepté | #44 |
+| [0033](./0033-notification-confirmation-rdv.md) | Notification de confirmation de RDV — ligne `notifications` persistée atomiquement (émission/trace §8.4/§11.4), canal pur PUSH→SMS→IN_APP, remise proactive différée M5, aucune migration | Accepté | #45 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 

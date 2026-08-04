@@ -26,6 +26,9 @@ from dataclasses import dataclass
 
 from coiflink_api.application.ports.appointment_repository import AppointmentRepository
 from coiflink_api.application.ports.audit_log import AuditLog
+from coiflink_api.application.ports.notification_repository import (
+    NotificationRepository,
+)
 from coiflink_api.application.ports.salon_catalog_repository import (
     SalonCatalogRepository,
 )
@@ -54,6 +57,11 @@ from coiflink_api.domain.availability import (
     SlotRange,
     free_slots,
     is_offered,
+)
+from coiflink_api.domain.notification import (
+    ChannelAvailability,
+    build_confirmation_notification,
+    resolve_confirmation_channel,
 )
 from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
 from coiflink_api.domain.enums import AppointmentStatus, Role
@@ -219,9 +227,20 @@ class BookAppointment:
 
     Séquence : valider `≥ 1` prestation → refuser un salon non réservable → charger
     les prestations actives (durée + prix figé) → calculer la fenêtre horaire →
-    défense en profondeur `is_offered` → `repository.create(...)`. En cas de course
-    concurrente, l'INSERT perd sur la contrainte d'exclusion et le dépôt lève
-    `SlotAlreadyBooked` (rollback complet — RDV + jonctions).
+    défense en profondeur `is_offered` → `repository.create(...)` → **émettre la
+    confirmation** (US-7.1, #45). En cas de course concurrente, l'INSERT perd sur la
+    contrainte d'exclusion et le dépôt lève `SlotAlreadyBooked` (rollback complet —
+    RDV + jonctions + confirmation).
+
+    **Confirmation à la réservation (US-7.1, #45)** — « à la création d'un RDV, une
+    confirmation est émise » est une **règle métier**, portée ici : après l'INSERT
+    réussi, une ligne `notifications` (`type = CONFIRMATION`, `status = PENDING`,
+    rattachée au client/salon/RDV) est **persistée** via `notification_repository`
+    dans la **même** `Session` (patron `AuditLog` #20). Cette ligne **est la trace**
+    exigée par §8.4/§11.4 et **la file** que consommera le worker de remise (M5+,
+    ADR-0006) : #45 **n'achemine rien** (aucun appel FCM/SMS ; `sent_at` reste `NULL`,
+    budget de latence §12.1 préservé). Le canal est résolu « selon disponibilité »
+    (PUSH → SMS → IN_APP) — au MVP, faute de registre de jetons, c'est **SMS**.
     """
 
     def __init__(
@@ -229,10 +248,12 @@ class BookAppointment:
         catalog_repository: SalonCatalogRepository,
         appointment_repository: AppointmentRepository,
         scope_repository: SalonScopeRepository,
+        notification_repository: NotificationRepository,
     ) -> None:
         self._catalog = catalog_repository
         self._appointments = appointment_repository
         self._scope = scope_repository
+        self._notifications = notification_repository
 
     def execute(
         self,
@@ -273,7 +294,7 @@ class BookAppointment:
         ):
             raise SlotUnavailable("Le créneau demandé n'est pas disponible.")
 
-        return self._appointments.create(
+        appointment = self._appointments.create(
             AppointmentToCreate(
                 salon_id=salon_id,
                 client_id=client_id,
@@ -285,6 +306,24 @@ class BookAppointment:
                 client_note=command.client_note,
             )
         )
+
+        # Confirmation de RDV (US-7.1, #45) : émise **après** l'INSERT réussi, dans la
+        # **même** unité de travail (patron `AuditLog` #20) — committée/rollbackée avec
+        # le RDV (une réservation échouée n'atteint jamais ce point). Canal résolu
+        # « selon disponibilité » : au MVP, sans registre de jetons d'appareil, PUSH
+        # n'est jamais ciblable → SMS (client inscrit par téléphone #8, garantie
+        # supposée sans accès base supplémentaire). Ligne `PENDING` : #45 **émet/trace**
+        # la confirmation sans l'**acheminer** (remise réelle différée M5+, ADR-0006).
+        availability = ChannelAvailability(has_push_token=False, has_phone=True)
+        self._notifications.enqueue(
+            build_confirmation_notification(
+                client_id=client_id,
+                salon_id=salon_id,
+                appointment_id=appointment.id,
+                channel=resolve_confirmation_channel(availability),
+            )
+        )
+        return appointment
 
 
 # --------------------------------------------------------------------------- #

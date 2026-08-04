@@ -1271,6 +1271,44 @@ curl -G "$API/salons/$SALON_ID/hairdresser-performance" \
 }
 ```
 
+## Notifications — confirmation de RDV (US-7.1, #45 — [ADR-0033](../docs/adr/0033-notification-confirmation-rdv.md))
+
+À la **création d'un rendez-vous** (`POST /salons/{salon_id}/appointments`, #21), une **confirmation**
+est désormais **émise/tracée** : `BookAppointment` **persiste une** ligne `notifications`
+(`type = CONFIRMATION`, `status = PENDING`, rattachée au **client** `user_id`, au `salon_id` et à
+l'`appointment_id`) via le port `NotificationRepository` (`enqueue`) dans la **même** unité de travail
+que le RDV — committée/rollbackée **avec** lui (patron `AuditLog` #20/#23). Cette ligne **est la trace**
+de la notification critique exigée par **§8.4/§11.4** et **la file** que consommera le worker de remise.
+Le **contrat HTTP est inchangé** (toujours `201 AppointmentResponse`) ; **aucune** route publique,
+**aucune** migration (l'enum `CONFIRMATION` et la table `notifications` existent depuis la migration
+`0001`).
+
+**Canal « selon disponibilité ».** Une fonction pure `resolve_confirmation_channel(...)` choisit par
+priorité **PUSH → SMS → IN_APP** (`WHATSAPP` **exclu**, V2). Au MVP, faute de **registre de jetons
+d'appareil**, `PUSH` n'est jamais ciblable : le canal effectif est **SMS** (le client s'inscrit par
+téléphone, #8), `IN_APP` restant le repli garanti.
+
+**Non-remise assumée** ([ADR-0006](../docs/adr/0006-notifications-fcm-sms.md)). #45 **émet/trace** la
+confirmation ; il n'**envoie** rien — `status` reste `PENDING`, `sent_at` reste `NULL`. La remise
+proactive (push FCM / SMS via file Redis) relève du **worker M5+** ; le stub OTP existant n'est pas
+sollicité, aucun appel réseau externe n'entre dans le chemin de requête (budget de latence §12.1).
+
+**Non-fuite de PII** (§11.3). La ligne ne stocke **que** des identifiants **opaques** et un
+`title`/`message` **templaté neutre** — **jamais** le téléphone ni le nom du client. Ni
+`SqlNotificationRepository` ni `BookAppointment` ne journalisent le destinataire, le canal ou le corps
+du message. Le worker de remise (futur) résoudra `user_id → users.phone` **à l'envoi** : le numéro n'est
+**jamais** copié dans `notifications`.
+
+**Périmètre strict** : #45 notifie **le client**, **à la création** uniquement. La notification au salon
+(US-7.3, #47), les rappels (US-7.2, #46) et les notifications d'annulation/modification (US-7.4, #48)
+sont **hors périmètre** — `ModifyAppointment`/`CancelAppointment`/`SetAppointmentStatus` n'émettent
+**aucune** confirmation.
+
+| Déclencheur | Écriture `notifications` | Canal (MVP) | Statut | Remise |
+| --- | --- | --- | --- | --- |
+| `POST /salons/{salon_id}/appointments` réussi (`201`) | 1 ligne `CONFIRMATION` (client + salon + RDV) | `SMS` | `PENDING` | différée M5+ (aucune) |
+| Réservation échouée (`404`/`409`/`422`) | **aucune** (rollback conjoint) | — | — | — |
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
@@ -1781,3 +1819,30 @@ Issue #21 ajoute cinq suites dédiées au moteur de disponibilité et à l'anti 
   **un 201** et **un 409** (refus garanti par la contrainte d'exclusion `ex_appointments_hairdresser_slot`
   ou le garde `is_offered` — les deux sont corrects). Les données de test sont supprimées avant et
   après chaque test (pas de dépendance entre tests).
+
+Issue #45 ajoute trois suites dédiées à la notification de confirmation de RDV (US-7.1) :
+
+- `test_notification_domain.py` (nouveau) — domaine pur (aucune I/O) : `ChannelAvailability` :
+  valeurs par défaut (les deux faux), immuabilité, porte uniquement des booléens (jamais un numéro
+  ni un jeton d'appareil) ; `resolve_confirmation_channel` : priorité **PUSH → SMS → IN_APP**
+  déterministe — `PUSH` prime sur `SMS` ; sans canal disponible → `IN_APP` ; `WHATSAPP` et `EMAIL`
+  **jamais** renvoyés ; `build_confirmation_notification` : type `CONFIRMATION`, statut `PENDING`,
+  `user_id = client_id`, `salon_id`/`appointment_id` corrects, canal transmis, `title`/`message`
+  **templatés** (constantes — aucun numéro de téléphone dans le titre/message, §11.3) ; immutabilité
+  garantie ; `NotificationToCreate` : statut `PENDING` par défaut, immuable, identifiants à `None`
+  par défaut.
+
+- `test_appointment_usecases.py` (étendu — `TestBookAppointmentNotification`) — comportement de
+  `BookAppointment` (ports 100 % fakes, sans base) : réservation valide → **exactement une**
+  notification émise (`type=CONFIRMATION`, `status=PENDING`, `user_id=client_id`, `salon_id`
+  correct, `appointment_id` correspondant au RDV créé) ; canal `SMS` au MVP (faute de jeton PUSH,
+  cf. §12.1) ; titre/message = constantes templatées (§11.3 : aucun numéro de téléphone) ;
+  réservation échouée (`SlotAlreadyBooked`, `ServiceNotFound`, `SalonNotBookable`, `SlotUnavailable`)
+  → **aucune** notification (invariant d'atomicité §8.4/§11.4 : la notification n'est jamais émise
+  sur une réservation qui n'aboutit pas).
+
+- `test_appointment_concurrency.py` (étendu) — la fonction `_wipe_test_data` est complétée pour
+  supprimer les lignes `notifications` **avant** les RDV/comptes/salons (FK `RESTRICT`
+  `notifications → appointments/users/salons` introduite par #45). Les tests de concurrence
+  existants (niveau SQL et HTTP) vérifient implicitement le rollback conjoint : le perdant n'obtient
+  ni RDV ni notification.

@@ -114,15 +114,31 @@ def _next_monday() -> datetime.date:
 def _wipe_test_data() -> None:
     """Supprime les données de test dans l'ordre des contraintes FK (`ON DELETE RESTRICT`).
 
-    Ordre : appointment_services → appointments → audit_logs → services →
-    salon_members → salons → users. Les rendez-vous précèdent les prestations et
-    les salons (FK `RESTRICT` vers `services`/`salons`/`users`).
+    Ordre : notifications → appointment_services → appointments → audit_logs →
+    services → salon_members → salons → users. La confirmation de RDV (#45) crée une
+    ligne `notifications` (FK `appointment_id`/`user_id`/`salon_id` en `RESTRICT`) :
+    elle précède donc la suppression des RDV/comptes/salons. Les rendez-vous précèdent
+    les prestations et les salons (FK `RESTRICT` vers `services`/`salons`/`users`).
     """
 
     engine = get_engine()
     users_of_prefix = "SELECT id FROM users WHERE phone LIKE :prefix"
     with engine.connect() as conn:
         params = {"prefix": f"{_E2E_PHONE_PREFIX}%"}
+        # Notifications de confirmation (#45) : FK RESTRICT vers appointments/users/
+        # salons → à supprimer **avant** eux. On couvre les trois liens possibles.
+        conn.execute(
+            text(
+                "DELETE FROM notifications WHERE "
+                f"user_id IN ({users_of_prefix}) "
+                "OR salon_id IN (SELECT id FROM salons WHERE owner_id IN "
+                f"({users_of_prefix})) "
+                "OR appointment_id IN (SELECT id FROM appointments WHERE "
+                f"client_id IN ({users_of_prefix}) "
+                f"OR hairdresser_id IN ({users_of_prefix}))"
+            ),
+            params,
+        )
         # Jonctions RDV ↔ prestation (FK appointment_id → appointments).
         conn.execute(
             text(
