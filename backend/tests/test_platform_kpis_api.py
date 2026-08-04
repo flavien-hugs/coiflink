@@ -410,6 +410,32 @@ class TestGetPlatformKpisResponseSchema:
         data = self._get(admin_client, kpi_repo)
         assert "subscriptions" not in data
 
+    def test_response_keys_exactly_match_expected_set(
+        self, admin_client: TestClient, kpi_repo: FakePlatformKpiRepository
+    ) -> None:
+        """Les clés de la réponse sont **exactement** l'ensemble attendu (liste blanche).
+
+        Renforce les tests ci-dessus (liste noire de champs interdits nommés) par une
+        assertion **positive et exhaustive** : un champ interdit dont le nom ne
+        figurerait pas dans la liste noire (nouvelle PII non anticipée) ferait échouer
+        ce test, alors qu'il passerait la liste noire silencieusement.
+        """
+        data = self._get(admin_client, kpi_repo)
+        expected_keys = {
+            "salons_total",
+            "salons_active",
+            "clients_total",
+            "appointments_total",
+            "appointments_this_month",
+            "revenue_total",
+            "revenue_this_month",
+            "currency",
+            "reference_date",
+            "month_from",
+            "month_to",
+        }
+        assert set(data.keys()) == expected_keys
+
 
 # ---------------------------------------------------------------------------
 # `reference_date` — paramètre optionnel
