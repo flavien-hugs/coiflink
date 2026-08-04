@@ -365,12 +365,38 @@ class TestBookAppointment:
         )
         assert resp.status_code == 201
         appointment_id = resp.json()["id"]
-        assert len(notif.enqueued) == 1
-        notification = notif.enqueued[0]
-        assert notification.type == "CONFIRMATION"
+        confirmations = [n for n in notif.enqueued if n.type == "CONFIRMATION"]
+        assert len(confirmations) == 1
+        notification = confirmations[0]
         assert notification.status == "PENDING"
         assert str(notification.appointment_id) == appointment_id
         assert str(notification.user_id) == str(_CLIENT_ID)
+
+    def test_valid_booking_plans_reminders(self) -> None:
+        # US-7.2 (#46) : la réservation planifie aussi des rappels `REMINDER`
+        # `PENDING`, datés, rattachés au RDV créé (le RDV est réservé loin dans le
+        # futur — `_DATE` — donc les 3 offsets sont encore futurs).
+        notif = FakeNotificationRepository()
+        resp = _client(notifications=notif).post(
+            _BOOK_URL, json=_valid_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 201
+        appointment_id = resp.json()["id"]
+        reminders = [n for n in notif.enqueued if n.type == "REMINDER"]
+        assert len(reminders) == 3
+        for reminder in reminders:
+            assert reminder.status == "PENDING"
+            assert str(reminder.appointment_id) == appointment_id
+            assert reminder.scheduled_for is not None
+
+    def test_booking_response_never_exposes_reminder_content(self) -> None:
+        notif = FakeNotificationRepository()
+        resp = _client(notifications=notif).post(
+            _BOOK_URL, json=_valid_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 201
+        assert "REMINDER" not in resp.text
+        assert "scheduled_for" not in resp.text
 
     def test_response_contains_appointment_fields(self) -> None:
         resp = _client().post(
@@ -666,9 +692,10 @@ def _modify_client(
     catalog: FakeSalonCatalogRepository | None = None,
     appts: FakeAppointmentRepository | None = None,
     scope: FakeSalonScopeRepository | None = None,
+    notifications: FakeNotificationRepository | None = None,
 ) -> TestClient:
     """Comme `_client` mais installe aussi `get_audit_log` (requis par PATCH /appointments)."""
-    tc = _client(catalog=catalog, appts=appts, scope=scope)
+    tc = _client(catalog=catalog, appts=appts, scope=scope, notifications=notifications)
     app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
     return tc
 
@@ -892,6 +919,21 @@ class TestModifyAppointmentAPI:
         assert "status" in data
         assert "services" in data
 
+    # --- Re-planification des rappels (US-7.2, #46) -------------------------
+
+    def test_modify_reschedules_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        resp = _modify_client(appts=appts, notifications=notif).patch(
+            self._url(), json=_valid_modify_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 200
+        assert notif.cancel_calls == [_MODIFY_APPT_ID]
+        reminders = [n for n in notif.enqueued if n.type == "REMINDER"]
+        assert len(reminders) == 3
+
 
 # ---------------------------------------------------------------------------
 # _is_exclusion_violation — détection de la violation de contrainte d'exclusion
@@ -952,6 +994,7 @@ _ASSIGN_APPT_ID = uuid.UUID("eeeeeeee-0000-0000-0000-000000000001")
 def _manager_client(
     appts: FakeAppointmentRepository | None = None,
     scope: FakeSalonScopeRepository | None = None,
+    notifications: FakeNotificationRepository | None = None,
 ) -> TestClient:
     """TestClient configuré pour MANAGER avec `_SALON_ID` dans sa portée (#25)."""
     ap = appts if appts is not None else FakeAppointmentRepository()
@@ -961,9 +1004,11 @@ def _manager_client(
         if scope is not None
         else FakeSalonScopeRepository({_HAIRDRESSER_ID: frozenset({_SALON_ID})})
     )
+    notif = notifications if notifications is not None else FakeNotificationRepository()
     app.dependency_overrides[get_appointment_repository] = lambda: ap
     app.dependency_overrides[get_catalog_repository] = lambda: _catalog()
     app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
+    app.dependency_overrides[get_notification_repository] = lambda: notif
     app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(manager_scope)
     app.dependency_overrides[get_salon_scope_repository] = lambda: hairdresser_scope
@@ -1023,9 +1068,10 @@ def _make_assign_entity(
 
 def _cancel_client(
     appts: FakeAppointmentRepository | None = None,
+    notifications: FakeNotificationRepository | None = None,
 ) -> TestClient:
     """Comme `_client` mais installe aussi `get_audit_log` (requis par l'annulation)."""
-    tc = _client(appts=appts)
+    tc = _client(appts=appts, notifications=notifications)
     app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
     return tc
 
@@ -1245,6 +1291,19 @@ class TestCancelAppointmentAPI:
         assert "sql" not in detail.lower()
         assert "postgres" not in detail.lower()
 
+    # --- Annulation des rappels (US-7.2, #46, AC) ---------------------------
+
+    def test_cancel_cancels_pending_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        resp = _cancel_client(appts=appts, notifications=notif).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 200
+        assert notif.cancel_calls == [_CANCEL_APPT_ID]
+
 
 # ---------------------------------------------------------------------------
 # POST /salons/{salon_id}/appointments/{appointment_id}/status (US-3.4, #25)
@@ -1283,6 +1342,7 @@ class TestSetAppointmentStatusAPI:
         app.dependency_overrides[get_appointment_repository] = lambda: appts
         app.dependency_overrides[get_catalog_repository] = lambda: _catalog()
         app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
+        app.dependency_overrides[get_notification_repository] = lambda: FakeNotificationRepository()
         app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
         app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(
             FakeSalonScopeRepository()
@@ -1444,6 +1504,30 @@ class TestSetAppointmentStatusAPI:
         detail = resp.json().get("detail", "")
         assert "sql" not in detail.lower()
         assert "postgres" not in detail.lower()
+
+    # --- Annulation des rappels — refus gérant uniquement (US-7.2, #46) -----
+
+    def test_refusal_cancels_pending_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        resp = _manager_client(appts=appts, notifications=notif).post(
+            self._url(), json={"status": "CANCELLED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 200
+        assert notif.cancel_calls == [_SET_STATUS_APPT_ID]
+
+    def test_confirmation_does_not_cancel_reminders(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        resp = _manager_client(appts=appts, notifications=notif).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 200
+        assert notif.cancel_calls == []
 
 
 # ---------------------------------------------------------------------------

@@ -468,9 +468,11 @@ def book_appointment(
     En cas de course concurrente sur le même créneau/coiffeur, la contrainte
     d'exclusion base tranche : **une seule** insertion aboutit, l'autre reçoit un
     `409` (`SlotAlreadyBooked`). À la création, une confirmation `CONFIRMATION` est
-    **émise/tracée** dans la table `notifications` (§8.4/§11.4, US-7.1 #45), **même**
-    unité de travail que le RDV ; la **remise réelle** (push/SMS) reste différée M5+
-    (ADR-0006) — rien n'est envoyé, le contrat de réponse (`201`) est inchangé.
+    **émise/tracée** dans la table `notifications` (§8.4/§11.4, US-7.1 #45), et des
+    **rappels** `REMINDER` sont **planifiés** pour chaque échéance encore future
+    (`24h`/`2h`/`30min` avant le RDV, US-7.2 #46) — **même** unité de travail que le
+    RDV ; la **remise réelle** (push/SMS) reste différée M5+ (ADR-0006) — rien n'est
+    envoyé, le contrat de réponse (`201`) est inchangé.
     """
 
     command = BookingCommand(
@@ -678,6 +680,9 @@ def modify_appointment(
     ],
     scope: Annotated[SalonScopeRepository, Depends(get_salon_scope_repository)],
     audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    notifications: Annotated[
+        NotificationRepository, Depends(get_notification_repository)
+    ],
     principal: Annotated[
         Principal, Depends(require_permission(Permission.APPOINTMENT_BOOK))
     ],
@@ -688,7 +693,8 @@ def modify_appointment(
     corps (§11.2). Un RDV inexistant ou d'autrui est un `404` **indiscernable** (aucun
     oracle). Un RDV terminé est **verrouillé côté client** (`409`). En cas de course
     concurrente sur le créneau/coiffeur, la contrainte d'exclusion base tranche
-    (`409`). La modification est journalisée `APPOINTMENT_UPDATED` (§11.4).
+    (`409`). La modification **re-planifie les rappels** sur le nouveau créneau
+    (§8.4, US-7.2 #46) et est journalisée `APPOINTMENT_UPDATED` (§11.4).
     """
 
     command = ModifyAppointmentCommand(
@@ -700,7 +706,7 @@ def modify_appointment(
     )
     try:
         appointment = ModifyAppointment(
-            catalog, appointments, scope, audit_log
+            catalog, appointments, scope, audit_log, notifications
         ).execute(appointment_id, principal.id, command, now=_now())
     except AppointmentServiceRequired as exc:
         raise HTTPException(
@@ -746,6 +752,9 @@ def cancel_appointment(
         AppointmentRepository, Depends(get_appointment_repository)
     ],
     audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    notifications: Annotated[
+        NotificationRepository, Depends(get_notification_repository)
+    ],
     principal: Annotated[
         Principal, Depends(require_permission(Permission.APPOINTMENT_BOOK))
     ],
@@ -758,12 +767,14 @@ def cancel_appointment(
     d'appartenance : le `salon_id` vient du RDV chargé. Un RDV inexistant ou d'autrui
     est un `404` **indiscernable** (aucun oracle). Un RDV terminé/terminal (déjà annulé,
     `COMPLETED`, `NO_SHOW`) est **verrouillé côté client** (`409`). L'annulation
-    **libère** le créneau (le RDV quitte l'ensemble actif) et est journalisée
-    `APPOINTMENT_CANCELLED` (§11.4). Aucune notification n'est émise (§8.4 → Épic 7).
+    **libère** le créneau (le RDV quitte l'ensemble actif), **annule les rappels**
+    planifiés (§8.4, US-7.2 #46) et est journalisée `APPOINTMENT_CANCELLED` (§11.4).
+    Aucune notification poussée au client n'est émise ici (annulation/modification
+    poussée = US-7.4, #48).
     """
 
     try:
-        appointment = CancelAppointment(appointments, audit_log).execute(
+        appointment = CancelAppointment(appointments, audit_log, notifications).execute(
             appointment_id, principal.id, payload.reason, now=_now()
         )
     except AppointmentNotCancellable as exc:
@@ -917,6 +928,9 @@ def set_appointment_status(
         AppointmentRepository, Depends(get_appointment_repository)
     ],
     audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    notifications: Annotated[
+        NotificationRepository, Depends(get_notification_repository)
+    ],
     _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
     principal: Annotated[
         Principal,
@@ -930,13 +944,13 @@ def set_appointment_status(
     **doublement contraint** (énumération Pydantic → `422` ; machine à états du
     domaine → `409`) — le juge est le domaine, jamais un champ soumis (§11.2). Un RDV
     hors salon/inexistant est un `404` **indiscernable** (aucun oracle). Un RDV
-    terminal (`COMPLETED`/`CANCELLED`/`NO_SHOW`) est **verrouillé** (`409`). Chaque
-    changement est journalisé `APPOINTMENT_STATUS_CHANGED` (§11.4). Aucune
-    notification n'est émise (§8.4 → Épic 7).
+    terminal (`COMPLETED`/`CANCELLED`/`NO_SHOW`) est **verrouillé** (`409`). Un refus
+    gérant (`→ CANCELLED`) **annule les rappels** planifiés (§8.4, US-7.2 #46). Chaque
+    changement est journalisé `APPOINTMENT_STATUS_CHANGED` (§11.4).
     """
 
     try:
-        appointment = SetAppointmentStatus(appointments, audit_log).execute(
+        appointment = SetAppointmentStatus(appointments, audit_log, notifications).execute(
             appointment_id,
             salon_id,
             principal.id,
