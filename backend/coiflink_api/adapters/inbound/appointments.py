@@ -72,6 +72,9 @@ from coiflink_api.adapters.outbound.persistence.notification_repository import (
 from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import (
     SqlSalonCatalogRepository,
 )
+from coiflink_api.adapters.outbound.persistence.salon_repository import (
+    SqlSalonRepository,
+)
 from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.application.appointments import (
     AssignHairdresser,
@@ -95,6 +98,7 @@ from coiflink_api.application.ports.notification_repository import (
 from coiflink_api.application.ports.salon_catalog_repository import (
     SalonCatalogRepository,
 )
+from coiflink_api.application.ports.salon_repository import SalonRepository
 from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.appointment import (
@@ -332,6 +336,22 @@ def get_notification_repository(
     """
 
     return SqlNotificationRepository(session)
+
+
+def get_salon_repository(
+    session: Annotated[Session, Depends(get_session)],
+) -> SalonRepository:
+    """Dépôt de salons adossé à la **même** session (atomicité, US-7.4 #48).
+
+    Sert à résoudre le **gérant** du salon (`salon.owner_id`) pour la notification
+    d'annulation destinée au salon (§8.4). `find_by_id` est un `get` par clé primaire
+    **indépendant du statut** : une annulation reste possible même sur un salon devenu
+    inactif (§8.3). FastAPI met en cache `get_session` par requête → même `Session` que
+    le dépôt de RDV et de notifications, d'où le commit/rollback conjoint (patron
+    `get_notification_repository`).
+    """
+
+    return SqlSalonRepository(session)
 
 
 def _now() -> datetime.datetime:
@@ -696,7 +716,9 @@ def modify_appointment(
     oracle). Un RDV terminé est **verrouillé côté client** (`409`). En cas de course
     concurrente sur le créneau/coiffeur, la contrainte d'exclusion base tranche
     (`409`). La modification **re-planifie les rappels** sur le nouveau créneau
-    (§8.4, US-7.2 #46) et est journalisée `APPOINTMENT_UPDATED` (§11.4).
+    (§8.4, US-7.2 #46), **notifie le salon** (une ligne `APPOINTMENT_UPDATE`/`IN_APP`
+    destinée au gérant, US-7.4 #48 — remise différée M5+) et est journalisée
+    `APPOINTMENT_UPDATED` (§11.4).
     """
 
     command = ModifyAppointmentCommand(
@@ -757,6 +779,7 @@ def cancel_appointment(
     notifications: Annotated[
         NotificationRepository, Depends(get_notification_repository)
     ],
+    salons: Annotated[SalonRepository, Depends(get_salon_repository)],
     principal: Annotated[
         Principal, Depends(require_permission(Permission.APPOINTMENT_BOOK))
     ],
@@ -770,15 +793,17 @@ def cancel_appointment(
     est un `404` **indiscernable** (aucun oracle). Un RDV terminé/terminal (déjà annulé,
     `COMPLETED`, `NO_SHOW`) est **verrouillé côté client** (`409`). L'annulation
     **libère** le créneau (le RDV quitte l'ensemble actif), **annule les rappels**
-    planifiés (§8.4, US-7.2 #46) et est journalisée `APPOINTMENT_CANCELLED` (§11.4).
-    Aucune notification poussée au client n'est émise ici (annulation/modification
-    poussée = US-7.4, #48).
+    planifiés (§8.4, US-7.2 #46) et est journalisée `APPOINTMENT_CANCELLED` (§11.4). Le
+    **client et le salon** sont notifiés de l'annulation (deux lignes `CANCELLATION`
+    **émises/tracées** dans `notifications`, §8.4, US-7.4 #48) — **même** unité de
+    travail ; la **remise réelle** reste différée M5+ (ADR-0006), le contrat de réponse
+    (`200`) est inchangé.
     """
 
     try:
-        appointment = CancelAppointment(appointments, audit_log, notifications).execute(
-            appointment_id, principal.id, payload.reason, now=_now()
-        )
+        appointment = CancelAppointment(
+            appointments, audit_log, notifications, salons
+        ).execute(appointment_id, principal.id, payload.reason, now=_now())
     except AppointmentNotCancellable as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
@@ -933,6 +958,7 @@ def set_appointment_status(
     notifications: Annotated[
         NotificationRepository, Depends(get_notification_repository)
     ],
+    salons: Annotated[SalonRepository, Depends(get_salon_repository)],
     _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
     principal: Annotated[
         Principal,
@@ -948,11 +974,17 @@ def set_appointment_status(
     hors salon/inexistant est un `404` **indiscernable** (aucun oracle). Un RDV
     terminal (`COMPLETED`/`CANCELLED`/`NO_SHOW`) est **verrouillé** (`409`). Un refus
     gérant (`→ CANCELLED`) **annule les rappels** planifiés (§8.4, US-7.2 #46). Chaque
-    changement est journalisé `APPOINTMENT_STATUS_CHANGED` (§11.4).
+    changement est journalisé `APPOINTMENT_STATUS_CHANGED` (§11.4). **Chaque changement
+    de statut notifie la partie concernée** (US-7.4 #48) : `→ CANCELLED` émet **deux**
+    `CANCELLATION` (client + salon, §8.4) ; les autres transitions émettent **une**
+    `APPOINTMENT_UPDATE` au **client** — dans la **même** unité de travail, remise
+    différée M5+ (ADR-0006), contrat de réponse (`200`) inchangé.
     """
 
     try:
-        appointment = SetAppointmentStatus(appointments, audit_log, notifications).execute(
+        appointment = SetAppointmentStatus(
+            appointments, audit_log, notifications, salons
+        ).execute(
             appointment_id,
             salon_id,
             principal.id,
