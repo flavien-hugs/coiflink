@@ -414,7 +414,14 @@ la **migration `0008`** (valeur d'enum `APPOINTMENT_UPDATE` + régénération du
 persistées dans la **même unité de travail** que le changement de statut (un changement échoué n'en laisse
 aucune). Comme #45/#46/#47, la **remise proactive** (push/SMS/email) reste **différée M5+** (ADR-0006,
 `sent_at` reste `NULL`) et la **lecture** est différée (parité #45/#47), voir
-[ADR-0036](./docs/adr/0036-notification-annulation-modification.md).
+[ADR-0036](./docs/adr/0036-notification-annulation-modification.md). Les **campagnes/messages aux
+clients** (#49, US-7.5) closent l'Épic 7 côté émission/trace : le gérant crée une campagne
+(`POST /salons/{salon_id}/campaigns`, rappel/promotion/fermeture exceptionnelle) ciblant un **segment**
+salon-scopé de ses fiches clients (#28) — **émise/tracée** dans une table dédiée `campaigns` (migration
+`0009`), avec un **effectif** snapshot **non-PII** (`recipient_count`, `COUNT` des fiches joignables du
+segment) et `status = PENDING`, dans la **même unité de travail** que l'audit `CAMPAIGN_CREATED`. La
+**remise** (fan-out SMS) reste **différée M5+** (ADR-0006, `sent_at` reste `NULL`) — aucun numéro n'est
+matérialisé ni journalisé, voir [ADR-0037](./docs/adr/0037-campagnes-messages-clients.md).
 
 ---
 

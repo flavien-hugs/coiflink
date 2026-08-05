@@ -1453,6 +1453,57 @@ route ajoutée, rien dans `PUBLIC_ROUTE_PATHS`. La **lecture** (`GET /me/notific
 | Changement de statut échoué (`404`/`409`/`422`) | **aucune** (rollback conjoint) | — | — | — | — |
 | (Dés)assignation d'un coiffeur | **aucune** (hors périmètre) | — | — | — | — |
 
+## Campagnes/messages aux clients (US-7.5, #49 — [ADR-0037](../docs/adr/0037-campagnes-messages-clients.md))
+
+Le gérant compose un message (**rappel**, **promotion** ou **fermeture exceptionnelle**) et le diffuse à
+un **segment** de son fichier clients (#28) : `POST /salons/{salon_id}/campaigns` (`CUSTOMER_MANAGE` +
+`require_salon_scope`, **MANAGER** seul — matrice RBAC inchangée). La campagne est **émise/tracée** dans
+une table dédiée `campaigns` (migration `0009`, `down_revision = 0008`), dans la **même** unité de
+travail que l'entrée d'audit `CAMPAIGN_CREATED` (§11.4) — la **remise proactive** (fan-out SMS) reste
+**différée M5+** (ADR-0006) : rien n'est envoyé, `status = PENDING`, `sent_at = NULL`.
+
+**Table dédiée, pas une ligne par destinataire.** Contrairement à `notifications` (#45–#48, rattachées à
+un RDV et un destinataire unique), une campagne est **un-à-plusieurs** avec un **texte libre** composé par
+le gérant. Matérialiser une ligne par fiche à la création serait volumineux (§12.1) et figerait un
+snapshot de PII (téléphones). `campaigns` porte donc un **effectif** (`recipient_count`, entier
+non-PII) — le fan-out réel (résolution `segment → customer_profiles.phone`) est **différé** au worker
+M5+, qui re-résout le segment à l'envoi.
+
+**Segment = prédicat salon-scopé sur les fiches (#28).** `segment` (`ALL`/`FEMALE`/`MALE`/`OTHER`) se
+traduit en `CustomerFilter` (`domain/campaign.py::segment_to_customer_filter`) : `ALL` cible toutes les
+fiches **joignables** du salon, `FEMALE`/`MALE`/`OTHER` y ajoutent un filtre de genre exact. **Toutes**
+les traductions imposent `has_phone=True` : le canal effectif au MVP est **SMS**
+(`customer_profiles.phone`), donc une fiche walk-in **sans** numéro ne peut recevoir de campagne — elle
+n'entre **jamais** dans `recipient_count`, même si son genre correspond au segment ciblé.
+
+**Effectif = un seul `COUNT`, jamais un fan-out.** `CreateCampaign` résout `recipient_count` via **un**
+`COUNT` salon-scopé (`CustomerRepository.count_for_salon`) sur le segment traduit — aucune liste de
+fiches n'est matérialisée ni journalisée. Un segment sans fiche joignable donne un effectif `0` : la
+campagne est quand même créée (l'émission n'est pas conditionnée à un effectif non nul).
+
+**Permission : `CUSTOMER_MANAGE` réutilisée.** Le gérant qui gère déjà son fichier clients (#28) peut
+créer une campagne — aucune modification de `ROLE_PERMISSIONS` (§4.1). `CLIENT`/`HAIRDRESSER`/`ADMIN`
+ainsi qu'un gérant hors portée du salon reçoivent un `403` générique (ADR-0015).
+
+**Non-fuite de PII (§11.3, ADR-0006).** Aucune colonne de `campaigns` ni entrée d'audit ne porte un
+téléphone, un nom ou une identité de destinataire. Le `metadata` de `CAMPAIGN_CREATED` ne porte que
+`type`/`segment`/`recipient_count` — **jamais** le titre ni le corps du message composé par le gérant
+(contenu métier, diffusé à l'identique à tout le segment, mais non journalisé). La lecture
+(`GET /salons/{salon_id}/campaigns`, paginée) projette un résumé **sans** le corps du message
+(`CampaignSummaryResponse`) — celui-ci n'est renvoyé qu'à la création (`POST`).
+
+**Atomicité, non-remise.** La persistance de la campagne (`flush`, `status = PENDING`) et l'audit
+`CAMPAIGN_CREATED` partagent la **même** `Session` (`get_session`) : une validation domaine échouée
+(titre/message/type/segment invalide, `422`) ne persiste **ni** campagne **ni** audit. Comme #45–#48,
+`sent_at` reste `NULL` tant qu'aucun worker de remise n'existe (M5+, ADR-0006) ; l'**opt-out marketing**
+par client reste un pré-requis à durcir avant toute remise réelle (#52).
+
+| Déclencheur | Écriture `campaigns` | Effectif | Statut | Remise |
+| --- | --- | --- | --- | --- |
+| `POST /salons/{salon_id}/campaigns` réussi (`201`) | 1 ligne (`type`/`segment`/`title`/`message` du gérant) | `COUNT` salon-scopé, fiches joignables du segment | `PENDING` | différée M5+ (aucune) |
+| Payload invalide (`type`/`segment`/`title`/`message`, `422`) | **aucune** (rollback conjoint) | — | — | — |
+| `GET /salons/{salon_id}/campaigns` | lecture seule, paginée, **sans** le corps du message | — | — | — |
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

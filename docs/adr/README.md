@@ -49,6 +49,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0034](./0034-rappel-automatique-avant-rdv.md) | Rappel automatique avant RDV — rappels `notifications` datés (`scheduled_for`), annulation liée au cycle de vie du RDV (statut `CANCELLED`), remise proactive différée M5 | Accepté | #46 |
 | [0035](./0035-notification-salon-a-la-reservation.md) | Notification au salon à la réservation — ligne `notifications` `NEW_BOOKING`/`IN_APP` persistée atomiquement (émission/trace §8.4/§11.4), destinataire = gérant (`salon.owner_id`), lecture salon-scopée différée, remise email/SMS différée M5 | Accepté | #47 |
 | [0036](./0036-notification-annulation-modification.md) | Notification d'annulation/modification de RDV — émission atomique aux parties concernées, `CANCELLATION` réutilisé (client + salon, §8.4, sans migration), type `APPOINTMENT_UPDATE` (migration `0008`) pour les autres changements de statut & la modification, résolution du gérant via `SalonRepository`, lecture & remise différées M5 | Accepté | #48 |
+| [0037](./0037-campagnes-messages-clients.md) | Campagnes/messages aux clients — table dédiée `campaigns` (migration `0009`, pas de fan-out dans `notifications`), segment = prédicat salon-scopé sur les fiches (#28) restreint aux fiches joignables SMS, effectif snapshot non-PII (`COUNT`), permission `CUSTOMER_MANAGE` réutilisée, audit `CAMPAIGN_CREATED` neutre, remise différée M5 | Accepté | #49 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
