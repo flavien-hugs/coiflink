@@ -73,8 +73,11 @@ class TestAuditAction:
     def test_cash_adjusted_value(self) -> None:
         assert AuditAction.CASH_ADJUSTED == "CASH_ADJUSTED"
 
-    def test_exactly_thirteen_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 13
+    def test_campaign_created_value(self) -> None:
+        assert AuditAction.CAMPAIGN_CREATED == "CAMPAIGN_CREATED"
+
+    def test_exactly_fourteen_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 14
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -99,6 +102,7 @@ class TestAuditAction:
             "CUSTOMER_NOTE_UPDATED",
             "PAYMENT_RECORDED",
             "CASH_ADJUSTED",
+            "CAMPAIGN_CREATED",
         }
 
 

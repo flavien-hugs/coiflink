@@ -202,6 +202,11 @@ class CustomerFilter:
     created_to: datetime.date | None = None
     created_at_from: datetime.datetime | None = None
     created_at_to: datetime.datetime | None = None
+    # Contrainte de **joignabilité** (US-7.5, #49) : `True` restreint aux fiches
+    # portant un téléphone (`phone IS NOT NULL`). `None` = pas de contrainte (la
+    # liste des fiches #28 ne la pose jamais). Une campagne SMS l'active pour que
+    # l'effectif ciblé ne compte que les fiches réellement joignables (Risks §4).
+    has_phone: bool | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -212,6 +217,7 @@ class CustomerFilter:
             and self.gender is None
             and self.created_from is None
             and self.created_to is None
+            and self.has_phone is None
         )
 
 
@@ -247,6 +253,7 @@ def validate_customer_filter(
     gender: str | None = None,
     created_from: datetime.date | None = None,
     created_to: datetime.date | None = None,
+    has_phone: bool | None = None,
 ) -> CustomerFilter:
     """Valide/normalise les critères de filtre → `CustomerFilter`.
 
@@ -258,6 +265,10 @@ def validate_customer_filter(
 
     Les bornes de date sont converties du jour civil `Africa/Abidjan` (UTC+0) vers
     des `datetime` UTC inclusifs, exposés par `created_at_from`/`created_at_to`.
+
+    `has_phone` (US-7.5, #49) restreint, quand il vaut `True`, aux fiches
+    **joignables** par téléphone (`phone IS NOT NULL`) — utilisé pour l'effectif
+    d'une campagne SMS ; `None` (défaut) = pas de contrainte de joignabilité.
     """
 
     if created_from is not None and not isinstance(created_from, datetime.date):
@@ -274,6 +285,7 @@ def validate_customer_filter(
         created_to=created_to,
         created_at_from=_day_start_utc(created_from) if created_from is not None else None,
         created_at_to=_day_end_utc(created_to) if created_to is not None else None,
+        has_phone=has_phone if has_phone else None,
     )
 
 
