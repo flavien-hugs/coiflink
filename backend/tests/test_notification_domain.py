@@ -27,6 +27,8 @@ from coiflink_api.domain.enums import (
 from coiflink_api.domain.notification import (
     CONFIRMATION_MESSAGE,
     CONFIRMATION_TITLE,
+    NEW_BOOKING_MESSAGE,
+    NEW_BOOKING_TITLE,
     REMINDER_MESSAGE,
     REMINDER_OFFSETS,
     REMINDER_TITLE,
@@ -34,6 +36,7 @@ from coiflink_api.domain.notification import (
     NotificationToCreate,
     build_confirmation_notification,
     build_reminder_notifications,
+    build_salon_new_booking_notification,
     compute_reminder_schedules,
     resolve_confirmation_channel,
     resolve_notification_channel,
@@ -46,6 +49,7 @@ from coiflink_api.domain.notification import (
 _CLIENT_ID = uuid.UUID("22222222-0000-0000-0000-000000000002")
 _SALON_ID = uuid.UUID("11111111-0000-0000-0000-000000000001")
 _APPOINTMENT_ID = uuid.UUID("aaaaaa00-0000-0000-0000-000000000001")
+_OWNER_ID = uuid.UUID("66666666-0000-0000-0000-000000000006")
 _APPOINTMENT_START = datetime.datetime(2026, 8, 10, 9, 0)
 
 
@@ -448,3 +452,140 @@ class TestBuildReminderNotifications:
     def test_immediate_appointment_yields_no_reminder(self) -> None:
         now = _APPOINTMENT_START - datetime.timedelta(minutes=10)
         assert self._build(now=now) == ()
+
+
+# ---------------------------------------------------------------------------
+# NotificationType.NEW_BOOKING (US-7.3, #47)
+# ---------------------------------------------------------------------------
+
+
+class TestNotificationTypeNewBooking:
+    """Valeur d'enum `NEW_BOOKING` — régression schéma/protocole (migration `0007`)."""
+
+    def test_new_booking_value_is_string_new_booking(self) -> None:
+        assert NotificationType.NEW_BOOKING.value == "NEW_BOOKING"
+
+    def test_new_booking_distinct_from_confirmation(self) -> None:
+        assert NotificationType.NEW_BOOKING != NotificationType.CONFIRMATION
+
+    def test_new_booking_distinct_from_reminder(self) -> None:
+        assert NotificationType.NEW_BOOKING != NotificationType.REMINDER
+
+    def test_new_booking_distinct_from_cancellation(self) -> None:
+        assert NotificationType.NEW_BOOKING != NotificationType.CANCELLATION
+
+
+# ---------------------------------------------------------------------------
+# build_salon_new_booking_notification (US-7.3, #47)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSalonNewBookingNotification:
+    """Constructeur de notification salon — pur, sans I/O.
+
+    Vérifie : type `NEW_BOOKING`, canal `IN_APP`, statut `PENDING`,
+    `scheduled_for = None` (pas de planification différée), ciblage du
+    gérant (`user_id = owner_id`, jamais du client), `salon_id` /
+    `appointment_id` rattachés, libellés templatés **sans PII**, immuabilité.
+    """
+
+    def _build(
+        self,
+        *,
+        owner_id: uuid.UUID = _OWNER_ID,
+        salon_id: uuid.UUID = _SALON_ID,
+        appointment_id: uuid.UUID = _APPOINTMENT_ID,
+        channel: str = NotificationChannel.IN_APP.value,
+    ) -> NotificationToCreate:
+        return build_salon_new_booking_notification(
+            owner_id=owner_id,
+            salon_id=salon_id,
+            appointment_id=appointment_id,
+            channel=channel,
+        )
+
+    def test_type_is_new_booking(self) -> None:
+        n = self._build()
+        assert n.type == NotificationType.NEW_BOOKING.value
+
+    def test_channel_is_in_app(self) -> None:
+        n = self._build(channel=NotificationChannel.IN_APP.value)
+        assert n.channel == NotificationChannel.IN_APP.value
+
+    def test_status_is_pending(self) -> None:
+        n = self._build()
+        assert n.status == NotificationStatus.PENDING.value
+
+    def test_scheduled_for_is_none(self) -> None:
+        n = self._build()
+        assert n.scheduled_for is None
+
+    def test_user_id_is_owner_id(self) -> None:
+        n = self._build(owner_id=_OWNER_ID)
+        assert n.user_id == _OWNER_ID
+
+    def test_user_id_is_not_client_id(self) -> None:
+        # La notification salon cible le gérant, jamais le client.
+        n = self._build(owner_id=_OWNER_ID)
+        assert n.user_id != _CLIENT_ID
+
+    def test_salon_id_is_set(self) -> None:
+        n = self._build(salon_id=_SALON_ID)
+        assert n.salon_id == _SALON_ID
+
+    def test_appointment_id_is_set(self) -> None:
+        n = self._build(appointment_id=_APPOINTMENT_ID)
+        assert n.appointment_id == _APPOINTMENT_ID
+
+    def test_title_is_new_booking_title_constant(self) -> None:
+        n = self._build()
+        assert n.title == NEW_BOOKING_TITLE
+
+    def test_message_is_new_booking_message_constant(self) -> None:
+        n = self._build()
+        assert n.message == NEW_BOOKING_MESSAGE
+
+    def test_title_is_non_empty(self) -> None:
+        n = self._build()
+        assert len(n.title.strip()) > 0
+
+    def test_message_is_non_empty(self) -> None:
+        n = self._build()
+        assert len(n.message.strip()) > 0
+
+    def test_title_contains_no_phone_number(self) -> None:
+        # §11.3 : titre templaté, aucune PII (ni numéro ni nom du client).
+        n = self._build()
+        assert "+" not in n.title
+        assert not any(c.isdigit() for c in n.title)
+
+    def test_message_contains_no_phone_number(self) -> None:
+        n = self._build()
+        assert "+" not in n.message
+
+    def test_result_is_immutable(self) -> None:
+        n = self._build()
+        with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
+            n.status = "SENT"  # type: ignore[misc]
+
+    def test_different_owners_produce_different_user_ids(self) -> None:
+        other_owner = uuid.UUID("99999999-0000-0000-0000-000000000099")
+        n1 = self._build(owner_id=_OWNER_ID)
+        n2 = self._build(owner_id=other_owner)
+        assert n1.user_id != n2.user_id
+
+    def test_text_fields_carry_no_owner_id_literal(self) -> None:
+        # Les champs texte ne doivent jamais contenir l'UUID du gérant en clair.
+        n = self._build()
+        as_dict = dataclasses.asdict(n)
+        owner_str = str(_OWNER_ID)
+        for key in ("title", "message", "type", "channel", "status"):
+            assert owner_str not in as_dict[key]
+
+    def test_channel_forwarded_to_result(self) -> None:
+        for channel in [
+            NotificationChannel.IN_APP.value,
+            NotificationChannel.SMS.value,
+        ]:
+            n = self._build(channel=channel)
+            assert n.channel == channel

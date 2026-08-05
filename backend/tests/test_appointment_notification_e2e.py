@@ -256,6 +256,7 @@ class _Fixture:
         self,
         *,
         salon_id: str,
+        owner_id: str,
         hairdresser_id: str,
         service_id: str,
         client_a_id: str,
@@ -264,6 +265,9 @@ class _Fixture:
         token_b: str,
     ) -> None:
         self.salon_id = salon_id
+        # Gérant propriétaire du salon (`salon.owner_id`) : destinataire de la
+        # notification `NEW_BOOKING` au salon (US-7.3, #47).
+        self.owner_id = owner_id
         self.hairdresser_id = hairdresser_id
         self.service_id = service_id
         self.client_a_id = client_a_id
@@ -281,7 +285,7 @@ def _fixture(_e2e_client: TestClient) -> _Fixture:
     contrôle de rattachement §11.2).
     """
     client = _e2e_client
-    _register(
+    owner_id = _register(
         client, "/auth/register/manager", phone=_PHONE_MANAGER_LOCAL, full_name="Gérant E2E Notif"
     )
     manager_token = _login(client, phone=_PHONE_MANAGER_LOCAL)
@@ -329,6 +333,7 @@ def _fixture(_e2e_client: TestClient) -> _Fixture:
 
     return _Fixture(
         salon_id=salon_id,
+        owner_id=owner_id,
         hairdresser_id=hairdresser_id,
         service_id=service_id,
         client_a_id=client_a_id,
@@ -377,6 +382,11 @@ def _confirmation_rows(rows: list[dict]) -> list[dict]:
 
 def _reminder_rows(rows: list[dict]) -> list[dict]:
     return [row for row in rows if row["type"] == "REMINDER"]
+
+
+def _new_booking_rows(rows: list[dict]) -> list[dict]:
+    """Notifications `NEW_BOOKING` destinées au **salon** (US-7.3, #47)."""
+    return [row for row in rows if row["type"] == "NEW_BOOKING"]
 
 
 def _as_naive_utc(value: datetime.datetime) -> datetime.datetime:
@@ -475,7 +485,12 @@ class TestAppointmentNotificationE2E:
     def test_notification_linked_to_client_salon_and_appointment(
         self, _e2e_client: TestClient, _fixture: _Fixture
     ) -> None:
-        """Chaque ligne (confirmation + rappels) rattache le bon `user_id`/`salon_id`/`appointment_id`."""
+        """Chaque ligne rattache le bon `user_id`/`salon_id`/`appointment_id`.
+
+        Confirmation (#45) et rappels (#46) ciblent le **client** ; la notification
+        `NEW_BOOKING` au salon (#47) cible le **gérant** (`salon.owner_id`). Toutes
+        partagent le même `salon_id`/`appointment_id`.
+        """
         date = _next_monday()
         resp = _book(
             _e2e_client,
@@ -490,11 +505,20 @@ class TestAppointmentNotificationE2E:
         appointment_id = resp.json()["id"]
 
         rows = _notifications_for_appointment(appointment_id)
-        assert len(rows) == 1 + len(REMINDER_OFFSETS)
+        # 1 confirmation (#45) + N rappels (#46) + 1 notification salon (#47).
+        assert len(rows) == 2 + len(REMINDER_OFFSETS)
         for row in rows:
-            assert str(row["user_id"]) == _fixture.client_a_id
             assert str(row["salon_id"]) == _fixture.salon_id
             assert str(row["appointment_id"]) == appointment_id
+        # Les notifications client (confirmation + rappels) ciblent le client…
+        client_rows = _confirmation_rows(rows) + _reminder_rows(rows)
+        assert len(client_rows) == 1 + len(REMINDER_OFFSETS)
+        for row in client_rows:
+            assert str(row["user_id"]) == _fixture.client_a_id
+        # …la notification salon cible le gérant (`salon.owner_id`), pas le client.
+        new_booking = _new_booking_rows(rows)
+        assert len(new_booking) == 1
+        assert str(new_booking[0]["user_id"]) == _fixture.owner_id
 
     def test_notification_title_and_message_are_templated_no_pii(
         self, _e2e_client: TestClient, _fixture: _Fixture
@@ -600,9 +624,10 @@ class TestAppointmentNotificationE2E:
         after_count = _notification_count_for_salon(_fixture.salon_id)
 
         # Le refus (409) ne doit ajouter aucune notification : seule la première
-        # réservation (acceptée) en a émis une confirmation + ses rappels (#46).
+        # réservation (acceptée) en a émis une confirmation (#45) + ses rappels (#46)
+        # + une notification au salon (#47).
         assert after_count == before_count
-        assert after_count == 1 + len(REMINDER_OFFSETS)
+        assert after_count == 2 + len(REMINDER_OFFSETS)
 
     # ── Parcours 3 : la notification n'est jamais exposée dans la réponse HTTP ──
 

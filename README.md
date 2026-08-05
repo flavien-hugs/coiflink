@@ -391,7 +391,18 @@ RDV annule ses rappels** (§8.4/§11.4, AC) : annulation client (#24) et refus g
 **modification** (#23) les **re-planifie** sur le nouveau créneau. Comme #45, la **remise proactive**
 (push/SMS) et l'**ordonnanceur** qui interrogera les rappels dus restent **différés M5+** (ADR-0006) —
 rien n'est réellement envoyé, `sent_at` reste `NULL`, voir
-[ADR-0034](./docs/adr/0034-rappel-automatique-avant-rdv.md).
+[ADR-0034](./docs/adr/0034-rappel-automatique-avant-rdv.md). La **notification au salon à la réservation**
+(#47, US-7.3) est livrée à la suite côté backend : à la création d'un RDV, en plus des notifications
+**client** (#45/#46), `BookAppointment` **notifie le salon** — **une** ligne `notifications`
+(`type = NEW_BOOKING`, `channel = IN_APP`, `status = PENDING`) est **émise/tracée** vers le **gérant**
+(`user_id = salon.owner_id`), rattachée au salon et au RDV, dans la **même unité de travail** que la
+réservation (une réservation échouée n'en laisse aucune). **Migration `0007`** requise : valeur d'enum
+`NotificationType.NEW_BOOKING` + régénération du `CHECK` `type` (patron du `CHECK` `status` de `0006`). Le
+canal « dashboard » est `IN_APP` ; l'**option** de remise proactive email/SMS au gérant reste **différée
+M5+** (ADR-0006, `sent_at` reste `NULL`). Le périmètre est **strict** (création uniquement — l'annulation/
+la modification au client comme au salon relèvent de #48, US-7.4) ; l'endpoint de **lecture** salon-scopé
+qui afficherait ces notifications est **différé** (parité #45), voir
+[ADR-0035](./docs/adr/0035-notification-salon-a-la-reservation.md).
 
 ---
 

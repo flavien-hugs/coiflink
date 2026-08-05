@@ -1,4 +1,4 @@
-"""Domaine pur des **notifications applicatives** (US-7.1 #45, US-7.2 #46).
+"""Domaine pur des **notifications applicatives** (US-7.1 #45, US-7.2 #46, US-7.3 #47).
 
 Le domaine définit *ce qu'est* une notification à créer et *comment se choisit son
 canal* — sans rien savoir de la persistance (table SQL) ni de l'acheminement réel
@@ -14,6 +14,13 @@ la réservation pour chaque échéance encore future (`24h`/`2h`/`30min` avant l
 du RDV) et annulée si le RDV l'est. Dans les deux cas, la **remise réelle** (push FCM
 / SMS via file Redis) reste **différée M5+** (ADR-0006) — rien n'est envoyé ici : la
 ligne `PENDING` **est la file** et **la trace** de la notification critique (§8.4/§11.4).
+
+#47 ajoute la notification destinée au **salon** (au gérant) à chaque nouvelle
+réservation : `build_salon_new_booking_notification` assemble une ligne `NEW_BOOKING`
+`IN_APP` `PENDING` rattachée à `salon.owner_id` (le gérant), au salon et au RDV — le
+canal « dashboard » est `IN_APP`, la remise proactive **optionnelle** email/SMS reste
+différée M5+ (ADR-0006). Un **destinataire différent** (le gérant, pas le client) est
+la seule vraie différence avec la confirmation client.
 
 Invariant de non-fuite (PRD §11.3/§11.4, ADR-0006) : une `NotificationToCreate` est
 **neutre** — elle ne porte **jamais** de PII (ni téléphone, ni nom) ni de secret. Seuls
@@ -47,6 +54,13 @@ CONFIRMATION_MESSAGE = "Votre rendez-vous a bien été enregistré."
 # d'heure ni de nom de salon, données que le worker de remise composera à l'envoi).
 REMINDER_TITLE = "Rappel de rendez-vous"
 REMINDER_MESSAGE = "Vous avez un rendez-vous à venir."
+
+# Titre/corps **templatés et neutres** de la notification **au salon** (US-7.3, #47 —
+# §11.3 : aucune PII). Le salon apprend qu'**une** nouvelle réservation est arrivée ;
+# les détails du RDV (date/heure/prestation/client — que le salon a le droit de voir)
+# sont résolus **à la lecture** via `appointment_id`, jamais stockés dans la ligne.
+NEW_BOOKING_TITLE = "Nouvelle réservation"
+NEW_BOOKING_MESSAGE = "Un nouveau rendez-vous a été réservé dans votre salon."
 
 # Avances de rappel par défaut (« configurable 24h / 2h / 30 min », backlog #46) —
 # jeu **fixe** au MVP, aucune préférence par client/salon (cf. spec, Open Questions §2).
@@ -147,6 +161,36 @@ def build_confirmation_notification(
     )
 
 
+def build_salon_new_booking_notification(
+    *,
+    owner_id: uuid.UUID,
+    salon_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    channel: str,
+) -> NotificationToCreate:
+    """Assemble la notification **au salon** d'une nouvelle réservation (`NEW_BOOKING`).
+
+    Rattache la notification au **gérant** (`user_id = owner_id`, jamais au client),
+    au salon et au RDV par identifiants **opaques** ; `title`/`message` sont
+    **templatés** (aucune PII — ni nom ni téléphone du client). `status` reste
+    `PENDING` (non remis, ADR-0006), `scheduled_for` reste `None` (à remettre au plus
+    tôt). Le `channel` est celui du **tableau de bord** (`IN_APP`) : la notification
+    salon n'est pas « selon disponibilité » (le canal est fourni explicitement par
+    l'appelant, cf. `application/appointments.py`). Aucun `raise` : les données sont
+    déjà validées par la réservation. Gabarit direct : `build_confirmation_notification`.
+    """
+
+    return NotificationToCreate(
+        type=NotificationType.NEW_BOOKING.value,
+        channel=channel,
+        title=NEW_BOOKING_TITLE,
+        message=NEW_BOOKING_MESSAGE,
+        user_id=owner_id,
+        salon_id=salon_id,
+        appointment_id=appointment_id,
+    )
+
+
 def compute_reminder_schedules(
     appointment_start: datetime.datetime,
     *,
@@ -210,11 +254,14 @@ __all__ = [
     "REMINDER_TITLE",
     "REMINDER_MESSAGE",
     "REMINDER_OFFSETS",
+    "NEW_BOOKING_TITLE",
+    "NEW_BOOKING_MESSAGE",
     "NotificationToCreate",
     "ChannelAvailability",
     "resolve_notification_channel",
     "resolve_confirmation_channel",
     "build_confirmation_notification",
+    "build_salon_new_booking_notification",
     "compute_reminder_schedules",
     "build_reminder_notifications",
 ]
