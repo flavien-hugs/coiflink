@@ -416,6 +416,44 @@ class InvalidServiceFilter(DomainError):
     """
 
 
+class InvalidCampaignTitle(DomainError):
+    """Le titre de la campagne est vide ou hors bornes (US-7.5, #49).
+
+    Levée par `domain/campaign.py::validate_campaign_title` quand le titre —
+    **composé par le gérant** — est vide après `strip()` ou dépasse
+    `CAMPAIGN_TITLE_MAX_LENGTH` (aligné `String(255)`). Message **neutre** — il ne
+    reprend **jamais** le titre soumis. L'adapter entrant la traduit en `422`.
+    """
+
+
+class InvalidCampaignMessage(DomainError):
+    """Le corps du message de la campagne est vide ou hors bornes (US-7.5, #49).
+
+    Levée par `domain/campaign.py::validate_campaign_message` quand le corps —
+    **composé par le gérant** — est vide après `strip()` ou dépasse
+    `CAMPAIGN_MESSAGE_MAX_LENGTH` (borne **applicative**, colonne `TEXT`). Message
+    **neutre** — il ne reprend **jamais** le corps soumis. Traduite en `422`.
+    """
+
+
+class InvalidCampaignType(DomainError):
+    """Le type de campagne n'appartient pas à l'énumération fermée (US-7.5, #49).
+
+    Miroir du `CHECK` dérivé de `enums.CampaignType`
+    (`REMINDER`/`PROMOTION`/`EXCEPTIONAL_CLOSURE`) : aucune valeur n'est devinée ni
+    corrigée. Message neutre — l'adapter entrant la traduit en `422`.
+    """
+
+
+class InvalidCampaignSegment(DomainError):
+    """Le segment ciblé n'appartient pas à l'énumération fermée (US-7.5, #49).
+
+    Miroir du `CHECK` dérivé de `enums.CampaignSegment` (`ALL`/`FEMALE`/`MALE`/
+    `OTHER`) : le segment est un prédicat **salon-scopé** fermé sur les fiches
+    (#28). Message neutre — l'adapter entrant la traduit en `422`.
+    """
+
+
 class InvalidOtp(DomainError):
     """Le code OTP saisi ne correspond pas au défi en cours."""
 
@@ -514,6 +552,10 @@ __all__ = [
     "InvalidPlatformSummaryFilter",
     "InvalidCustomerFilter",
     "InvalidServiceFilter",
+    "InvalidCampaignTitle",
+    "InvalidCampaignMessage",
+    "InvalidCampaignType",
+    "InvalidCampaignSegment",
     "SlotAlreadyBooked",
     "SlotUnavailable",
     "SalonNotBookable",

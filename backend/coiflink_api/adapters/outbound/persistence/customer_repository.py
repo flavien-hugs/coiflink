@@ -142,6 +142,10 @@ class SqlCustomerRepository:
             clauses.append(models.CustomerProfile.created_at <= filter.created_at_to)
         if filter.gender is not None:
             clauses.append(models.CustomerProfile.gender == filter.gender)
+        # Joignabilité SMS (US-7.5, #49) : n'inclut que les fiches ayant un
+        # téléphone — une fiche walk-in sans numéro ne peut recevoir de campagne.
+        if filter.has_phone:
+            clauses.append(models.CustomerProfile.phone.is_not(None))
         if filter.q is not None:
             clauses.append(
                 models.CustomerProfile.full_name.ilike(

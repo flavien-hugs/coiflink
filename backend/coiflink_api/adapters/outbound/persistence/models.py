@@ -601,6 +601,67 @@ class Notification(Base):
     )
 
 
+class Campaign(Base):
+    """Campagne/message aux clients d'un salon (PRD §8.4, US-7.5, #49).
+
+    Une **action manuelle du gérant** : composer un message (`type` + `title` +
+    `message` en **texte libre**) et le diffuser à un **segment** de son fichier
+    clients (#28). Contrairement aux notifications de RDV (`notifications`,
+    #45–#48), une campagne n'est **pas** rattachée à un RDV ni à un destinataire
+    précis : elle porte un **effectif** (`recipient_count`, entier non-PII) snapshot
+    du segment à la création, jamais la liste des téléphones (résolus **à l'envoi**
+    par le worker de remise M5+, ADR-0006).
+
+    **Non-fuite de PII (§11.3)** : aucune colonne ne porte de téléphone, nom ni
+    identité de destinataire. Le `message` est du **contenu métier** composé par le
+    gérant (diffusé à l'identique à tout le segment), pas une donnée client.
+
+    `status = PENDING` + `sent_at = NULL` au MVP : la campagne est **émise/tracée**,
+    jamais remise (le worker M5+ passera `SENT`/`FAILED`). FK **RESTRICT** vers
+    `salons` et `users` (convention du module ; une campagne garde sa trace même si
+    le salon/l'auteur change d'état).
+    """
+
+    __tablename__ = "campaigns"
+
+    id: Mapped[uuid.UUID] = _pk()
+    salon_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    # Auteur (le gérant) — imposé serveur (`principal.id`), jamais lu du corps.
+    created_by: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    segment: Mapped[str] = mapped_column(String(32), nullable=False)
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    # Effectif **snapshot** du segment à la création (entier, non-PII).
+    recipient_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=text(f"'{enums.CampaignStatus.PENDING.value}'"),
+    )
+    sent_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime.datetime] = _created_at()
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["salon_id"], ["salons.id"], name="fk_campaigns_salon_id", ondelete="RESTRICT"
+        ),
+        ForeignKeyConstraint(
+            ["created_by"], ["users.id"], name="fk_campaigns_created_by", ondelete="RESTRICT"
+        ),
+        enum_check("type", enums.CampaignType, name="type"),
+        enum_check("segment", enums.CampaignSegment, name="segment"),
+        enum_check("channel", enums.NotificationChannel, name="channel"),
+        enum_check("status", enums.CampaignStatus, name="status"),
+        CheckConstraint("recipient_count >= 0", name="recipient_count_positive"),
+        # Liste des campagnes du salon, la plus récente d'abord.
+        Index("ix_campaigns_salon_id", "salon_id", "created_at"),
+    )
+
+
 class AuditLog(Base):
     """Journal d'audit §11.4 — trace *qui* fait *quelle* action sur *quelle*
     entité de *quel* salon, *quand* (US-2.3, #17).
@@ -671,6 +732,7 @@ __all__ = [
     "Payment",
     "CashJournal",
     "Notification",
+    "Campaign",
     "AuditLog",
     "enum_check",
 ]

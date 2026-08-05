@@ -1228,6 +1228,9 @@ class FakeCustomerRepository:
                 continue
             if filter.gender is not None and c.gender != filter.gender:  # type: ignore[union-attr]
                 continue
+            # Joignabilité SMS (US-7.5, #49) : une fiche sans téléphone est exclue.
+            if filter.has_phone and c.phone is None:  # type: ignore[union-attr]
+                continue
             if filter.q is not None and filter.q.lower() not in c.full_name.lower():  # type: ignore[union-attr]
                 continue
             result.append(c)
@@ -1266,6 +1269,60 @@ class FakeCustomerRepository:
         visits = self._visits.get(customer_id, ())
         # Le dépôt SQL filtre le statut en base ; le fake reproduit ce filtre.
         return tuple(v for v in visits if v.status in statuses)
+
+
+class FakeCampaignRepository:
+    """Dépôt de campagnes en mémoire (US-7.5, #49).
+
+    Implémente le port `CampaignRepository` sans I/O réelle. `created` accumule les
+    `CampaignToCreate` reçues (vérifie qu'une campagne est bien émise, `status =
+    PENDING`, `created_by`/`salon_id` corrects, **sans PII** de destinataire).
+    Isolation §11.2 : `list_for_salon`/`count_for_salon` filtrent sur `salon_id`.
+    N'achemine **rien** et ne journalise **rien** (ADR-0006).
+    """
+
+    def __init__(self) -> None:
+        self._campaigns: dict[uuid.UUID, object] = {}
+        self.created: list = []
+
+    def create(self, campaign):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.campaign import Campaign
+
+        entity = Campaign(
+            id=uuid.uuid4(),
+            salon_id=campaign.salon_id,
+            created_by=campaign.created_by,
+            type=campaign.type,
+            segment=campaign.segment,
+            channel=campaign.channel,
+            title=campaign.title,
+            message=campaign.message,
+            recipient_count=campaign.recipient_count,
+            status=campaign.status,
+            sent_at=None,
+            created_at=_CREATED_AT,
+        )
+        self._campaigns[entity.id] = entity
+        self.created.append(campaign)
+        return entity
+
+    def list_for_salon(self, salon_id: uuid.UUID, *, limit: int, offset: int):  # type: ignore[no-untyped-def]
+        matches = [
+            c for c in self._campaigns.values() if c.salon_id == salon_id  # type: ignore[union-attr]
+        ]
+        # Tri déterministe : created_at DESC, id DESC (miroir du SQL).
+        matches.sort(key=lambda c: (c.created_at, c.id), reverse=True)  # type: ignore[union-attr]
+        return tuple(matches[offset : offset + limit])
+
+    def count_for_salon(self, salon_id: uuid.UUID) -> int:
+        return sum(
+            1 for c in self._campaigns.values() if c.salon_id == salon_id  # type: ignore[union-attr]
+        )
+
+
+@pytest.fixture()
+def fake_campaign_repository() -> "FakeCampaignRepository":
+    return FakeCampaignRepository()
 
 
 @pytest.fixture()

@@ -20,6 +20,7 @@ from fastapi import Depends, FastAPI
 from coiflink_api.adapters.inbound.admin import router as admin_router
 from coiflink_api.adapters.inbound.appointments import router as appointments_router
 from coiflink_api.adapters.inbound.auth import router as auth_router
+from coiflink_api.adapters.inbound.campaigns import router as campaigns_router
 from coiflink_api.adapters.inbound.catalog import router as catalog_router
 from coiflink_api.adapters.inbound.customers import router as customers_router
 from coiflink_api.adapters.inbound.employees import router as employees_router
@@ -146,6 +147,15 @@ app.include_router(appointments_router)
 # collecte de PII au sens §11.3, entrée d'audit **neutre**. Rien n'est ajouté à
 # `security.PUBLIC_ROUTE_PATHS` : une fiche client n'est jamais publique.
 app.include_router(customers_router)
+# Campagnes/messages aux clients (#49, US-7.5) : création + liste sous
+# /salons/{id}/campaigns. Réutilise la permission CUSTOMER_MANAGE (§4.1, MANAGER
+# seul) + portée salon (isolation §11.2). Le gérant compose un message (texte
+# libre) et cible un segment de son fichier clients (#28) : la campagne est
+# **émise/tracée** (CAMPAIGN_CREATED, effectif non-PII, status=PENDING) dans la
+# même unité de travail que l'audit. La **remise proactive** (fan-out SMS) reste
+# différée M5 (Épic 7, ADR-0006) — rien n'est envoyé, sent_at reste NULL. Rien
+# n'est ajouté à `security.PUBLIC_ROUTE_PATHS` : une campagne n'est jamais publique.
+app.include_router(campaigns_router)
 # Encaissement & journal de caisse (#33/#34, US-5.1/5.3) : enregistrement d'un
 # paiement (PAYMENT_RECORD), journal horodaté en lecture (CASH_JOURNAL_READ) et
 # correction par ligne d'ajustement (PAYMENT_RECORD) sous /salons/{id}/…. Journal

@@ -42,6 +42,9 @@ ENTITY_TYPE_PAYMENT = "payment"
 # Type d'entité journalisée pour le journal de caisse (§11.4 « Correction de caisse ») — #34.
 ENTITY_TYPE_CASH_JOURNAL = "cash_journal"
 
+# Type d'entité journalisée pour les campagnes/messages aux clients (§11.4) — #49.
+ENTITY_TYPE_CAMPAIGN = "campaign"
+
 
 @unique
 class AuditAction(_StrEnum):
@@ -97,6 +100,14 @@ class AuditAction(_StrEnum):
     # journal d'audit.
     CASH_ADJUSTED = "CASH_ADJUSTED"
 
+    # Campagne/message aux clients — #49 (US-7.5, §11.4). Une campagne est une
+    # **action manuelle du gérant** (composer + diffuser un message à un segment) :
+    # à ce titre elle mérite sa propre trace d'audit, contrairement aux
+    # notifications de RDV (#45–#48, effets de bord d'événements déjà audités). Le
+    # `metadata` reste **non-PII** : type + segment + effectif (entier) — **jamais**
+    # le corps du message, **jamais** un téléphone ou un nom de client (§11.3).
+    CAMPAIGN_CREATED = "CAMPAIGN_CREATED"
+
 
 @dataclass(frozen=True)
 class AuditEntry:
@@ -125,6 +136,7 @@ __all__ = [
     "ENTITY_TYPE_CUSTOMER",
     "ENTITY_TYPE_PAYMENT",
     "ENTITY_TYPE_CASH_JOURNAL",
+    "ENTITY_TYPE_CAMPAIGN",
     "AuditAction",
     "AuditEntry",
 ]

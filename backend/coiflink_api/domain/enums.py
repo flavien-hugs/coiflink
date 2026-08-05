@@ -163,6 +163,56 @@ class NotificationStatus(_StrEnum):
     CANCELLED = "CANCELLED"
 
 
+@unique
+class CampaignType(_StrEnum):
+    """Type métier d'une campagne/message aux clients (PRD §8.4, US-7.5, #49).
+
+    Les trois exemples « campagnes simples » du backlog (Épic 7) : un **rappel**
+    générique, une **promotion** et une **fermeture exceptionnelle**. Contrairement
+    aux notifications de RDV (#45–#48, à libellés fixes), le **titre** et le **corps**
+    d'une campagne sont **composés par le gérant** (texte libre validé). La colonne
+    `type` (`campaigns`, migration `0009`) en dérive son `CHECK` via
+    `models.py::enum_check`.
+    """
+
+    REMINDER = "REMINDER"
+    PROMOTION = "PROMOTION"
+    EXCEPTIONAL_CLOSURE = "EXCEPTIONAL_CLOSURE"
+
+
+@unique
+class CampaignSegment(_StrEnum):
+    """Segment ciblé d'une campagne — prédicat **salon-scopé** sur les fiches (#28).
+
+    Le segment est un prédicat **structuré et fermé** sur `customer_profiles` du
+    salon (isolation §11.2). Au MVP : **tout le fichier** (`ALL`) ou un segment
+    **par genre** (`FEMALE`/`MALE`/`OTHER`) — réutilisant le `CustomerFilter`
+    existant (#28/#35) et sa brique `count_for_salon` (aucun nouveau chemin
+    d'agrégat). Les valeurs de genre reprennent celles de `Gender` (fiche client)
+    afin que `campaigns.segment` se traduise directement en `CustomerFilter`.
+    """
+
+    ALL = "ALL"
+    FEMALE = "FEMALE"
+    MALE = "MALE"
+    OTHER = "OTHER"
+
+
+@unique
+class CampaignStatus(_StrEnum):
+    """Statut d'émission/remise d'une campagne (US-7.5, #49).
+
+    Au MVP, une campagne est **émise/tracée** (`PENDING`) mais jamais remise : le
+    worker de remise (M5+, ADR-0006) passera `SENT` (fan-out SMS effectué) ou
+    `FAILED`. Enum **dédié** (cycle de vie propre à la campagne), distinct de
+    `NotificationStatus` (notifications de RDV).
+    """
+
+    PENDING = "PENDING"
+    SENT = "SENT"
+    FAILED = "FAILED"
+
+
 def values(enum_cls: type[_StrEnum]) -> tuple[str, ...]:
     """Retourne les valeurs textuelles d'une énumération, dans l'ordre déclaré.
 
@@ -185,5 +235,8 @@ __all__ = [
     "NotificationType",
     "NotificationChannel",
     "NotificationStatus",
+    "CampaignType",
+    "CampaignSegment",
+    "CampaignStatus",
     "values",
 ]
