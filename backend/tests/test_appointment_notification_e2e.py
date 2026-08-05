@@ -43,6 +43,22 @@ Scénarios (spec `specs/notification-confirmation-rdv.md` et
     - la réponse HTTP de réservation ne révèle **jamais** l'existence ni le
       contenu de la notification (canal, titre, message absents du corps).
 
+Groupe `TestAppointmentNotificationE2E` couvre également US-7.4 — notification
+d'annulation/modification (#48, spec
+`specs/notification-annulation-modification-rdv.md`) :
+    - l'**annulation client** (`POST .../cancellation`) et le **refus gérant**
+      (`POST .../status` `CANCELLED`) insèrent **2** lignes `type=CANCELLATION`
+      `status=PENDING` : une au **client** (`channel=SMS`), une au **salon**
+      (`user_id = salon.owner_id`, `channel=IN_APP`) — §8.4 ;
+    - une **confirmation** gérant (`→ CONFIRMED`) insère **1** ligne
+      `type=APPOINTMENT_UPDATE` au **client** ;
+    - une **modification** (`PATCH /appointments/{id}`) insère **1** ligne
+      `type=APPOINTMENT_UPDATE` au **salon** (`salon.owner_id`) ;
+    - `title`/`message` sont templatés, **sans PII** ni motif d'annulation ;
+    - une transition **refusée** (`409`) ne laisse **aucune** notification
+      supplémentaire (rollback conjoint) ;
+    - la réponse HTTP d'annulation ne révèle jamais le contenu de la notification.
+
 Le décor (salon réservable, horaires, coiffeur, prestation, client) est monté
 **via l'API réelle** (miroir `test_appointment_concurrency.py`, #21) — la
 réservation elle-même passe par `POST /salons/{id}/appointments`, jamais un
@@ -387,6 +403,16 @@ def _reminder_rows(rows: list[dict]) -> list[dict]:
 def _new_booking_rows(rows: list[dict]) -> list[dict]:
     """Notifications `NEW_BOOKING` destinées au **salon** (US-7.3, #47)."""
     return [row for row in rows if row["type"] == "NEW_BOOKING"]
+
+
+def _cancellation_rows(rows: list[dict]) -> list[dict]:
+    """Notifications d'annulation `CANCELLATION` — client **et** salon (US-7.4, #48)."""
+    return [row for row in rows if row["type"] == "CANCELLATION"]
+
+
+def _appointment_update_rows(rows: list[dict]) -> list[dict]:
+    """Notifications de changement de statut / modification (US-7.4, #48)."""
+    return [row for row in rows if row["type"] == "APPOINTMENT_UPDATE"]
 
 
 def _as_naive_utc(value: datetime.datetime) -> datetime.datetime:
@@ -791,3 +817,224 @@ class TestAppointmentNotificationE2E:
         # La confirmation d'origine n'est jamais touchée par une modification.
         confirmation = _confirmation_rows(_notifications_for_appointment(appointment_id))[0]
         assert confirmation["status"] == "PENDING"
+
+    # ── Parcours 6 : annulation → notifie client + salon (US-7.4, #48, §8.4) ───
+
+    def test_client_cancellation_persists_two_cancellation_rows(
+        self, _e2e_client: TestClient, _fixture: _Fixture
+    ) -> None:
+        """`POST .../cancellation` insère **2** lignes `CANCELLATION`/`PENDING` (client + salon)."""
+        date = _next_monday()
+        booking = _book(
+            _e2e_client,
+            _fixture.token_a,
+            _fixture.salon_id,
+            date=date,
+            start_time="12:00",
+            service_id=_fixture.service_id,
+            hairdresser_id=_fixture.hairdresser_id,
+        )
+        assert booking.status_code == 201, f"Réservation échouée : {booking.text}"
+        appointment_id = booking.json()["id"]
+
+        cancellation = _cancel(_e2e_client, _fixture.token_a, appointment_id)
+        assert cancellation.status_code == 200, f"Annulation échouée : {cancellation.text}"
+
+        rows = _cancellation_rows(_notifications_for_appointment(appointment_id))
+        assert len(rows) == 2
+        recipients = {str(row["user_id"]) for row in rows}
+        assert recipients == {_fixture.client_a_id, _fixture.owner_id}
+        for row in rows:
+            assert row["status"] == "PENDING"
+            assert row["sent_at"] is None
+            assert row["scheduled_for"] is None
+            assert str(row["salon_id"]) == _fixture.salon_id
+            assert str(row["appointment_id"]) == appointment_id
+
+        client_row = next(r for r in rows if str(r["user_id"]) == _fixture.client_a_id)
+        salon_row = next(r for r in rows if str(r["user_id"]) == _fixture.owner_id)
+        assert client_row["channel"] == "SMS"
+        assert salon_row["channel"] == "IN_APP"
+
+    def test_client_cancellation_notification_titles_are_templated_no_pii(
+        self, _e2e_client: TestClient, _fixture: _Fixture
+    ) -> None:
+        """`title`/`message` des lignes d'annulation sont templatés, sans PII ni motif."""
+        date = _next_monday()
+        booking = _book(
+            _e2e_client,
+            _fixture.token_a,
+            _fixture.salon_id,
+            date=date,
+            start_time="12:30",
+            service_id=_fixture.service_id,
+            hairdresser_id=_fixture.hairdresser_id,
+        )
+        assert booking.status_code == 201, f"Réservation échouée : {booking.text}"
+        appointment_id = booking.json()["id"]
+
+        cancellation = _cancel(_e2e_client, _fixture.token_a, appointment_id)
+        assert cancellation.status_code == 200, f"Annulation échouée : {cancellation.text}"
+
+        rows = _cancellation_rows(_notifications_for_appointment(appointment_id))
+        for row in rows:
+            assert row["title"] == "Rendez-vous annulé"
+            assert _PHONE_CLIENT_A_LOCAL not in row["title"]
+            assert _PHONE_CLIENT_A_LOCAL not in row["message"]
+            assert "Client E2E Notif A" not in row["message"]
+            assert "motif" not in row["message"].lower()
+
+    def test_manager_refusal_persists_two_cancellation_rows(
+        self, _e2e_client: TestClient, _fixture: _Fixture
+    ) -> None:
+        """Refus gérant (`→ CANCELLED`) insère lui aussi **2** lignes `CANCELLATION`."""
+        date = _next_monday()
+        booking = _book(
+            _e2e_client,
+            _fixture.token_a,
+            _fixture.salon_id,
+            date=date,
+            start_time="13:30",
+            service_id=_fixture.service_id,
+            hairdresser_id=_fixture.hairdresser_id,
+        )
+        assert booking.status_code == 201, f"Réservation échouée : {booking.text}"
+        appointment_id = booking.json()["id"]
+
+        manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_LOCAL)
+        refusal = _set_status(
+            _e2e_client, manager_token, _fixture.salon_id, appointment_id, "CANCELLED"
+        )
+        assert refusal.status_code == 200, f"Refus échoué : {refusal.text}"
+
+        rows = _cancellation_rows(_notifications_for_appointment(appointment_id))
+        assert len(rows) == 2
+        recipients = {str(row["user_id"]) for row in rows}
+        assert recipients == {_fixture.client_a_id, _fixture.owner_id}
+
+    def test_cancellation_response_never_exposes_notification_content(
+        self, _e2e_client: TestClient, _fixture: _Fixture
+    ) -> None:
+        """La réponse d'annulation ne révèle ni canal, ni titre, ni message."""
+        date = _next_monday()
+        booking = _book(
+            _e2e_client,
+            _fixture.token_a,
+            _fixture.salon_id,
+            date=date,
+            start_time="14:30",
+            service_id=_fixture.service_id,
+            hairdresser_id=_fixture.hairdresser_id,
+        )
+        assert booking.status_code == 201, f"Réservation échouée : {booking.text}"
+        appointment_id = booking.json()["id"]
+
+        cancellation = _cancel(_e2e_client, _fixture.token_a, appointment_id)
+        assert cancellation.status_code == 200
+        assert "CANCELLATION" not in cancellation.text
+        assert "Rendez-vous annulé" not in cancellation.text
+        assert "IN_APP" not in cancellation.text
+
+    # ── Parcours 7 : changements de statut & modification (US-7.4, #48, Volet B) ─
+
+    def test_manager_confirmation_persists_one_appointment_update_row(
+        self, _e2e_client: TestClient, _fixture: _Fixture
+    ) -> None:
+        """Confirmation gérant (`→ CONFIRMED`) insère **1** ligne `APPOINTMENT_UPDATE` client."""
+        date = _next_monday()
+        booking = _book(
+            _e2e_client,
+            _fixture.token_a,
+            _fixture.salon_id,
+            date=date,
+            start_time="09:00",
+            service_id=_fixture.service_id,
+            hairdresser_id=_fixture.hairdresser_id,
+        )
+        assert booking.status_code == 201, f"Réservation échouée : {booking.text}"
+        appointment_id = booking.json()["id"]
+
+        manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_LOCAL)
+        confirmed = _set_status(
+            _e2e_client, manager_token, _fixture.salon_id, appointment_id, "CONFIRMED"
+        )
+        assert confirmed.status_code == 200, f"Confirmation échouée : {confirmed.text}"
+
+        rows = _appointment_update_rows(_notifications_for_appointment(appointment_id))
+        assert len(rows) == 1
+        row = rows[0]
+        assert str(row["user_id"]) == _fixture.client_a_id
+        assert row["status"] == "PENDING"
+        assert row["sent_at"] is None
+        assert row["channel"] == "SMS"
+
+        # Aucune `CANCELLATION` mêlée : la confirmation n'est pas une annulation.
+        assert _cancellation_rows(_notifications_for_appointment(appointment_id)) == []
+
+    def test_modify_persists_one_appointment_update_row_for_salon(
+        self, _e2e_client: TestClient, _fixture: _Fixture
+    ) -> None:
+        """`PATCH /appointments/{id}` insère **1** ligne `APPOINTMENT_UPDATE` au salon."""
+        old_date = _next_monday()
+        booking = _book(
+            _e2e_client,
+            _fixture.token_a,
+            _fixture.salon_id,
+            date=old_date,
+            start_time="11:30",
+            service_id=_fixture.service_id,
+            hairdresser_id=_fixture.hairdresser_id,
+        )
+        assert booking.status_code == 201, f"Réservation échouée : {booking.text}"
+        appointment_id = booking.json()["id"]
+
+        new_date = old_date + datetime.timedelta(days=7)
+        modified = _modify(
+            _e2e_client,
+            _fixture.token_a,
+            appointment_id,
+            date=new_date,
+            start_time="14:00",
+            service_id=_fixture.service_id,
+            hairdresser_id=_fixture.hairdresser_id,
+        )
+        assert modified.status_code == 200, f"Modification échouée : {modified.text}"
+
+        rows = _appointment_update_rows(_notifications_for_appointment(appointment_id))
+        assert len(rows) == 1
+        row = rows[0]
+        assert str(row["user_id"]) == _fixture.owner_id
+        assert row["channel"] == "IN_APP"
+        assert row["status"] == "PENDING"
+        assert row["sent_at"] is None
+
+    def test_forbidden_status_transition_persists_no_new_notification(
+        self, _e2e_client: TestClient, _fixture: _Fixture
+    ) -> None:
+        """Une transition interdite (`409`) ne laisse **aucune** notification supplémentaire."""
+        date = _next_monday()
+        booking = _book(
+            _e2e_client,
+            _fixture.token_a,
+            _fixture.salon_id,
+            date=date,
+            start_time="15:30",
+            service_id=_fixture.service_id,
+            hairdresser_id=_fixture.hairdresser_id,
+        )
+        assert booking.status_code == 201, f"Réservation échouée : {booking.text}"
+        appointment_id = booking.json()["id"]
+
+        before_count = len(_notifications_for_appointment(appointment_id))
+
+        manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_LOCAL)
+        # PENDING → COMPLETED est interdit (la machine à états impose PENDING →
+        # CONFIRMED → COMPLETED) : aucune notification supplémentaire ne doit être
+        # insérée (rollback conjoint).
+        forbidden = _set_status(
+            _e2e_client, manager_token, _fixture.salon_id, appointment_id, "COMPLETED"
+        )
+        assert forbidden.status_code == 409, f"Transition attendue refusée : {forbidden.text}"
+
+        after_count = len(_notifications_for_appointment(appointment_id))
+        assert after_count == before_count

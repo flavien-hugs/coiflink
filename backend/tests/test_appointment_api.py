@@ -33,6 +33,7 @@ from coiflink_api.adapters.inbound.appointments import (
     get_audit_log,
     get_catalog_repository,
     get_notification_repository,
+    get_salon_repository,
 )
 from coiflink_api.domain.appointment import (
     Appointment as AppointmentEntity,
@@ -47,7 +48,7 @@ from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenSe
 from coiflink_api.application.authorization import AccessPolicy
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.credentials import UserCredentials
-from coiflink_api.domain.enums import UserStatus
+from coiflink_api.domain.enums import NotificationChannel, NotificationType, UserStatus
 from coiflink_api.domain.opening_hours import to_jsonb, parse_opening_hours
 from coiflink_api.domain.salon import Salon
 from coiflink_api.domain.service import Service
@@ -60,6 +61,7 @@ from .conftest import (
     FakeAuthUserRepository,
     FakeNotificationRepository,
     FakeSalonCatalogRepository,
+    FakeSalonRepository,
     FakeSalonScopeRepository,
     TEST_JWT_SECRET,
     make_access_token,
@@ -94,16 +96,18 @@ _AVAIL_URL = f"/catalog/salons/{_SALON_ID}/availability"
 _BOOK_URL = f"/salons/{_SALON_ID}/appointments"
 _MODIFY_APPT_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")
 _OTHER_CLIENT_ID_API = uuid.UUID("99999999-0000-0000-0000-000000000099")
+_SALON_OWNER_ID = uuid.UUID("88888888-0000-0000-0000-000000000008")
 
 
 def _make_salon(
     *,
     status: str = "ACTIVE",
     opening_hours: dict | None = _OPENING_HOURS_DICT,
+    owner_id: uuid.UUID | None = None,
 ) -> Salon:
     return Salon(
         id=_SALON_ID,
-        owner_id=uuid.uuid4(),
+        owner_id=owner_id if owner_id is not None else uuid.uuid4(),
         name="Salon Test",
         description=None,
         phone=None,
@@ -150,6 +154,16 @@ def _catalog(
     return FakeSalonCatalogRepository(salons=[s], services={_SALON_ID: svcs})
 
 
+def _salon_repository_with_owner(
+    owner_id: uuid.UUID = _SALON_OWNER_ID,
+) -> FakeSalonRepository:
+    """`FakeSalonRepository` pré-alimenté : `find_by_id(_SALON_ID)` renvoie un salon
+    dont l'`owner_id` est connu (US-7.4, #48 — notification d'annulation au salon)."""
+    repo = FakeSalonRepository()
+    repo._salons[_SALON_ID] = _make_salon(owner_id=owner_id)
+    return repo
+
+
 @pytest.fixture(autouse=True)
 def _install_token_service() -> Generator[None, None, None]:
     """Installe le service JWT (TEST_JWT_SECRET) sur `app.state` pour la durée du test."""
@@ -169,6 +183,7 @@ def _teardown_overrides() -> Generator[None, None, None]:
     app.dependency_overrides.pop(get_user_repository, None)
     app.dependency_overrides.pop(get_access_policy, None)
     app.dependency_overrides.pop(get_salon_scope_repository, None)
+    app.dependency_overrides.pop(get_salon_repository, None)
 
 
 def _user_repo_for_all_roles() -> FakeAuthUserRepository:
@@ -187,6 +202,7 @@ def _client(
     appts: FakeAppointmentRepository | None = None,
     scope: FakeSalonScopeRepository | None = None,
     notifications: FakeNotificationRepository | None = None,
+    salons: FakeSalonRepository | None = None,
 ) -> TestClient:
     cat = catalog if catalog is not None else _catalog()
     ap = appts if appts is not None else FakeAppointmentRepository()
@@ -206,6 +222,13 @@ def _client(
     app.dependency_overrides[get_notification_repository] = lambda: notif
     app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(FakeSalonScopeRepository())
+    # Annulation (#48) : le salon (gérant) est résolu via `get_salon_repository` — fake
+    # en mémoire pour garder le chemin hors base (aucun salon amorcé par défaut →
+    # notification salon simplement omise, la notification client reste émise ;
+    # `salons` permet d'injecter un salon connu pour vérifier la notification salon).
+    app.dependency_overrides[get_salon_repository] = lambda: (
+        salons if salons is not None else FakeSalonRepository()
+    )
     return TestClient(app)
 
 
@@ -700,6 +723,7 @@ def _modify_client(
     return tc
 
 
+
 # ---------------------------------------------------------------------------
 # GET /appointments — liste des rendez-vous actifs du client (US-3.2, #23)
 # ---------------------------------------------------------------------------
@@ -934,6 +958,36 @@ class TestModifyAppointmentAPI:
         reminders = [n for n in notif.enqueued if n.type == "REMINDER"]
         assert len(reminders) == 3
 
+    # --- Notification au salon de la modification (US-7.4, #48) -------------
+
+    def test_modify_emits_appointment_update_notification_to_salon(self) -> None:
+        salon = _make_salon(owner_id=_SALON_OWNER_ID)
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        resp = _modify_client(
+            catalog=_catalog(salon=salon), appts=appts, notifications=notif
+        ).patch(self._url(), json=_valid_modify_body(), headers=_auth_header())
+        assert resp.status_code == 200
+        updates = [
+            n for n in notif.enqueued if n.type == NotificationType.APPOINTMENT_UPDATE.value
+        ]
+        assert len(updates) == 1
+        assert updates[0].user_id == _SALON_OWNER_ID
+        assert updates[0].channel == NotificationChannel.IN_APP.value
+
+    def test_failed_modification_emits_no_notification(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        notif = FakeNotificationRepository()
+        resp = _modify_client(appts=appts, notifications=notif).patch(
+            self._url(), json=_valid_modify_body(), headers=_auth_header()
+        )
+        assert resp.status_code == 409
+        assert notif.enqueued == []
+
 
 # ---------------------------------------------------------------------------
 # _is_exclusion_violation — détection de la violation de contrainte d'exclusion
@@ -995,6 +1049,7 @@ def _manager_client(
     appts: FakeAppointmentRepository | None = None,
     scope: FakeSalonScopeRepository | None = None,
     notifications: FakeNotificationRepository | None = None,
+    salons: FakeSalonRepository | None = None,
 ) -> TestClient:
     """TestClient configuré pour MANAGER avec `_SALON_ID` dans sa portée (#25)."""
     ap = appts if appts is not None else FakeAppointmentRepository()
@@ -1012,6 +1067,11 @@ def _manager_client(
     app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(manager_scope)
     app.dependency_overrides[get_salon_scope_repository] = lambda: hairdresser_scope
+    # Notification d'annulation au salon (#48) : `get_salon_repository` en mémoire ;
+    # `salons` permet d'injecter un salon connu pour vérifier la notification salon.
+    app.dependency_overrides[get_salon_repository] = lambda: (
+        salons if salons is not None else FakeSalonRepository()
+    )
     return TestClient(app)
 
 
@@ -1069,9 +1129,10 @@ def _make_assign_entity(
 def _cancel_client(
     appts: FakeAppointmentRepository | None = None,
     notifications: FakeNotificationRepository | None = None,
+    salons: FakeSalonRepository | None = None,
 ) -> TestClient:
     """Comme `_client` mais installe aussi `get_audit_log` (requis par l'annulation)."""
-    tc = _client(appts=appts, notifications=notifications)
+    tc = _client(appts=appts, notifications=notifications, salons=salons)
     app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
     return tc
 
@@ -1304,6 +1365,71 @@ class TestCancelAppointmentAPI:
         assert resp.status_code == 200
         assert notif.cancel_calls == [_CANCEL_APPT_ID]
 
+    # --- Notifications d'annulation aux deux parties (US-7.4, #48, §8.4) ----
+
+    def test_cancel_emits_two_cancellation_notifications(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        resp = _cancel_client(appts=appts, notifications=notif, salons=salons).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 200
+        cancellations = [
+            n for n in notif.enqueued if n.type == NotificationType.CANCELLATION.value
+        ]
+        assert len(cancellations) == 2
+        assert {n.user_id for n in cancellations} == {_CLIENT_ID, _SALON_OWNER_ID}
+
+    def test_cancel_salon_notification_channel_is_in_app(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        resp = _cancel_client(appts=appts, notifications=notif, salons=salons).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 200
+        salon_notif = next(
+            n
+            for n in notif.enqueued
+            if n.type == NotificationType.CANCELLATION.value
+            and n.user_id == _SALON_OWNER_ID
+        )
+        assert salon_notif.channel == NotificationChannel.IN_APP.value
+
+    def test_cancel_without_known_salon_notifies_client_only(self) -> None:
+        # `_cancel_client` par défaut n'amorce aucun salon (`FakeSalonRepository()`
+        # vide) : l'annulation n'échoue pas, seule la notification salon est omise.
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        resp = _cancel_client(appts=appts, notifications=notif).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 200
+        cancellations = [
+            n for n in notif.enqueued if n.type == NotificationType.CANCELLATION.value
+        ]
+        assert len(cancellations) == 1
+        assert cancellations[0].user_id == _CLIENT_ID
+
+    def test_terminal_appointment_emits_no_notification(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_cancel_entity(status="COMPLETED")]
+        )
+        notif = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        resp = _cancel_client(appts=appts, notifications=notif, salons=salons).post(
+            self._url(), json={}, headers=_auth_header()
+        )
+        assert resp.status_code == 409
+        assert notif.enqueued == []
+
 
 # ---------------------------------------------------------------------------
 # POST /salons/{salon_id}/appointments/{appointment_id}/status (US-3.4, #25)
@@ -1348,6 +1474,7 @@ class TestSetAppointmentStatusAPI:
             FakeSalonScopeRepository()
         )
         app.dependency_overrides[get_salon_scope_repository] = lambda: FakeSalonScopeRepository()
+        app.dependency_overrides[get_salon_repository] = lambda: FakeSalonRepository()
         tc = TestClient(app)
         resp = tc.post(
             self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
@@ -1528,6 +1655,51 @@ class TestSetAppointmentStatusAPI:
         )
         assert resp.status_code == 200
         assert notif.cancel_calls == []
+
+    # --- Notifications de changement de statut (US-7.4, #48) ----------------
+
+    def test_refusal_emits_two_cancellation_notifications(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        resp = _manager_client(appts=appts, notifications=notif, salons=salons).post(
+            self._url(), json={"status": "CANCELLED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 200
+        cancellations = [
+            n for n in notif.enqueued if n.type == NotificationType.CANCELLATION.value
+        ]
+        assert len(cancellations) == 2
+        assert {n.user_id for n in cancellations} == {_CLIENT_ID, _SALON_OWNER_ID}
+
+    def test_confirmation_emits_appointment_update_notification_to_client(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        resp = _manager_client(appts=appts, notifications=notif).post(
+            self._url(), json={"status": "CONFIRMED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 200
+        updates = [
+            n for n in notif.enqueued if n.type == NotificationType.APPOINTMENT_UPDATE.value
+        ]
+        assert len(updates) == 1
+        assert updates[0].user_id == _CLIENT_ID
+        assert notif.enqueued == updates  # aucune CANCELLATION mélangée
+
+    def test_forbidden_transition_emits_no_notification(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_status_entity(status="PENDING")]
+        )
+        notif = FakeNotificationRepository()
+        resp = _manager_client(appts=appts, notifications=notif).post(
+            self._url(), json={"status": "COMPLETED"}, headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 409
+        assert notif.enqueued == []
 
 
 # ---------------------------------------------------------------------------

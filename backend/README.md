@@ -1406,6 +1406,53 @@ dans `PUBLIC_ROUTE_PATHS`.
 | Réservation échouée (`404`/`409`/`422`) | **aucune** (rollback conjoint) | — | — | — | — |
 | Annulation / modification du RDV | **aucune** (périmètre #48) | — | — | — | — |
 
+## Notifications — annulation/modification de RDV (US-7.4, #48 — [ADR-0036](../docs/adr/0036-notification-annulation-modification.md))
+
+« Un **changement de statut** déclenche la notification aux **parties concernées** » (AC #48), et §8.4
+impose qu'« une **annulation** notifie **le client et le salon** ». Après #45/#46/#47, `CancelAppointment`
+(#24), `SetAppointmentStatus` (#25) et `ModifyAppointment` (#23) **annulaient/re-planifiaient les rappels**
+mais ne **notifiaient personne** de l'événement. #48 ajoute l'**émission/trace** de la notification au
+moment du changement, dans la **même** unité de travail que l'écriture du statut — sans construire aucune
+remise réelle.
+
+**Volet A — annulation (sans migration).** Sur **toute** transition `→ CANCELLED` (annulation client #24
+**ou** refus gérant #25), **deux** lignes `notifications` `type = CANCELLATION` `status = PENDING` sont
+**émises/tracées** : une au **client** (`user_id = appointment.client_id`, canal résolu « selon
+disponibilité » → **SMS** au MVP) et une au **salon** (`user_id = salon.owner_id`, canal **`IN_APP`**). Le
+type `CANCELLATION` existant (enum + `CHECK`, migration `0007`) suffit — **aucune migration**.
+
+**Volet B — autres changements & modification (migration `0008`).** Les transitions gérant
+`CONFIRMED`/`COMPLETED`/`NO_SHOW` notifient le **client** ; une **modification** (#23) notifie le **salon**
+(`salon.owner_id`, déjà chargé) — via `type = APPOINTMENT_UPDATE`. La **migration `0008`** ajoute la valeur
+d'enum et **régénère** le `CHECK` `ck_notifications_type` (drop + recreate incluant les 5 valeurs) — patron
+de `0007` ; `downgrade` symétrique, round-trip vérifié en CI.
+
+**Résolution du gérant.** `ModifyAppointment` a déjà `salon.owner_id` (chargé par `_load_bookable_salon`).
+`CancelAppointment`/`SetAppointmentStatus` reçoivent une dépendance **optionnelle** `SalonRepository`
+(défaut `None`) et résolvent `owner_id` via `find_by_id(salon_id)` — un `get` par clé primaire
+**indépendant du statut** (une annulation reste possible sur un salon inactif §8.3). Le câblage HTTP
+(`get_salon_repository`, **même** `Session`) l'injecte toujours ; en son absence (ou si `find_by_id`
+renvoie `None`, théoriquement impossible), l'annulation **n'échoue pas** et seule la notification salon est
+omise.
+
+**Atomicité, non-remise, non-fuite.** L'émission passe par le port `enqueue` sur la **même** `Session` que
+l'écriture du statut : un changement échoué (verrou terminal, TOCTOU, RDV d'autrui) ne laisse **aucune**
+notification. Comme #45/#46/#47, rien n'est **envoyé** (`status = PENDING`, `sent_at = NULL`, remise
+différée M5+, ADR-0006) ; les lignes sont **neutres** (identifiants opaques + `title`/`message` templatés,
+**jamais** le nom/téléphone d'une partie ni le **motif** d'annulation). `AssignHairdresser` n'émet **rien**
+(pas un changement de statut). **Contrats HTTP inchangés** (`cancel`/`status`/`modify` → `200`) ; **aucune**
+route ajoutée, rien dans `PUBLIC_ROUTE_PATHS`. La **lecture** (`GET /me/notifications`,
+`GET /salons/{salon_id}/notifications`) reste différée (parité #45/#47).
+
+| Déclencheur | Écriture `notifications` | Destinataire(s) | Canal | Statut | Remise |
+| --- | --- | --- | --- | --- | --- |
+| `POST /appointments/{id}/cancellation` réussi (annulation client) | 2 lignes `CANCELLATION` | client + gérant (`salon.owner_id`) | SMS (client) / `IN_APP` (salon) | `PENDING` | différée M5+ (aucune) |
+| `POST /salons/{id}/appointments/{id}/status` `→ CANCELLED` (refus gérant) | 2 lignes `CANCELLATION` | client + gérant | SMS / `IN_APP` | `PENDING` | différée M5+ (aucune) |
+| `POST /salons/{id}/appointments/{id}/status` `CONFIRMED`/`COMPLETED`/`NO_SHOW` | 1 ligne `APPOINTMENT_UPDATE` | client | SMS | `PENDING` | différée M5+ (aucune) |
+| `PATCH /appointments/{id}` réussi (modification) | 1 ligne `APPOINTMENT_UPDATE` | gérant (`salon.owner_id`) | `IN_APP` | `PENDING` | différée M5+ (aucune) |
+| Changement de statut échoué (`404`/`409`/`422`) | **aucune** (rollback conjoint) | — | — | — | — |
+| (Dés)assignation d'un coiffeur | **aucune** (hors périmètre) | — | — | — | — |
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;

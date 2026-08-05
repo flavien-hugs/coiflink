@@ -46,7 +46,12 @@ from coiflink_api.application.appointments import (
 from coiflink_api.domain.appointment import Appointment, BookedService
 from coiflink_api.domain.audit import AuditAction, ENTITY_TYPE_APPOINTMENT
 from coiflink_api.domain.availability import SlotRange
-from coiflink_api.domain.enums import Role
+from coiflink_api.domain.enums import (
+    NotificationChannel,
+    NotificationStatus,
+    NotificationType,
+    Role,
+)
 from coiflink_api.domain.errors import (
     AppointmentNotCancellable,
     AppointmentNotFound,
@@ -68,6 +73,7 @@ from .conftest import (
     FakeAuditLog,
     FakeNotificationRepository,
     FakeSalonCatalogRepository,
+    FakeSalonRepository,
     FakeSalonScopeRepository,
 )
 
@@ -145,6 +151,16 @@ def _bookable_catalog(
         salons=[s],
         services={_SALON_ID: svcs},
     )
+
+
+def _salon_repository_with_owner(
+    *, salon_id: uuid.UUID = _SALON_ID, owner_id: uuid.UUID = _OWNER_ID
+) -> FakeSalonRepository:
+    """`FakeSalonRepository` pré-alimenté : `find_by_id(salon_id)` renvoie un salon
+    dont l'`owner_id` est connu (US-7.4, #48 — notification d'annulation au salon)."""
+    repo = FakeSalonRepository()
+    repo._salons[salon_id] = _make_salon(owner_id=owner_id)
+    return repo
 
 
 # ---------------------------------------------------------------------------
@@ -1549,6 +1565,83 @@ class TestModifyAppointment:
         assert len(reminders) == 1
         assert reminders[0].scheduled_for == new_start - datetime.timedelta(minutes=30)
 
+    # --- Notification au salon de la modification (US-7.4, #48) -------------
+
+    def test_modify_emits_one_appointment_update_to_salon(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        self._uc(catalog=catalog, appts=appts, notifications=notifs).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        updates = [
+            n for n in notifs.enqueued if n.type == NotificationType.APPOINTMENT_UPDATE.value
+        ]
+        assert len(updates) == 1
+        assert updates[0].user_id == _OWNER_ID
+
+    def test_modify_salon_notification_channel_is_in_app(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        self._uc(catalog=catalog, appts=appts, notifications=notifs).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        update = next(
+            n for n in notifs.enqueued if n.type == NotificationType.APPOINTMENT_UPDATE.value
+        )
+        assert update.channel == NotificationChannel.IN_APP.value
+
+    def test_modify_notification_status_is_pending(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        self._uc(catalog=catalog, appts=appts, notifications=notifs).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        update = next(
+            n for n in notifs.enqueued if n.type == NotificationType.APPOINTMENT_UPDATE.value
+        )
+        assert update.status == NotificationStatus.PENDING.value
+
+    def test_modify_does_not_notify_client(self) -> None:
+        # Le client est l'auteur de la modification ; il n'est pas re-notifié (#48).
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        self._uc(catalog=catalog, appts=appts, notifications=notifs).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        updates = [
+            n for n in notifs.enqueued if n.type == NotificationType.APPOINTMENT_UPDATE.value
+        ]
+        assert all(n.user_id != _CLIENT_ID for n in updates)
+
+    def test_race_condition_emits_no_notification(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity()],
+            raise_conflict=True,
+        )
+        notifs = FakeNotificationRepository()
+        with pytest.raises(SlotAlreadyBooked):
+            self._uc(catalog=catalog, appts=appts, notifications=notifs).execute(
+                _APPT_ID, _CLIENT_ID, _valid_modify_command()
+            )
+        assert notifs.enqueued == []
+
+    def test_not_modifiable_emits_no_notification(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        notifs = FakeNotificationRepository()
+        with pytest.raises(AppointmentNotModifiable):
+            self._uc(catalog=catalog, appts=appts, notifications=notifs).execute(
+                _APPT_ID, _CLIENT_ID, _valid_modify_command()
+            )
+        assert notifs.enqueued == []
+
 
 # ---------------------------------------------------------------------------
 # ListMyAppointments (US-3.2, #23)
@@ -1607,11 +1700,13 @@ class TestCancelAppointment:
         appts: FakeAppointmentRepository | None = None,
         audit_log: FakeAuditLog | None = None,
         notifications: FakeNotificationRepository | None = None,
+        salons: FakeSalonRepository | None = None,
     ) -> CancelAppointment:
         return CancelAppointment(
             appts if appts is not None else FakeAppointmentRepository(),
             audit_log if audit_log is not None else FakeAuditLog(),
             notifications if notifications is not None else FakeNotificationRepository(),
+            salons,
         )
 
     # --- Propriété / appartenance ------------------------------------------
@@ -1863,6 +1958,123 @@ class TestCancelAppointment:
             self._uc(appts=appts, notifications=notifs).execute(_APPT_ID, _CLIENT_ID)
         assert notifs.cancel_calls == []
 
+    # --- Notifications d'annulation aux deux parties (US-7.4, #48, §8.4) ----
+
+    def test_cancel_emits_two_cancellation_notifications(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+            _APPT_ID, _CLIENT_ID
+        )
+        cancellations = [
+            n for n in notifs.enqueued if n.type == NotificationType.CANCELLATION.value
+        ]
+        assert len(cancellations) == 2
+
+    def test_cancel_notifies_client_and_salon_owner(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+            _APPT_ID, _CLIENT_ID
+        )
+        cancellations = [
+            n for n in notifs.enqueued if n.type == NotificationType.CANCELLATION.value
+        ]
+        assert {n.user_id for n in cancellations} == {_CLIENT_ID, _OWNER_ID}
+
+    def test_cancel_client_notification_channel_is_resolved(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+            _APPT_ID, _CLIENT_ID
+        )
+        client_notif = next(
+            n
+            for n in notifs.enqueued
+            if n.type == NotificationType.CANCELLATION.value and n.user_id == _CLIENT_ID
+        )
+        assert client_notif.channel == NotificationChannel.SMS.value
+
+    def test_cancel_salon_notification_channel_is_in_app(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+            _APPT_ID, _CLIENT_ID
+        )
+        salon_notif = next(
+            n
+            for n in notifs.enqueued
+            if n.type == NotificationType.CANCELLATION.value and n.user_id == _OWNER_ID
+        )
+        assert salon_notif.channel == NotificationChannel.IN_APP.value
+
+    def test_cancel_notifications_status_is_pending(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+            _APPT_ID, _CLIENT_ID
+        )
+        cancellations = [
+            n for n in notifs.enqueued if n.type == NotificationType.CANCELLATION.value
+        ]
+        assert all(n.status == NotificationStatus.PENDING.value for n in cancellations)
+
+    def test_cancel_without_salon_repository_notifies_client_only(self) -> None:
+        # Câblage de test qui n'injecte pas de `SalonRepository` (défaut `None`) :
+        # l'annulation n'échoue pas, seule la notification salon est omise.
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(_APPT_ID, _CLIENT_ID)
+        cancellations = [
+            n for n in notifs.enqueued if n.type == NotificationType.CANCELLATION.value
+        ]
+        assert len(cancellations) == 1
+        assert cancellations[0].user_id == _CLIENT_ID
+
+    def test_cancel_unresolvable_salon_notifies_client_only(self) -> None:
+        # `find_by_id` renvoie `None` (salon non amorcé) : théoriquement impossible
+        # (FK RESTRICT) mais ne doit pas faire échouer l'annulation.
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        salons = FakeSalonRepository()  # vide : find_by_id(_SALON_ID) -> None
+        self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+            _APPT_ID, _CLIENT_ID
+        )
+        cancellations = [
+            n for n in notifs.enqueued if n.type == NotificationType.CANCELLATION.value
+        ]
+        assert len(cancellations) == 1
+        assert cancellations[0].user_id == _CLIENT_ID
+
+    def test_not_cancellable_emits_no_cancellation_notification(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="COMPLETED")]
+        )
+        notifs = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        with pytest.raises(AppointmentNotCancellable):
+            self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+                _APPT_ID, _CLIENT_ID
+            )
+        assert notifs.enqueued == []
+
+    def test_not_owned_emits_no_cancellation_notification(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(client_id=_CLIENT_ID)]
+        )
+        notifs = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+                _APPT_ID, _OTHER_CLIENT_ID
+            )
+        assert notifs.enqueued == []
+
 
 # ---------------------------------------------------------------------------
 # SetAppointmentStatus (US-3.4, #25)
@@ -1877,11 +2089,13 @@ class TestSetAppointmentStatus:
         appts: FakeAppointmentRepository | None = None,
         audit_log: FakeAuditLog | None = None,
         notifications: FakeNotificationRepository | None = None,
+        salons: FakeSalonRepository | None = None,
     ) -> SetAppointmentStatus:
         return SetAppointmentStatus(
             appts if appts is not None else FakeAppointmentRepository(),
             audit_log if audit_log is not None else FakeAuditLog(),
             notifications if notifications is not None else FakeNotificationRepository(),
+            salons,
         )
 
     # --- RDV introuvable / hors salon (§11.2) --------------------------------
@@ -2150,6 +2364,130 @@ class TestSetAppointmentStatus:
             _APPT_ID, _SALON_ID, _MANAGER_ID, "CONFIRMED"
         )
         assert notifs.cancel_calls == []
+
+    # --- Notifications de changement de statut (US-7.4, #48) ----------------
+
+    def test_refusal_emits_two_cancellation_notifications(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notifs = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "CANCELLED"
+        )
+        cancellations = [
+            n for n in notifs.enqueued if n.type == NotificationType.CANCELLATION.value
+        ]
+        assert len(cancellations) == 2
+        assert {n.user_id for n in cancellations} == {_CLIENT_ID, _OWNER_ID}
+
+    def test_refusal_salon_notification_channel_is_in_app(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notifs = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "CANCELLED"
+        )
+        salon_notif = next(
+            n
+            for n in notifs.enqueued
+            if n.type == NotificationType.CANCELLATION.value and n.user_id == _OWNER_ID
+        )
+        assert salon_notif.channel == NotificationChannel.IN_APP.value
+
+    def test_refusal_without_salon_repository_notifies_client_only(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "CANCELLED"
+        )
+        cancellations = [
+            n for n in notifs.enqueued if n.type == NotificationType.CANCELLATION.value
+        ]
+        assert len(cancellations) == 1
+        assert cancellations[0].user_id == _CLIENT_ID
+
+    def test_confirmation_emits_one_appointment_update_to_client(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "CONFIRMED"
+        )
+        updates = [
+            n for n in notifs.enqueued if n.type == NotificationType.APPOINTMENT_UPDATE.value
+        ]
+        assert len(updates) == 1
+        assert updates[0].user_id == _CLIENT_ID
+        assert notifs.enqueued == updates  # aucune CANCELLATION mélangée
+
+    def test_completion_emits_one_appointment_update_to_client(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CONFIRMED")]
+        )
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "COMPLETED"
+        )
+        updates = [
+            n for n in notifs.enqueued if n.type == NotificationType.APPOINTMENT_UPDATE.value
+        ]
+        assert len(updates) == 1
+        assert updates[0].user_id == _CLIENT_ID
+
+    def test_no_show_emits_one_appointment_update_to_client(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CONFIRMED")]
+        )
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "NO_SHOW"
+        )
+        updates = [
+            n for n in notifs.enqueued if n.type == NotificationType.APPOINTMENT_UPDATE.value
+        ]
+        assert len(updates) == 1
+        assert updates[0].user_id == _CLIENT_ID
+
+    def test_status_update_channel_is_resolved(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notifs = FakeNotificationRepository()
+        self._uc(appts=appts, notifications=notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "CONFIRMED"
+        )
+        update = next(
+            n for n in notifs.enqueued if n.type == NotificationType.APPOINTMENT_UPDATE.value
+        )
+        assert update.channel == NotificationChannel.SMS.value
+
+    def test_invalid_transition_emits_no_notification(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CANCELLED")]
+        )
+        notifs = FakeNotificationRepository()
+        salons = _salon_repository_with_owner()
+        with pytest.raises(InvalidAppointmentTransition):
+            self._uc(appts=appts, notifications=notifs, salons=salons).execute(
+                _APPT_ID, _SALON_ID, _MANAGER_ID, "CONFIRMED"
+            )
+        assert notifs.enqueued == []
+
+    def test_not_found_emits_no_notification(self) -> None:
+        appts = FakeAppointmentRepository()
+        notifs = FakeNotificationRepository()
+        with pytest.raises(AppointmentNotFound):
+            self._uc(appts=appts, notifications=notifs).execute(
+                _APPT_ID, _SALON_ID, _MANAGER_ID, "CONFIRMED"
+            )
+        assert notifs.enqueued == []
 
     def test_completed_does_not_cancel_reminders(self) -> None:
         appts = FakeAppointmentRepository(

@@ -62,6 +62,26 @@ REMINDER_MESSAGE = "Vous avez un rendez-vous à venir."
 NEW_BOOKING_TITLE = "Nouvelle réservation"
 NEW_BOOKING_MESSAGE = "Un nouveau rendez-vous a été réservé dans votre salon."
 
+# Titre/corps **templatés et neutres** des notifications d'**annulation** (US-7.4, #48 —
+# §11.3 : aucune PII, jamais le **motif** — persisté sur le RDV, jamais recopié ici).
+# Deux destinataires distincts, deux libellés : le **client** (« votre rendez-vous »)
+# et le **salon** (« un rendez-vous de votre salon »).
+CANCELLATION_TITLE = "Rendez-vous annulé"
+CANCELLATION_MESSAGE = "Votre rendez-vous a été annulé."
+SALON_CANCELLATION_TITLE = "Rendez-vous annulé"
+SALON_CANCELLATION_MESSAGE = "Un rendez-vous de votre salon a été annulé."
+
+# Titre/corps **templatés et neutres** des notifications de **changement de statut /
+# modification** (US-7.4, #48 — §11.3 : aucune PII, ni ancien/nouveau statut ni
+# ancien/nouveau créneau). `STATUS_UPDATE_*` va au **client** (le gérant a confirmé /
+# clôturé / marqué absent son RDV) ; `SALON_MODIFICATION_*` va au **salon** (le client
+# a modifié un RDV). Le détail (from/to, diff) vit dans `audit_logs`/sur le RDV, résolu
+# à la lecture/remise — jamais copié dans la ligne `notifications`.
+STATUS_UPDATE_TITLE = "Rendez-vous mis à jour"
+STATUS_UPDATE_MESSAGE = "Le statut de votre rendez-vous a été mis à jour."
+SALON_MODIFICATION_TITLE = "Rendez-vous modifié"
+SALON_MODIFICATION_MESSAGE = "Un rendez-vous de votre salon a été modifié."
+
 # Avances de rappel par défaut (« configurable 24h / 2h / 30 min », backlog #46) —
 # jeu **fixe** au MVP, aucune préférence par client/salon (cf. spec, Open Questions §2).
 REMINDER_OFFSETS: tuple[datetime.timedelta, ...] = (
@@ -191,6 +211,123 @@ def build_salon_new_booking_notification(
     )
 
 
+def build_client_cancellation_notification(
+    *,
+    client_id: uuid.UUID,
+    salon_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    channel: str,
+) -> NotificationToCreate:
+    """Assemble la notification d'annulation **au client** (`type = CANCELLATION`, #48).
+
+    Sur **toute** transition `→ CANCELLED` (annulation client #24 **ou** refus gérant
+    #25), le §8.4 impose de notifier le client. Rattache la notification au **client**
+    (`user_id = client_id`), au salon et au RDV par identifiants **opaques** ;
+    `title`/`message` sont **templatés** (aucune PII, jamais le motif). `status` reste
+    `PENDING` (non remis, ADR-0006), `scheduled_for` reste `None`. Le `channel` est
+    résolu « selon disponibilité » (SMS au MVP). Aucun `raise` : les données sont déjà
+    validées par le changement de statut. Gabarit : `build_confirmation_notification`.
+    """
+
+    return NotificationToCreate(
+        type=NotificationType.CANCELLATION.value,
+        channel=channel,
+        title=CANCELLATION_TITLE,
+        message=CANCELLATION_MESSAGE,
+        user_id=client_id,
+        salon_id=salon_id,
+        appointment_id=appointment_id,
+    )
+
+
+def build_salon_cancellation_notification(
+    *,
+    owner_id: uuid.UUID,
+    salon_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    channel: str,
+) -> NotificationToCreate:
+    """Assemble la notification d'annulation **au salon** (`type = CANCELLATION`, #48).
+
+    Deuxième volet de la règle §8.4 (« une annulation notifie le client **et** le
+    salon ») : rattache la notification au **gérant** (`user_id = owner_id`, jamais au
+    client), au salon et au RDV par identifiants **opaques** ; `title`/`message` sont
+    **templatés** (aucune PII, jamais le motif). `status` reste `PENDING`,
+    `scheduled_for` reste `None`. Le `channel` « dashboard » est `IN_APP` (explicite,
+    fourni par l'appelant, comme #47). Aucun `raise`. Gabarit :
+    `build_salon_new_booking_notification`.
+    """
+
+    return NotificationToCreate(
+        type=NotificationType.CANCELLATION.value,
+        channel=channel,
+        title=SALON_CANCELLATION_TITLE,
+        message=SALON_CANCELLATION_MESSAGE,
+        user_id=owner_id,
+        salon_id=salon_id,
+        appointment_id=appointment_id,
+    )
+
+
+def build_client_status_update_notification(
+    *,
+    client_id: uuid.UUID,
+    salon_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    channel: str,
+) -> NotificationToCreate:
+    """Assemble la notification de changement de statut **au client** (US-7.4, #48).
+
+    Couvre les transitions gérant **autres** que l'annulation (`CONFIRMED`,
+    `COMPLETED`, `NO_SHOW`) : « un changement de statut déclenche la notification à la
+    partie concernée » (AC #48). Type dédié `APPOINTMENT_UPDATE` (migration `0008`) —
+    distinct de `CONFIRMATION` (réservation #45). Rattache la notification au
+    **client** (`user_id = client_id`), au salon et au RDV par identifiants
+    **opaques** ; `title`/`message` sont **templatés** (aucune PII, ni ancien/nouveau
+    statut). `status` reste `PENDING`, `scheduled_for` reste `None`. Le `channel` est
+    résolu « selon disponibilité » (SMS au MVP). Aucun `raise`.
+    """
+
+    return NotificationToCreate(
+        type=NotificationType.APPOINTMENT_UPDATE.value,
+        channel=channel,
+        title=STATUS_UPDATE_TITLE,
+        message=STATUS_UPDATE_MESSAGE,
+        user_id=client_id,
+        salon_id=salon_id,
+        appointment_id=appointment_id,
+    )
+
+
+def build_salon_modification_notification(
+    *,
+    owner_id: uuid.UUID,
+    salon_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    channel: str,
+) -> NotificationToCreate:
+    """Assemble la notification de **modification au salon** (US-7.4, #48).
+
+    Quand un client **modifie** son RDV (#23), le salon est notifié (« annulation/
+    **modification** », titre #48). Type dédié `APPOINTMENT_UPDATE` (migration
+    `0008`). Rattache la notification au **gérant** (`user_id = owner_id`), au salon et
+    au RDV par identifiants **opaques** ; `title`/`message` sont **templatés** (aucune
+    PII, ni ancien/nouveau créneau). `status` reste `PENDING`, `scheduled_for` reste
+    `None`. Le `channel` « dashboard » est `IN_APP` (explicite, comme #47). Aucun
+    `raise`.
+    """
+
+    return NotificationToCreate(
+        type=NotificationType.APPOINTMENT_UPDATE.value,
+        channel=channel,
+        title=SALON_MODIFICATION_TITLE,
+        message=SALON_MODIFICATION_MESSAGE,
+        user_id=owner_id,
+        salon_id=salon_id,
+        appointment_id=appointment_id,
+    )
+
+
 def compute_reminder_schedules(
     appointment_start: datetime.datetime,
     *,
@@ -256,12 +393,24 @@ __all__ = [
     "REMINDER_OFFSETS",
     "NEW_BOOKING_TITLE",
     "NEW_BOOKING_MESSAGE",
+    "CANCELLATION_TITLE",
+    "CANCELLATION_MESSAGE",
+    "SALON_CANCELLATION_TITLE",
+    "SALON_CANCELLATION_MESSAGE",
+    "STATUS_UPDATE_TITLE",
+    "STATUS_UPDATE_MESSAGE",
+    "SALON_MODIFICATION_TITLE",
+    "SALON_MODIFICATION_MESSAGE",
     "NotificationToCreate",
     "ChannelAvailability",
     "resolve_notification_channel",
     "resolve_confirmation_channel",
     "build_confirmation_notification",
     "build_salon_new_booking_notification",
+    "build_client_cancellation_notification",
+    "build_salon_cancellation_notification",
+    "build_client_status_update_notification",
+    "build_salon_modification_notification",
     "compute_reminder_schedules",
     "build_reminder_notifications",
 ]

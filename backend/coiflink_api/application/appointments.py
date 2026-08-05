@@ -60,11 +60,16 @@ from coiflink_api.domain.availability import (
 )
 from coiflink_api.domain.notification import (
     ChannelAvailability,
+    build_client_cancellation_notification,
+    build_client_status_update_notification,
     build_confirmation_notification,
     build_reminder_notifications,
+    build_salon_cancellation_notification,
+    build_salon_modification_notification,
     build_salon_new_booking_notification,
     resolve_notification_channel,
 )
+from coiflink_api.application.ports.salon_repository import SalonRepository
 from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
 from coiflink_api.domain.enums import AppointmentStatus, NotificationChannel, Role
 from coiflink_api.domain.errors import (
@@ -459,6 +464,14 @@ class ModifyAppointment:
     les rappels `PENDING` existants sont **annulés** (`cancel_pending_for_appointment`)
     puis **recréés** sur la nouvelle date/heure (`build_reminder_notifications`),
     même `Session` — cohérent avec l'annulation liée au cycle de vie (#24/#25).
+
+    **Notification de modification au salon (US-7.4, #48)** — après la re-planification
+    des rappels (destinés au **client**, qui est l'auteur du changement), **une** ligne
+    `notifications` (`type = APPOINTMENT_UPDATE`, `channel = IN_APP`, `status = PENDING`)
+    est **émise/tracée** pour le **gérant** (`user_id = salon.owner_id`, déjà chargé),
+    dans la **même** `Session`. Cette ligne **est la trace** de la notification critique
+    « un rendez-vous du salon a été modifié » (§8.4/§11.4) et **la file** du futur worker
+    de remise (M5+, ADR-0006) — rien n'est **envoyé** ici (`sent_at` reste `NULL`).
     """
 
     def __init__(
@@ -558,6 +571,23 @@ class ModifyAppointment:
         ):
             self._notifications.enqueue(reminder)
 
+        # Notification **au salon** de la modification (US-7.4, #48 — Volet B) : le
+        # titre de l'issue est « annulation/**modification** ». Le client est l'auteur
+        # (il connaît déjà le changement) ; on notifie donc **le salon** — **une** ligne
+        # `APPOINTMENT_UPDATE`/`IN_APP` destinée au **gérant** (`salon.owner_id`, déjà
+        # chargé — aucun accès base en plus), dans la **même** unité de travail. Ligne
+        # `PENDING`, `sent_at = NULL` : #48 **émet/trace** sans **acheminer** (remise
+        # réelle différée M5+, ADR-0006). Une modification échouée n'atteint jamais ce
+        # point (rollback conjoint).
+        self._notifications.enqueue(
+            build_salon_modification_notification(
+                owner_id=salon.owner_id,
+                salon_id=current.salon_id,
+                appointment_id=appointment_id,
+                channel=NotificationChannel.IN_APP.value,
+            )
+        )
+
         # Audit §11.4 dans la **même** unité de travail que l'écriture (patron #20) :
         # métadonnées **neutres** (noms de champs uniquement, jamais de valeur).
         self._audit_log.record(
@@ -571,6 +601,56 @@ class ModifyAppointment:
             )
         )
         return updated
+
+
+def _emit_cancellation_notifications(
+    notifications: NotificationRepository,
+    salon_repository: SalonRepository | None,
+    *,
+    client_id: uuid.UUID,
+    salon_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+) -> None:
+    """Émet les notifications d'annulation aux **deux** parties (§8.4, US-7.4 #48).
+
+    Sur **toute** transition `→ CANCELLED` (annulation client #24, refus gérant #25),
+    §8.4 impose de notifier **le client et le salon**. Émet **une** ligne
+    `CANCELLATION` au **client** (canal résolu « selon disponibilité » → SMS au MVP,
+    comme #45/#46) et, si le salon est résoluble via `salon_repository.find_by_id`
+    (un `get` par clé primaire **indépendant du statut** — l'annulation reste possible
+    sur un salon devenu inactif §8.3), **une** au **gérant** (`salon.owner_id`, canal
+    `IN_APP` explicite, comme #47). Les deux passent par le port `enqueue`, dans la
+    **même** `Session` que l'écriture du statut (atomicité §11.4). Lignes `PENDING`,
+    `sent_at = NULL` : on **émet/trace** sans **acheminer** (remise différée M5+,
+    ADR-0006). Si `salon_repository` est absent ou renvoie `None` (théoriquement
+    impossible — FK RESTRICT), l'annulation n'est **pas** compromise : seule la
+    notification salon est omise.
+    """
+
+    channel = resolve_notification_channel(
+        ChannelAvailability(has_push_token=False, has_phone=True)
+    )
+    notifications.enqueue(
+        build_client_cancellation_notification(
+            client_id=client_id,
+            salon_id=salon_id,
+            appointment_id=appointment_id,
+            channel=channel,
+        )
+    )
+    if salon_repository is None:
+        return
+    salon = salon_repository.find_by_id(salon_id)
+    if salon is None:
+        return
+    notifications.enqueue(
+        build_salon_cancellation_notification(
+            owner_id=salon.owner_id,
+            salon_id=salon_id,
+            appointment_id=appointment_id,
+            channel=NotificationChannel.IN_APP.value,
+        )
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -602,6 +682,15 @@ class CancelAppointment:
     **annulés** (`cancel_pending_for_appointment`, marqués `CANCELLED`) dans la
     **même** `Session` — un RDV annulé ne laisse **aucun** rappel `PENDING` derrière
     lui. Un RDV déjà terminal (`AppointmentNotCancellable`) n'atteint jamais ce point.
+
+    **Notification d'annulation aux deux parties (US-7.4, #48, §8.4)** — après
+    l'annulation réussie (et l'annulation des rappels), **deux** notifications
+    `CANCELLATION` sont **émises/tracées** dans la **même** `Session` : une au **client**
+    et une au **salon** (`salon.owner_id`, résolu via `SalonRepository.find_by_id`). Le
+    `SalonRepository` est **optionnel** au constructeur (défaut `None`) : le câblage de
+    production l'injecte toujours (§8.4 → client **et** salon) ; en son absence, seule la
+    notification client est émise. Aucune n'est **acheminée** ici (remise différée M5+,
+    ADR-0006). Cf. `_emit_cancellation_notifications`.
     """
 
     def __init__(
@@ -609,10 +698,12 @@ class CancelAppointment:
         appointment_repository: AppointmentRepository,
         audit_log: AuditLog,
         notification_repository: NotificationRepository,
+        salon_repository: SalonRepository | None = None,
     ) -> None:
         self._appointments = appointment_repository
         self._audit_log = audit_log
         self._notifications = notification_repository
+        self._salons = salon_repository
 
     def execute(
         self,
@@ -641,6 +732,15 @@ class CancelAppointment:
         # Rappels (US-7.2, #46, AC) : annule les rappels `PENDING` de ce RDV, même
         # unité de travail que l'annulation — aucun rappel ne survit à un RDV annulé.
         self._notifications.cancel_pending_for_appointment(appointment_id)
+        # Notifications d'annulation (US-7.4, #48, §8.4) : le **client** et le **salon**
+        # sont notifiés dans la **même** unité de travail que l'annulation.
+        _emit_cancellation_notifications(
+            self._notifications,
+            self._salons,
+            client_id=client_id,
+            salon_id=current.salon_id,
+            appointment_id=appointment_id,
+        )
         # Audit §11.4 dans la **même** unité de travail que l'écriture (patron #20/#23) :
         # métadonnées **neutres** — jamais le texte du motif ni de PII.
         self._audit_log.record(
@@ -684,6 +784,15 @@ class SetAppointmentStatus:
     Les autres transitions (`CONFIRMED`, `COMPLETED`, `NO_SHOW`) n'annulent **rien** :
     un RDV `COMPLETED`/`NO_SHOW` a des rappels dont l'échéance est déjà passée, que le
     futur worker de remise ne remettra pas (il re-vérifiera le statut à l'envoi).
+
+    **Notification à chaque changement de statut (US-7.4, #48)** — « un changement de
+    statut déclenche la notification aux parties concernées » (AC #48). Sur `→ CANCELLED`
+    (refus gérant), **deux** notifications `CANCELLATION` (client + salon, §8.4 —
+    Volet A) ; sur `CONFIRMED`/`COMPLETED`/`NO_SHOW`, **une** notification
+    `APPOINTMENT_UPDATE` au **client** (Volet B). Toutes dans la **même** `Session`,
+    `status = PENDING`, `sent_at = NULL` (remise différée M5+, ADR-0006). Le
+    `SalonRepository` (optionnel, résout `salon.owner_id`) n'est sollicité **que** sur
+    l'annulation.
     """
 
     def __init__(
@@ -691,10 +800,12 @@ class SetAppointmentStatus:
         appointment_repository: AppointmentRepository,
         audit_log: AuditLog,
         notification_repository: NotificationRepository,
+        salon_repository: SalonRepository | None = None,
     ) -> None:
         self._appointments = appointment_repository
         self._audit_log = audit_log
         self._notifications = notification_repository
+        self._salons = salon_repository
 
     def execute(
         self,
@@ -734,6 +845,32 @@ class SetAppointmentStatus:
         # statut. Les autres transitions n'y touchent pas.
         if target_status == AppointmentStatus.CANCELLED.value:
             self._notifications.cancel_pending_for_appointment(appointment_id)
+            # Annulation (US-7.4, #48, §8.4 — Volet A) : notifie le **client** et le
+            # **salon** (`salon.owner_id`) dans la **même** unité de travail.
+            _emit_cancellation_notifications(
+                self._notifications,
+                self._salons,
+                client_id=current.client_id,
+                salon_id=salon_id,
+                appointment_id=appointment_id,
+            )
+        else:
+            # Autres transitions (`CONFIRMED`/`COMPLETED`/`NO_SHOW`, US-7.4 #48 —
+            # Volet B) : « un changement de statut déclenche la notification » (AC) —
+            # **une** ligne `APPOINTMENT_UPDATE` au **client** (`current.client_id`),
+            # même unité de travail. Canal résolu « selon disponibilité » (SMS au MVP),
+            # `status = PENDING`, `sent_at = NULL` (remise différée M5+, ADR-0006).
+            channel = resolve_notification_channel(
+                ChannelAvailability(has_push_token=False, has_phone=True)
+            )
+            self._notifications.enqueue(
+                build_client_status_update_notification(
+                    client_id=current.client_id,
+                    salon_id=salon_id,
+                    appointment_id=appointment_id,
+                    channel=channel,
+                )
+            )
         # Audit §11.4 dans la **même** unité de travail que l'écriture (patron #20) :
         # métadonnées **neutres** — valeurs d'énumération de statut, jamais de PII.
         self._audit_log.record(

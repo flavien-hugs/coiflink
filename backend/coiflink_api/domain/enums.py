@@ -119,12 +119,21 @@ class NotificationType(_StrEnum):
     gérant) à chaque nouvelle réservation — distincte de la `CONFIRMATION` du
     **client** (#45). L'ajouter suppose de **régénérer** le `CHECK` `type`
     (migration `0007`, dérivé de cette énumération via `models.py::enum_check`).
+
+    `APPOINTMENT_UPDATE` (US-7.4, #48) couvre les **autres** changements de statut
+    d'un RDV côté client (confirmation/clôture/absence par le gérant) **et** la
+    **modification** notifiée au salon — sémantique qu'aucune valeur existante ne
+    porte (`CONFIRMATION`/`REMINDER` visent une réservation client, `NEW_BOOKING`
+    le salon, `CANCELLATION` une annulation). L'ajouter suppose de **régénérer** le
+    `CHECK` `type` (migration `0008`, même patron que `0007`). L'**annulation**
+    réutilise `CANCELLATION` — elle n'exige **aucune** migration.
     """
 
     CONFIRMATION = "CONFIRMATION"
     REMINDER = "REMINDER"
     CANCELLATION = "CANCELLATION"
     NEW_BOOKING = "NEW_BOOKING"
+    APPOINTMENT_UPDATE = "APPOINTMENT_UPDATE"
 
 
 @unique

@@ -402,7 +402,19 @@ canal « dashboard » est `IN_APP` ; l'**option** de remise proactive email/SMS 
 M5+** (ADR-0006, `sent_at` reste `NULL`). Le périmètre est **strict** (création uniquement — l'annulation/
 la modification au client comme au salon relèvent de #48, US-7.4) ; l'endpoint de **lecture** salon-scopé
 qui afficherait ces notifications est **différé** (parité #45), voir
-[ADR-0035](./docs/adr/0035-notification-salon-a-la-reservation.md).
+[ADR-0035](./docs/adr/0035-notification-salon-a-la-reservation.md). La **notification d'annulation/
+modification** (#48, US-7.4) est livrée à la suite côté backend : « un changement de statut déclenche la
+notification aux parties concernées » (§8.4). Sur **toute** transition `→ CANCELLED` (annulation client
+#24 ou refus gérant #25), **deux** lignes `notifications` (`type = CANCELLATION`) sont **émises/tracées** —
+au **client** (canal résolu, SMS au MVP) **et** au **salon** (`user_id = salon.owner_id`, canal `IN_APP`),
+comme l'exige §8.4 ; sur les **autres** changements de statut gérant (`CONFIRMED`/`COMPLETED`/`NO_SHOW`) le
+**client** est notifié, et sur une **modification** (#23) le **salon** l'est, via `type = APPOINTMENT_UPDATE`.
+Le cœur « annulation » **n'exige aucune migration** (`CANCELLATION` existe depuis `0007`) ; le reste ajoute
+la **migration `0008`** (valeur d'enum `APPOINTMENT_UPDATE` + régénération du `CHECK` `type`). Toutes sont
+persistées dans la **même unité de travail** que le changement de statut (un changement échoué n'en laisse
+aucune). Comme #45/#46/#47, la **remise proactive** (push/SMS/email) reste **différée M5+** (ADR-0006,
+`sent_at` reste `NULL`) et la **lecture** est différée (parité #45/#47), voir
+[ADR-0036](./docs/adr/0036-notification-annulation-modification.md).
 
 ---
 
