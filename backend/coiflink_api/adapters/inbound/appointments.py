@@ -468,11 +468,13 @@ def book_appointment(
     En cas de course concurrente sur le même créneau/coiffeur, la contrainte
     d'exclusion base tranche : **une seule** insertion aboutit, l'autre reçoit un
     `409` (`SlotAlreadyBooked`). À la création, une confirmation `CONFIRMATION` est
-    **émise/tracée** dans la table `notifications` (§8.4/§11.4, US-7.1 #45), et des
+    **émise/tracée** dans la table `notifications` (§8.4/§11.4, US-7.1 #45), des
     **rappels** `REMINDER` sont **planifiés** pour chaque échéance encore future
-    (`24h`/`2h`/`30min` avant le RDV, US-7.2 #46) — **même** unité de travail que le
-    RDV ; la **remise réelle** (push/SMS) reste différée M5+ (ADR-0006) — rien n'est
-    envoyé, le contrat de réponse (`201`) est inchangé.
+    (`24h`/`2h`/`30min` avant le RDV, US-7.2 #46), et **le salon est notifié** par une
+    ligne `NEW_BOOKING`/`IN_APP` destinée au gérant (`salon.owner_id`, US-7.3 #47) —
+    **même** unité de travail que le RDV ; la **remise réelle** (push/SMS/email) reste
+    différée M5+ (ADR-0006) — rien n'est envoyé, le contrat de réponse (`201`) est
+    inchangé.
     """
 
     command = BookingCommand(

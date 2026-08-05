@@ -1357,6 +1357,55 @@ route de lecture des rappels, rien dans `PUBLIC_ROUTE_PATHS`.
 | Modification (`PATCH`, `200`) | anciens rappels annulés + nouveaux planifiés | `CANCELLED` puis `PENDING` |
 | Confirmation / terminé / absence (`CONFIRMED`/`COMPLETED`/`NO_SHOW`) | **aucune** | inchangé |
 
+## Notifications — au salon à la réservation (US-7.3, #47 — [ADR-0035](../docs/adr/0035-notification-salon-a-la-reservation.md))
+
+À la **création d'un rendez-vous**, en plus de la confirmation (#45) et des rappels (#46) — destinés au
+**client** —, `BookAppointment` **notifie le salon** : **une** ligne `notifications`
+(`type = NEW_BOOKING`, `channel = IN_APP`, `status = PENDING`, `scheduled_for = NULL`) est persistée pour
+le **gérant** (`user_id = salon.owner_id`, déjà chargé — aucun accès base supplémentaire), rattachée au
+`salon_id` et à l'`appointment_id`, via le **même** port `NotificationRepository` (`enqueue`), dans la
+**même** unité de travail que le RDV — committée/rollbackée **avec** lui. Cette ligne **est la trace** de
+la notification critique « nouvelle réservation reçue par le salon » (§8.4/§11.4) et **la file** que
+consommera le futur worker pour la remise **optionnelle** email/SMS. **Une** réservation → **une**
+notification salon ; une réservation échouée (`404`/`409`/`422`) n'en laisse **aucune** (rollback
+conjoint). **Migration `0007`** requise : valeur d'enum `NotificationType.NEW_BOOKING` + **régénération**
+du `CHECK` `ck_notifications_type` (drop + recreate incluant `NEW_BOOKING`) — patron du `CHECK` `status`
+régénéré par `0006`.
+
+**Destinataire = le gérant, pas le client.** La seule vraie différence avec la confirmation client est le
+destinataire : `user_id = salon.owner_id` (imposé serveur, jamais soumis). Le `salon_id` de la ligne est
+celui du chemin ; l'`appointment_id` est celui du RDV créé.
+
+**Canal « dashboard » = `IN_APP`.** Le backlog dit « Notification **dashboard** + **option** email/SMS ».
+La notification que le salon consulte est **`IN_APP`** (passée explicitement, pas « selon disponibilité »
+téléphone/push). L'**option** email/SMS est une **remise proactive** qui relève — comme le push/SMS
+client de #45/#46 — du **worker M5+** ([ADR-0006](../docs/adr/0006-notifications-fcm-sms.md)) : `status`
+reste `PENDING`, `sent_at` reste `NULL` — rien n'est envoyé ici.
+
+**Non-fuite de PII** (§11.3). La ligne ne stocke **que** des identifiants **opaques** (`user_id = owner`,
+`salon_id`, `appointment_id`) et un `title`/`message` **templaté neutre** (« Nouvelle réservation » /
+« Un nouveau rendez-vous a été réservé dans votre salon. ») — **jamais** le nom ni le téléphone du client.
+Les détails du RDV (date/heure/prestation/client), que le salon a le droit de voir, sont résolus **à la
+lecture** via `appointment_id`, jamais copiés dans `notifications`. Ni `SqlNotificationRepository` ni
+`BookAppointment` ne journalisent le destinataire, le canal ou le corps du message.
+
+**Périmètre strict : création uniquement.** #47 notifie le salon **à la réservation**
+(`BookAppointment`). Les notifications d'**annulation/modification** (au client comme au salon) relèvent de
+**#48 (US-7.4)** : `ModifyAppointment`/`CancelAppointment`/`SetAppointmentStatus` n'émettent **aucune**
+`NEW_BOOKING` (une modification ne **re-notifie pas** le salon dans #47).
+
+**Lecture « dashboard » différée.** Comme #45 (dont l'ADR-0033 a *reporté* `GET /me/notifications`), #47
+livre l'**émission/trace** ; l'endpoint de **lecture salon-scopé** (`GET /salons/{salon_id}/notifications`)
+qui matérialiserait l'affichage est **différé** (voir ADR-0035). **Contrat HTTP inchangé** :
+`POST /salons/{salon_id}/appointments` reste `201 AppointmentResponse` ; **aucune** route ajoutée, rien
+dans `PUBLIC_ROUTE_PATHS`.
+
+| Déclencheur | Écriture `notifications` | Destinataire | Canal | Statut | Remise |
+| --- | --- | --- | --- | --- | --- |
+| `POST /salons/{salon_id}/appointments` réussi (`201`) | 1 ligne `NEW_BOOKING` (owner + salon + RDV) | gérant (`salon.owner_id`) | `IN_APP` | `PENDING` | option email/SMS différée M5+ (aucune) |
+| Réservation échouée (`404`/`409`/`422`) | **aucune** (rollback conjoint) | — | — | — | — |
+| Annulation / modification du RDV | **aucune** (périmètre #48) | — | — | — | — |
+
 ## Configuration
 
 La configuration est lue **depuis l'environnement** (jamais en dur). Voir `.env.example` ;
@@ -1881,16 +1930,46 @@ Issue #45 ajoute trois suites dédiées à la notification de confirmation de RD
   par défaut.
 
 - `test_appointment_usecases.py` (étendu — `TestBookAppointmentNotification`) — comportement de
-  `BookAppointment` (ports 100 % fakes, sans base) : réservation valide → **exactement une**
-  notification émise (`type=CONFIRMATION`, `status=PENDING`, `user_id=client_id`, `salon_id`
-  correct, `appointment_id` correspondant au RDV créé) ; canal `SMS` au MVP (faute de jeton PUSH,
-  cf. §12.1) ; titre/message = constantes templatées (§11.3 : aucun numéro de téléphone) ;
-  réservation échouée (`SlotAlreadyBooked`, `ServiceNotFound`, `SalonNotBookable`, `SlotUnavailable`)
-  → **aucune** notification (invariant d'atomicité §8.4/§11.4 : la notification n'est jamais émise
-  sur une réservation qui n'aboutit pas).
+  `BookAppointment` (ports 100 % fakes, sans base) : réservation valide → **5** notifications émises
+  (1 `CONFIRMATION` + 3 `REMINDER` + 1 `NEW_BOOKING`) ; la `CONFIRMATION` porte `type=CONFIRMATION`,
+  `status=PENDING`, `user_id=client_id`, `salon_id` correct, `appointment_id` correspondant au RDV
+  créé, canal `SMS` au MVP (faute de jeton PUSH, cf. §12.1), libellés templatés (§11.3 : aucun
+  numéro de téléphone) ; réservation échouée (`SlotAlreadyBooked`, `ServiceNotFound`,
+  `SalonNotBookable`, `SlotUnavailable`) → **aucune** notification (invariant d'atomicité §8.4/§11.4 :
+  la notification n'est jamais émise sur une réservation qui n'aboutit pas).
 
 - `test_appointment_concurrency.py` (étendu) — la fonction `_wipe_test_data` est complétée pour
   supprimer les lignes `notifications` **avant** les RDV/comptes/salons (FK `RESTRICT`
   `notifications → appointments/users/salons` introduite par #45). Les tests de concurrence
   existants (niveau SQL et HTTP) vérifient implicitement le rollback conjoint : le perdant n'obtient
   ni RDV ni notification.
+
+Issue #47 étend les suites de #45/#46 pour la notification au salon à la réservation (US-7.3) :
+
+- `test_notification_domain.py` (étendu) — `TestNotificationTypeNewBooking` : valeur d'enum
+  `NotificationType.NEW_BOOKING == "NEW_BOOKING"` ; distincte de `CONFIRMATION`/`REMINDER`/
+  `CANCELLATION` (régression schéma — `CHECK` `type` régénéré par la migration `0007`).
+  `TestBuildSalonNewBookingNotification` : type `NEW_BOOKING`, canal `IN_APP`, statut `PENDING`,
+  `scheduled_for = None` (pas de planification) ; `user_id = owner_id` (gérant, **jamais** le
+  client) ; `salon_id`/`appointment_id` corrects ; libellés `NEW_BOOKING_TITLE`/`NEW_BOOKING_MESSAGE`
+  **templatés et sans PII** (ni nom ni téléphone du client, §11.3) ; immuabilité garantie.
+
+- `test_appointment_usecases.py` (étendu — `TestBookAppointmentSalonNotification`) — invariants
+  de la notification salon : une réservation valide émet **exactement une** `NEW_BOOKING` ; canal
+  `IN_APP` explicite (pas « selon disponibilité ») ; `user_id = salon.owner_id` (gérant chargé,
+  jamais le client) ; statut `PENDING` ; libellés `NEW_BOOKING_TITLE`/`NEW_BOOKING_MESSAGE` sans
+  PII ; émise **en dernier** (après `CONFIRMATION` et `REMINDER`s) ; `user_id` suit l'`owner_id` du
+  salon chargé — deux salons avec des gérants distincts produisent des `NEW_BOOKING` ciblant leurs
+  gérants respectifs ; réservation échouée → **aucune** `NEW_BOOKING` (rollback conjoint).
+  `TestNoNewBookingOnOtherUsecases` : régression de périmètre — `CancelAppointment`,
+  `SetAppointmentStatus` et `ModifyAppointment` n'émettent **aucune** `NEW_BOOKING` (les
+  notifications d'annulation/modification relèvent de #48, US-7.4).
+
+- `test_appointment_notification_e2e.py` (étendu — `TestAppointmentNotificationE2E`) — bout-en-bout
+  SQL réel (PostgreSQL, skip propre sans `DATABASE_URL`) : une réservation réussie insère **1 ligne**
+  `NEW_BOOKING`/`IN_APP`/`PENDING` avec `user_id = salon.owner_id` (gérant, **pas** le client),
+  `salon_id`/`appointment_id` liés, `scheduled_for IS NULL`, `sent_at IS NULL`, libellés templatés
+  **sans PII** — en plus des lignes `CONFIRMATION`/`REMINDER` du client (#45/#46) ; total = `2 +
+  len(REMINDER_OFFSETS)` lignes par réservation. Réservation refusée (`409`) → **aucune**
+  `NEW_BOOKING` (rollback conjoint). Chaque ligne respecte les contraintes réelles du schéma
+  (FK `RESTRICT`, `CHECK type` incluant `NEW_BOOKING` — migration `0007`).

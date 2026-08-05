@@ -113,11 +113,18 @@ class CashOperationType(_StrEnum):
 
 @unique
 class NotificationType(_StrEnum):
-    """Type métier d'une notification (PRD §8.4)."""
+    """Type métier d'une notification (PRD §8.4).
+
+    `NEW_BOOKING` (US-7.3, #47) désigne la notification destinée au **salon** (au
+    gérant) à chaque nouvelle réservation — distincte de la `CONFIRMATION` du
+    **client** (#45). L'ajouter suppose de **régénérer** le `CHECK` `type`
+    (migration `0007`, dérivé de cette énumération via `models.py::enum_check`).
+    """
 
     CONFIRMATION = "CONFIRMATION"
     REMINDER = "REMINDER"
     CANCELLATION = "CANCELLATION"
+    NEW_BOOKING = "NEW_BOOKING"
 
 
 @unique

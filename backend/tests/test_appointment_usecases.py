@@ -80,6 +80,7 @@ _CLIENT_ID = uuid.UUID("22222222-0000-0000-0000-000000000002")
 _HAIRDRESSER_ID = uuid.UUID("33333333-0000-0000-0000-000000000003")
 _SERVICE_ID = uuid.UUID("44444444-0000-0000-0000-000000000004")
 _OTHER_SERVICE_ID = uuid.UUID("55555555-0000-0000-0000-000000000005")
+_OWNER_ID = uuid.UUID("66666666-0000-0000-0000-000000000006")
 _DATE = datetime.date(2026, 8, 3)  # lundi
 _CREATED_AT = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
 
@@ -92,10 +93,11 @@ def _make_salon(
     *,
     status: str = "ACTIVE",
     opening_hours: dict | None = _OPENING_HOURS_DICT,
+    owner_id: uuid.UUID = _OWNER_ID,
 ) -> Salon:
     return Salon(
         id=_SALON_ID,
-        owner_id=uuid.uuid4(),
+        owner_id=owner_id,
         name="Salon Test",
         description=None,
         phone=None,
@@ -482,13 +484,14 @@ class TestBookAppointmentNotification:
         # Sans `now` explicite, `BookAppointment` traite l'absence de référence
         # temporelle comme « aucun filtrage par le passé » (parité `is_offered`) :
         # les 3 rappels (`REMINDER_OFFSETS`) sont donc tous planifiés, en plus de
-        # la confirmation (#45) — soit 4 notifications au total.
+        # la confirmation (#45) et de la notification au salon (#47) — soit 5
+        # notifications au total.
         catalog = _bookable_catalog()
         notifs = FakeNotificationRepository()
         self._uc(catalog, notifications=notifs).execute(
             _SALON_ID, _CLIENT_ID, _valid_command()
         )
-        assert len(notifs.enqueued) == 4
+        assert len(notifs.enqueued) == 5
 
     def test_valid_booking_enqueues_exactly_one_confirmation(self) -> None:
         from coiflink_api.domain.enums import NotificationType
@@ -803,8 +806,9 @@ class TestBookAppointmentReminder:
             _SALON_ID, _CLIENT_ID, _valid_command(), now=now
         )
         assert self._reminders(notifs) == []
-        # La confirmation, elle, part toujours (#45, inchangé).
-        assert len(notifs.enqueued) == 1
+        # La confirmation (#45) et la notification au salon (#47) partent toujours,
+        # indépendamment des échéances de rappel — soit 2 notifications.
+        assert len(notifs.enqueued) == 2
 
     # --- Atomicité : pas de rappel sur échec (§8.4) -------------------------
 
@@ -817,6 +821,236 @@ class TestBookAppointmentReminder:
                 _SALON_ID, _CLIENT_ID, _valid_command()
             )
         assert notifs.enqueued == []
+
+
+# ---------------------------------------------------------------------------
+# BookAppointment — notification au salon (US-7.3, #47)
+# ---------------------------------------------------------------------------
+
+
+class TestBookAppointmentSalonNotification:
+    """Vérifie qu'une notification `NEW_BOOKING` est émise au gérant à la réservation
+    et **jamais** en cas d'échec — invariant d'atomicité, canal `IN_APP`, ciblage
+    `salon.owner_id` (§8.4/§11.4, ADR-0006)."""
+
+    def _uc(
+        self,
+        catalog: FakeSalonCatalogRepository,
+        appts: FakeAppointmentRepository | None = None,
+        scope: FakeSalonScopeRepository | None = None,
+        notifications: FakeNotificationRepository | None = None,
+    ) -> BookAppointment:
+        return BookAppointment(
+            catalog,
+            appts or FakeAppointmentRepository(),
+            scope if scope is not None else _scope(),
+            notifications or FakeNotificationRepository(),
+        )
+
+    def _new_booking_notifs(self, notifs: FakeNotificationRepository) -> list:
+        from coiflink_api.domain.enums import NotificationType
+
+        return [n for n in notifs.enqueued if n.type == NotificationType.NEW_BOOKING.value]
+
+    # --- Émission sur réservation valide ------------------------------------
+
+    def test_valid_booking_emits_exactly_one_new_booking(self) -> None:
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        assert len(self._new_booking_notifs(notifs)) == 1
+
+    def test_new_booking_targets_owner_not_client(self) -> None:
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert nb.user_id == _OWNER_ID
+        assert nb.user_id != _CLIENT_ID
+
+    def test_new_booking_channel_is_in_app(self) -> None:
+        from coiflink_api.domain.enums import NotificationChannel
+
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert nb.channel == NotificationChannel.IN_APP.value
+
+    def test_new_booking_channel_is_not_sms(self) -> None:
+        # Le canal salon est `IN_APP` (dashboard), jamais SMS (§B de la spec).
+        from coiflink_api.domain.enums import NotificationChannel
+
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert nb.channel != NotificationChannel.SMS.value
+
+    def test_new_booking_salon_id_is_correct(self) -> None:
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert nb.salon_id == _SALON_ID
+
+    def test_new_booking_appointment_id_matches_created(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository()
+        notifs = FakeNotificationRepository()
+        result = self._uc(catalog, appts, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert nb.appointment_id == result.id
+
+    def test_new_booking_scheduled_for_is_none(self) -> None:
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert nb.scheduled_for is None
+
+    def test_new_booking_status_is_pending(self) -> None:
+        from coiflink_api.domain.enums import NotificationStatus
+
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert nb.status == NotificationStatus.PENDING.value
+
+    def test_new_booking_title_is_new_booking_template(self) -> None:
+        from coiflink_api.domain.notification import NEW_BOOKING_TITLE
+
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert nb.title == NEW_BOOKING_TITLE
+
+    def test_new_booking_message_is_new_booking_template(self) -> None:
+        from coiflink_api.domain.notification import NEW_BOOKING_MESSAGE
+
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert nb.message == NEW_BOOKING_MESSAGE
+
+    def test_new_booking_title_contains_no_phone_pii(self) -> None:
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert "+" not in nb.title
+        assert not any(c.isdigit() for c in nb.title)
+
+    def test_new_booking_message_contains_no_phone_pii(self) -> None:
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert "+" not in nb.message
+
+    def test_new_booking_emitted_last_after_confirmation_and_reminders(self) -> None:
+        # L'ordre dans `enqueued` : [CONFIRMATION, ...REMINDER..., NEW_BOOKING].
+        # Le salon est notifié **après** le client (confirmation + rappels).
+        from coiflink_api.domain.enums import NotificationType
+
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        assert notifs.enqueued[-1].type == NotificationType.NEW_BOOKING.value
+        assert notifs.enqueued[0].type == NotificationType.CONFIRMATION.value
+
+    def test_new_booking_uses_owner_id_from_loaded_salon(self) -> None:
+        # Un autre salon avec un autre gérant génère une notification ciblant ce gérant.
+        other_owner = uuid.UUID("77777777-0000-0000-0000-000000000007")
+        catalog = _bookable_catalog(salon=_make_salon(owner_id=other_owner))
+        notifs = FakeNotificationRepository()
+        self._uc(catalog, notifications=notifs).execute(
+            _SALON_ID, _CLIENT_ID, _valid_command()
+        )
+        nb = self._new_booking_notifs(notifs)[0]
+        assert nb.user_id == other_owner
+        assert nb.user_id != _OWNER_ID
+
+    # --- Atomicité : pas de notification salon sur échec --------------------
+
+    def test_slot_unavailable_no_new_booking_enqueued(self) -> None:
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        cmd = _valid_command(start_time=datetime.time(23, 0))
+        with pytest.raises(SlotUnavailable):
+            self._uc(catalog, notifications=notifs).execute(
+                _SALON_ID, _CLIENT_ID, cmd
+            )
+        assert self._new_booking_notifs(notifs) == []
+
+    def test_race_condition_no_new_booking_enqueued(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(raise_conflict=True)
+        notifs = FakeNotificationRepository()
+        with pytest.raises(SlotAlreadyBooked):
+            self._uc(catalog, appts, notifications=notifs).execute(
+                _SALON_ID, _CLIENT_ID, _valid_command()
+            )
+        assert self._new_booking_notifs(notifs) == []
+
+    def test_unknown_service_no_new_booking_enqueued(self) -> None:
+        catalog = _bookable_catalog()
+        notifs = FakeNotificationRepository()
+        cmd = _valid_command(service_ids=(_OTHER_SERVICE_ID,))
+        with pytest.raises(ServiceNotFound):
+            self._uc(catalog, notifications=notifs).execute(
+                _SALON_ID, _CLIENT_ID, cmd
+            )
+        assert self._new_booking_notifs(notifs) == []
+
+    def test_unknown_salon_no_new_booking_enqueued(self) -> None:
+        catalog = FakeSalonCatalogRepository()
+        notifs = FakeNotificationRepository()
+        with pytest.raises(SalonNotFound):
+            self._uc(catalog, notifications=notifs).execute(
+                _SALON_ID, _CLIENT_ID, _valid_command()
+            )
+        assert self._new_booking_notifs(notifs) == []
+
+    def test_hairdresser_not_in_salon_no_new_booking_enqueued(self) -> None:
+        catalog = _bookable_catalog()
+        other_salon = uuid.UUID("99999999-0000-0000-0000-000000000099")
+        scope = _scope({_HAIRDRESSER_ID: frozenset({other_salon})})
+        notifs = FakeNotificationRepository()
+        with pytest.raises(HairdresserNotInSalon):
+            self._uc(catalog, scope=scope, notifications=notifs).execute(
+                _SALON_ID, _CLIENT_ID, _valid_command()
+            )
+        assert self._new_booking_notifs(notifs) == []
 
 
 # ---------------------------------------------------------------------------
@@ -2627,3 +2861,68 @@ class TestSummarizeDailyAppointments:
         assert repo.cancelled == []
         assert repo.status_changes == []
         assert repo.assignments == []
+
+
+# ---------------------------------------------------------------------------
+# Périmètre de la notification salon (US-7.3, #47) — Cancel / SetStatus /
+# ModifyAppointment n'émettent pas de NEW_BOOKING
+# ---------------------------------------------------------------------------
+
+
+class TestNoNewBookingOnOtherUsecases:
+    """Régression de périmètre : seul `BookAppointment` émet `NEW_BOOKING`.
+
+    `CancelAppointment`, `SetAppointmentStatus` et `ModifyAppointment`
+    n'émettent **aucune** notification `NEW_BOOKING` — l'annulation/la
+    modification du RDV relèvent de #48 (US-7.4), hors périmètre de #47.
+    """
+
+    def _new_booking_notifs(self, notifs: FakeNotificationRepository) -> list:
+        from coiflink_api.domain.enums import NotificationType
+
+        return [n for n in notifs.enqueued if n.type == NotificationType.NEW_BOOKING.value]
+
+    def test_cancel_does_not_emit_new_booking(self) -> None:
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        CancelAppointment(appts, FakeAuditLog(), notifs).execute(_APPT_ID, _CLIENT_ID)
+        assert self._new_booking_notifs(notifs) == []
+
+    def test_set_status_confirmed_does_not_emit_new_booking(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notifs = FakeNotificationRepository()
+        SetAppointmentStatus(appts, FakeAuditLog(), notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "CONFIRMED"
+        )
+        assert self._new_booking_notifs(notifs) == []
+
+    def test_set_status_cancelled_does_not_emit_new_booking(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="PENDING")]
+        )
+        notifs = FakeNotificationRepository()
+        SetAppointmentStatus(appts, FakeAuditLog(), notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "CANCELLED"
+        )
+        assert self._new_booking_notifs(notifs) == []
+
+    def test_set_status_completed_does_not_emit_new_booking(self) -> None:
+        appts = FakeAppointmentRepository(
+            appointments=[_make_appointment_entity(status="CONFIRMED")]
+        )
+        notifs = FakeNotificationRepository()
+        SetAppointmentStatus(appts, FakeAuditLog(), notifs).execute(
+            _APPT_ID, _SALON_ID, _MANAGER_ID, "COMPLETED"
+        )
+        assert self._new_booking_notifs(notifs) == []
+
+    def test_modify_does_not_emit_new_booking(self) -> None:
+        catalog = _bookable_catalog()
+        appts = FakeAppointmentRepository(appointments=[_make_appointment_entity()])
+        notifs = FakeNotificationRepository()
+        ModifyAppointment(catalog, appts, _scope(), FakeAuditLog(), notifs).execute(
+            _APPT_ID, _CLIENT_ID, _valid_modify_command()
+        )
+        assert self._new_booking_notifs(notifs) == []

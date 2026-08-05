@@ -62,10 +62,11 @@ from coiflink_api.domain.notification import (
     ChannelAvailability,
     build_confirmation_notification,
     build_reminder_notifications,
+    build_salon_new_booking_notification,
     resolve_notification_channel,
 )
 from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
-from coiflink_api.domain.enums import AppointmentStatus, Role
+from coiflink_api.domain.enums import AppointmentStatus, NotificationChannel, Role
 from coiflink_api.domain.errors import (
     AppointmentNotCancellable,
     AppointmentNotFound,
@@ -229,9 +230,10 @@ class BookAppointment:
     Séquence : valider `≥ 1` prestation → refuser un salon non réservable → charger
     les prestations actives (durée + prix figé) → calculer la fenêtre horaire →
     défense en profondeur `is_offered` → `repository.create(...)` → **émettre la
-    confirmation** (US-7.1, #45) → **planifier les rappels** (US-7.2, #46). En cas de
-    course concurrente, l'INSERT perd sur la contrainte d'exclusion et le dépôt lève
-    `SlotAlreadyBooked` (rollback complet — RDV + jonctions + confirmation + rappels).
+    confirmation** (US-7.1, #45) → **planifier les rappels** (US-7.2, #46) →
+    **notifier le salon** (US-7.3, #47). En cas de course concurrente, l'INSERT perd
+    sur la contrainte d'exclusion et le dépôt lève `SlotAlreadyBooked` (rollback
+    complet — RDV + jonctions + confirmation + rappels + notification salon).
 
     **Confirmation à la réservation (US-7.1, #45)** — « à la création d'un RDV, une
     confirmation est émise » est une **règle métier**, portée ici : après l'INSERT
@@ -250,6 +252,19 @@ class BookAppointment:
     exigés par §8.4 et **la file** du futur worker de remise (M5+) ; aucune n'est
     **envoyée** ici (`sent_at` reste `NULL`). `CancelAppointment`/`SetAppointmentStatus`
     les **annulent** si le RDV l'est (AC #46).
+
+    **Notification au salon à la réservation (US-7.3, #47)** — après la confirmation
+    et les rappels (destinés au **client**), **une** ligne `notifications`
+    (`type = NEW_BOOKING`, `channel = IN_APP`, `status = PENDING`,
+    `scheduled_for = NULL`) est persistée pour le **gérant** (`user_id =
+    salon.owner_id`, déjà chargé — aucun accès base supplémentaire), via le même port,
+    **même** `Session`. Cette ligne **est la trace** de la notification critique
+    « nouvelle réservation reçue par le salon » (§8.4/§11.4) et **la file** du futur
+    worker de remise **optionnelle** email/SMS (M5+, ADR-0006) — le canal « dashboard »
+    est `IN_APP`, rien n'est **envoyé** ici (`sent_at` reste `NULL`). Une réservation →
+    **une** notification salon ; une réservation échouée n'en laisse **aucune**
+    (rollback conjoint). L'annulation/la modification du RDV **ne re-notifie pas** le
+    salon (périmètre #48).
     """
 
     def __init__(
@@ -353,6 +368,23 @@ class BookAppointment:
             now=reminder_now,
         ):
             self._notifications.enqueue(reminder)
+
+        # Notification **au salon** (US-7.3, #47) : après la confirmation/les rappels
+        # (destinés au **client**), émettre **une** ligne `NEW_BOOKING` destinée au
+        # **gérant** (`user_id = salon.owner_id`, déjà chargé — aucun accès base en
+        # plus), dans la **même** unité de travail. Une réservation → **une** seule
+        # notification salon. Le canal « dashboard » est **`IN_APP`** (explicite, pas
+        # « selon disponibilité ») : la remise proactive **optionnelle** email/SMS au
+        # gérant relève du worker M5+ (ADR-0006) — ligne `PENDING`, `sent_at = NULL`,
+        # rien n'est envoyé ici. Une réservation échouée n'atteint jamais ce point.
+        self._notifications.enqueue(
+            build_salon_new_booking_notification(
+                owner_id=salon.owner_id,
+                salon_id=salon_id,
+                appointment_id=appointment.id,
+                channel=NotificationChannel.IN_APP.value,
+            )
+        )
         return appointment
 
 

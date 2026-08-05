@@ -47,6 +47,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0032](./0032-kpi-globaux-plateforme-admin.md) | KPI globaux plateforme (admin) — instantané consolidé `STATS_READ_PLATFORM`, revenu net via `cash_journal`, report du KPI abonnements (aucun modèle), non-PII renforcée | Accepté | #44 |
 | [0033](./0033-notification-confirmation-rdv.md) | Notification de confirmation de RDV — ligne `notifications` persistée atomiquement (émission/trace §8.4/§11.4), canal pur PUSH→SMS→IN_APP, remise proactive différée M5, aucune migration | Accepté | #45 |
 | [0034](./0034-rappel-automatique-avant-rdv.md) | Rappel automatique avant RDV — rappels `notifications` datés (`scheduled_for`), annulation liée au cycle de vie du RDV (statut `CANCELLED`), remise proactive différée M5 | Accepté | #46 |
+| [0035](./0035-notification-salon-a-la-reservation.md) | Notification au salon à la réservation — ligne `notifications` `NEW_BOOKING`/`IN_APP` persistée atomiquement (émission/trace §8.4/§11.4), destinataire = gérant (`salon.owner_id`), lecture salon-scopée différée, remise email/SMS différée M5 | Accepté | #47 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
