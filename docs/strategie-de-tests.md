@@ -62,6 +62,29 @@ modification du workflow** : sa réussite est donc une **condition de merge** (l
 status check requis). Skip propre sans `DATABASE_URL` (fixture + `skipif`), plage de téléphones réservée
 (`+225068999`), nettoyage FK-safe avant/après chaque test.
 
+### Tests de sécurité — authz / JWT / brute-force / journalisation (#51, §11)
+
+Suite de sécurité **transverse** qui vérifie le socle §11 « comme un tout », du point de vue d'un
+attaquant, sur toute la surface d'API montée. Deux niveaux, cohérents avec la pyramide ci-dessus :
+
+- **Rapide (gate ADW + CI, sans base)** — matrice **rôle × route réelle** dérivée de `ROLE_PERMISSIONS`
+  (`test_security_authz_matrix.py` : rôle non habilité → `403` générique, sans jeton → `401`, `role`
+  d'inscription ignoré) ; propriétés **JWT/refresh** consolidées (`test_security_jwt.py` : `alg=none`,
+  confusion d'algorithme, signature altérée, claims manquants, expiration, mauvais `type`, `503` sans
+  secret) ; **non-divulgation** & régression de `PUBLIC_ROUTE_PATHS` (`test_security_no_leak.py`).
+- **e2e (CI job `backend`, PostgreSQL requis)** — **isolation inter-salons** sur routes réelles
+  (`test_security_isolation_e2e.py` : lecture/écriture inter-salons → `403` sans écriture, anti-oracle,
+  filtre `client_id` étranger → vide, révocation immédiate, rotation du refresh) ; **brute-force** HTTP de
+  `POST /auth/login` (`test_security_bruteforce_e2e.py` : `429` + `Retry-After`, `401` générique identique,
+  succès qui réinitialise, verrou par identifiant) ; **journalisation** §11.3/§11.4
+  (`test_security_audit_e2e.py` : présence des entrées sensibles, atomicité échec → 0 entrée, **invariant
+  de non-fuite** balayant `audit_logs`). #51 **teste l'existant** : les actions §11.4 non encore câblées
+  (`Connexion`, `Création rendez-vous`, `Création employé`, `Désactivation salon`) ne sont pas assertées.
+
+Plages de téléphones **réservées** aux e2e de sécurité (distinctes des autres suites) : `+225089991`
+(isolation), `+225089992` (brute-force), `+225089993` (audit). Skip propre sans `DATABASE_URL`, nettoyage
+FK-safe (`audit_logs`/`notifications`/`campaigns`/`customer_profiles` avant `salons`/`users`).
+
 ## 3. Le test gate ADW (`MX_AGENT_TEST_CMD`)
 
 Le pipeline ADW ([`adw_sdlc/`](../adw_sdlc/README.md)) lit `MX_AGENT_TEST_CMD` (ou `--test-cmd`) et exécute
@@ -115,7 +138,7 @@ MX_AGENT_TEST_CMD=bash ../scripts/test-gate.sh
 
 ## 4. Tableau « quoi tourne où »
 
-| Couche de test | Gate ADW (`MX_AGENT_TEST_CMD`) | CI applicative (#4) | e2e (#50) |
+| Couche de test | Gate ADW (`MX_AGENT_TEST_CMD`) | CI applicative (#4) | e2e (#50 / #51) |
 | --- | :---: | :---: | :---: |
 | Unitaire backend (`pytest`) | ✅ | ✅ | — |
 | Unitaire web (`vitest`) | ✅ | ✅ | — |
@@ -125,6 +148,8 @@ MX_AGENT_TEST_CMD=bash ../scripts/test-gate.sh
 | Build (wheel / `next build` / APK) | — | ✅ | — |
 | Images Docker (build + smoke test) | — | ✅ | — |
 | End-to-end parcours critiques (§5, backend-HTTP) | — | ✅ (job `backend`) | ✅ |
+| Sécurité rapide (authz / JWT / non-divulgation, §11, #51) | ✅ | ✅ | — |
+| Sécurité e2e (isolation / brute-force / audit, §11, #51) | — | ✅ (job `backend`) | ✅ |
 
 ## 5. Comment ajouter un test
 
