@@ -136,7 +136,7 @@ des images Docker :
 
 | Job | Contenu | Artefact produit |
 | --- | --- | --- |
-| `backend` | `ruff check` · `pytest` (unitaire + intégration **+ e2e des parcours critiques §5**, #50) · round-trip Alembic contre **PostgreSQL 16** · `python -m build` | `backend-dist` (wheel + sdist) |
+| `backend` | `ruff check` · `pytest` (unitaire + intégration **+ e2e des parcours critiques §5** (#50) **+ sécurité §11** (#51)) · round-trip Alembic contre **PostgreSQL 16** · `python -m build` | `backend-dist` (wheel + sdist) |
 | `web` | `npm run lint` · `npm test` · `npm run build` (sortie **standalone**) | `web-dashboard-build` |
 | `mobile` | `flutter analyze` · `flutter test` · `flutter build apk` | `app-mobile-apk` (APK Android) |
 | `dependency-scan` | `pip-audit` · `npm audit` · `osv-scanner` (**informatif**, complété par Dependabot) | — |
@@ -431,7 +431,20 @@ un même RDV) et vérifie la **continuité inter-modules** qu'aucune suite par-f
 par exemple qu'un RDV `COMPLETED` apparaît bien dans l'historique client, qu'un paiement fait monter
 le CA du dashboard et qu'un reçu est récupérable dès l'encaissement. La suite intègre la CI **sans
 modification du workflow** (job `backend` de `ci.yml`, où `DATABASE_URL` est défini et `alembic upgrade
-head` précède `pytest`) — sa réussite est une **condition de merge**.
+head` précède `pytest`) — sa réussite est une **condition de merge**. Dans la foulée, les **tests de
+sécurité** (#51, §11) consolident le socle authz/JWT/brute-force/journalisation « comme un tout », du
+point de vue d'un attaquant, sur toute la surface d'API montée : une **matrice rôle × route réelle**
+dérivée de `ROLE_PERMISSIONS` (rôle non habilité → `403` générique, sans jeton → `401`), les propriétés
+**JWT/refresh** (`alg=none`, confusion d'algorithme, signature altérée, claims manquants, expiration,
+mauvais `type`, `503` sans secret), la **non-divulgation** (`PUBLIC_ROUTE_PATHS`, aucun secret dans les
+schémas de réponse) — volet rapide dans le gate ADW ; puis, en e2e (PostgreSQL requis), l'**isolation
+inter-salons** sur routes réelles (lecture/écriture inter-salons → `403` sans écriture, anti-oracle,
+filtre `client_id` étranger → vide, révocation immédiate, rotation du refresh), le **brute-force** HTTP de
+`POST /auth/login` (`429` + `Retry-After`, `401` générique identique, succès qui réinitialise) et la
+**journalisation** §11.3/§11.4 (présence des entrées sensibles, atomicité échec → 0 entrée, **invariant de
+non-fuite** balayant `audit_logs`). La suite **teste l'existant** : les actions §11.4 non encore câblées
+(`Connexion`, `Création rendez-vous`, `Création employé`, `Désactivation salon`) sont documentées comme
+gap, pas assertées présentes.
 
 ---
 
