@@ -136,7 +136,7 @@ des images Docker :
 
 | Job | Contenu | Artefact produit |
 | --- | --- | --- |
-| `backend` | `ruff check` · `pytest` · round-trip Alembic contre **PostgreSQL 16** · `python -m build` | `backend-dist` (wheel + sdist) |
+| `backend` | `ruff check` · `pytest` (unitaire + intégration **+ e2e des parcours critiques §5**, #50) · round-trip Alembic contre **PostgreSQL 16** · `python -m build` | `backend-dist` (wheel + sdist) |
 | `web` | `npm run lint` · `npm test` · `npm run build` (sortie **standalone**) | `web-dashboard-build` |
 | `mobile` | `flutter analyze` · `flutter test` · `flutter build apk` | `app-mobile-apk` (APK Android) |
 | `dependency-scan` | `pip-audit` · `npm audit` · `osv-scanner` (**informatif**, complété par Dependabot) | — |
@@ -422,6 +422,16 @@ salon-scopé de ses fiches clients (#28) — **émise/tracée** dans une table d
 segment) et `status = PENDING`, dans la **même unité de travail** que l'audit `CAMPAIGN_CREATED`. La
 **remise** (fan-out SMS) reste **différée M5+** (ADR-0006, `sent_at` reste `NULL`) — aucun numéro n'est
 matérialisé ni journalisé, voir [ADR-0037](./docs/adr/0037-campagnes-messages-clients.md).
+**M6 est amorcé** : les **tests e2e des parcours critiques** sont livrés (#50) — les trois parcours
+Must du PRD §5 (réservation client §5.1, gestion RDV gérant §5.2, encaissement §5.3) sont exercés de
+bout en bout dans [`backend/tests/test_critical_journeys_e2e.py`](./backend/tests/test_critical_journeys_e2e.py)
+au **niveau HTTP du backend** (`TestClient` → routers → cas d'usage → dépôts SQL → PostgreSQL).
+Chaque parcours enchaîne les endpoints réels sur des entités partagées (un même salon, un même client,
+un même RDV) et vérifie la **continuité inter-modules** qu'aucune suite par-fonctionnalité ne couvre —
+par exemple qu'un RDV `COMPLETED` apparaît bien dans l'historique client, qu'un paiement fait monter
+le CA du dashboard et qu'un reçu est récupérable dès l'encaissement. La suite intègre la CI **sans
+modification du workflow** (job `backend` de `ci.yml`, où `DATABASE_URL` est défini et `alembic upgrade
+head` précède `pytest`) — sa réussite est une **condition de merge**.
 
 ---
 

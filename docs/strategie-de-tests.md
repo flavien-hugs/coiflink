@@ -12,7 +12,7 @@ Les tests tournent à trois endroits complémentaires, du plus rapide/local au p
 | --- | --- | --- | --- |
 | **Gate ADW** (`MX_AGENT_TEST_CMD`) | pendant un run du pipeline, avant PR et avant merge | **sous-ensemble unitaire rapide et déterministe** des 3 paquets | garde-fou local : la boucle `resolve` corrige les régressions *avant* de pousser |
 | **CI applicative** ([`ci.yml`](../.github/workflows/ci.yml), #4) | à chaque PR / push `main` | unitaire **+ intégration** (Alembic/PostgreSQL 16) + lint + build + images Docker | référence bloquante avant merge |
-| **e2e** (#50) | CI dédiée (à venir) | flux cross-composants (mobile/web ↔ backend ↔ DB) | non-régression bout-en-bout |
+| **e2e** (#50) | job `backend` de [`ci.yml`](../.github/workflows/ci.yml) (livré) | parcours critiques §5 au **niveau HTTP backend** (routers → cas d'usage → DB) | non-régression bout-en-bout |
 
 Le **gate ADW est un sous-ensemble rapide de la CI** : il exécute exactement les mêmes commandes de test
 unitaire (`pytest` / `npm test` / `flutter test`), pas les étapes lourdes (round-trip Alembic, build APK,
@@ -42,10 +42,25 @@ Round-trip des migrations Alembic et tests de routes API sur une base de test
 **Exclus du gate ADW par défaut** (trop lents / dépendants d'infra pour la boucle `resolve`). Un
 sous-ensemble local reste possible quand `docker compose` est démarré, mais n'est **pas imposé** par le gate.
 
-### End-to-end — cross-composants
+### End-to-end — parcours critiques (§5)
 
-Flux complets mobile/web ↔ backend ↔ DB. **Périmètre de l'issue #50** (« Tests e2e intégrés à la CI »).
-**Jamais dans le gate ADW local.** Cette stratégie les *positionne* ; #50 les câble.
+Flux complets bout-en-bout. **Périmètre de l'issue #50** — **livré** : les trois parcours critiques du
+PRD §5 (réservation client §5.1, gestion RDV gérant §5.2, encaissement §5.3) sont exercés en **un seul
+parcours continu** partagé (le même salon, le même client, le même RDV) au **niveau HTTP du backend**
+(`TestClient` → routers → cas d'usage → dépôts SQL → PostgreSQL) — le contrat que consomment web/mobile,
+cohérent avec 100 % des `*_e2e.py` existants. Ils **câblent** ce que les suites par-fonctionnalité
+vérifient isolément, pour attraper les régressions d'**intégration inter-modules**. Fichier :
+[`backend/tests/test_critical_journeys_e2e.py`](../backend/tests/test_critical_journeys_e2e.py).
+
+L'e2e d'**IU** (Playwright web / `integration_test` Flutter) n'est **pas** dans le périmètre de #50 : aucune
+infra de ce type n'existe et la CI n'orchestre pas d'app vivante — extension possible hors périmètre.
+**Jamais dans le gate ADW local** (pas de `DATABASE_URL` → suites `*_e2e.py` skippées).
+
+Comme les autres `*_e2e.py`, la suite **s'exécute déjà** dans le job `backend` de `ci.yml` (où
+`DATABASE_URL` est défini au niveau du job et `alembic upgrade head` précède `pytest`) — **sans aucune
+modification du workflow** : sa réussite est donc une **condition de merge** (le job `backend` est un
+status check requis). Skip propre sans `DATABASE_URL` (fixture + `skipif`), plage de téléphones réservée
+(`+225068999`), nettoyage FK-safe avant/après chaque test.
 
 ## 3. Le test gate ADW (`MX_AGENT_TEST_CMD`)
 
@@ -109,13 +124,22 @@ MX_AGENT_TEST_CMD=bash ../scripts/test-gate.sh
 | Intégration (Alembic + PostgreSQL 16) | — (sous-ensemble local optionnel) | ✅ | — |
 | Build (wheel / `next build` / APK) | — | ✅ | — |
 | Images Docker (build + smoke test) | — | ✅ | — |
-| End-to-end cross-composants | — | — | ✅ |
+| End-to-end parcours critiques (§5, backend-HTTP) | — | ✅ (job `backend`) | ✅ |
 
 ## 5. Comment ajouter un test
 
 - **backend** (`pytest`) : ajouter un fichier `backend/tests/test_*.py`. Tests unitaires sans I/O
   (fonctions pures, adaptateurs avec fakes). Les tests base/intégration réels tournent en CI contre
   PostgreSQL 16.
+- **backend e2e / parcours** (`pytest`, PostgreSQL requis) : ajouter un fichier
+  `backend/tests/test_*_e2e.py` (p. ex. `test_critical_journeys_e2e.py` pour les parcours §5). Convention
+  de sélection = **le nom de fichier** `*_e2e.py` + un `@pytest.mark.skipif(not DATABASE_URL, …)` sur la
+  classe et un `pytest.skip(...)` en fixture (skip propre sans base). Réserver une **plage de téléphones
+  distincte** (grep les préfixes déjà pris) et **nettoyer FK-safe** avant/après chaque test
+  (`notifications`/`campaigns` avant `appointments`/`salons`/`users` — mémoire `notifications-fk-restrict`).
+  Jeton **JWT de test factice** injecté par `app.state` ; argent en chaîne `NUMERIC(12,2)`. Lancer :
+  `DATABASE_URL=… alembic upgrade head && DATABASE_URL=… pytest tests/test_critical_journeys_e2e.py -v`.
+  Ne **jamais** journaliser jeton, mot de passe ni téléphone en sortie (§6).
 - **web-dashboard** (`vitest`) : ajouter un `web-dashboard/test/*.test.ts`. Composants, hooks, utilitaires.
 - **app-mobile** (`flutter test`) : ajouter un `app-mobile/test/*_test.dart`. Widgets et unités.
 
