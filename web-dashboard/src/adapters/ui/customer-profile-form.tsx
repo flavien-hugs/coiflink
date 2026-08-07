@@ -5,7 +5,8 @@
 // valeurs courantes, valide **côté client** (parité domaine, retour immédiat)
 // puis poste vers le Route Handler BFF `PATCH /api/salons/{id}/customers/{id}`,
 // qui proxifie le backend avec le jeton du cookie httpOnly (invariant #14). En
-// cas de succès, rafraîchit la page (`router.refresh()`).
+// cas de succès, rafraîchit la page (`router.refresh()`) puis referme le
+// panneau (`onSaved`, mode drawer — `CustomerProfilePanel`).
 //
 // **Seule l'identité** est éditée ici : la note privée garde son éditeur dédié
 // (#32). Le nom reste obligatoire ; vider le téléphone ou le genre efface le
@@ -16,7 +17,7 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
-import { CheckIcon, PersonIcon, PhoneIcon } from "@/src/adapters/ui/action-icons";
+import { CheckIcon, PersonIcon, PhoneIcon, XIcon } from "@/src/adapters/ui/action-icons";
 import { FieldLabel } from "@/src/adapters/ui/field-label";
 import { SearchableSelect } from "@/src/adapters/ui/searchable-select";
 import {
@@ -35,6 +36,10 @@ export interface CustomerProfileFormProps {
   initialFullName: string;
   initialPhone: string | null;
   initialGender: string | null;
+  // Fermer le panneau après un enregistrement réussi (mode drawer).
+  onSaved?: () => void;
+  // Fermer le formulaire sans enregistrer (mode drawer).
+  onCancel?: () => void;
 }
 
 export function CustomerProfileForm({
@@ -43,6 +48,8 @@ export function CustomerProfileForm({
   initialFullName,
   initialPhone,
   initialGender,
+  onCancel,
+  onSaved,
 }: CustomerProfileFormProps) {
   const router = useRouter();
   const [fullName, setFullName] = useState(initialFullName);
@@ -93,6 +100,7 @@ export function CustomerProfileForm({
       if (response.ok) {
         setSaved(true);
         router.refresh();
+        onSaved?.();
         return;
       }
       if (response.status === 409) {
@@ -195,6 +203,17 @@ export function CustomerProfileForm({
           {pending ? null : <CheckIcon className="shrink-0" />}
           {pending ? "Enregistrement…" : "Enregistrer les modifications"}
         </button>
+        {onCancel ? (
+          <button
+            type="button"
+            className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
+            onClick={onCancel}
+            disabled={pending}
+          >
+            <XIcon className="shrink-0" />
+            Annuler
+          </button>
+        ) : null}
       </div>
     </form>
   );
