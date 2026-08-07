@@ -20,8 +20,15 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition, type FormEvent } from "react";
 
-import { FilterIcon, PlusIcon, RefreshIcon, XIcon } from "@/src/adapters/ui/action-icons";
+import {
+  FilterIcon,
+  PencilIcon,
+  PlusIcon,
+  RefreshIcon,
+  XIcon,
+} from "@/src/adapters/ui/action-icons";
 import { CustomerForm } from "@/src/adapters/ui/customer-form";
+import { CustomerProfileForm } from "@/src/adapters/ui/customer-profile-form";
 import { EmptyState } from "@/src/adapters/ui/empty-state";
 import { SalonToolIcon } from "@/src/adapters/ui/salon-tool-icons";
 import { SearchableSelect, SearchIcon } from "@/src/adapters/ui/searchable-select";
@@ -74,6 +81,11 @@ function sortCustomers(customers: Customer[], direction: SortDirection): Custome
     : sorted.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+// Drawer partagé : création (#28) ou édition de l'identité d'une fiche
+// existante (US-4.6, #144) — un seul panneau pour toutes les lignes du
+// tableau, comme `service-list.tsx`.
+type DrawerState = { mode: "create" } | { mode: "edit"; customer: Customer };
+
 export interface CustomerListProps {
   salonId: string;
   customers: Customer[];
@@ -96,7 +108,7 @@ export function CustomerList({
 }: CustomerListProps) {
   const router = useRouter();
   const [isRefreshing, startRefresh] = useTransition();
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [values, setValues] = useState({ q, gender, createdFrom, createdTo });
 
@@ -153,7 +165,7 @@ export function CustomerList({
         <button
           type="button"
           className="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-lg bg-accent px-4 text-sm font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 hover:shadow-elevated active:translate-y-0"
-          onClick={() => setDrawerOpen(true)}
+          onClick={() => setDrawer({ mode: "create" })}
         >
           <PlusIcon className="shrink-0" />
           Créer une fiche client
@@ -287,13 +299,23 @@ export function CustomerList({
                   <td className="px-4 py-3 text-muted">{genderLabel(customer.gender)}</td>
                   <td className="px-4 py-3">{customer.totalVisits}</td>
                   <td className="px-4 py-3 text-muted">{formatDate(customer.createdAt)}</td>
-                  <td className="px-4 py-3 text-right">
-                    <Link
-                      href={`/gerant/clients/${customer.id}`}
-                      className="font-medium text-accent hover:underline"
-                    >
-                      Voir l&apos;historique
-                    </Link>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-3 whitespace-nowrap">
+                      <button
+                        type="button"
+                        className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
+                        onClick={() => setDrawer({ mode: "edit", customer })}
+                      >
+                        <PencilIcon className="shrink-0" />
+                        Modifier
+                      </button>
+                      <Link
+                        href={`/gerant/clients/${customer.id}`}
+                        className="font-medium text-accent hover:underline"
+                      >
+                        Voir l&apos;historique
+                      </Link>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -318,8 +340,8 @@ export function CustomerList({
 
       <CustomerDrawer
         salonId={salonId}
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        drawer={drawer}
+        onClose={() => setDrawer(null)}
       />
     </div>
   );
@@ -327,15 +349,15 @@ export function CustomerList({
 
 function CustomerDrawer({
   salonId,
-  open,
+  drawer,
   onClose,
 }: {
   salonId: string;
-  open: boolean;
+  drawer: DrawerState | null;
   onClose: () => void;
 }) {
   useEffect(() => {
-    if (!open) return undefined;
+    if (!drawer) return undefined;
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") onClose();
@@ -343,9 +365,11 @@ function CustomerDrawer({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
+  }, [drawer, onClose]);
 
-  if (!open) return null;
+  if (!drawer) return null;
+
+  const editing = drawer.mode === "edit";
 
   return (
     <div className="fixed inset-0 z-50">
@@ -364,10 +388,12 @@ function CustomerDrawer({
         <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
           <div>
             <h2 id="customer-drawer-title" className="font-serif text-xl font-semibold text-ink">
-              Créer une fiche client
+              {editing ? "Modifier les informations" : "Créer une fiche client"}
             </h2>
             <p className="mt-1 text-sm text-muted">
-              Seul le nom est obligatoire.
+              {editing
+                ? "Le nom du client est obligatoire."
+                : "Seul le nom est obligatoire."}
             </p>
           </div>
           <button
@@ -381,7 +407,19 @@ function CustomerDrawer({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-          <CustomerForm salonId={salonId} onCancel={onClose} onSaved={onClose} />
+          {editing ? (
+            <CustomerProfileForm
+              salonId={salonId}
+              customerId={drawer.customer.id}
+              initialFullName={drawer.customer.fullName}
+              initialPhone={drawer.customer.phone}
+              initialGender={drawer.customer.gender}
+              onCancel={onClose}
+              onSaved={onClose}
+            />
+          ) : (
+            <CustomerForm salonId={salonId} onCancel={onClose} onSaved={onClose} />
+          )}
         </div>
       </aside>
     </div>
