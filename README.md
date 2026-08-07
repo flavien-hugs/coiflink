@@ -73,7 +73,7 @@ chaque décision et son compromis sont détaillés dans l'ADR lié.
 | Base de données | PostgreSQL + Redis (cache/queue) | [0004](./docs/adr/0004-donnees-postgresql-redis.md) |
 | Fichiers | Stockage objet S3-compatible | [0005](./docs/adr/0005-stockage-objet-s3-compatible.md) |
 | Notifications | Firebase Cloud Messaging + SMS (WhatsApp en V2) | [0006](./docs/adr/0006-notifications-fcm-sms.md) |
-| Déploiement | Docker · CI/CD GitHub Actions · **Railway** (hébergement, environnements, secrets, sauvegardes) | [0010](./docs/adr/0010-ci-cd-docker-packaging.md) (CI/CD + Docker, #4) · [0011](./docs/adr/0011-deploiement-environnements-secrets.md) (hébergement/région, secrets, sauvegardes, #5) |
+| Déploiement | Docker · CI/CD GitHub Actions · **Railway** (hébergement, environnements, secrets, sauvegardes) · **mise en production monitorée**, sauvegardes vérifiées & rollback documenté (#54) | [0010](./docs/adr/0010-ci-cd-docker-packaging.md) (CI/CD + Docker, #4) · [0011](./docs/adr/0011-deploiement-environnements-secrets.md) (hébergement/région, secrets, sauvegardes, #5) · [0038](./docs/adr/0038-observabilite-monitoring-rollback.md) (observabilité, alerting, rollback, #54) |
 
 **Versions de référence** (figées par #2 — voir [ADR-0007](./docs/adr/0007-arborescence-monorepo-versions.md)) :
 Flutter **stable** / Dart **^3.12**, Node **≥ 20 (LTS)**, Python **≥ 3.12**. **PostgreSQL 16** est figée
@@ -461,7 +461,19 @@ Enfin, la **documentation utilisateur** est livrée (#53) : deux guides pas à p
 (interface web) et un **[guide client](./docs/guides/guide-client.md)** (application mobile) — couvrant
 les **parcours Must** (§5.1/§5.2/§5.3) tels qu'ils sont réellement livrés, avec des encadrés « À venir »
 pour les étapes pas encore exposées à l'interface (notifications non remises, reçu/inscription mobiles,
-journal de caisse/zone admin/employés côté web).
+journal de caisse/zone admin/employés côté web). Enfin, la **mise en production** (#54) est cadrée et
+documentée : l'observabilité (**monitoring des services critiques** + **sonde de disponibilité externe**
+visant **≥ 99 %** + **alertes non-PII**), la **stratégie de rollback** (application + arbre de décision
+base) et le choix **liveness-only** au MVP sont tranchés par
+**[ADR-0038](./docs/adr/0038-observabilite-monitoring-rollback.md)** ; le **runbook `production`** (parité
+stricte du runbook `staging` #5), le **journal de vérification des sauvegardes** (activation quotidienne,
+restauration testée, RPO/RTO consignés) et le **runbook de rollback** vivent dans
+**[docs/mise-en-production.md](./docs/mise-en-production.md)**. Aucun code applicatif ni secret n'est
+introduit : `deploy/railway/*.json` restent inchangés, les secrets `production` vivent **hors dépôt**
+(magasin Railway `production`, reviewers requis), et le suivi d'erreurs applicatif (Sentry) reste
+**optionnel/différé** — non câblé, non impliqué. Le **provisionnement réel** de `production`, l'activation
+des sauvegardes et la configuration du monitoring sont des opérations d'exploitation à mener par un
+opérateur disposant de l'accès restreint (via `use-railway`/MCP `railway`).
 
 ---
 
@@ -524,5 +536,7 @@ Chemin critique : **M0 → M1 → M2 → M3 → M4/M5 → M6**.
 - [prd-coiflink.md](./prd-coiflink.md) — exigences produit (source de vérité)
 - [BACKLOG.md](./BACKLOG.md) — backlog livrable (55 issues, M0–M6)
 - [docs/guides/](./docs/guides/README.md) — guides utilisateur (parcours Must) : [guide gérant](./docs/guides/guide-gerant.md) · [guide client](./docs/guides/guide-client.md)
+- [docs/environnements-et-secrets.md](./docs/environnements-et-secrets.md) — environnements, politique de secrets, runbook `staging`, sauvegardes (#5)
+- [docs/mise-en-production.md](./docs/mise-en-production.md) — mise en production : runbook `production`, monitoring & alerting, journal de vérification des sauvegardes, rollback (#54)
 - [adw_sdlc/README.md](./adw_sdlc/README.md) — usage du pipeline ADW
 - [adw_sdlc/PLAN.md](./adw_sdlc/PLAN.md) — architecture du pipeline

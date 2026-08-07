@@ -169,7 +169,11 @@ la skill **`use-railway`** / le serveur MCP `railway` (voir ADR-0011).
 les migrations est un no-op si le schéma est à jour ; re-poser une variable écrase l'ancienne valeur.
 
 **Parité `prod`** : `prod` suit le même runbook sur l'environnement `production` (reviewers requis,
-accès restreint, données réelles, sauvegardes activées §5).
+accès restreint, données réelles, sauvegardes activées §5). Cette parité est **exécutée et complétée**
+(monitoring, vérification des sauvegardes, rollback) par **#54** — voir
+**[docs/mise-en-production.md](./mise-en-production.md)** (runbook `production`, monitoring & alerting,
+journal de vérification des sauvegardes, runbook de rollback ;
+décision **[ADR-0038](./adr/0038-observabilite-monitoring-rollback.md)**).
 
 ### Parité locale (dev) — `docker-compose`
 
@@ -198,6 +202,12 @@ démarrage (fail-fast attendu — cf. `session.py` qui lève si `DATABASE_URL` m
   environnement isolé et valider l'intégrité. *Une sauvegarde non testée n'est pas une sauvegarde.* La
   restauration ne doit **pas** exposer de PII hors du périmètre autorisé.
 - **Cibles** : **RPO ≤ 24 h** (sauvegarde quotidienne), **RTO** documenté lors du premier test.
+- **Activation & vérification `production`** (#54) : l'**activation** réelle de la sauvegarde quotidienne
+  `production` et la **preuve de restaurabilité** (test de restauration → intégrité → RTO mesuré) sont
+  portées par **[docs/mise-en-production.md](./mise-en-production.md)** §3, qui tient le **journal de
+  vérification des sauvegardes** (sans PII). Une sauvegarde n'est réputée **vérifiée** qu'après **au
+  moins une** ligne de restauration réussie consignée dans ce journal (décision
+  **[ADR-0038](./adr/0038-observabilite-monitoring-rollback.md)**).
 - **Redis** : **pas** de sauvegarde critique — cache/queue, **pas** source de vérité (ADR-0004) ;
   reconstructible depuis PostgreSQL.
 - **Stockage objet** : le bucket est **actif depuis #15** (médias de salon). Activer le
