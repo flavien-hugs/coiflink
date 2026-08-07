@@ -224,6 +224,12 @@ l'encaissement (M4) et les KPI (M5) dépendent de la boucle de rendez-vous (M3).
   *Acceptation :* le gérant ajoute/édite une note privée non visible du client.
   *Dépend de :* #28.
 
+- **#144 — US-4.6 · Modification des informations d'une fiche client (gérant)** · `Must` · `S` · `feature`
+  Nom, téléphone, genre optionnel — les mêmes champs que la création (#28), modifiables après coup.
+  *Acceptation :* le gérant modifie nom/téléphone/genre d'une fiche de son salon ; unicité `(salon_id, phone)`
+  respectée ; isolation par salon (§11.2) ; modification journalisée (§11.4).
+  *Dépend de :* #28.
+
 - **#33 — US-5.1 · Enregistrement d'un paiement** · `Must` · `M` · `feature` `payments`
   Montant, mode de paiement, prestation liée, client lié ; un paiement est lié à une prestation/RDV avec un utilisateur responsable (§8.2) ; le montant correspond à la prestation (§5.3).
   *Acceptation :* paiement enregistré et lié au RDV/prestation ; montant cohérent ; opération journalisée (§11.4).
