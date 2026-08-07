@@ -25,6 +25,8 @@ backend/.venv/
 backend/dist/
 *.egg-info/
 backend/.env
+# Rapports générés par le harnais de charge (#52) — artefacts, jamais versionnés.
+backend/perf/reports/
 
 # web-dashboard/ (Next.js / Node) — node_modules déjà couvert globalement
 web-dashboard/.next/

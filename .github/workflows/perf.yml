@@ -1,0 +1,87 @@
+# Tests de performance / charge — endpoints critiques (budgets PRD §12.1, issue #52).
+#
+# Job **opt-in et NON requis** : déclenché manuellement (`workflow_dispatch`) ou la nuit
+# (`schedule`), **jamais** sur chaque PR et **jamais** en status check requis. Les
+# mesures de perf sont sensibles à l'environnement (runners partagés variables) : un
+# seuil dur y serait flaky. La suite est donc **informative** par défaut (le job réussit
+# même en WARN/FAIL) ; le verdict **de référence** §12.1 doit viser un environnement
+# stable (staging Railway) via `PERF_TARGET_URL`. Ce workflow est **hors** du test gate
+# ADW et **hors** de la CI applicative (`ci.yml`).
+#
+# Aucun secret n'est requis ni journalisé : le mot de passe du service Postgres est
+# éphémère/non secret, et le serveur local démarré par `perf/run.py` utilise un secret
+# JWT **de test local** (jamais un secret de prod).
+name: Perf (charge §12.1)
+
+on:
+  workflow_dispatch:
+    inputs:
+      strict:
+        description: "Échouer si un budget §12.1 est dépassé (réservé à un env de référence)"
+        type: boolean
+        default: false
+  schedule:
+    # Nocturne (03:17 UTC) — hors heures de CI de PR, indicateur de dérive.
+    - cron: "17 3 * * *"
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  perf:
+    name: perf
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    # Base **dédiée** au job perf (jamais partagée avec d'autres suites) — patron du
+    # job `backend` de ci.yml. Identifiants éphémères et NON secrets.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: coiflink
+          POSTGRES_PASSWORD: coiflink_perf_ephemeral
+          POSTGRES_DB: coiflink_perf
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U coiflink -d coiflink_perf"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://coiflink:coiflink_perf_ephemeral@localhost:5432/coiflink_perf
+      # Charge volontairement modeste sur runner partagé (indicateur de dérive, pas SLA).
+      PERF_USERS: "10"
+      PERF_SPAWN_RATE: "5"
+      PERF_WARMUP_S: "5"
+      PERF_STEADY_STATE_S: "30"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Installer le paquet + extra perf
+        run: pip install -e ".[perf]"
+
+      - name: Run de charge §12.1 (migrate → seed → uvicorn → charge → rapport → teardown)
+        # Informatif par défaut : `run.py` sort en 0 même en WARN/FAIL (sauf --strict).
+        run: |
+          python -m perf.run ${{ (github.event_name == 'workflow_dispatch' && inputs.strict) && '--strict' || '' }}
+
+      - name: Téléverser le rapport de perf (CSV + JSON + Markdown)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report
+          path: backend/perf/reports/*
+          if-no-files-found: warn

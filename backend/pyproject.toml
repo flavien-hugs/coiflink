@@ -38,6 +38,15 @@ dev = [
     "ruff>=0.6,<0.16",
     "pyyaml>=6.0",
 ]
+# Outillage de **test de charge** (#52, §12.1) — extra **distinct** de `dev`, **hors**
+# dépendances de production et **hors** image Docker (le harnais `perf/` vit hors du
+# package `coiflink_api`). `httpx` alimente le seed et le pilote intégré (`perf/driver.py`) ;
+# `locust` est le moteur **alternatif** opt-in (`perf/locustfile.py`). Installer via
+# `pip install -e ".[perf]"` — jamais requis par le test gate ni la CI applicative #4.
+perf = [
+    "httpx>=0.27",
+    "locust>=2",
+]
 
 [tool.setuptools.packages.find]
 include = ["coiflink_api*"]
