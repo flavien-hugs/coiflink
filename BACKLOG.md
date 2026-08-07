@@ -297,6 +297,14 @@ l'encaissement (M4) et les KPI (M5) dépendent de la boucle de rendez-vous (M3).
   *Acceptation :* dashboard admin avec KPI globaux agrégés.
   *Dépend de :* #37.
 
+- **#148 — Dashboard Manager · Activité du salon** · `Must` · `L` · `feature`
+  Consolide/étend le dashboard gérant (#39/#40/#42) : KPI clients en attente/prestations en cours/CA/
+  clientes (+ évolution), filtres de période, graphiques CA & fréquentation, liste des prestations en
+  cours, timeline d'activité, alertes, actualisation automatique.
+  *Acceptation :* 4 KPI affichés et filtrables par période, données réelles (aucun mock), mise à jour
+  automatique, états loading/empty/error gérés, tests ajoutés.
+  *Dépend de :* #39, #40, #42.
+
 - **#45 — US-7.1 · Notification de confirmation de RDV** · `Must` · `M` · `feature` `notifications`
   Push, SMS ou WhatsApp selon disponibilité ; envoyée après chaque réservation (§8.4).
   *Acceptation :* une confirmation part à la création du RDV ; notification critique tracée (§8.4/§11.4).
