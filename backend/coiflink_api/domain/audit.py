@@ -86,6 +86,15 @@ class AuditAction(_StrEnum):
     # contenu de la note, ni l'ancienne valeur n'entrent au journal.
     CUSTOMER_NOTE_UPDATED = "CUSTOMER_NOTE_UPDATED"
 
+    # Fiche client — #144 (US-4.6). Modification des champs d'identité (nom,
+    # téléphone, genre) d'une fiche existante, journalisée au titre de §11.4
+    # (« Modification »). Contrairement à `CUSTOMER_CREATED`/`CUSTOMER_NOTE_UPDATED`
+    # (`metadata` vide), l'entrée porte le **diff neutre** `{"changed": [...]}`
+    # (patron `SALON_UPDATED`) : seuls les **noms** des champs modifiés — jamais une
+    # **valeur** (ni ancien/nouveau nom, ni numéro, ni genre), ce serait de la PII
+    # au journal (§11.3/§11.4).
+    CUSTOMER_UPDATED = "CUSTOMER_UPDATED"
+
     # Paiement enregistré — #34 (US-5.3, §11.4 « Paiement enregistré »). Chaque
     # paiement validé porte son auteur (`recorded_by`) et son horodatage. L'entrée
     # reste **neutre** — `metadata` est vide : ni le montant, ni le mode, ni

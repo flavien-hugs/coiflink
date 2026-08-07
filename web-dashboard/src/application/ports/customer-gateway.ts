@@ -4,7 +4,11 @@
 // `/salons/{id}/customers` (US-4.1, #28). Implémenté par un adapter dans
 // `src/adapters/api/`.
 
-import type { Customer, CustomerInput } from "@/src/domain/customer/customer";
+import type {
+  Customer,
+  CustomerInput,
+  CustomerProfileInput,
+} from "@/src/domain/customer/customer";
 import type { CustomerServiceStats } from "@/src/domain/customer/stats";
 import type { VisitHistory } from "@/src/domain/customer/visit";
 
@@ -75,6 +79,26 @@ export type UpdateNoteResult =
         | "unavailable";
     };
 
+// Édition de l'**identité** d'une fiche (nom/téléphone/genre, US-4.6, #144).
+// Mêmes motifs que `CreateCustomerResult` : `invalid` = `422` (nom vide,
+// téléphone/genre invalides), `duplicate` = `409` (une **autre** fiche du salon
+// porte déjà ce téléphone), `forbidden` = `403` (rôle ≠ gérant ou salon hors
+// périmètre), `not-found` = `404` (fiche absente, portée validée),
+// `unauthenticated` = `401`, `unavailable` = `503`/panne réseau. Renvoie la fiche
+// à jour en cas de succès (la note privée n'est **pas** touchée — route #32).
+export type UpdateProfileResult =
+  | { ok: true; customer: Customer }
+  | {
+      ok: false;
+      reason:
+        | "invalid"
+        | "duplicate"
+        | "forbidden"
+        | "unauthenticated"
+        | "not-found"
+        | "unavailable";
+    };
+
 export interface CustomerListOptions {
   limit?: number;
   offset?: number;
@@ -106,4 +130,12 @@ export interface CustomerGateway {
     customerId: string,
     notes: string | null,
   ): Promise<UpdateNoteResult>;
+  // Proxifie `PATCH /salons/{id}/customers/{customerId}` (édite l'**identité** :
+  // nom/téléphone/genre ; `null`/vide efface téléphone/genre). Renvoie la fiche
+  // à jour ; la note privée (#32) n'est **pas** touchée.
+  updateProfile(
+    salonId: string,
+    customerId: string,
+    input: CustomerProfileInput,
+  ): Promise<UpdateProfileResult>;
 }

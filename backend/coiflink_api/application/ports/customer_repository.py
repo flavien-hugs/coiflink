@@ -94,6 +94,30 @@ class CustomerRepository(Protocol):
         """
         ...
 
+    def update(
+        self,
+        salon_id: uuid.UUID,
+        customer_id: uuid.UUID,
+        *,
+        full_name: str,
+        phone: str | None,
+        gender: str | None,
+    ) -> Customer:
+        """Remplace l'identité (nom/téléphone/genre) de la fiche `(salon_id, customer_id)` (US-4.6, #144).
+
+        Le filtre porte sur `salon_id` **et** `id` (isolation §11.2) : une fiche
+        d'un autre salon est indiscernable d'une fiche inexistante. Lève
+        `domain.errors.CustomerNotFound` si la fiche est absente du salon (jamais
+        un oracle d'existence). Lève `domain.errors.CustomerAlreadyExists` si
+        l'unicité `(salon_id, phone)` est violée — y compris pour le **perdant
+        d'une course concurrente** (l'`IntegrityError` de l'index unique partiel
+        `uq_customer_profiles_salon_phone` est retraduite, jamais propagée).
+        `phone = None`/`gender = None` **effacent** le champ (`= NULL`). **Seules**
+        les colonnes d'identité (`full_name`/`phone`/`gender`) sont écrites ;
+        `notes`, `user_id` et les compteurs de visites restent inchangés.
+        """
+        ...
+
     def list_visits(
         self,
         salon_id: uuid.UUID,

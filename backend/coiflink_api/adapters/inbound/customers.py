@@ -56,6 +56,7 @@ from coiflink_api.application.customers import (
     GetCustomerServiceStats,
     GetCustomerVisitHistory,
     ListSalonCustomers,
+    UpdateCustomer,
     UpdateCustomerNote,
 )
 from coiflink_api.application.ports.audit_log import AuditLog
@@ -130,6 +131,30 @@ class CreateCustomerRequest(BaseModel):
         max_length=NOTES_MAX_LENGTH,
         examples=["Préfère le samedi matin."],
     )
+
+
+class UpdateCustomerRequest(BaseModel):
+    """Corps de `PATCH /salons/{salon_id}/customers/{customer_id}` (US-4.6, #144).
+
+    **Seule l'identité** est éditable : `full_name` (**requis**, non vide),
+    `phone` et `gender` (**optionnels**, `null`/vide **efface** le champ). Tout
+    champ privilégié présent au corps (`salon_id`, `id`, `user_id`, `notes`,
+    `total_visits`, `last_visit_at`, `created_at`, `updated_at`) est **ignoré**
+    (`extra="ignore"`) : la note garde sa route dédiée `PUT …/notes` (#32), le
+    reste est généré ou non éditable.
+
+    Le formulaire est **pré-rempli** des valeurs courantes : « modifier le nom, le
+    téléphone **et/ou** le genre » se ramène à renvoyer le triplet complet avec les
+    seuls champs voulus changés (évite l'ambiguïté « champ omis vs `null` »).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    full_name: str = Field(
+        min_length=1, max_length=CUSTOMER_NAME_MAX_LENGTH, examples=["Awa Koné"]
+    )
+    phone: str | None = Field(default=None, examples=["0700000000"])
+    gender: str | None = Field(default=None, examples=[GENDER_VALUES[0]])
 
 
 class UpdateCustomerNoteRequest(BaseModel):
@@ -495,6 +520,67 @@ def get_customer(
     except CustomerNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _customer_response(customer)
+
+
+@router.patch(
+    "/{salon_id}/customers/{customer_id}",
+    response_model=CustomerResponse,
+    summary="Modifier l'identité d'une fiche client (nom, téléphone, genre)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "Fiche introuvable (portée déjà validée)"},
+        409: {"description": "Une fiche porte déjà ce téléphone dans ce salon"},
+        422: {"description": "Nom, téléphone ou genre invalides"},
+    },
+)
+def update_customer(
+    salon_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    payload: UpdateCustomerRequest,
+    repository: Annotated[CustomerRepository, Depends(get_customer_repository)],
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    principal: Annotated[
+        Principal, Depends(require_permission(Permission.CUSTOMER_MANAGE))
+    ],
+) -> CustomerResponse:
+    """Modifie l'identité (nom/téléphone/genre) de la fiche `(salon_id, customer_id)` (US-4.6, #144).
+
+    **Seule l'identité** est éditée ; `null`/vide efface `phone`/`gender`, le nom
+    reste obligatoire. La note (#32) n'est pas touchée. Le `salon_id` vient du
+    chemin (portée), jamais du corps. L'unicité `(salon_id, phone)` est respectée
+    au changement de numéro (`409` neutre, sans le numéro) ; conserver son propre
+    numéro ne déclenche aucun faux conflit. Journalise `CUSTOMER_UPDATED`
+    (§11.4/§11.3) dans la même unité de travail, `metadata.changed` = **noms** des
+    champs modifiés (aucune PII). `404` (fiche hors salon/inconnue) est renvoyé
+    **après** validation de portée (sans oracle).
+    """
+
+    try:
+        customer = UpdateCustomer(repository, audit_log).execute(
+            salon_id,
+            customer_id,
+            CustomerCommand(
+                full_name=payload.full_name,
+                phone=payload.phone,
+                gender=payload.gender,
+            ),
+            actor_user_id=principal.id,
+        )
+    except _VALIDATION_ERRORS as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except CustomerNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except CustomerAlreadyExists as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
     return _customer_response(customer)
 

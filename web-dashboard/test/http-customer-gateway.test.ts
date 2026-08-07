@@ -915,3 +915,248 @@ describe("createHttpCustomerGateway().updateNote() — codes de statut", () => {
     expect(Object.keys(body)).toEqual(["notes"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// updateProfile() — US-4.6, #144
+// ---------------------------------------------------------------------------
+
+const PROFILE_INPUT = {
+  fullName: "Aminata Diallo",
+  phone: "+2250700111222",
+  gender: "MALE" as const,
+};
+
+describe("createHttpCustomerGateway().updateProfile() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpCustomerGateway({ accessToken: null }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accessToken undefined → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpCustomerGateway({}).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("createHttpCustomerGateway().updateProfile() — codes HTTP", () => {
+  it("200 → ok:true avec le client converti (snake_case → camelCase)", async () => {
+    stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.customer.fullName).toBe(FAKE_CUSTOMER_PAYLOAD.full_name);
+      expect(result.customer.salonId).toBe(FAKE_CUSTOMER_PAYLOAD.salon_id);
+      expect(result.customer.phone).toBe(FAKE_CUSTOMER_PAYLOAD.phone);
+    }
+  });
+
+  it("200 → le jeton n'est pas inclus dans le résultat", async () => {
+    stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unauthenticated");
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("forbidden");
+  });
+
+  it("404 → not-found", async () => {
+    stubFetch(404, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("not-found");
+  });
+
+  it("409 → duplicate", async () => {
+    stubFetch(409, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("duplicate");
+  });
+
+  it("422 → invalid", async () => {
+    stubFetch(422, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("invalid");
+  });
+
+  it("503 → unavailable", async () => {
+    stubFetch(503, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("erreur réseau → unavailable", async () => {
+    stubFetchNetworkError();
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+});
+
+describe("createHttpCustomerGateway().updateProfile() — appel réseau", () => {
+  it("méthode HTTP est PATCH (pas PUT)", async () => {
+    const fetchMock = stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init?.method).toBe("PATCH");
+  });
+
+  it("en-tête Authorization est présent", async () => {
+    const fetchMock = stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init?.headers as Record<string, string>;
+    expect(headers?.["Authorization"]).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("l'URL contient salonId et customerId mais PAS '/notes'", async () => {
+    const fetchMock = stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      PROFILE_INPUT,
+    );
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(SALON_ID);
+    expect(url).toContain(CUSTOMER_ID);
+    expect(url).not.toContain("/notes");
+  });
+
+  it("le corps contient full_name, phone et gender — pas notes/salon_id/user_id/id", async () => {
+    const fetchMock = stubFetch(200, FAKE_CUSTOMER_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      { fullName: "Aminata Diallo", phone: "+2250700111222", gender: "MALE" },
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+
+    // Champs attendus.
+    expect(body).toHaveProperty("full_name", "Aminata Diallo");
+    expect(body).toHaveProperty("phone", "+2250700111222");
+    expect(body).toHaveProperty("gender", "MALE");
+
+    // Champs interdits (anti-oracle, §11.3).
+    expect(body).not.toHaveProperty("notes");
+    expect(body).not.toHaveProperty("salon_id");
+    expect(body).not.toHaveProperty("user_id");
+    expect(body).not.toHaveProperty("id");
+  });
+
+  it("phone null (effacement) transmis tel quel", async () => {
+    const fetchMock = stubFetch(200, { ...FAKE_CUSTOMER_PAYLOAD, phone: null });
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).updateProfile(
+      SALON_ID,
+      CUSTOMER_ID,
+      { fullName: "Awa Koné", phone: null, gender: null },
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+    expect(body.phone).toBeNull();
+    expect(body.gender).toBeNull();
+  });
+});

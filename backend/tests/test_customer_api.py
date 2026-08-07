@@ -1170,3 +1170,485 @@ class TestUpdateCustomerNoteApi:
         finally:
             _cleanup_overrides()
         assert r.json()["detail"] == "Accès refusé."
+
+
+# ---------------------------------------------------------------------------
+# PATCH /salons/{salon_id}/customers/{customer_id} — TestUpdateCustomerApi
+# (US-4.6, #144)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateCustomerApi:
+    """Tests API pour `PATCH /salons/{id}/customers/{customerId}` (US-4.6, #144).
+
+    Couvre :
+    - 200 : mise à jour complète, notes inchangées, `user_id` absent, `updated_at` rafraîchi ;
+    - 200 : effacement (`phone: null`, `gender: null`) ;
+    - 200 : champs privilégiés dans le corps ignorés (`notes`, `salon_id`, `id`, `user_id`) ;
+    - 409 : doublon de numéro, message neutre sans le numéro (§11.3) ;
+    - 422 : nom vide, téléphone invalide, genre inconnu ;
+    - 404 : fiche inconnue, fiche d'un autre salon (isolation §11.2) ;
+    - 401 : sans jeton ;
+    - 403 : rôle CLIENT / HAIRDRESSER / hors-portée ; message 403 générique (ADR-0015).
+    """
+
+    def _create_with_notes(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+        notes: str = "Note privée.",
+    ) -> object:
+        from coiflink_api.application.customers import CreateCustomer, CustomerCommand
+
+        return CreateCustomer(customer_repo, audit_log).execute(
+            _SALON_ID,
+            CustomerCommand(full_name="Awa Koné", notes=notes),
+            actor_user_id=_MANAGER_ID,
+        )
+
+    def _create_with_phone(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+        phone: str,
+        salon_id: uuid.UUID = _SALON_ID,
+    ) -> object:
+        from coiflink_api.application.customers import CreateCustomer, CustomerCommand
+
+        return CreateCustomer(customer_repo, audit_log).execute(
+            salon_id,
+            CustomerCommand(full_name="Awa Koné", phone=phone),
+            actor_user_id=_MANAGER_ID,
+        )
+
+    # -- 200 ----------------------------------------------------------------
+
+    def test_200_full_update(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Aminata Diallo", "phone": "0700111222", "gender": "MALE"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        data = r.json()
+        assert data["full_name"] == "Aminata Diallo"
+        assert data["phone"] == "+2250700111222"
+        assert data["gender"] == "MALE"
+
+    def test_200_notes_unchanged(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Invariant #144 : la note privée n'est pas modifiée par l'édition d'identité."""
+        customer = self._create_with_notes(customer_repo, audit_log, "Note privée.")
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Aminata Diallo", "phone": None, "gender": None},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        assert r.json()["notes"] == "Note privée."
+
+    def test_200_no_user_id_in_response(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """ADR-0026 anti-oracle : `user_id` n'est jamais exposé dans la réponse."""
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Aminata Diallo"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        assert "user_id" not in r.json()
+
+    def test_200_salon_id_from_path(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Le `salon_id` du résultat correspond au chemin, jamais au corps."""
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Aminata Diallo"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        assert r.json()["salon_id"] == str(_SALON_ID)
+
+    def test_200_erasure_phone_null(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Effacement : `phone: null` → NULL en base (client walk-in acceptable)."""
+        customer = self._create_with_phone(customer_repo, audit_log, "0700000000")
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Awa Koné", "phone": None, "gender": None},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        assert r.json()["phone"] is None
+
+    def test_200_erasure_gender_null(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Effacement : `gender: null` → NULL en base."""
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Awa Koné", "gender": None},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        assert r.json()["gender"] is None
+
+    def test_200_privileged_fields_in_body_ignored(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Parité `extra="ignore"` : `notes`/`salon_id`/`id`/`user_id` dans le corps → ignorés."""
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={
+                    "full_name": "Aminata Diallo",
+                    "phone": None,
+                    "gender": None,
+                    # Champs privilégiés — doivent être ignorés :
+                    "notes": "Note injectée.",
+                    "salon_id": str(_OTHER_SALON_ID),
+                    "id": str(uuid.uuid4()),
+                    "user_id": str(uuid.uuid4()),
+                    "total_visits": 999,
+                },
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        data = r.json()
+        assert data["full_name"] == "Aminata Diallo"
+        # salon_id provient du chemin, jamais du corps.
+        assert data["salon_id"] == str(_SALON_ID)
+        # La note reste None (elle n'a pas été injectée par le corps).
+        assert data["notes"] is None
+        assert data["total_visits"] == 0
+
+    # -- 409 ----------------------------------------------------------------
+
+    def test_409_duplicate_phone(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Numéro déjà fiché par une autre fiche du salon → 409."""
+        customer_a = self._create_with_phone(customer_repo, audit_log, "0700000001")
+        self._create_with_phone(customer_repo, FakeAuditLog(), "0700000002")
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer_a.id),
+                json={"full_name": "Awa Koné", "phone": "0700000002"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 409
+
+    def test_409_message_neutral_no_phone(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """§11.3 : le message 409 ne rappelle jamais le numéro soumis."""
+        customer_a = self._create_with_phone(customer_repo, audit_log, "0700000001")
+        self._create_with_phone(customer_repo, FakeAuditLog(), "0700000002")
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer_a.id),
+                json={"full_name": "Awa Koné", "phone": "0700000002"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        detail = r.json().get("detail", "")
+        assert "0700000002" not in detail
+        assert "+225" not in detail
+
+    # -- 422 ----------------------------------------------------------------
+
+    def test_422_empty_name(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "", "phone": None},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 422
+
+    def test_422_invalid_phone(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Awa Koné", "phone": "not-a-phone"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 422
+
+    def test_422_invalid_gender(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Awa Koné", "gender": "UNKNOWN"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 422
+
+    # -- 404 ----------------------------------------------------------------
+
+    def test_404_unknown_customer(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, uuid.uuid4()),
+                json={"full_name": "Aminata Diallo"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 404
+
+    def test_404_customer_from_other_salon(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Isolation §11.2 : fiche d'un autre salon → 404 (après validation de portée)."""
+        customer = _make_customer_in_repo(customer_repo, _OTHER_SALON_ID)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Aminata Diallo"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 404
+
+    # -- 401 ----------------------------------------------------------------
+
+    def test_401_no_token(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Aminata Diallo"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 401
+
+    # -- 403 ----------------------------------------------------------------
+
+    def test_403_client_role(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        token = make_access_token(_CLIENT_ID, Role.CLIENT.value)
+        client = _make_client_with_overrides(
+            customer_repo,
+            audit_log,
+            user_id=_CLIENT_ID,
+            role=Role.CLIENT.value,
+            scopes={},
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Aminata Diallo"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 403
+
+    def test_403_hairdresser_role(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        customer = _make_customer_in_repo(customer_repo)
+        token = make_access_token(_HAIRDRESSER_ID, Role.HAIRDRESSER.value)
+        client = _make_client_with_overrides(
+            customer_repo,
+            audit_log,
+            user_id=_HAIRDRESSER_ID,
+            role=Role.HAIRDRESSER.value,
+            scopes={_HAIRDRESSER_ID: frozenset({_SALON_ID})},
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Aminata Diallo"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 403
+
+    def test_403_out_of_scope(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Isolation §11.2 : gérant ciblant un salon hors périmètre → 403 générique."""
+        customer = _make_customer_in_repo(customer_repo)
+        token = make_access_token(_OTHER_MANAGER_ID, Role.MANAGER.value)
+        client = _make_client_with_overrides(
+            customer_repo,
+            audit_log,
+            user_id=_OTHER_MANAGER_ID,
+            role=Role.MANAGER.value,
+            scopes={_OTHER_MANAGER_ID: frozenset({_OTHER_SALON_ID})},
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Aminata Diallo"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 403
+
+    def test_403_detail_is_generic(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Le message 403 est constant et ne révèle pas le motif (ADR-0015)."""
+        customer = _make_customer_in_repo(customer_repo)
+        token = make_access_token(_CLIENT_ID, Role.CLIENT.value)
+        client = _make_client_with_overrides(
+            customer_repo,
+            audit_log,
+            user_id=_CLIENT_ID,
+            role=Role.CLIENT.value,
+            scopes={},
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Aminata Diallo"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.json()["detail"] == "Accès refusé."
