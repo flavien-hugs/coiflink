@@ -96,6 +96,7 @@ coiflink/
 ├── deploy/                    # topologie non secrète : docker-compose + config Railway (#5)
 ├── docs/adr/                  # Architecture Decision Records (stack & socle)
 ├── docs/environnements-et-secrets.md  # environnements, politique de secrets, sauvegardes (#5)
+├── docs/guides/               # guides utilisateur (gérant & client) — parcours Must (#53)
 ├── specs/                     # specs de planification du pipeline ADW
 ├── adw_sdlc/                  # pipeline ADW (control plane TypeScript) — voir adw_sdlc/README.md
 ├── adw/                       # contrat d'état inter-langage (state.schema.json + fixtures)
@@ -455,6 +456,12 @@ opt-in** ([`perf.yml`](./.github/workflows/perf.yml), `workflow_dispatch`/noctur
 ADW et **hors** des status checks requis (la variabilité des runners partagés rendrait un seuil dur flaky) ;
 le verdict **de référence** vise **staging** via `PERF_TARGET_URL`. #52 **mesure** sans modifier le code de
 production : un dépassement se **documente** (issue d'optimisation dédiée), il ne se corrige pas ici.
+Enfin, la **documentation utilisateur** est livrée (#53) : deux guides pas à pas en français sous
+**[docs/guides/](./docs/guides/README.md)** — un **[guide gérant](./docs/guides/guide-gerant.md)**
+(interface web) et un **[guide client](./docs/guides/guide-client.md)** (application mobile) — couvrant
+les **parcours Must** (§5.1/§5.2/§5.3) tels qu'ils sont réellement livrés, avec des encadrés « À venir »
+pour les étapes pas encore exposées à l'interface (notifications non remises, reçu/inscription mobiles,
+journal de caisse/zone admin/employés côté web).
 
 ---
 
@@ -516,5 +523,6 @@ Chemin critique : **M0 → M1 → M2 → M3 → M4/M5 → M6**.
 
 - [prd-coiflink.md](./prd-coiflink.md) — exigences produit (source de vérité)
 - [BACKLOG.md](./BACKLOG.md) — backlog livrable (55 issues, M0–M6)
+- [docs/guides/](./docs/guides/README.md) — guides utilisateur (parcours Must) : [guide gérant](./docs/guides/guide-gerant.md) · [guide client](./docs/guides/guide-client.md)
 - [adw_sdlc/README.md](./adw_sdlc/README.md) — usage du pipeline ADW
 - [adw_sdlc/PLAN.md](./adw_sdlc/PLAN.md) — architecture du pipeline
