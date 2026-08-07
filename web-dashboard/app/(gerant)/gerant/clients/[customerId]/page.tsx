@@ -16,6 +16,7 @@ import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-stor
 import { createHttpCustomerGateway } from "@/src/adapters/api/http-customer-gateway";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { CustomerNoteForm } from "@/src/adapters/ui/customer-note-form";
+import { CustomerProfileForm } from "@/src/adapters/ui/customer-profile-form";
 import { CustomerServiceStatsPanel } from "@/src/adapters/ui/customer-service-stats";
 import { CustomerVisitHistory } from "@/src/adapters/ui/customer-visit-history";
 import { Tabs } from "@/src/adapters/ui/tabs";
@@ -91,6 +92,16 @@ export default async function CustomerDetailPage({
         ariaLabel="Sections de la fiche client"
         items={[
           {
+            key: "profile",
+            label: "Informations",
+            content: (
+              <CustomerProfile
+                salonId={salon.id}
+                customer={customerResult.customer}
+              />
+            ),
+          },
+          {
             key: "note",
             label: "Note privée",
             content: (
@@ -135,6 +146,34 @@ function CustomerHeader({ customer }: { customer: Customer }) {
         <span>{customer.phone ?? "Téléphone non renseigné"}</span>
         <span>{genderLabel(customer.gender)}</span>
       </p>
+    </div>
+  );
+}
+
+// Informations éditables (US-4.6, #144) : nom, téléphone, genre. Le formulaire
+// est pré-rempli des valeurs courantes ; le téléphone est unique au sein du
+// salon. Le jeton d'accès reste lu côté serveur (le formulaire poste au BFF,
+// invariant #14). La note privée garde son propre onglet (#32).
+function CustomerProfile({
+  salonId,
+  customer,
+}: {
+  salonId: string;
+  customer: Customer;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-6 shadow-soft">
+      <p className="max-w-prose text-sm text-muted">
+        Corrigez le nom, le téléphone ou le genre de ce client. Le téléphone doit
+        rester unique au sein de votre salon.
+      </p>
+      <CustomerProfileForm
+        salonId={salonId}
+        customerId={customer.id}
+        initialFullName={customer.fullName}
+        initialPhone={customer.phone}
+        initialGender={customer.gender}
+      />
     </div>
   );
 }

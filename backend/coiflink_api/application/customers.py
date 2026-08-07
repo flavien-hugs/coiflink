@@ -194,6 +194,100 @@ class UpdateCustomerNote:
         return customer
 
 
+class UpdateCustomer:
+    """Modifie l'identité (nom/téléphone/genre) d'une fiche du salon et journalise (§11.4, US-4.6, #144).
+
+    Fusion de `CreateCustomer` (validation d'identité + pré-contrôle d'unicité
+    `phone_exists`) et d'`UpdateSalon` #20 (résolution `find_by_id` → `404` avant
+    l'audit, **diff neutre** `metadata.changed`). Séquence :
+
+    1. **Validation domaine avant tout accès base** : nom → téléphone → genre
+       (aucune écriture ni audit si un champ est invalide) ;
+    2. **Résolution dans le salon** : `find_by_id` filtre `(salon_id, id)`
+       (isolation §11.2) — `CustomerNotFound` levée **avant** l'audit → aucune
+       trace pour une cible hors salon/inconnue ;
+    3. **Pré-contrôle d'unicité uniquement si le numéro change** : conserver son
+       propre numéro ne déclenche **jamais** de faux `409` (le numéro courant
+       appartient à la fiche éditée) ; en concurrence, l'index unique partiel base
+       tranche (le dépôt retraduit l'`IntegrityError` en `CustomerAlreadyExists`) ;
+    4. **Diff neutre puis écriture + audit** dans la même unité de travail :
+       `metadata = {"changed": [...]}` ne porte que les **noms** des champs
+       modifiés — jamais une **valeur** (§11.3/§11.4 : « sans fuite de PII dans les
+       métadonnées d'audit », critère d'acceptation).
+
+    **Seule l'identité est éditée** : la note (#32) garde sa route dédiée et n'est
+    pas touchée ; `notes` de la commande est **ignoré**. Comme pour `CreateCustomer`,
+    le `salon_id` provient toujours de la portée validée, jamais du corps.
+    """
+
+    # Champs d'identité comparés pour le diff neutre (noms uniquement, ordre stable).
+    _DIFF_FIELDS = ("full_name", "phone", "gender")
+
+    def __init__(self, repository: CustomerRepository, audit_log: AuditLog) -> None:
+        self._repository = repository
+        self._audit_log = audit_log
+
+    def execute(
+        self,
+        salon_id: uuid.UUID,
+        customer_id: uuid.UUID,
+        command: CustomerCommand,
+        *,
+        actor_user_id: uuid.UUID,
+    ) -> Customer:
+        # 1. Validation domaine AVANT tout accès base (aucune écriture ni audit si
+        #    invalide). `notes` de la commande est ignoré : #144 n'édite que l'identité.
+        full_name = validate_customer_name(command.full_name)
+        phone = normalize_customer_phone(command.phone)
+        gender = normalize_gender(command.gender)
+
+        # 2. Résout la fiche DANS le salon (404 après portée si hors salon/inconnue),
+        #    AVANT l'audit → aucune trace pour une cible inexistante.
+        current = self._repository.find_by_id(salon_id, customer_id)
+        if current is None:
+            raise CustomerNotFound("Fiche client introuvable.")
+
+        # 3. Pré-contrôle d'unicité UNIQUEMENT si le numéro change (jamais de faux
+        #    409 contre soi-même). En concurrence, l'index base tranche (repository.update).
+        if (
+            phone is not None
+            and phone != current.phone
+            and self._repository.phone_exists(salon_id, phone)
+        ):
+            # Message **neutre** : il ne rappelle jamais le numéro soumis (§11.3).
+            raise CustomerAlreadyExists(
+                "Une fiche existe déjà pour ce numéro dans ce salon."
+            )
+
+        # 4. Diff NEUTRE (noms de champs uniquement — jamais de valeur, §11.3/§11.4).
+        candidate = {"full_name": full_name, "phone": phone, "gender": gender}
+        changed = [
+            name
+            for name in self._DIFF_FIELDS
+            if getattr(current, name) != candidate[name]
+        ]
+
+        customer = self._repository.update(
+            salon_id,
+            customer_id,
+            full_name=full_name,
+            phone=phone,
+            gender=gender,
+        )
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.CUSTOMER_UPDATED.value,
+                actor_user_id=actor_user_id,
+                salon_id=salon_id,
+                entity_type=ENTITY_TYPE_CUSTOMER,
+                entity_id=customer.id,
+                # NOMS de champs modifiés uniquement — aucune PII (§11.3/§11.4).
+                metadata={"changed": changed},
+            )
+        )
+        return customer
+
+
 class ListSalonCustomers:
     """Liste paginée des fiches d'un salon (lecture — pas d'audit)."""
 
@@ -293,6 +387,7 @@ class GetCustomerServiceStats:
 __all__ = [
     "CustomerCommand",
     "CreateCustomer",
+    "UpdateCustomer",
     "UpdateCustomerNote",
     "ListSalonCustomers",
     "GetCustomer",

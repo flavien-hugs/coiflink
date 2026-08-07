@@ -190,6 +190,52 @@ class SqlCustomerRepository:
         self._session.refresh(row)
         return _to_domain(row)
 
+    def update(
+        self,
+        salon_id: uuid.UUID,
+        customer_id: uuid.UUID,
+        *,
+        full_name: str,
+        phone: str | None,
+        gender: str | None,
+    ) -> Customer:
+        """Remplace l'identité de la fiche `(salon_id, customer_id)` (US-4.6, #144).
+
+        Fusion des patrons `update_notes` (résolution `(salon_id, id)` → isolation
+        §11.2, `CustomerNotFound` avant l'audit, `flush` sans `commit`) et `create`
+        (retraduction de l'`IntegrityError` du doublon de téléphone en
+        `CustomerAlreadyExists` — filet de la course concurrente). `phone`/`gender`
+        `None` **effacent** le champ ; conserver son propre numéro ne viole pas
+        l'index (même ligne). **Seules** les colonnes d'identité sont écrites.
+        """
+
+        stmt = select(models.CustomerProfile).where(
+            models.CustomerProfile.salon_id == salon_id,
+            models.CustomerProfile.id == customer_id,
+        )
+        row = self._session.scalar(stmt)
+        if row is None:
+            raise CustomerNotFound("Fiche client introuvable.")
+        row.full_name = full_name
+        row.phone = phone
+        row.gender = gender
+        try:
+            # `flush` déclenche l'UPDATE (et les contraintes) sans committer.
+            self._session.flush()
+        except IntegrityError as exc:
+            if _is_phone_duplicate(exc):
+                # Course concurrente perdue : rollback puis erreur de domaine
+                # neutre (l'`IntegrityError` brute n'est jamais journalisée, elle
+                # peut porter le numéro soumis).
+                self._session.rollback()
+                raise CustomerAlreadyExists(
+                    "Une fiche existe déjà pour ce numéro dans ce salon."
+                ) from exc
+            raise
+        # Recharge `updated_at` régénéré côté serveur (`onupdate`).
+        self._session.refresh(row)
+        return _to_domain(row)
+
     def list_visits(
         self,
         salon_id: uuid.UUID,

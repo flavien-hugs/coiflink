@@ -1259,6 +1259,40 @@ class FakeCustomerRepository:
         self._customers[customer_id] = updated
         return updated
 
+    def update(self, salon_id, customer_id, *, full_name, phone, gender):  # type: ignore[no-untyped-def]
+        from dataclasses import replace
+
+        from coiflink_api.domain.errors import (
+            CustomerAlreadyExists,
+            CustomerNotFound,
+        )
+
+        customer = self._customers.get(customer_id)
+        if customer is None or customer.salon_id != salon_id:  # type: ignore[union-attr]
+            # Fiche hors salon/inexistante : indiscernable (isolation §11.2).
+            raise CustomerNotFound("Fiche client introuvable.")
+        # Filet base de l'unicité `(salon_id, phone)` : le nouveau numéro est déjà
+        # porté par une **autre** fiche du salon (course concurrente simulée si le
+        # pré-contrôle applicatif ne l'a pas déjà refusé).
+        if phone is not None and any(
+            c.phone == phone and c.id != customer_id  # type: ignore[union-attr]
+            for c in self._for_salon(salon_id)
+        ):
+            raise CustomerAlreadyExists(
+                "Une fiche existe déjà pour ce numéro dans ce salon."
+            )
+        # Seule l'identité change ; `notes`/compteurs inchangés, `updated_at`
+        # régénéré (miroir du `onupdate` SQL).
+        updated = replace(
+            customer,
+            full_name=full_name,
+            phone=phone,
+            gender=gender,
+            updated_at=_UPDATED_AT,
+        )
+        self._customers[customer_id] = updated
+        return updated
+
     def list_visits(self, salon_id, customer_id, statuses):  # type: ignore[no-untyped-def]
         # Enregistre l'appel (les tests vérifient que `statuses == HISTORY_STATUSES`).
         self.last_visits_call = (salon_id, customer_id, statuses)

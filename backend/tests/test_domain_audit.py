@@ -67,6 +67,9 @@ class TestAuditAction:
     def test_customer_note_updated_value(self) -> None:
         assert AuditAction.CUSTOMER_NOTE_UPDATED == "CUSTOMER_NOTE_UPDATED"
 
+    def test_customer_updated_value(self) -> None:
+        assert AuditAction.CUSTOMER_UPDATED == "CUSTOMER_UPDATED"
+
     def test_payment_recorded_value(self) -> None:
         assert AuditAction.PAYMENT_RECORDED == "PAYMENT_RECORDED"
 
@@ -76,8 +79,8 @@ class TestAuditAction:
     def test_campaign_created_value(self) -> None:
         assert AuditAction.CAMPAIGN_CREATED == "CAMPAIGN_CREATED"
 
-    def test_exactly_fourteen_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 14
+    def test_exactly_fifteen_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 15
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -100,6 +103,7 @@ class TestAuditAction:
             "APPOINTMENT_HAIRDRESSER_ASSIGNED",
             "CUSTOMER_CREATED",
             "CUSTOMER_NOTE_UPDATED",
+            "CUSTOMER_UPDATED",
             "PAYMENT_RECORDED",
             "CASH_ADJUSTED",
             "CAMPAIGN_CREATED",

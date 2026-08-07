@@ -55,6 +55,15 @@ export interface CustomerInput {
   notes: string | null;
 }
 
+// Champs d'**identité** éditables d'une fiche (US-4.6, #144) — sous-ensemble de
+// `CustomerInput` **sans `notes`** : la note privée garde sa route dédiée (#32).
+// Le nom reste obligatoire ; `null` sur téléphone/genre efface le champ.
+export interface CustomerProfileInput {
+  fullName: string;
+  phone: string | null;
+  gender: Gender | null;
+}
+
 // Saisie brute (formulaire) avant normalisation/validation.
 export interface RawCustomerInput {
   fullName: string;

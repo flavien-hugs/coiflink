@@ -17,8 +17,13 @@ import type {
   GetCustomerResult,
   ListCustomersResult,
   UpdateNoteResult,
+  UpdateProfileResult,
 } from "@/src/application/ports/customer-gateway";
-import type { Customer, CustomerInput } from "@/src/domain/customer/customer";
+import type {
+  Customer,
+  CustomerInput,
+  CustomerProfileInput,
+} from "@/src/domain/customer/customer";
 import type { CustomerServiceStats } from "@/src/domain/customer/stats";
 import type { VisitHistory } from "@/src/domain/customer/visit";
 import { resolveApiBaseUrl } from "./config";
@@ -403,6 +408,59 @@ export function createHttpCustomerGateway(
       }
       if (response.status === 404) {
         return { ok: false, reason: "not-found" };
+      }
+      if (response.status === 422) {
+        return { ok: false, reason: "invalid" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async updateProfile(
+      salonId: string,
+      customerId: string,
+      input: CustomerProfileInput,
+    ): Promise<UpdateProfileResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `${customersUrl(salonId)}/${encodeURIComponent(customerId)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", ...authHeader() },
+            // Seule l'identité est transmise ; `null`/vide efface téléphone/genre.
+            // La note n'est **jamais** envoyée ici (route #32). `salon_id`/`id`/
+            // `user_id` ne sont jamais transmis (portée par le chemin, anti-oracle).
+            body: JSON.stringify({
+              full_name: input.fullName,
+              phone: input.phone,
+              gender: input.gender,
+            }),
+            cache: "no-store",
+          },
+        );
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as CustomerResponsePayload;
+        return { ok: true, customer: toCustomer(payload) };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "not-found" };
+      }
+      if (response.status === 409) {
+        return { ok: false, reason: "duplicate" };
       }
       if (response.status === 422) {
         return { ok: false, reason: "invalid" };
