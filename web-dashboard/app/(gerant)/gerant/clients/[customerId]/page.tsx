@@ -16,7 +16,6 @@ import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-stor
 import { createHttpCustomerGateway } from "@/src/adapters/api/http-customer-gateway";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { CustomerNoteForm } from "@/src/adapters/ui/customer-note-form";
-import { CustomerProfilePanel } from "@/src/adapters/ui/customer-profile-panel";
 import { CustomerServiceStatsPanel } from "@/src/adapters/ui/customer-service-stats";
 import { CustomerVisitHistory } from "@/src/adapters/ui/customer-visit-history";
 import { Tabs } from "@/src/adapters/ui/tabs";
@@ -87,7 +86,7 @@ export default async function CustomerDetailPage({
 
   return (
     <Shell>
-      <CustomerHeader salonId={salon.id} customer={customerResult.customer} />
+      <CustomerHeader customer={customerResult.customer} />
       <Tabs
         ariaLabel="Sections de la fiche client"
         items={[
@@ -128,28 +127,18 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-// En-tête de fiche + icône « Modifier » (US-4.6, #144) qui ouvre un panneau
-// latéral droit pré-rempli des valeurs courantes (nom, téléphone, genre) ; le
-// téléphone reste unique au sein du salon. Le jeton d'accès reste lu côté
-// serveur (le formulaire du panneau poste au BFF, invariant #14). La note
-// privée garde son propre onglet (#32).
-function CustomerHeader({
-  salonId,
-  customer,
-}: {
-  salonId: string;
-  customer: Customer;
-}) {
+// En-tête de fiche, lecture seule : nom, téléphone, genre. L'édition de
+// l'identité (US-4.6, #144) se fait depuis la ligne du client dans le
+// tableau `/gerant/clients` (icône « Modifier », `CustomerList`) — la note
+// privée garde son propre onglet ici (#32).
+function CustomerHeader({ customer }: { customer: Customer }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <h1 className="font-serif text-2xl font-semibold tracking-tight text-ink">{customer.fullName}</h1>
-        <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted">
-          <span>{customer.phone ?? "Téléphone non renseigné"}</span>
-          <span>{genderLabel(customer.gender)}</span>
-        </p>
-      </div>
-      <CustomerProfilePanel salonId={salonId} customer={customer} />
+    <div>
+      <h1 className="font-serif text-2xl font-semibold tracking-tight text-ink">{customer.fullName}</h1>
+      <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted">
+        <span>{customer.phone ?? "Téléphone non renseigné"}</span>
+        <span>{genderLabel(customer.gender)}</span>
+      </p>
     </div>
   );
 }

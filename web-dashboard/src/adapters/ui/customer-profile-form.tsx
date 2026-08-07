@@ -6,7 +6,8 @@
 // puis poste vers le Route Handler BFF `PATCH /api/salons/{id}/customers/{id}`,
 // qui proxifie le backend avec le jeton du cookie httpOnly (invariant #14). En
 // cas de succès, rafraîchit la page (`router.refresh()`) puis referme le
-// panneau (`onSaved`, mode drawer — `CustomerProfilePanel`).
+// panneau (`onSaved`, mode drawer — icône « Modifier » de chaque ligne du
+// tableau, `CustomerList`).
 //
 // **Seule l'identité** est éditée ici : la note privée garde son éditeur dédié
 // (#32). Le nom reste obligatoire ; vider le téléphone ou le genre efface le
