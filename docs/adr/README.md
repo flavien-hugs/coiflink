@@ -50,6 +50,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0035](./0035-notification-salon-a-la-reservation.md) | Notification au salon à la réservation — ligne `notifications` `NEW_BOOKING`/`IN_APP` persistée atomiquement (émission/trace §8.4/§11.4), destinataire = gérant (`salon.owner_id`), lecture salon-scopée différée, remise email/SMS différée M5 | Accepté | #47 |
 | [0036](./0036-notification-annulation-modification.md) | Notification d'annulation/modification de RDV — émission atomique aux parties concernées, `CANCELLATION` réutilisé (client + salon, §8.4, sans migration), type `APPOINTMENT_UPDATE` (migration `0008`) pour les autres changements de statut & la modification, résolution du gérant via `SalonRepository`, lecture & remise différées M5 | Accepté | #48 |
 | [0037](./0037-campagnes-messages-clients.md) | Campagnes/messages aux clients — table dédiée `campaigns` (migration `0009`, pas de fan-out dans `notifications`), segment = prédicat salon-scopé sur les fiches (#28) restreint aux fiches joignables SMS, effectif snapshot non-PII (`COUNT`), permission `CUSTOMER_MANAGE` réutilisée, audit `CAMPAIGN_CREATED` neutre, remise différée M5 | Accepté | #49 |
+| [0038](./0038-observabilite-monitoring-rollback.md) | Mise en production — observabilité (monitoring/alerting native Railway + sonde de disponibilité externe visant 99 %), alerting non-PII, stratégie de rollback (app + arbre de décision base), liveness-only (readiness différée), suivi d'erreurs applicatif différé/optionnel | Accepté | #54 |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
@@ -69,7 +70,17 @@ ultérieure et signalés en *Conséquences* des ADR concernés :
   `docs/environnements-et-secrets.md` ; voir ADR-0005 et
   [ADR-0017](./0017-creation-salon-medias-et-reservabilite.md).
 - **Sauvegardes automatiques** (§10.2, §12.2) — **tranchées par ADR-0011** (#5 : quotidiennes,
-  rétention 7 j, restauration testée), voir ADR-0004.
+  rétention 7 j, restauration testée), voir ADR-0004. La **mise en service `production`**,
+  l'**activation** et la **vérification** de ces sauvegardes (test de restauration, RPO/RTO consignés)
+  sont **exécutées et documentées par #54** — voir
+  [ADR-0038](./0038-observabilite-monitoring-rollback.md) et
+  [`docs/mise-en-production.md`](../mise-en-production.md).
+- **Monitoring & alerting** (§12.2 : monitoring des services critiques, alertes en cas d'incident,
+  disponibilité ≥ 99 %) et **stratégie de rollback** — **tranchés par
+  [ADR-0038](./0038-observabilite-monitoring-rollback.md)** (#54 : observabilité native Railway + sonde
+  de disponibilité externe, alerting non-PII, rollback manuel documenté app + base, **liveness-only** au
+  MVP — readiness dédiée différée). Le **suivi d'erreurs applicatif** (Sentry ou équivalent) reste
+  **différé/optionnel** (non câblé, surface documentée sans l'impliquer).
 - **ORM + migrations** — **tranché par [ADR-0009](./0009-orm-migrations-sqlalchemy-alembic.md)** (#3 :
   SQLAlchemy 2.0 + Alembic + psycopg 3, PostgreSQL 16).
 - **Lib de hachage de mot de passe** — **tranchée par [ADR-0012](./0012-hachage-argon2-strategie-otp.md)**
