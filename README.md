@@ -445,6 +445,16 @@ filtre `client_id` étranger → vide, révocation immédiate, rotation du refre
 non-fuite** balayant `audit_logs`). La suite **teste l'existant** : les actions §11.4 non encore câblées
 (`Connexion`, `Création rendez-vous`, `Création employé`, `Désactivation salon`) sont documentées comme
 gap, pas assertées présentes.
+Enfin, les **tests de performance** (#52, §12.1) mesurent la latence des **endpoints critiques** sous
+**charge nominale** contre un **serveur réel** (uvicorn + PostgreSQL 16 peuplée) : recherche salon
+(`< 2 s`), création de rendez-vous (`< 3 s`), dashboard gérant agrégé (`< 3 s`) et échantillon d'API
+générale (`< 3 s`). Le harnais vit sous [`backend/perf/`](./backend/perf/README.md) (hors package de prod,
+hors image Docker, extra `perf` opt-in) ; il produit un **rapport** p50/p95/p99 confronté aux budgets §12.1
+(PASS/WARN/FAIL en CSV/JSON/Markdown). La suite est **informative** et tourne dans un **job CI dédié
+opt-in** ([`perf.yml`](./.github/workflows/perf.yml), `workflow_dispatch`/nocturne) — **hors** du test gate
+ADW et **hors** des status checks requis (la variabilité des runners partagés rendrait un seuil dur flaky) ;
+le verdict **de référence** vise **staging** via `PERF_TARGET_URL`. #52 **mesure** sans modifier le code de
+production : un dépassement se **documente** (issue d'optimisation dédiée), il ne se corrige pas ici.
 
 ---
 

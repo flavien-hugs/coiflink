@@ -79,7 +79,14 @@ Comptes créés (mot de passe commun `CoifLink#2026`) :
 | **Build** (installation du paquet) | `pip install -e .` |
 | **Test** (test gate, cf. #6) | `pytest` |
 | **Lint** (CI #4, cf. [ADR-0010](../docs/adr/0010-ci-cd-docker-packaging.md)) | `ruff check .` (installé via l'extra `dev`) |
+| **Charge / perf** (§12.1, #52 — opt-in, hors gate) | `pip install -e ".[perf]"` puis `DATABASE_URL=… python -m perf.run` |
 | **Image Docker** (build-seul en CI ; config par env, non-root) | `docker build -t coiflink-backend ./backend` |
+
+Le répertoire [`perf/`](./perf/README.md) porte le **harnais de test de charge** des endpoints critiques
+(#52, budgets §12.1) : il vit **hors** du package `coiflink_api` et **hors** de `tests/` (non collecté par
+`pytest`, hors test gate ADW, hors image Docker), derrière l'extra **`perf`** (`httpx` + `locust`). Il
+mesure la latence p50/p95/p99 contre un **serveur réel** et la confronte aux budgets §12.1 ; job CI dédié
+**opt-in** ([`perf.yml`](../.github/workflows/perf.yml)), jamais requis. Voir [`perf/README.md`](./perf/README.md).
 
 ## Endpoints
 

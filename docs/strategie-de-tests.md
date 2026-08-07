@@ -150,6 +150,40 @@ MX_AGENT_TEST_CMD=bash ../scripts/test-gate.sh
 | End-to-end parcours critiques (§5, backend-HTTP) | — | ✅ (job `backend`) | ✅ |
 | Sécurité rapide (authz / JWT / non-divulgation, §11, #51) | ✅ | ✅ | — |
 | Sécurité e2e (isolation / brute-force / audit, §11, #51) | — | ✅ (job `backend`) | ✅ |
+| **Performance / charge (§12.1, #52)** | — | — | job **`perf`** opt-in (`perf.yml`), **non requis** |
+
+> **Ligne « performance »** : les tests de charge (#52) ne sont **ni** dans le gate ADW **ni** dans la CI
+> applicative requise (`ci.yml`). Ils tournent dans un **job dédié opt-in** ([`perf.yml`](../.github/workflows/perf.yml),
+> `workflow_dispatch`/nocturne) — voir [§4bis](#4bis-tests-de-performance-52-1221).
+
+## 4bis. Tests de performance (#52, §12.1)
+
+La suite de **charge** (#52) mesure la latence des **endpoints critiques** contre un **serveur réel**
+(uvicorn + PostgreSQL 16 peuplée d'un jeu représentatif), **jamais** via `TestClient` (transport ASGI
+en-processus mono-thread : ne mesure ni la latence réelle sous concurrence, ni le pool de connexions).
+Elle confronte le **p95** serveur (régime établi, warm-up exclu) aux **budgets §12.1** — recherche salon
+`< 2 s`, création de RDV `< 3 s`, dashboard gérant agrégé `< 3 s`, API générale `< 3 s` — et émet un
+rapport PASS/WARN/FAIL (CSV/JSON/Markdown).
+
+- **Où** : harnais isolé sous [`backend/perf/`](../backend/perf/README.md) — **hors** du package
+  `coiflink_api`, **hors** de `backend/tests/` (non collecté par `pytest`), **hors** de l'image Docker,
+  **hors** du test gate ADW. Dépendance de dev **optionnelle** : extra `perf` (`httpx` + `locust`).
+- **Exécution** : `DATABASE_URL=… python -m perf.run` (uvicorn local, secret JWT **de test**) ou
+  `PERF_TARGET_URL=…` (cible externe). Job CI **opt-in** `perf.yml` (jamais sur chaque PR, jamais status
+  check requis : la variabilité des runners partagés rendrait un seuil dur flaky).
+- **Verdict de référence** : viser **staging** (matériel stable, proche prod) via `PERF_TARGET_URL` ; le
+  job CI local reste un **indicateur de dérive**. Mode **informatif** par défaut (un FAIL n'échoue pas le
+  job, sauf `--strict`).
+- **Plage de téléphones réservée** : `+225059990…` (distincte de toutes les plages e2e), pour un
+  **nettoyage FK-safe** (`notifications`/`campaigns` avant `appointments`/`payments`/`cash_journal`/
+  `salons`/`users` — mémoire `notifications-fk-restrict`). Secret JWT **de test** uniquement ; **aucun**
+  secret ni PII dans la sortie, le rapport ou les logs (le rapport passe `assert_no_pii`, cohérent §6).
+- **Que faire en cas de FAIL** : #52 **mesure**, il n'optimise pas — documenter le dépassement et ouvrir
+  une **issue d'optimisation dédiée** (index, N+1, pagination, cache Redis M5), sans modifier la prod.
+
+Les **fonctions pures** du harnais (budgets, verdict PASS/WARN/FAIL, sérialisation du rapport, mix de
+trafic) sont **déterministes** et couvertes par des tests unitaires rapides sous `backend/tests/`
+(collectés par `pytest`, **sans** exécuter de charge) — sûrs dans le gate et la CI.
 
 ## 5. Comment ajouter un test
 

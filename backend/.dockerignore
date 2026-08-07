@@ -17,3 +17,6 @@ build/
 
 # Tests non nécessaires au runtime de l'image.
 tests/
+
+# Harnais de test de charge (#52) — outillage opt-in, jamais dans l'image de prod.
+perf/
