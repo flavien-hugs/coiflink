@@ -261,9 +261,17 @@ def _login(client: TestClient, *, phone: str) -> str:
 
 
 def _next_monday() -> datetime.date:
-    """Prochain lundi (jour couvert par `_VALID_HOURS`), toujours dans le futur."""
+    """Prochain lundi (jour couvert par `_VALID_HOURS`), au moins 2 jours dans le futur.
+
+    La marge de 2 jours garantit que les 3 rappels 24h/2h/30min (#46) restent futurs
+    quelle que soit l'heure d'exécution des tests : un « prochain lundi » à seulement
+    1 jour (si `today` est un dimanche) laisserait le rappel 24h déjà passé dès que
+    l'heure courante dépasse l'heure de début du RDV.
+    """
     today = datetime.date.today()
     days_ahead = (7 - today.weekday()) % 7 or 7
+    if days_ahead < 2:
+        days_ahead += 7
     return today + datetime.timedelta(days=days_ahead)
 
 
