@@ -322,10 +322,25 @@ export function ServiceList({
                 <tr key={service.id} className="align-top">
                   <td className="px-4 py-3 font-medium text-muted">{index + 1}</td>
                   <td className="max-w-[320px] px-4 py-3">
-                    <div className="font-semibold">{service.name}</div>
-                    {service.description ? (
-                      <p className="mt-1 line-clamp-2 text-muted">{service.description}</p>
-                    ) : null}
+                    <div className="flex items-start gap-3">
+                      {service.imageUrl ? (
+                        // URL signée à durée limitée : jamais optimisable/mise en cache par next/image.
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={service.imageUrl}
+                          alt=""
+                          className="size-10 shrink-0 rounded-lg border border-border object-cover"
+                        />
+                      ) : null}
+                      <div>
+                        <div className="font-semibold">{service.name}</div>
+                        {service.description ? (
+                          <p className="mt-1 line-clamp-2 text-muted">
+                            {service.description}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-muted">{service.category ?? "—"}</td>
                   <td className="px-4 py-3 font-medium">{formatPrice(service.price)}</td>

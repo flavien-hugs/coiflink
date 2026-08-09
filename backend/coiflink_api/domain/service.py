@@ -191,7 +191,16 @@ class ServiceUpdate:
 
 @dataclass(frozen=True)
 class Service:
-    """Prestation persistée, rattachée à un salon (PRD §9.3)."""
+    """Prestation persistée, rattachée à un salon (PRD §9.3).
+
+    `image_object_key` est la clé d'objet S3-compatible de l'illustration
+    (ADR-0005), jamais une URL — l'URL signée est résolue par l'adapter entrant
+    à la lecture (miroir `Salon.logo_object_key`). `None` = aucune illustration
+    (état normal, pas une erreur). Attachée via `AttachServiceImage`, jamais via
+    `CreateService`/`UpdateService` (décision de conception : le binaire
+    n'existe pas encore à la création, l'attachement est une action dédiée,
+    miroir exact de `AttachSalonLogo`).
+    """
 
     id: uuid.UUID
     salon_id: uuid.UUID
@@ -201,6 +210,7 @@ class Service:
     duration_minutes: int
     category: str | None
     is_active: bool
+    image_object_key: str | None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 

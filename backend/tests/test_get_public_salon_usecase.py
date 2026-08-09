@@ -82,6 +82,7 @@ def _service(
         duration_minutes=30,
         category="Coupe",
         is_active=is_active,
+        image_object_key=None,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )

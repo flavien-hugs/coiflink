@@ -38,6 +38,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from coiflink_api.adapters.inbound.salons import (
+    get_optional_media_storage,
+    require_media_storage,
+)
 from coiflink_api.adapters.inbound.security import (
     require_permission,
     require_salon_scope,
@@ -48,11 +52,14 @@ from coiflink_api.adapters.outbound.persistence.service_repository import (
 )
 from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.application.ports.audit_log import AuditLog
+from coiflink_api.application.ports.media_storage import MediaStorage
 from coiflink_api.application.ports.service_repository import ServiceRepository
 from coiflink_api.application.services import (
+    AttachServiceImage,
     CreateService,
     DeactivateService,
     GetService,
+    IssueServiceImageUploadUrl,
     ListSalonServices,
     ReactivateService,
     ServiceCommand,
@@ -60,11 +67,13 @@ from coiflink_api.application.services import (
 )
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.errors import (
+    InvalidMediaType,
     InvalidServiceCategory,
     InvalidServiceDuration,
     InvalidServiceFilter,
     InvalidServiceName,
     InvalidServicePrice,
+    MediaKeyMismatch,
     ServiceNotFound,
 )
 from coiflink_api.domain.permissions import Permission
@@ -110,7 +119,12 @@ class UpdateServiceRequest(CreateServiceRequest):
 
 
 class ServiceResponse(BaseModel):
-    """Représentation d'une prestation renvoyée par l'API."""
+    """Représentation d'une prestation renvoyée par l'API.
+
+    `image_url` est une **URL signée** de lecture (ou `null` si aucune image ou
+    stockage non configuré) — **jamais** la clé d'objet brute (ADR-0005, miroir
+    `SalonResponse.logo_url`).
+    """
 
     id: uuid.UUID
     salon_id: uuid.UUID
@@ -120,8 +134,41 @@ class ServiceResponse(BaseModel):
     duration_minutes: int
     category: str | None
     is_active: bool
+    image_url: str | None
     created_at: object
     updated_at: object
+
+
+class ServiceImageUploadUrlRequest(BaseModel):
+    """Corps de `POST /salons/{salon_id}/services/media/upload-url`."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    content_type: str = Field(examples=["image/png"])
+
+
+class ServiceImageUploadUrlResponse(BaseModel):
+    """URL signée de téléversement direct navigateur → stockage objet (ADR-0005)."""
+
+    url: str
+    method: str
+    headers: dict[str, str]
+    object_key: str
+    expires_in: int
+
+
+class AttachServiceImageRequest(BaseModel):
+    """Corps de `PUT /salons/{salon_id}/services/{service_id}/image`.
+
+    `object_key` est la clé **préalablement téléversée** (émise par
+    `POST .../media/upload-url`) ; `null` **efface** l'illustration.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    object_key: str | None = Field(
+        default=None, examples=["services/<salon_id>/<uuid>.png"]
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -148,7 +195,21 @@ def get_audit_log(
     return SqlAuditLog(session)
 
 
-def _service_response(service: Service) -> ServiceResponse:
+def _service_response(
+    service: Service, storage: MediaStorage | None
+) -> ServiceResponse:
+    """Mappe une `Service` vers la réponse HTTP, résolvant l'URL signée de l'image.
+
+    `image_url` vaut `null` si la prestation n'a pas d'illustration **ou** si le
+    stockage objet n'est pas configuré (les lectures tolèrent l'absence de
+    stockage, miroir `_salon_response`) — jamais la clé d'objet brute.
+    """
+
+    image_url = (
+        storage.presign_download(service.image_object_key)
+        if storage is not None and service.image_object_key
+        else None
+    )
     return ServiceResponse(
         id=service.id,
         salon_id=service.salon_id,
@@ -158,6 +219,7 @@ def _service_response(service: Service) -> ServiceResponse:
         duration_minutes=service.duration_minutes,
         category=service.category,
         is_active=service.is_active,
+        image_url=image_url,
         created_at=service.created_at,
         updated_at=service.updated_at,
     )
@@ -192,6 +254,7 @@ def create_service(
     payload: CreateServiceRequest,
     repository: Annotated[ServiceRepository, Depends(get_service_repository)],
     audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    storage: Annotated[MediaStorage | None, Depends(get_optional_media_storage)],
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
     principal: Annotated[
         Principal, Depends(require_permission(Permission.SERVICE_MANAGE))
@@ -200,7 +263,9 @@ def create_service(
     """Crée une prestation (`is_active=true`) pour le salon de la portée validée.
 
     Le `salon_id` vient du chemin (portée), jamais du corps. Journalise
-    `SERVICE_CREATED` (§11.4) dans la même unité de travail.
+    `SERVICE_CREATED` (§11.4) dans la même unité de travail. L'illustration
+    n'est **pas** posée ici : elle s'attache séparément une fois la prestation
+    créée (`PUT .../services/{service_id}/image`, miroir #15 logo/salon).
     """
 
     try:
@@ -211,7 +276,7 @@ def create_service(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
-    return _service_response(service)
+    return _service_response(service, storage)
 
 
 @router.get(
@@ -227,6 +292,7 @@ def create_service(
 def list_services(
     salon_id: uuid.UUID,
     repository: Annotated[ServiceRepository, Depends(get_service_repository)],
+    storage: Annotated[MediaStorage | None, Depends(get_optional_media_storage)],
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
     _principal: Annotated[
         Principal, Depends(require_permission(Permission.SERVICE_READ))
@@ -261,7 +327,7 @@ def list_services(
     services = ListSalonServices(repository).execute(
         salon_id, filter=service_filter, include_inactive=True
     )
-    return [_service_response(service) for service in services]
+    return [_service_response(service, storage) for service in services]
 
 
 @router.get(
@@ -278,6 +344,7 @@ def get_service(
     salon_id: uuid.UUID,
     service_id: uuid.UUID,
     repository: Annotated[ServiceRepository, Depends(get_service_repository)],
+    storage: Annotated[MediaStorage | None, Depends(get_optional_media_storage)],
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
     _principal: Annotated[
         Principal, Depends(require_permission(Permission.SERVICE_READ))
@@ -291,7 +358,7 @@ def get_service(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
-    return _service_response(service)
+    return _service_response(service, storage)
 
 
 @router.put(
@@ -311,6 +378,7 @@ def update_service(
     payload: UpdateServiceRequest,
     repository: Annotated[ServiceRepository, Depends(get_service_repository)],
     audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    storage: Annotated[MediaStorage | None, Depends(get_optional_media_storage)],
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
     principal: Annotated[
         Principal, Depends(require_permission(Permission.SERVICE_MANAGE))
@@ -320,6 +388,7 @@ def update_service(
 
     Cœur du critère « modification journalisée » : après écriture, une entrée
     `SERVICE_UPDATED` porte la **liste des champs modifiés** (`metadata.changed`).
+    L'illustration n'est **pas** touchée ici (route dédiée `.../image`).
     """
 
     try:
@@ -334,7 +403,7 @@ def update_service(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
-    return _service_response(service)
+    return _service_response(service, storage)
 
 
 @router.delete(
@@ -390,6 +459,7 @@ def reactivate_service(
     service_id: uuid.UUID,
     repository: Annotated[ServiceRepository, Depends(get_service_repository)],
     audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    storage: Annotated[MediaStorage | None, Depends(get_optional_media_storage)],
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
     principal: Annotated[
         Principal, Depends(require_permission(Permission.SERVICE_MANAGE))
@@ -408,7 +478,96 @@ def reactivate_service(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
-    return _service_response(service)
+    return _service_response(service, storage)
+
+
+@router.post(
+    "/{salon_id}/services/media/upload-url",
+    response_model=ServiceImageUploadUrlResponse,
+    summary="Émettre une URL signée de téléversement de l'image d'une prestation",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {"description": "Type MIME hors liste blanche"},
+        503: {"description": "Stockage objet non configuré"},
+    },
+)
+def issue_service_image_upload_url(
+    salon_id: uuid.UUID,
+    payload: ServiceImageUploadUrlRequest,
+    storage: Annotated[MediaStorage, Depends(require_media_storage)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.SERVICE_MANAGE))
+    ],
+) -> ServiceImageUploadUrlResponse:
+    """Fabrique la clé d'objet (sans PII) et renvoie l'URL signée `PUT` (ADR-0005).
+
+    Scopée au **salon** (pas encore à une prestation précise) : le binaire est
+    téléversé directement navigateur → stockage objet, puis la clé est attachée
+    via `PUT .../services/{service_id}/image` — la prestation peut être en cours
+    de création (miroir #15 : le logo s'attache après la création du salon).
+    """
+
+    try:
+        presigned = IssueServiceImageUploadUrl(storage).execute(
+            salon_id, payload.content_type
+        )
+    except InvalidMediaType as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return ServiceImageUploadUrlResponse(
+        url=presigned.url,
+        method=presigned.method,
+        headers=presigned.headers,
+        object_key=presigned.object_key,
+        expires_in=presigned.expires_in,
+    )
+
+
+@router.put(
+    "/{salon_id}/services/{service_id}/image",
+    response_model=ServiceResponse,
+    summary="Attacher l'image d'une prestation (clé d'objet préalablement téléversée)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "Prestation introuvable (portée déjà validée)"},
+        422: {"description": "Clé d'objet hors du préfixe de ce salon"},
+    },
+)
+def attach_service_image(
+    salon_id: uuid.UUID,
+    service_id: uuid.UUID,
+    payload: AttachServiceImageRequest,
+    repository: Annotated[ServiceRepository, Depends(get_service_repository)],
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    storage: Annotated[MediaStorage | None, Depends(get_optional_media_storage)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    principal: Annotated[
+        Principal, Depends(require_permission(Permission.SERVICE_MANAGE))
+    ],
+) -> ServiceResponse:
+    """Revalide le préfixe de la clé puis l'écrit comme image de la prestation.
+
+    `object_key=null` **efface** l'illustration. Nettoie best-effort l'ancienne
+    image remplacée (jamais bloquant) ; journalise `SERVICE_UPDATED` (§11.4).
+    """
+
+    try:
+        service = AttachServiceImage(repository, audit_log, storage).execute(
+            salon_id, service_id, payload.object_key, actor_user_id=principal.id
+        )
+    except MediaKeyMismatch as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except ServiceNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _service_response(service, storage)
 
 
 __all__ = ["router"]

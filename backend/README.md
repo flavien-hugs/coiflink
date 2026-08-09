@@ -428,6 +428,8 @@ publique (le catalogue client relève de #18/#19). Détails dans
 | `GET` | `/salons/{salon_id}/services/{service_id}` | `SERVICE_READ` + portée | `200` \| `404` | — |
 | `PUT` | `/salons/{salon_id}/services/{service_id}` | `SERVICE_MANAGE` + portée | `200` (*replace*) \| `404` \| `422` | `SERVICE_UPDATED` |
 | `DELETE` | `/salons/{salon_id}/services/{service_id}` | `SERVICE_MANAGE` + portée | `204` (**désactivation**) \| `404` | `SERVICE_DEACTIVATED` |
+| `POST` | `/salons/{salon_id}/services/media/upload-url` | `SERVICE_MANAGE` + portée | `200` URL signée \| `422` \| `503` | — |
+| `PUT` | `/salons/{salon_id}/services/{service_id}/image` | `SERVICE_MANAGE` + portée | `200` \| `404` \| `422` | `SERVICE_UPDATED` |
 
 - **Champs** (`domain/service.py`, validation **avant** écriture — les `CHECK` SQL restent un filet) :
   `name` non vide ≤ 255 ; `price` **obligatoire**, `>= 0`, ≤ `NUMERIC(12,2)`, au plus 2 décimales ;
@@ -436,6 +438,25 @@ publique (le catalogue client relève de #18/#19). Détails dans
 - **`DELETE` = désactivation (soft-delete)** : passe `is_active=false` (pas de suppression physique —
   la FK `appointment_services → services` est `ON DELETE RESTRICT`, et l'historique/`price_at_booking`
   des RDV est préservé). Une réactivation (`is_active=true`) journalise `SERVICE_REACTIVATED`.
+- **Illustration de la prestation** (image/photo affichée sur la borne cliente) — décision de
+  conception **miroir du logo salon** (#15, ADR-0005/ADR-0017) : le binaire ne transite **jamais** par
+  l'API. Flux en deux temps :
+  1. `POST .../services/media/upload-url` (corps `{content_type}`) fabrique une clé d'objet **sans
+     PII** (`services/{salon_id}/{uuid}.{ext}`, MIME validé contre la liste blanche
+     `domain.salon.ALLOWED_IMAGE_TYPES` — `image/png`/`image/jpeg`/`image/webp`) et renvoie une URL
+     signée `PUT` (navigateur → stockage objet direct, `expires_in` secondes) ;
+  2. `PUT .../services/{service_id}/image` (corps `{object_key}`) **revalide** que la clé appartient
+     au préfixe de ce salon (sinon `422`, `MediaKeyMismatch` — sans quoi l'isolation §11.2 serait
+     contournable *par les médias*) puis l'attache ; `object_key: null` **efface** l'illustration.
+     L'ancienne image remplacée est nettoyée **best-effort** (jamais bloquant) du stockage. Journalise
+     `SERVICE_UPDATED` (`metadata.changed = ["image_object_key"]`).
+
+  L'illustration n'est **jamais** posée par `POST`/`PUT .../services` (création/modification générales) :
+  action **dédiée**, découplée — la prestation peut ne pas encore exister au moment du téléversement.
+  Chaque réponse `ServiceResponse` porte `image_url` (URL signée de **lecture**, ou `null` si aucune
+  image ou stockage non configuré) — **jamais** la clé d'objet brute. Les **lectures** (`GET`) tolèrent
+  l'absence de stockage objet (`image_url: null`) ; seule l'émission d'URL de téléversement l'exige
+  (`503` sinon, miroir logo/photos salon).
 
 **Journalisation §11.4** — la table `audit_logs` (migration `0004`, modèle ORM `AuditLog`) trace *qui*
 (`actor_user_id`, UUID opaque = le `Principal`) a fait *quelle* action sur *quelle* prestation de

@@ -76,5 +76,18 @@ class ServiceRepository(Protocol):
         """
         ...
 
+    def set_image(
+        self, salon_id: uuid.UUID, service_id: uuid.UUID, image_object_key: str | None
+    ) -> Service:
+        """Remplace la clé d'objet image de la prestation ; retourne l'entité relue.
+
+        `None` efface l'illustration (aucune image). Action **dédiée**, découplée
+        de `update()` (miroir `set_active`/`AttachSalonLogo` — le binaire est
+        téléversé séparément, la clé est revalidée par le cas d'usage avant
+        d'atteindre le dépôt). Lève `domain.errors.ServiceNotFound` si
+        `(salon_id, service_id)` est absent.
+        """
+        ...
+
 
 __all__ = ["ServiceRepository"]

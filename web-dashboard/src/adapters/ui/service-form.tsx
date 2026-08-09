@@ -19,6 +19,7 @@ import {
   XIcon,
 } from "@/src/adapters/ui/action-icons";
 import { FieldLabel } from "@/src/adapters/ui/field-label";
+import { ServiceImageUpload } from "@/src/adapters/ui/service-image-upload";
 import { validateService, type Service } from "@/src/domain/service/service";
 
 const INPUT_CLASS =
@@ -48,6 +49,12 @@ export function ServiceForm({ salonId, service, onCancel, onSaved }: ServiceForm
   const [category, setCategory] = useState(service?.category ?? "");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  // L'illustration s'attache **séparément** (route dédiée, miroir logo salon
+  // #15) : `imageTouched` distingue « jamais touchée cette session » (aucun
+  // appel d'attachement) de « explicitement changée/retirée » (nouvelle clé,
+  // ou `null` pour effacer).
+  const [imageObjectKey, setImageObjectKey] = useState<string | null>(null);
+  const [imageTouched, setImageTouched] = useState(false);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -89,12 +96,37 @@ export function ServiceForm({ salonId, service, onCancel, onSaved }: ServiceForm
       });
 
       if (response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          service?: Service;
+        } | null;
+        const savedId = body?.service?.id ?? service?.id;
+
+        if (imageTouched && savedId) {
+          const imageResponse = await fetch(
+            `/api/salons/${encodeURIComponent(salonId)}/services/${encodeURIComponent(savedId)}/image`,
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ objectKey: imageObjectKey }),
+            },
+          );
+          if (!imageResponse.ok) {
+            router.refresh();
+            setError(
+              "La prestation a été enregistrée, mais l'image n'a pas pu être associée. Veuillez réessayer.",
+            );
+            return;
+          }
+        }
+
         if (!editing) {
           setName("");
           setPrice("");
           setDurationMinutes("");
           setDescription("");
           setCategory("");
+          setImageObjectKey(null);
+          setImageTouched(false);
         }
         router.refresh();
         onSaved?.();
@@ -120,6 +152,17 @@ export function ServiceForm({ salonId, service, onCancel, onSaved }: ServiceForm
 
   return (
     <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
+      <div className="flex flex-col gap-1.5 text-sm font-medium">
+        <FieldLabel optional>Image de la prestation</FieldLabel>
+        <ServiceImageUpload
+          salonId={salonId}
+          initialImageUrl={service?.imageUrl ?? null}
+          onChange={(objectKey) => {
+            setImageObjectKey(objectKey);
+            setImageTouched(true);
+          }}
+        />
+      </div>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         <FieldLabel required>Nom de la prestation</FieldLabel>
         <div className="relative">

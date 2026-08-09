@@ -178,7 +178,9 @@ Tant que `isBookable(salon) === false` (§8.3 : `ACTIVE` **et** horaires présen
 `domain/salon.py`), un **bandeau** invite à configurer les horaires d'ouverture. Les médias
 (logo/photos) transitent par des **URLs signées** côté backend ; le téléversement direct
 navigateur→bucket exige que le bucket autorise l'origine du dashboard (**CORS**) — configuration
-d'infrastructure, hors code.
+d'infrastructure, hors code. **Aucune UI de logo/photos n'est encore câblée ici** (le formulaire salon
+ne les expose pas) ; l'illustration des **prestations** (section Prestations, ci-dessous) implémente ce
+flux de téléversement direct pour la première fois dans ce dashboard et peut servir de référence.
 
 ### Paramètres — horaires d'ouverture (#16)
 
@@ -204,6 +206,20 @@ plus 2 décimales, durée entière `> 0` ≤ 24 h, nom non vide) avant d'être p
 `POST/PUT /api/salons/[id]/services[/serviceId]` et `DELETE …` (désactivation). Le **backend reste
 l'autorité** ; la modification et la désactivation y sont **journalisées §11.4**. Le catalogue **client
 public** (#18/#19) et la **réservation** (#21+) restent hors périmètre.
+
+**Illustration de la prestation** (`ServiceImageUpload`, dans `ServiceForm`) : **premier téléversement
+direct navigateur → stockage objet** implémenté dans ce dashboard (ADR-0005) — le binaire ne transite
+**jamais** par l'API/BFF. Choisir un fichier (PNG/JPEG/WEBP, liste blanche `isAllowedServiceImageType`,
+miroir `domain.salon.ALLOWED_IMAGE_TYPES`) déclenche : (1) `POST /api/salons/[id]/services/media/
+upload-url` (BFF, jeton lu du cookie httpOnly côté serveur) → URL signée `PUT` ; (2) `PUT` **direct** du
+fichier vers le stockage objet avec cette URL ; (3) aperçu local immédiat (`URL.createObjectURL`). La
+clé obtenue n'est **attachée** qu'à la soumission du formulaire — `PUT /api/salons/[id]/services/
+[serviceId]/image` (BFF) — **après** la création/modification générale : la prestation peut ne pas
+encore exister au moment du choix de l'image. Le catalogue (`ServiceList`) affiche une **miniature**
+quand l'illustration est disponible. **Prérequis d'infrastructure** : le bucket doit autoriser
+l'origine du dashboard (**CORS**) pour que l'étape (2) réussisse — configuration hors code, à vérifier
+en environnement de déploiement (même prérequis que le logo/photos du salon, ci-dessous — cette
+implémentation peut leur servir de référence).
 
 ### Clients — fiches du salon (#28)
 

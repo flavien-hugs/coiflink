@@ -134,6 +134,17 @@ class SqlServiceRepository:
         self._session.refresh(row)
         return _to_domain(row)
 
+    def set_image(
+        self, salon_id: uuid.UUID, service_id: uuid.UUID, image_object_key: str | None
+    ) -> Service:
+        row = self._get_row(salon_id, service_id)
+        if row is None:
+            raise ServiceNotFound("Prestation introuvable.")
+        row.image_object_key = image_object_key
+        self._session.flush()
+        self._session.refresh(row)
+        return _to_domain(row)
+
     def _get_row(
         self, salon_id: uuid.UUID, service_id: uuid.UUID
     ) -> models.Service | None:
@@ -156,6 +167,7 @@ def _to_domain(row: models.Service) -> Service:
         duration_minutes=row.duration_minutes,
         category=row.category,
         is_active=row.is_active,
+        image_object_key=row.image_object_key,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

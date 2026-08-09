@@ -10,6 +10,7 @@ import {
   DURATION_MAX_MINUTES,
   PRICE_MAX,
   SERVICE_NAME_MAX_LENGTH,
+  isAllowedServiceImageType,
   validateService,
 } from "../src/domain/service/service";
 import type { RawServiceInput } from "../src/domain/service/service";
@@ -302,4 +303,22 @@ describe("validateService — ordre de validation", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("invalid-duration");
   });
+});
+
+describe("isAllowedServiceImageType — parité domain.salon.ALLOWED_IMAGE_TYPES", () => {
+  it.each(["image/png", "image/jpeg", "image/webp"])("%s est autorisé", (type) => {
+    expect(isAllowedServiceImageType(type)).toBe(true);
+  });
+
+  it("insensible à la casse (miroir de la normalisation backend)", () => {
+    expect(isAllowedServiceImageType("IMAGE/PNG")).toBe(true);
+    expect(isAllowedServiceImageType("  image/webp  ")).toBe(true);
+  });
+
+  it.each(["image/gif", "image/svg+xml", "application/pdf", ""])(
+    "%s est refusé",
+    (type) => {
+      expect(isAllowedServiceImageType(type)).toBe(false);
+    },
+  );
 });

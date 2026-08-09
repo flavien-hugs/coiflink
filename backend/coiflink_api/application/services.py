@@ -24,9 +24,11 @@ import uuid
 from dataclasses import dataclass
 
 from coiflink_api.application.ports.audit_log import AuditLog
+from coiflink_api.application.ports.media_storage import MediaStorage, PresignedUpload
 from coiflink_api.application.ports.service_repository import ServiceRepository
 from coiflink_api.domain.audit import ENTITY_TYPE_SERVICE, AuditAction, AuditEntry
-from coiflink_api.domain.errors import ServiceNotFound
+from coiflink_api.domain.errors import MediaKeyMismatch, ServiceNotFound
+from coiflink_api.domain.salon import validate_content_type
 from coiflink_api.domain.service import (
     Service,
     ServiceFilter,
@@ -38,6 +40,38 @@ from coiflink_api.domain.service import (
     validate_price,
     validate_service_name,
 )
+
+# Segment de préfixe de la clé d'objet image (ADR-0005) : `services/{salon_id}/…`,
+# **distinct** du préfixe `salons/{salon_id}/…` (#15) — une prestation n'est pas
+# un salon, même si le port `MediaStorage` (générique) est partagé.
+_IMAGE_PREFIX_SEGMENT = "services"
+
+
+def _build_image_object_key(salon_id: uuid.UUID, extension: str) -> str:
+    """Fabrique une clé d'objet **sans PII** : `services/{salon_id}/{uuid4}.{ext}`.
+
+    Miroir `application/salons.py::_build_object_key`. `salon_id` et l'`uuid4`
+    sont opaques ; l'extension vient du **MIME validé**. Le `service_id` n'entre
+    **pas** dans la clé : à l'émission de l'URL, la prestation n'existe pas
+    encore nécessairement (création en cours) — seul le salon est déjà connu.
+    """
+
+    return f"{_IMAGE_PREFIX_SEGMENT}/{salon_id}/{uuid.uuid4()}.{extension}"
+
+
+def _ensure_image_key_prefix(salon_id: uuid.UUID, object_key: str) -> str:
+    """Revalide que `object_key` appartient bien au préfixe **de ce salon**.
+
+    Règle de sécurité obligatoire (§11.2, miroir `application/salons.py::
+    _ensure_key_prefix`) : sans cette vérification, un gérant pourrait faire
+    référencer par une prestation de son salon une clé appartenant à un autre
+    salon. Lève `MediaKeyMismatch` (→ 422) si le préfixe ne correspond pas.
+    """
+
+    expected_prefix = f"{_IMAGE_PREFIX_SEGMENT}/{salon_id}/"
+    if not isinstance(object_key, str) or not object_key.startswith(expected_prefix):
+        raise MediaKeyMismatch("La clé d'objet ne correspond pas à ce salon.")
+    return object_key
 
 # Champs comparés pour le diff neutre de `UpdateService` (ordre stable). Seuls des
 # **noms de champs** sont journalisés — jamais les valeurs (règle de non-fuite).
@@ -292,6 +326,84 @@ class ReactivateService:
         return service
 
 
+class IssueServiceImageUploadUrl:
+    """Fabrique la clé d'objet (sans PII) et délègue au stockage l'URL signée `PUT`.
+
+    Miroir `application/salons.py::IssueMediaUploadUrl`, simplifié : une seule
+    nature de média (« image »), pas de `kind`. Le binaire ne transite **jamais**
+    par l'API (ADR-0005) — le navigateur téléverse directement vers le stockage
+    objet avec cette URL. Aucune écriture, aucun audit (lecture d'une capacité de
+    téléversement, pas une mutation de prestation).
+    """
+
+    def __init__(self, media_storage: MediaStorage) -> None:
+        self._media_storage = media_storage
+
+    def execute(self, salon_id: uuid.UUID, content_type: str) -> PresignedUpload:
+        extension = validate_content_type(content_type)
+        object_key = _build_image_object_key(salon_id, extension)
+        return self._media_storage.presign_upload(object_key, content_type)
+
+
+class AttachServiceImage:
+    """Attache une clé d'objet **revalidée** comme image de la prestation.
+
+    Miroir `application/salons.py::AttachSalonLogo` : la clé est revalidée
+    contre le préfixe du salon (`_ensure_image_key_prefix`, sinon
+    `MediaKeyMismatch` → 422) avant d'atteindre le dépôt — sans quoi
+    l'isolation §11.2 serait contournable *par les médias* (référencer l'objet
+    d'un autre salon). `object_key=None` **efface** l'illustration. Contrairement
+    à `AttachSalonLogo` (non journalisé), cette action journalise
+    `SERVICE_UPDATED` (§11.4) : #17 pose « modification journalisée » comme
+    critère d'acceptation pour toute mutation de prestation, images incluses.
+    """
+
+    def __init__(
+        self,
+        repository: ServiceRepository,
+        audit_log: AuditLog,
+        media_storage: MediaStorage | None = None,
+    ) -> None:
+        self._repository = repository
+        self._audit_log = audit_log
+        self._media_storage = media_storage
+
+    def execute(
+        self,
+        salon_id: uuid.UUID,
+        service_id: uuid.UUID,
+        object_key: str | None,
+        *,
+        actor_user_id: uuid.UUID,
+    ) -> Service:
+        key = _ensure_image_key_prefix(salon_id, object_key) if object_key else None
+
+        previous = self._repository.find_by_id(salon_id, service_id)
+        if previous is None:
+            raise ServiceNotFound("Prestation introuvable.")
+
+        service = self._repository.set_image(salon_id, service_id, key)
+        # Nettoyage best-effort de l'ancienne image remplacée (jamais bloquant).
+        if (
+            previous.image_object_key
+            and previous.image_object_key != key
+            and self._media_storage is not None
+        ):
+            self._media_storage.delete(previous.image_object_key)
+
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.SERVICE_UPDATED.value,
+                actor_user_id=actor_user_id,
+                salon_id=salon_id,
+                entity_type=ENTITY_TYPE_SERVICE,
+                entity_id=service_id,
+                metadata={"changed": ["image_object_key"]},
+            )
+        )
+        return service
+
+
 __all__ = [
     "ServiceCommand",
     "CreateService",
@@ -300,4 +412,6 @@ __all__ = [
     "UpdateService",
     "DeactivateService",
     "ReactivateService",
+    "IssueServiceImageUploadUrl",
+    "AttachServiceImage",
 ]

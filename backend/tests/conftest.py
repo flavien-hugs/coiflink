@@ -603,6 +603,7 @@ class FakeServiceRepository:
             duration_minutes=service.duration_minutes,
             category=service.category,
             is_active=True,
+            image_object_key=None,
             created_at=_CREATED_AT,
             updated_at=_CREATED_AT,
         )
@@ -668,6 +669,20 @@ class FakeServiceRepository:
         if service is None:
             raise ServiceNotFound("Prestation introuvable.")
         updated = _dc.replace(service, is_active=active, updated_at=_CREATED_AT)
+        self._services[service_id] = updated
+        return updated
+
+    def set_image(self, salon_id: uuid.UUID, service_id: uuid.UUID, image_object_key):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.errors import ServiceNotFound
+
+        service = self.find_by_id(salon_id, service_id)
+        if service is None:
+            raise ServiceNotFound("Prestation introuvable.")
+        updated = _dc.replace(
+            service, image_object_key=image_object_key, updated_at=_CREATED_AT
+        )
         self._services[service_id] = updated
         return updated
 

@@ -10,6 +10,7 @@
 
 import type {
   DeactivateServiceResult,
+  IssueImageUploadUrlResult,
   ListServicesResult,
   MutateServiceResult,
   ServiceGateway,
@@ -28,8 +29,18 @@ interface ServiceResponsePayload {
   duration_minutes: number;
   category: string | null;
   is_active: boolean;
+  image_url: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// Forme du corps `ServiceImageUploadUrlResponse` renvoyé par le backend.
+interface UploadUrlResponsePayload {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  object_key: string;
+  expires_in: number;
 }
 
 // Projette la réponse backend (snake_case) sur l'entité de domaine (camelCase).
@@ -45,6 +56,7 @@ function toService(payload: ServiceResponsePayload): Service {
     durationMinutes: payload.duration_minutes,
     category: payload.category,
     isActive: payload.is_active,
+    imageUrl: payload.image_url,
     createdAt: payload.created_at,
     updatedAt: payload.updated_at,
   };
@@ -244,6 +256,91 @@ export function createHttpServiceGateway(
       }
       if (response.status === 404) {
         return { ok: false, reason: "not-found" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async issueImageUploadUrl(
+      salonId: string,
+      contentType: string,
+    ): Promise<IssueImageUploadUrlResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(`${servicesUrl(salonId)}/media/upload-url`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeader() },
+          body: JSON.stringify({ content_type: contentType }),
+          cache: "no-store",
+        });
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as UploadUrlResponsePayload;
+        return {
+          ok: true,
+          upload: {
+            url: payload.url,
+            method: payload.method,
+            headers: payload.headers,
+            objectKey: payload.object_key,
+            expiresIn: payload.expires_in,
+          },
+        };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 422) {
+        return { ok: false, reason: "invalid" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async attachImage(
+      salonId: string,
+      serviceId: string,
+      objectKey: string | null,
+    ): Promise<MutateServiceResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(`${serviceUrl(salonId, serviceId)}/image`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", ...authHeader() },
+          body: JSON.stringify({ object_key: objectKey }),
+          cache: "no-store",
+        });
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as ServiceResponsePayload;
+        return { ok: true, service: toService(payload) };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "not-found" };
+      }
+      if (response.status === 422) {
+        return { ok: false, reason: "invalid" };
       }
       return { ok: false, reason: "unavailable" };
     },
