@@ -209,6 +209,13 @@ l'encaissement (M4) et les KPI (M5) dépendent de la boucle de rendez-vous (M3).
   *Acceptation :* l'historique liste les RDV terminés du client avec prestations et montants.
   *Dépend de :* #25, #28.
 
+- **Fiche client · Historique des paiements (gérant)** · `feature` · **Livré**
+  Extension de #29 : onglet « Paiements » sur la fiche client (date, montant, statut, tous statuts
+  confondus) — lien fiche → compte encapsulé en SQL (anti-oracle ADR-0026), isolation par salon,
+  dégradation locale sur panne. Demande ad hoc (aucune issue GitHub créée en amont).
+  *Livré via :* [PR #150](https://github.com/flavien-hugs/coiflink/pull/150) (mergée sur `main`).
+  *Dépend de :* #28, #29.
+
 - **#30 — US-4.4 · Historique de prestations (côté client mobile)** · `Should` · `S` · `feature`
   Historique depuis l'application mobile ; un client ne voit que ses propres RDV (§11.2).
   *Acceptation :* le client voit son historique de RDV terminés et rien d'autre.
