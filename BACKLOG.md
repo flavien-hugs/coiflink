@@ -321,6 +321,15 @@ l'encaissement (M4) et les KPI (M5) dépendent de la boucle de rendez-vous (M3).
   *Dépend de :* #39, #40, #42.
   *Livré via :* #149 (mergé sur `main`), [ADR-0039](./docs/adr/0039-dashboard-manager-activite-salon.md).
 
+- **Dashboard Manager · Gestion des employés & file d'attente (gérant)** · `feature` · **Livré**
+  Étend #148 : gestion complète des coiffeuses (création, modification de profil, activation/
+  désactivation pilotant la disponibilité aux affectations, #13) et file d'attente du jour avec
+  pointage réel de l'arrivée/du début (migration dédiée, statut dérivé En attente/En cours/Terminée/
+  Payée) — réutilise l'assignation de coiffeuse et le cycle de statut (#25) ainsi que l'encaissement
+  (#33) plutôt que de créer de nouveaux flux. Demande ad hoc (aucune issue GitHub créée en amont).
+  *Livré via :* [PR #152](https://github.com/flavien-hugs/coiflink/pull/152) (mergée sur `main`).
+  *Dépend de :* #13, #25, #33, #148.
+
 - **#45 — US-7.1 · Notification de confirmation de RDV** · `Must` · `M` · `feature` `notifications`
   Push, SMS ou WhatsApp selon disponibilité ; envoyée après chaque réservation (§8.4).
   *Acceptation :* une confirmation part à la création du RDV ; notification critique tracée (§8.4/§11.4).
