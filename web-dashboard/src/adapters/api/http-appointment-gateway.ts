@@ -253,5 +253,51 @@ export function createHttpAppointmentGateway(
       }
       return { ok: false, reason: "unavailable" };
     },
+
+    async assignHairdresser(
+      salonId: string,
+      appointmentId: string,
+      hairdresserId: string | null,
+    ): Promise<MutateAppointmentResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `${salonBase(salonId)}/${encodeURIComponent(appointmentId)}/hairdresser`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", ...authHeader() },
+            body: JSON.stringify({ hairdresser_id: hairdresserId }),
+            cache: "no-store",
+          },
+        );
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as AppointmentResponsePayload;
+        return { ok: true, appointment: toAppointment(payload) };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "not-found" };
+      }
+      if (response.status === 409) {
+        return { ok: false, reason: "conflict" };
+      }
+      if (response.status === 422) {
+        return { ok: false, reason: "invalid" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
   };
 }

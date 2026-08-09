@@ -133,6 +133,21 @@ class PaymentRepository(Protocol):
         """
         ...
 
+    def list_paid_appointment_ids(
+        self, salon_id: uuid.UUID, appointment_ids: tuple[uuid.UUID, ...]
+    ) -> frozenset[uuid.UUID]:
+        """Sous-ensemble d'`appointment_ids` **couvert** par un paiement (file d'attente, #150).
+
+        « Couvert » reprend **exactement** la définition de `domain.discrepancy.
+        PAID_PAYMENT_STATUSES` (`VALIDATED`/`ADJUSTED`) : un paiement `CANCELLED`/
+        `PENDING` ne couvre rien. Bulk-lookup en **une** requête (`appointment_id IN
+        (...)`) — pas de N+1 sur la liste de la file. L'isolation §11.2 est imposée
+        **en SQL** (`WHERE salon_id`) : un paiement d'un autre salon ne couvre jamais
+        un RDV. `appointment_ids` vide renvoie un ensemble vide sans requête. Lecture
+        pure.
+        """
+        ...
+
 
 __all__ = [
     "PaymentRepository",

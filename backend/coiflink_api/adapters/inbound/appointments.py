@@ -72,6 +72,9 @@ from coiflink_api.adapters.outbound.persistence.notification_repository import (
 from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import (
     SqlSalonCatalogRepository,
 )
+from coiflink_api.adapters.outbound.persistence.payment_repository import (
+    SqlPaymentRepository,
+)
 from coiflink_api.adapters.outbound.persistence.salon_repository import (
     SqlSalonRepository,
 )
@@ -95,11 +98,17 @@ from coiflink_api.application.ports.audit_log import AuditLog
 from coiflink_api.application.ports.notification_repository import (
     NotificationRepository,
 )
+from coiflink_api.application.ports.payment_repository import PaymentRepository
 from coiflink_api.application.ports.salon_catalog_repository import (
     SalonCatalogRepository,
 )
 from coiflink_api.application.ports.salon_repository import SalonRepository
 from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
+from coiflink_api.application.queue import (
+    ListSalonQueue,
+    MarkAppointmentArrived,
+    StartAppointmentService,
+)
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.appointment import (
     Appointment,
@@ -110,6 +119,8 @@ from coiflink_api.domain.appointment import (
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.enums import AppointmentStatus
 from coiflink_api.domain.errors import (
+    AppointmentArrivalRequired,
+    AppointmentHairdresserRequired,
     AppointmentNotCancellable,
     AppointmentNotFound,
     AppointmentNotModifiable,
@@ -124,6 +135,7 @@ from coiflink_api.domain.errors import (
 )
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
+from coiflink_api.domain.queue import QueueEntry
 from coiflink_api.domain.time_window import SALON_TIMEZONE
 
 router = APIRouter(tags=["appointments"])
@@ -254,7 +266,11 @@ class BookedServiceResponse(BaseModel):
 
 
 class AppointmentResponse(BaseModel):
-    """Rendez-vous créé, renvoyé par l'API (statut `PENDING` à la création)."""
+    """Rendez-vous créé, renvoyé par l'API (statut `PENDING` à la création).
+
+    `arrived_at`/`started_at` (#150) portent le **pointage réel** de la file
+    d'attente — distinct de `status` (`domain/queue.py`) ; `None` = non pointé.
+    """
 
     id: uuid.UUID
     salon_id: uuid.UUID
@@ -266,6 +282,28 @@ class AppointmentResponse(BaseModel):
     status: str
     client_note: str | None
     services: list[BookedServiceResponse]
+    arrived_at: datetime.datetime | None = None
+    started_at: datetime.datetime | None = None
+
+
+class QueueEntryResponse(BaseModel):
+    """Une ligne de la file d'attente du salon (#150) — sans PII au-delà des noms.
+
+    `queue_status` est **dérivé** (`en_attente`/`en_cours`/`terminee`/`payee`
+    côté domaine `waiting`/`in_progress`/`completed`/`paid`), jamais stocké.
+    """
+
+    appointment_id: uuid.UUID
+    client_name: str | None
+    service_names: list[str]
+    hairdresser_id: uuid.UUID | None
+    hairdresser_name: str | None
+    start_time: datetime.time
+    end_time: datetime.time
+    status: str
+    queue_status: str
+    arrived_at: datetime.datetime | None
+    started_at: datetime.datetime | None
 
 
 class DailyAppointmentsSummaryResponse(BaseModel):
@@ -354,6 +392,18 @@ def get_salon_repository(
     return SqlSalonRepository(session)
 
 
+def get_payment_repository(
+    session: Annotated[Session, Depends(get_session)],
+) -> PaymentRepository:
+    """Dépôt de paiements adossé à la **même** session (lecture, file d'attente #150).
+
+    Sert **uniquement** à résoudre les RDV `COMPLETED` couverts par un paiement
+    validé (`list_paid_appointment_ids`) — lecture pure, pas d'écriture.
+    """
+
+    return SqlPaymentRepository(session)
+
+
 def _now() -> datetime.datetime:
     """Instant courant **naïf** dans le repère Africa/Abidjan (UTC+0, cf. schéma)."""
 
@@ -388,6 +438,24 @@ def _appointment_response(appointment: Appointment) -> AppointmentResponse:
             )
             for service in appointment.services
         ],
+        arrived_at=appointment.arrived_at,
+        started_at=appointment.started_at,
+    )
+
+
+def _queue_entry_response(entry: QueueEntry) -> QueueEntryResponse:
+    return QueueEntryResponse(
+        appointment_id=entry.appointment_id,
+        client_name=entry.client_name,
+        service_names=list(entry.service_names),
+        hairdresser_id=entry.hairdresser_id,
+        hairdresser_name=entry.hairdresser_name,
+        start_time=entry.start_time,
+        end_time=entry.end_time,
+        status=entry.status,
+        queue_status=entry.queue_status,
+        arrived_at=entry.arrived_at,
+        started_at=entry.started_at,
     )
 
 
@@ -1057,6 +1125,151 @@ def assign_appointment_hairdresser(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
     return _appointment_response(appointment)
+
+
+@router.post(
+    "/salons/{salon_id}/appointments/{appointment_id}/arrival",
+    response_model=AppointmentResponse,
+    summary="Pointer l'arrivée d'une cliente sur un RDV du salon (gérant, §11.4, #150)",
+    responses={
+        200: {"description": "Arrivée pointée (idempotent)"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "RDV inexistant ou hors salon (après portée)"},
+        409: {"description": "RDV non confirmé (pas encore/plus dans un état pointable)"},
+    },
+)
+def mark_appointment_arrived(
+    salon_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    appointments: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    principal: Annotated[
+        Principal,
+        Depends(require_permission(Permission.APPOINTMENT_UPDATE_STATUS)),
+    ],
+) -> AppointmentResponse:
+    """Pose `arrived_at` sur un RDV `CONFIRMED` **du salon** — idempotent.
+
+    Un double appel n'écrase **pas** l'horodatage déjà posé (pas de second clic
+    accidentel qui décalerait l'heure d'arrivée). Un RDV hors salon/inexistant
+    est un `404` indiscernable ; un RDV non `CONFIRMED` (pas encore confirmé,
+    déjà réalisé/annulé) est un `409`. Journalisé `APPOINTMENT_ARRIVED`.
+    """
+
+    try:
+        appointment = MarkAppointmentArrived(appointments, audit_log).execute(
+            appointment_id, salon_id, principal.id
+        )
+    except InvalidAppointmentTransition as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except AppointmentNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _appointment_response(appointment)
+
+
+@router.post(
+    "/salons/{salon_id}/appointments/{appointment_id}/start",
+    response_model=AppointmentResponse,
+    summary="Démarrer la prestation d'un RDV du salon (gérant, §11.4, #150)",
+    responses={
+        200: {"description": "Prestation démarrée (idempotent)"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "RDV inexistant ou hors salon (après portée)"},
+        409: {
+            "description": (
+                "RDV non confirmé, arrivée non pointée, ou aucune coiffeuse assignée"
+            )
+        },
+    },
+)
+def start_appointment_service(
+    salon_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    appointments: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    principal: Annotated[
+        Principal,
+        Depends(require_permission(Permission.APPOINTMENT_UPDATE_STATUS)),
+    ],
+) -> AppointmentResponse:
+    """Pose `started_at` sur un RDV `CONFIRMED` **du salon** — idempotent.
+
+    Exige l'arrivée déjà pointée **et** une coiffeuse déjà assignée (`409`
+    sinon) — une prestation « en cours » sans arrivée ni coiffeuse n'a pas de
+    sens métier. Un RDV hors salon/inexistant est un `404` indiscernable.
+    Journalisé `APPOINTMENT_STARTED`.
+    """
+
+    try:
+        appointment = StartAppointmentService(appointments, audit_log).execute(
+            appointment_id, salon_id, principal.id
+        )
+    except (
+        AppointmentArrivalRequired,
+        AppointmentHairdresserRequired,
+        InvalidAppointmentTransition,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except AppointmentNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _appointment_response(appointment)
+
+
+@router.get(
+    "/salons/{salon_id}/queue",
+    response_model=list[QueueEntryResponse],
+    summary="Lister la file d'attente du salon pour un jour donné (gérant, #150)",
+    responses={
+        200: {"description": "File d'attente du jour, triée par heure de RDV"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {"description": "Paramètre de date invalide"},
+    },
+)
+def list_salon_queue(
+    salon_id: uuid.UUID,
+    appointments: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    payments: Annotated[PaymentRepository, Depends(get_payment_repository)],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.APPOINTMENT_READ_SALON))
+    ],
+    day: Annotated[
+        datetime.date | None,
+        Query(description="Jour ciblé (AAAA-MM-JJ) ; défaut aujourd'hui"),
+    ] = None,
+) -> list[QueueEntryResponse]:
+    """Liste les RDV `CONFIRMED`/`COMPLETED` **du salon** pour `day` (défaut aujourd'hui).
+
+    Portée « RDV existants uniquement » (§ décision produit) : ni `PENDING` non
+    confirmé, ni `CANCELLED`/`NO_SHOW`. `queue_status` est **dérivé**
+    (`waiting`/`in_progress`/`completed`/`paid`) — « payée » reflète un paiement
+    **réellement validé** (réutilise le flux d'encaissement #33/#34), jamais un
+    drapeau propre au RDV. Lecture pure, aucun audit (cohérent avec le
+    Dashboard #148).
+    """
+
+    target_day = day if day is not None else _today()
+    entries = ListSalonQueue(appointments, payments).execute(salon_id, target_day)
+    return [_queue_entry_response(entry) for entry in entries]
 
 
 __all__ = ["router", "AVAILABILITY_PATH"]

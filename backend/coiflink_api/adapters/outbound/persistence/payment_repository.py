@@ -298,6 +298,24 @@ class SqlPaymentRepository:
             clauses.append(models.Appointment.appointment_date <= filter.date_to)
         return clauses
 
+    def list_paid_appointment_ids(
+        self, salon_id: uuid.UUID, appointment_ids: tuple[uuid.UUID, ...]
+    ) -> frozenset[uuid.UUID]:
+        """Sous-ensemble d'`appointment_ids` couvert par un paiement `VALIDATED`/`ADJUSTED`."""
+
+        if not appointment_ids:
+            return frozenset()
+        rows = self._session.execute(
+            select(models.Payment.appointment_id)
+            .where(
+                models.Payment.salon_id == salon_id,
+                models.Payment.appointment_id.in_(appointment_ids),
+                models.Payment.status.in_(PAID_PAYMENT_STATUSES),
+            )
+            .distinct()
+        ).all()
+        return frozenset(row[0] for row in rows)
+
     def _get_row(
         self, salon_id: uuid.UUID, payment_id: uuid.UUID
     ) -> models.Payment | None:

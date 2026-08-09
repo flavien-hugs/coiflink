@@ -73,5 +73,27 @@ class UserRepository(Protocol):
         """
         ...
 
+    def update_identity(
+        self,
+        user_id: uuid.UUID | str,
+        *,
+        full_name: str,
+        phone: str,
+        email: str | None,
+    ) -> User | None:
+        """Remplace nom/téléphone/e-mail du compte ; retourne l'entité à jour.
+
+        Reçoit des valeurs **déjà validées et normalisées** (nom trimé,
+        téléphone E.164) — ce port ne revalide rien, à l'image de `create`.
+        Retourne `None` si `user_id` n'existe pas ou est illisible (garde-fou
+        cohérent avec `find_user_by_id`).
+
+        Doit lever `domain.errors.PhoneAlreadyInUse` (resp. `EmailAlreadyInUse`)
+        si la contrainte d'unicité base (**globale**, `users.phone`/`users.email`
+        — distincte de l'unicité salon-scopée de `customer_profiles`) est
+        violée par un **autre** compte.
+        """
+        ...
+
 
 __all__ = ["UserRepository"]

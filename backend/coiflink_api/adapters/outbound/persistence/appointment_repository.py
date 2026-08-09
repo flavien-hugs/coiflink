@@ -44,6 +44,7 @@ from coiflink_api.domain.errors import (
     SlotAlreadyBooked,
 )
 from coiflink_api.domain.hairdresser_performance import HairdresserActivityCounts
+from coiflink_api.domain.queue import QUEUE_APPOINTMENT_STATUSES, QueueAppointmentRow
 from coiflink_api.domain.service_demand import ServiceDemand
 
 # Précision de quantification des montants agrégés : le centime (miroir de la
@@ -365,6 +366,58 @@ class SqlAppointmentRepository:
         self._session.refresh(row)
         return _to_domain(row, self._load_services(appointment_id))
 
+    def mark_arrived(
+        self,
+        appointment_id: uuid.UUID,
+        salon_id: uuid.UUID,
+        *,
+        now: datetime.datetime,
+    ) -> Appointment:
+        """Pose `arrived_at` sur le RDV `CONFIRMED` du salon — idempotent (#150)."""
+
+        row = self._session.scalar(
+            select(models.Appointment).where(
+                models.Appointment.id == appointment_id,
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.status == AppointmentStatus.CONFIRMED.value,
+            )
+        )
+        if row is None:
+            raise InvalidAppointmentTransition(
+                "Cette prestation ne peut pas être pointée dans cet état."
+            )
+        if row.arrived_at is None:
+            row.arrived_at = now
+            self._session.flush()
+            self._session.refresh(row)
+        return _to_domain(row, self._load_services(appointment_id))
+
+    def mark_started(
+        self,
+        appointment_id: uuid.UUID,
+        salon_id: uuid.UUID,
+        *,
+        now: datetime.datetime,
+    ) -> Appointment:
+        """Pose `started_at` sur le RDV `CONFIRMED` du salon — idempotent (#150)."""
+
+        row = self._session.scalar(
+            select(models.Appointment).where(
+                models.Appointment.id == appointment_id,
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.status == AppointmentStatus.CONFIRMED.value,
+            )
+        )
+        if row is None:
+            raise InvalidAppointmentTransition(
+                "Cette prestation ne peut pas être pointée dans cet état."
+            )
+        if row.started_at is None:
+            row.started_at = now
+            self._session.flush()
+            self._session.refresh(row)
+        return _to_domain(row, self._load_services(appointment_id))
+
     def list_for_client(
         self,
         client_id: uuid.UUID,
@@ -639,6 +692,82 @@ class SqlAppointmentRepository:
             for row in rows
         )
 
+    def list_queue_details(
+        self, salon_id: uuid.UUID, *, day: datetime.date
+    ) -> tuple[QueueAppointmentRow, ...]:
+        """RDV `CONFIRMED`/`COMPLETED` du salon pour `day`, enrichis des noms (#150).
+
+        Miroir de `list_in_progress_details` (#148) : deux lectures bornées —
+        RDV + noms client/coiffeur (`users`), puis noms de prestation
+        (`appointment_services`/`services`) séparément pour ne pas dupliquer
+        les lignes du join un-à-plusieurs.
+        """
+
+        client = aliased(models.User)
+        hairdresser = aliased(models.User)
+        rows = self._session.execute(
+            select(
+                models.Appointment.id,
+                client.full_name.label("client_name"),
+                models.Appointment.hairdresser_id,
+                hairdresser.full_name.label("hairdresser_name"),
+                models.Appointment.start_time,
+                models.Appointment.end_time,
+                models.Appointment.status,
+                models.Appointment.arrived_at,
+                models.Appointment.started_at,
+            )
+            .outerjoin(client, client.id == models.Appointment.client_id)
+            .outerjoin(
+                hairdresser, hairdresser.id == models.Appointment.hairdresser_id
+            )
+            .where(
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.appointment_date == day,
+                models.Appointment.status.in_(QUEUE_APPOINTMENT_STATUSES),
+            )
+            .order_by(
+                models.Appointment.start_time.asc(),
+                models.Appointment.id.asc(),
+            )
+        ).all()
+        if not rows:
+            return ()
+
+        appointment_ids = [row.id for row in rows]
+        service_rows = self._session.execute(
+            select(models.AppointmentService.appointment_id, models.Service.name)
+            .join(
+                models.Service,
+                (models.Service.id == models.AppointmentService.service_id)
+                & (models.Service.salon_id == models.AppointmentService.salon_id),
+            )
+            .where(
+                models.AppointmentService.salon_id == salon_id,
+                models.AppointmentService.appointment_id.in_(appointment_ids),
+            )
+            .order_by(models.Service.name.asc())
+        ).all()
+        names_by_appointment: dict[uuid.UUID, list[str]] = {}
+        for appointment_id, name in service_rows:
+            names_by_appointment.setdefault(appointment_id, []).append(name)
+
+        return tuple(
+            QueueAppointmentRow(
+                appointment_id=row.id,
+                client_name=row.client_name,
+                service_names=tuple(names_by_appointment.get(row.id, ())),
+                hairdresser_id=row.hairdresser_id,
+                hairdresser_name=row.hairdresser_name,
+                start_time=row.start_time,
+                end_time=row.end_time,
+                status=row.status,
+                arrived_at=row.arrived_at,
+                started_at=row.started_at,
+            )
+            for row in rows
+        )
+
     def demand_by_service(
         self,
         salon_id: uuid.UUID,
@@ -907,6 +1036,8 @@ def _to_domain(
         client_note=row.client_note,
         created_at=row.created_at,
         services=services,
+        arrived_at=row.arrived_at,
+        started_at=row.started_at,
     )
 
 

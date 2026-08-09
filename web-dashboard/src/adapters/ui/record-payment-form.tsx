@@ -34,6 +34,13 @@ export interface RecordPaymentFormProps {
   // Prestations **actives** encaissables (nom + prix attendu). Une liste vide
   // empêche l'encaissement : le gérant doit d'abord créer une prestation.
   services: Service[];
+  // RDV **existant** à encaisser (file d'attente, #150) — quand fourni, le
+  // paiement se lie à ce RDV (`appointmentId`, jamais `serviceId`) : le
+  // sélecteur de prestation est masqué (le montant attendu dérive du RDV,
+  // pas d'une prestation isolée) et le gérant saisit le montant total des
+  // prestations du RDV (affichées ailleurs, ex. la ligne de la file) — le
+  // backend reste l'arbitre (rejette tout écart, §5.3/§8.2).
+  appointmentId?: string;
   onSaved?: () => void;
   onCancel?: () => void;
 }
@@ -41,10 +48,12 @@ export interface RecordPaymentFormProps {
 export function RecordPaymentForm({
   salonId,
   services,
+  appointmentId,
   onSaved,
   onCancel,
 }: RecordPaymentFormProps) {
   const router = useRouter();
+  const forAppointment = appointmentId != null;
   const [serviceId, setServiceId] = useState(services[0]?.id ?? "");
   const selectedService = useMemo(
     () => services.find((service) => service.id === serviceId) ?? null,
@@ -54,7 +63,7 @@ export function RecordPaymentForm({
     () => services.map((service) => ({ value: service.id, label: `${service.name} — ${formatXof(service.price)}` })),
     [services],
   );
-  const [amount, setAmount] = useState(services[0]?.price ?? "");
+  const [amount, setAmount] = useState(forAppointment ? "" : services[0]?.price ?? "");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
   const [reference, setReference] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +88,8 @@ export function RecordPaymentForm({
     const validated = validatePayment({
       amount,
       paymentMethod,
-      serviceId: serviceId || null,
+      appointmentId: forAppointment ? appointmentId : null,
+      serviceId: forAppointment ? null : serviceId || null,
       reference,
     });
     if (!validated.ok) {
@@ -144,7 +154,7 @@ export function RecordPaymentForm({
     }
   }
 
-  if (services.length === 0) {
+  if (!forAppointment && services.length === 0) {
     return (
       <p className="rounded-lg border border-border bg-surface px-3 py-2.5 text-sm text-muted">
         Ajoutez d&apos;abord une prestation active pour pouvoir encaisser.
@@ -154,18 +164,25 @@ export function RecordPaymentForm({
 
   return (
     <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
-      <div className="flex flex-col gap-1.5 text-sm font-medium">
-        <FieldLabel required>Prestation à encaisser</FieldLabel>
-        <SearchableSelect
-          ariaLabel="Prestation à encaisser"
-          value={serviceId}
-          options={serviceOptions}
-          onChange={onSelectService}
-          placeholder="Sélectionner une prestation"
-          searchPlaceholder="Rechercher une prestation"
-          emptyLabel="Aucune prestation trouvée"
-        />
-      </div>
+      {forAppointment ? (
+        <p className="rounded-lg border border-border bg-nude/30 px-3 py-2.5 text-sm text-muted">
+          Paiement lié au rendez-vous en cours — saisissez le montant total des
+          prestations réalisées.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-1.5 text-sm font-medium">
+          <FieldLabel required>Prestation à encaisser</FieldLabel>
+          <SearchableSelect
+            ariaLabel="Prestation à encaisser"
+            value={serviceId}
+            options={serviceOptions}
+            onChange={onSelectService}
+            placeholder="Sélectionner une prestation"
+            searchPlaceholder="Rechercher une prestation"
+            emptyLabel="Aucune prestation trouvée"
+          />
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel required>Montant (FCFA)</FieldLabel>
@@ -185,7 +202,7 @@ export function RecordPaymentForm({
               required
             />
           </div>
-          {selectedService ? (
+          {!forAppointment && selectedService ? (
             <span className="text-xs font-normal text-muted">
               Prix attendu : {formatXof(selectedService.price)} — le montant doit
               correspondre.

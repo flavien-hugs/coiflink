@@ -51,6 +51,15 @@ function ClientsIcon({ className = "" }: IconProps) {
   );
 }
 
+function QueueIcon({ className = "" }: IconProps) {
+  return (
+    <svg {...ICON_PROPS} className={`size-4.5 ${className}`}>
+      <circle cx="10" cy="10" r="7.2" />
+      <path d="M10 6v4l3 1.8" />
+    </svg>
+  );
+}
+
 function ServicesIcon({ className = "" }: IconProps) {
   return (
     <svg {...ICON_PROPS} className={`size-4.5 ${className}`}>
@@ -95,6 +104,7 @@ const SECTION_ICONS: Record<string, ComponentType<IconProps>> = {
   dashboard: DashboardIcon,
   planning: PlanningIcon,
   clients: ClientsIcon,
+  "file-attente": QueueIcon,
   prestations: ServicesIcon,
   encaissements: PaymentsIcon,
   employes: EmployeesIcon,

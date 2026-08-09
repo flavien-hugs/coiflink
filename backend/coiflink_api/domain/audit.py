@@ -45,6 +45,9 @@ ENTITY_TYPE_CASH_JOURNAL = "cash_journal"
 # Type d'entité journalisée pour les campagnes/messages aux clients (§11.4) — #49.
 ENTITY_TYPE_CAMPAIGN = "campaign"
 
+# Type d'entité journalisée pour les coiffeuses (appartenance salon, §11.4) — #150.
+ENTITY_TYPE_SALON_MEMBER = "salon_member"
+
 
 @unique
 class AuditAction(_StrEnum):
@@ -117,6 +120,23 @@ class AuditAction(_StrEnum):
     # le corps du message, **jamais** un téléphone ou un nom de client (§11.3).
     CAMPAIGN_CREATED = "CAMPAIGN_CREATED"
 
+    # Coiffeuses (§11.4 « Gestion des employés ») — #150. `EMPLOYEE_CREATED`
+    # complète #13 (jusqu'ici non journalisé) ; `EMPLOYEE_UPDATED` porte le diff
+    # **neutre** (`{"changed": [...]}`, patron `CUSTOMER_UPDATED`) ; l'activation/
+    # désactivation pilote `salon_members.status` (disponibilité aux affectations),
+    # distinct d'une désactivation de **compte** (`users.status`, hors périmètre).
+    EMPLOYEE_CREATED = "EMPLOYEE_CREATED"
+    EMPLOYEE_UPDATED = "EMPLOYEE_UPDATED"
+    EMPLOYEE_DEACTIVATED = "EMPLOYEE_DEACTIVATED"
+    EMPLOYEE_REACTIVATED = "EMPLOYEE_REACTIVATED"
+
+    # File d'attente — pointage réel (§11.4) — #150. Arrivée/début de prestation
+    # sont des actions manuelles du gérant sur un RDV **existant**, distinctes du
+    # cycle `APPOINTMENT_STATUS_CHANGED` (#25) : elles posent `arrived_at`/
+    # `started_at`, jamais `status`.
+    APPOINTMENT_ARRIVED = "APPOINTMENT_ARRIVED"
+    APPOINTMENT_STARTED = "APPOINTMENT_STARTED"
+
 
 @dataclass(frozen=True)
 class AuditEntry:
@@ -146,6 +166,7 @@ __all__ = [
     "ENTITY_TYPE_PAYMENT",
     "ENTITY_TYPE_CASH_JOURNAL",
     "ENTITY_TYPE_CAMPAIGN",
+    "ENTITY_TYPE_SALON_MEMBER",
     "AuditAction",
     "AuditEntry",
 ]
