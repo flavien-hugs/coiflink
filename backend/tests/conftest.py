@@ -21,6 +21,7 @@ from coiflink_api.domain.enums import (
     NotificationStatus,
     NotificationType,
 )
+from coiflink_api.domain.employee import Employee
 from coiflink_api.domain.errors import EmployeeAlreadyInSalon, PhoneAlreadyInUse, TooManyLoginAttempts
 from coiflink_api.domain.membership import SalonMembershipToCreate
 from coiflink_api.domain.salon import Salon as SalonEntity
@@ -105,11 +106,19 @@ class FakeHasher:
 class FakeUserRepository:
     """Dépôt en mémoire pour les tests unitaires et API."""
 
-    def __init__(self, existing_phones: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        existing_phones: set[str] | None = None,
+        *,
+        raise_on_update_identity: Exception | None = None,
+    ) -> None:
         self._phones: set[str] = set(existing_phones or [])
         self.created: list[UserToCreate] = []
         # Historique des appels à update_password (#11) : (user_id str, hash).
         self.updated_passwords: list[tuple[str, str]] = []
+        # Historique des appels à update_identity (#150) : (user_id str, nom, tel, email).
+        self.updated_identities: list[tuple[str, str, str, str | None]] = []
+        self._raise_on_update_identity = raise_on_update_identity
 
     def phone_exists(self, phone: str) -> bool:
         return phone in self._phones
@@ -133,6 +142,30 @@ class FakeUserRepository:
         """Enregistre le remplacement du condensat (réinitialisation, #11)."""
 
         self.updated_passwords.append((str(user_id), new_password_hash))
+
+    def update_identity(
+        self,
+        user_id: Union[uuid.UUID, str],
+        *,
+        full_name: str,
+        phone: str,
+        email: str | None,
+    ) -> User | None:
+        """Enregistre le remplacement d'identité (édition employé, #150)."""
+
+        if self._raise_on_update_identity is not None:
+            raise self._raise_on_update_identity
+        self.updated_identities.append((str(user_id), full_name, phone, email))
+        uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+        return User(
+            id=uid,
+            full_name=full_name,
+            phone=phone,
+            email=email,
+            role="HAIRDRESSER",
+            status="ACTIVE",
+            created_at=_CREATED_AT,
+        )
 
 
 class FakeUserRepositoryRaisingDuplicate:
@@ -396,20 +429,85 @@ def fake_salon_scope_repository() -> FakeSalonScopeRepository:
 
 
 class FakeSalonMemberRepository:
-    """Dépôt d'appartenances employé↔salon en mémoire (#13).
+    """Dépôt d'appartenances employé↔salon en mémoire (#13, #150).
 
     `raise_duplicate=True` simule une violation d'unicité `(salon_id, user_id)`.
     `added` enregistre chaque appel pour vérifier les données transmises.
+    `seed` pré-charge des coiffeuses (identité + champs pro) directement
+    exploitables par `list_for_salon`/`find_by_id`/`update_professional_fields`/
+    `set_status` — la fake `add_member` ne connaissant pas l'identité `users`
+    (comme l'adapter réel, qui la résout par jointure **à la lecture**), les
+    tests de lecture/écriture des coiffeuses la fournissent via `seed`.
     """
 
-    def __init__(self, *, raise_duplicate: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        raise_duplicate: bool = False,
+        seed: dict[tuple[uuid.UUID, uuid.UUID], Employee] | None = None,
+    ) -> None:
         self._raise_duplicate = raise_duplicate
         self.added: list[SalonMembershipToCreate] = []
+        self._employees: dict[tuple[uuid.UUID, uuid.UUID], Employee] = dict(seed or {})
 
     def add_member(self, membership: SalonMembershipToCreate) -> None:
         if self._raise_duplicate:
             raise EmployeeAlreadyInSalon("Cet employé est déjà rattaché à ce salon.")
         self.added.append(membership)
+        key = (membership.salon_id, membership.user_id)
+        self._employees.setdefault(
+            key,
+            Employee(
+                id=membership.user_id,
+                full_name="Coiffeuse Test",
+                phone="+2250700000000",
+                email=None,
+                role=membership.role,
+                status=membership.status,
+                specialties=None,
+                hired_at=None,
+                created_at=_CREATED_AT,
+            ),
+        )
+
+    def list_for_salon(self, salon_id: uuid.UUID) -> tuple[Employee, ...]:
+        return tuple(
+            employee
+            for (salon, _user), employee in self._employees.items()
+            if salon == salon_id
+        )
+
+    def find_by_id(self, salon_id: uuid.UUID, user_id: uuid.UUID) -> Employee | None:
+        return self._employees.get((salon_id, user_id))
+
+    def update_professional_fields(
+        self,
+        salon_id: uuid.UUID,
+        user_id: uuid.UUID,
+        *,
+        specialties: str | None,
+        hired_at,
+    ) -> Employee | None:
+        key = (salon_id, user_id)
+        current = self._employees.get(key)
+        if current is None:
+            return None
+        updated = dataclasses.replace(
+            current, specialties=specialties, hired_at=hired_at
+        )
+        self._employees[key] = updated
+        return updated
+
+    def set_status(
+        self, salon_id: uuid.UUID, user_id: uuid.UUID, status: str
+    ) -> Employee | None:
+        key = (salon_id, user_id)
+        current = self._employees.get(key)
+        if current is None:
+            return None
+        updated = dataclasses.replace(current, status=status)
+        self._employees[key] = updated
+        return updated
 
 
 @pytest.fixture()
@@ -848,6 +946,9 @@ class FakeAppointmentRepository:
         # Résultats configurables pour `list_in_progress_details` (dashboard #148).
         self.in_progress_details: tuple = ()
         self.list_in_progress_details_calls: list[dict] = []
+        # Résultats configurables pour `list_queue_details` (file d'attente #150).
+        self.queue_details: tuple = ()
+        self.list_queue_details_calls: list[dict] = []
         self._appointments: dict = {}
         for appt in (appointments or []):
             self._appointments[appt.id] = appt
@@ -1036,6 +1137,65 @@ class FakeAppointmentRepository:
         updated = _dc.replace(appt, hairdresser_id=hairdresser_id)
         self._appointments[appointment_id] = updated
         return updated
+
+    def mark_arrived(self, appointment_id, salon_id, *, now):  # type: ignore[no-untyped-def]
+        """Pose `arrived_at` sur un RDV `CONFIRMED` du salon — idempotent (#150).
+
+        Refuse (`InvalidAppointmentTransition`) un RDV disparu, hors salon, ou
+        non `CONFIRMED` — miroir du `WHERE ... status = 'CONFIRMED'` du SQL.
+        """
+        import dataclasses as _dc
+        from coiflink_api.domain.enums import AppointmentStatus
+        from coiflink_api.domain.errors import InvalidAppointmentTransition
+
+        appt = self._appointments.get(appointment_id)
+        if (
+            appt is None
+            or appt.salon_id != salon_id
+            or appt.status != AppointmentStatus.CONFIRMED.value
+        ):
+            raise InvalidAppointmentTransition(
+                "Cette prestation ne peut pas être pointée dans cet état."
+            )
+        if appt.arrived_at is None:
+            appt = _dc.replace(appt, arrived_at=now)
+            self._appointments[appointment_id] = appt
+        return appt
+
+    def mark_started(self, appointment_id, salon_id, *, now):  # type: ignore[no-untyped-def]
+        """Pose `started_at` sur un RDV `CONFIRMED` du salon — idempotent (#150).
+
+        Ne revalide **pas** les préconditions arrivée/coiffeuse (responsabilité
+        du cas d'usage `StartAppointmentService`) — miroir du dépôt réel.
+        """
+        import dataclasses as _dc
+        from coiflink_api.domain.enums import AppointmentStatus
+        from coiflink_api.domain.errors import InvalidAppointmentTransition
+
+        appt = self._appointments.get(appointment_id)
+        if (
+            appt is None
+            or appt.salon_id != salon_id
+            or appt.status != AppointmentStatus.CONFIRMED.value
+        ):
+            raise InvalidAppointmentTransition(
+                "Cette prestation ne peut pas être pointée dans cet état."
+            )
+        if appt.started_at is None:
+            appt = _dc.replace(appt, started_at=now)
+            self._appointments[appointment_id] = appt
+        return appt
+
+    def list_queue_details(self, salon_id, *, day):  # type: ignore[no-untyped-def]
+        """Retourne `queue_details` (préconfiguré) et enregistre l'appel (#150).
+
+        Comme `list_in_progress_details` : le fake ne ré-agrège pas depuis
+        `_appointments` — les tests configurent `queue_details` (tuple de
+        `QueueAppointmentRow`) directement. L'isolation SQL réelle et les joins
+        de noms sont testés en e2e.
+        """
+        self.list_queue_details_calls.append({"salon_id": salon_id, "day": day})
+        return self.queue_details
 
     def list_for_client(  # type: ignore[no-untyped-def]
         self, client_id, statuses=None, *, newest_first=False
@@ -1577,6 +1737,26 @@ class FakePaymentRepository:
 
     def count_for_salon(self, salon_id, *, filter):  # type: ignore[no-untyped-def]
         return len(self._matching(salon_id, filter))
+
+    def list_paid_appointment_ids(self, salon_id, appointment_ids):  # type: ignore[no-untyped-def]
+        """Sous-ensemble d'`appointment_ids` couvert par un paiement (file d'attente, #150).
+
+        Filtre réellement `self._payments` (contrairement à `list_queue_details`
+        de `FakeAppointmentRepository`, préconfiguré) : les tests peuvent créer
+        des paiements via `create()` puis vérifier la dérivation `queue_status`.
+        """
+        from coiflink_api.domain.discrepancy import PAID_PAYMENT_STATUSES
+
+        if not appointment_ids:
+            return frozenset()
+        ids = set(appointment_ids)
+        return frozenset(
+            p.appointment_id  # type: ignore[union-attr]
+            for p in self._payments.values()
+            if p.salon_id == salon_id  # type: ignore[union-attr]
+            and p.appointment_id in ids  # type: ignore[union-attr]
+            and p.status in PAID_PAYMENT_STATUSES  # type: ignore[union-attr]
+        )
 
     def _matching(self, salon_id, filter):  # type: ignore[no-untyped-def]
         """Filtrage en mémoire **miroir** des clauses SQL (§35) : salon + critères ET."""

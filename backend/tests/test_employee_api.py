@@ -42,6 +42,7 @@ from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenSe
 from .conftest import (
     FAKE_ACCESS_CLAIMS,
     TEST_JWT_SECRET,
+    FakeAuditLog,
     FakeAuthUserRepository,
     FakeHasher,
     FakeSalonMemberRepository,
@@ -91,6 +92,7 @@ def _build_create_employee_usecase(
         repository=FakeUserRepository(existing_phones=existing_phones),
         hasher=FakeHasher(),
         members=members or FakeSalonMemberRepository(),
+        audit_log=FakeAuditLog(),
         role=Role.HAIRDRESSER.value,
     )
 
@@ -106,6 +108,7 @@ def _build_create_employee_raising(exc: Exception) -> CreateEmployee:
         repository=FakeUserRepository(),
         hasher=FakeHasher(),
         members=_RaisingMemberRepo(),  # type: ignore[arg-type]
+        audit_log=FakeAuditLog(),
         role=Role.HAIRDRESSER.value,
     )
 
@@ -673,8 +676,9 @@ class TestRouteConfiguration:
         # Le préfixe patron aussi
         assert "/salons/{salon_id}/employees" not in PUBLIC_ROUTE_PATHS
 
-    def test_get_method_returns_405(self, manager_client: TestClient) -> None:
-        r = manager_client.get(
+    def test_patch_method_returns_405(self, manager_client: TestClient) -> None:
+        """`GET` liste désormais les coiffeuses (#150) ; `PATCH` reste absent."""
+        r = manager_client.patch(
             _EMPLOYEES_URL, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
         )
         assert r.status_code == 405

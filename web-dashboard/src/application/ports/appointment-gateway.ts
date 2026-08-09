@@ -77,4 +77,12 @@ export interface AppointmentGateway {
     status: AppointmentStatus,
     reason?: string,
   ): Promise<MutateAppointmentResult>;
+  // Proxifie `PUT /salons/{id}/appointments/{appointmentId}/hairdresser` (#25) :
+  // (dés)assigne une coiffeuse — `hairdresserId = null` désassigne. Réutilisé par
+  // la file d'attente (#150) pour affecter une coiffeuse disponible.
+  assignHairdresser(
+    salonId: string,
+    appointmentId: string,
+    hairdresserId: string | null,
+  ): Promise<MutateAppointmentResult>;
 }

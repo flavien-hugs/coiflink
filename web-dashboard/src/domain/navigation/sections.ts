@@ -54,6 +54,13 @@ export const DASHBOARD_SECTIONS: readonly DashboardSection[] = [
     category: "operations",
   },
   {
+    key: "file-attente",
+    label: "File d'attente",
+    href: "/gerant/file-attente",
+    status: "available",
+    category: "operations",
+  },
+  {
     key: "prestations",
     label: "Prestations",
     href: "/gerant/prestations",
@@ -71,7 +78,7 @@ export const DASHBOARD_SECTIONS: readonly DashboardSection[] = [
     key: "employes",
     label: "Employés",
     href: "/gerant/employes",
-    status: "coming-soon",
+    status: "available",
     category: "salon",
   },
   {

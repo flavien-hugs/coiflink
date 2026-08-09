@@ -83,6 +83,10 @@ class Appointment:
     client_note: str | None
     created_at: datetime.datetime
     services: tuple[BookedService, ...] = ()
+    # Pointage réel de la file d'attente (gérant, #150) — distinct du `status`
+    # ci-dessus (`domain/queue.py::derive_queue_status`). `None` = non pointé.
+    arrived_at: datetime.datetime | None = None
+    started_at: datetime.datetime | None = None
 
 
 @dataclass(frozen=True)

@@ -29,6 +29,7 @@ from coiflink_api.domain.errors import (
 )
 
 from .conftest import (
+    FakeAuditLog,
     FakeHasher,
     FakeSalonMemberRepository,
     FakeUserRepository,
@@ -36,9 +37,11 @@ from .conftest import (
 )
 
 _SALON_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
+_ACTOR_ID = uuid.UUID("ffffffff-0000-0000-0000-000000000009")
 
 _VALID_COMMAND = CreateEmployeeCommand(
     salon_id=_SALON_ID,
+    actor_id=_ACTOR_ID,
     full_name="Awa Koné",
     phone="0700000000",
     password="motdepasse-solide",
@@ -50,12 +53,14 @@ def _create_usecase(
     repository: FakeUserRepository | FakeUserRepositoryRaisingDuplicate | None = None,
     hasher: FakeHasher | None = None,
     members: FakeSalonMemberRepository | None = None,
+    audit_log: FakeAuditLog | None = None,
     role: str = Role.HAIRDRESSER.value,
 ) -> CreateEmployee:
     return CreateEmployee(
         repository=repository or FakeUserRepository(),
         hasher=hasher or FakeHasher(),
         members=members or FakeSalonMemberRepository(),
+        audit_log=audit_log or FakeAuditLog(),
         role=role,
     )
 
@@ -80,6 +85,7 @@ class TestSuccessfulCreation:
         uc = _create_usecase()
         command = CreateEmployeeCommand(
             salon_id=_SALON_ID,
+            actor_id=_ACTOR_ID,
             full_name="  Awa Koné  ",
             phone="0700000000",
             password="motdepasse-solide",
@@ -101,6 +107,7 @@ class TestSuccessfulCreation:
         uc = _create_usecase()
         command = CreateEmployeeCommand(
             salon_id=_SALON_ID,
+            actor_id=_ACTOR_ID,
             full_name="Awa Koné",
             phone="0700000000",
             password="motdepasse-solide",
@@ -114,6 +121,7 @@ class TestSuccessfulCreation:
         uc = _create_usecase()
         command = CreateEmployeeCommand(
             salon_id=_SALON_ID,
+            actor_id=_ACTOR_ID,
             full_name="Awa Koné",
             phone="0700000000",
             password="motdepasse-solide",
@@ -222,6 +230,7 @@ class TestSalonMembership:
         uc = _create_usecase(members=members)
         command = CreateEmployeeCommand(
             salon_id=other_salon,
+            actor_id=_ACTOR_ID,
             full_name="Awa Koné",
             phone="0700000000",
             password="motdepasse-solide",
@@ -266,6 +275,7 @@ class TestDuplicatePhone:
         uc = _create_usecase(repository=repository)
         local_command = CreateEmployeeCommand(
             salon_id=_SALON_ID,
+            actor_id=_ACTOR_ID,
             full_name="Autre",
             phone="0700000000",
             password="motdepasse-solide",
@@ -305,7 +315,7 @@ class TestInputValidation:
         with pytest.raises(InvalidName):
             uc.execute(
                 CreateEmployeeCommand(
-                    salon_id=_SALON_ID, full_name="", phone="0700000000", password="motdepasse-ok"
+                    salon_id=_SALON_ID, actor_id=_ACTOR_ID, full_name="", phone="0700000000", password="motdepasse-ok"
                 )
             )
 
@@ -315,6 +325,7 @@ class TestInputValidation:
             uc.execute(
                 CreateEmployeeCommand(
                     salon_id=_SALON_ID,
+            actor_id=_ACTOR_ID,
                     full_name="   ",
                     phone="0700000000",
                     password="motdepasse-ok",
@@ -326,7 +337,7 @@ class TestInputValidation:
         with pytest.raises(InvalidPassword):
             uc.execute(
                 CreateEmployeeCommand(
-                    salon_id=_SALON_ID, full_name="Awa", phone="0700000000", password="court"
+                    salon_id=_SALON_ID, actor_id=_ACTOR_ID, full_name="Awa", phone="0700000000", password="court"
                 )
             )
 
@@ -335,7 +346,7 @@ class TestInputValidation:
         with pytest.raises(InvalidPhone):
             uc.execute(
                 CreateEmployeeCommand(
-                    salon_id=_SALON_ID, full_name="Awa", phone="abc", password="motdepasse-ok"
+                    salon_id=_SALON_ID, actor_id=_ACTOR_ID, full_name="Awa", phone="abc", password="motdepasse-ok"
                 )
             )
 
@@ -344,7 +355,7 @@ class TestInputValidation:
         with pytest.raises(InvalidPhone):
             uc.execute(
                 CreateEmployeeCommand(
-                    salon_id=_SALON_ID, full_name="Awa", phone="", password="motdepasse-ok"
+                    salon_id=_SALON_ID, actor_id=_ACTOR_ID, full_name="Awa", phone="", password="motdepasse-ok"
                 )
             )
 
@@ -355,6 +366,7 @@ class TestInputValidation:
             uc.execute(
                 CreateEmployeeCommand(
                     salon_id=_SALON_ID,
+            actor_id=_ACTOR_ID,
                     full_name="",
                     phone="0700000000",
                     password="motdepasse-ok",
@@ -383,3 +395,69 @@ class TestUserEntitySecurity:
         uc = _create_usecase()
         user = uc.execute(_VALID_COMMAND)
         assert user.id is not None
+
+
+# ---------------------------------------------------------------------------
+# Champs professionnels facultatifs (#150)
+# ---------------------------------------------------------------------------
+
+
+class TestProfessionalFields:
+    def test_specialties_and_hired_at_none_by_default(self) -> None:
+        uc = _create_usecase()
+        employee = uc.execute(_VALID_COMMAND)
+        assert employee.specialties is None
+        assert employee.hired_at is None
+
+    def test_specialties_and_hired_at_persisted_when_provided(self) -> None:
+        import datetime
+
+        members = FakeSalonMemberRepository()
+        uc = _create_usecase(members=members)
+        command = CreateEmployeeCommand(
+            salon_id=_SALON_ID,
+            actor_id=_ACTOR_ID,
+            full_name="Awa Koné",
+            phone="0700000000",
+            password="motdepasse-solide",
+            specialties="  Tresses, colorations  ",
+            hired_at=datetime.date(2026, 1, 15),
+        )
+        employee = uc.execute(command)
+        assert employee.specialties == "Tresses, colorations"
+        assert employee.hired_at == datetime.date(2026, 1, 15)
+
+
+# ---------------------------------------------------------------------------
+# Journalisation d'audit (§11.4, #150)
+# ---------------------------------------------------------------------------
+
+
+class TestAuditLogging:
+    def test_records_employee_created_action(self) -> None:
+        from coiflink_api.domain.audit import AuditAction
+
+        audit_log = FakeAuditLog()
+        uc = _create_usecase(audit_log=audit_log)
+        employee = uc.execute(_VALID_COMMAND)
+
+        assert len(audit_log.recorded) == 1
+        entry = audit_log.recorded[0]
+        assert entry.action == AuditAction.EMPLOYEE_CREATED.value
+        assert entry.actor_user_id == _ACTOR_ID
+        assert entry.salon_id == _SALON_ID
+        assert entry.entity_id == employee.id
+
+    def test_audit_metadata_is_empty_no_pii(self) -> None:
+        audit_log = FakeAuditLog()
+        uc = _create_usecase(audit_log=audit_log)
+        uc.execute(_VALID_COMMAND)
+        assert audit_log.recorded[0].metadata == {}
+
+    def test_no_audit_entry_on_duplicate_phone(self) -> None:
+        audit_log = FakeAuditLog()
+        repository = FakeUserRepository(existing_phones={"+2250700000000"})
+        uc = _create_usecase(repository=repository, audit_log=audit_log)
+        with pytest.raises(PhoneAlreadyInUse):
+            uc.execute(_VALID_COMMAND)
+        assert audit_log.recorded == []

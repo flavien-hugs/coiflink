@@ -46,6 +46,8 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `/gerant/planning` | **protégée** | `MANAGER` — planning du salon, jour/semaine/mois (#26) |
 | `/gerant/clients` | **protégée** | `MANAGER` — fichier client du salon, création de fiche (#28) |
 | `/gerant/clients/[customerId]` | **protégée** | `MANAGER` — fiche client + note privée éditable (#32) + historique des visites terminées (#29) + prestations préférées (#31) |
+| `/gerant/employes` | **protégée** | `MANAGER` — gestion des coiffeuses : création, modification de profil, activation/désactivation (#13/#150) |
+| `/gerant/file-attente` | **protégée** | `MANAGER` — file d'attente du jour : pointage arrivée/début, assignation d'une coiffeuse, cycle de statut jusqu'à payée (#150) |
 | `/coiffeur/planning` | **protégée** | `HAIRDRESSER` actif — **son** planning assigné, lecture seule (#27) |
 | `POST /api/auth/login` | interne (BFF) | proxifie `POST /auth/login`, pose les cookies httpOnly |
 | `POST /api/auth/logout` | interne (BFF) | efface les cookies de session |
@@ -63,6 +65,16 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `PUT /api/salons/[id]/customers/[customerId]` | interne (BFF) | proxifie `PUT /salons/{id}/customers/{id}/notes` (édition de la note privée, #32) |
 | `POST /api/salons/[id]/payments` | interne (BFF) | proxifie `POST /salons/{id}/payments` (enregistrement d'un paiement validé, #33) |
 | `GET /api/salons/[id]/payments` | interne (BFF) | proxifie `GET /salons/{id}/payments` (historique filtrable des transactions, #35) |
+| `GET /api/salons/[id]/employees` | interne (BFF) | proxifie `GET /salons/{id}/employees` (liste des coiffeuses, #150) |
+| `POST /api/salons/[id]/employees` | interne (BFF) | proxifie `POST /salons/{id}/employees` (création, #13) |
+| `GET /api/salons/[id]/employees/[employeeId]` | interne (BFF) | proxifie `GET /salons/{id}/employees/{id}` (#150) |
+| `PUT /api/salons/[id]/employees/[employeeId]` | interne (BFF) | proxifie `PUT /salons/{id}/employees/{id}` (modification de profil journalisée, #150) |
+| `DELETE /api/salons/[id]/employees/[employeeId]` | interne (BFF) | proxifie `DELETE …` (désactivation, #150) |
+| `POST /api/salons/[id]/employees/[employeeId]/reactivate` | interne (BFF) | proxifie `POST …/reactivate` (#150) |
+| `PUT /api/salons/[id]/appointments/[appointmentId]/hairdresser` | interne (BFF) | proxifie `PUT …/hairdresser` ((dés)assignation d'une coiffeuse, #25, câblée pour #150) |
+| `POST /api/salons/[id]/appointments/[appointmentId]/arrival` | interne (BFF) | proxifie `POST …/arrival` (pointage d'arrivée, idempotent, #150) |
+| `POST /api/salons/[id]/appointments/[appointmentId]/start` | interne (BFF) | proxifie `POST …/start` (démarrage de la prestation, idempotent, #150) |
+| `GET /api/salons/[id]/queue` | interne (BFF) | proxifie `GET /salons/{id}/queue` (file d'attente du jour, #150) |
 
 `/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
 publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
@@ -350,6 +362,54 @@ serveur**, propage les query params de filtre au backend (`PaymentGateway.listTr
 corps **neutre** en erreur (`422` filtre invalide, `403`, `401`, `503`). État vide explicite (« Aucune
 transaction ne correspond à ces filtres. »). La liste est **cohérente avec le journal de caisse** (même
 source `payments`). Ni jeton, ni montant, ni PII ne sont journalisés.
+
+### Employés — gestion des coiffeuses (#13/#150)
+
+La section **Employés** (`/gerant/employes`, Server Component) est **disponible** depuis #150. Elle
+charge **côté serveur** (jeton du cookie httpOnly, jamais exposé, invariant #14) le salon du gérant
+puis ses coiffeuses : sans salon, elle invite à en créer un d'abord (Paramètres) ; sinon elle affiche
+le **tableau des coiffeuses** (`EmployeeList` — recherche locale sur le nom) et un **drawer d'ajout/
+modification** (`EmployeeForm`).
+
+La saisie (nom, téléphone, mot de passe initial **à la création seulement**, e-mail, spécialités,
+date d'embauche) est **validée côté client** (`validateCreateEmployee`/`validateUpdateEmployeeProfile`,
+`src/domain/employee/employee.ts` — parité avec `domain/employee.py`/`domain/user.py`/
+`domain/password.py` : nom et téléphone requis, mot de passe 8-128 caractères à la création, spécialités
+≤ 1000) avant d'être postée aux Route Handlers BFF `POST/GET/PUT /api/salons/[id]/employees[/
+employeeId]`. Le **backend reste l'autorité** : il normalise le téléphone (unicité **globale**
+`users.phone`, distincte de l'unicité salon-scopée des fiches clients), et **journalise** création,
+modification et (dés)activation (§11.4).
+
+Chaque ligne affiche le badge de **disponibilité** (`salon_members.status` — « Disponible »/
+« Désactivée »), **pas** le statut de compte global : le bouton **Activer/Désactiver** pilote
+l'éligibilité de la coiffeuse aux **nouvelles** affectations de ce salon (réutilisé par l'assignation
+de la file d'attente, ci-dessous), sans bloquer sa connexion ni ses RDV déjà assignés.
+
+### File d'attente & pointage réel (#150)
+
+La section **File d'attente** (`/gerant/file-attente`, Server Component) est **disponible** depuis
+#150. Elle charge **côté serveur** (jeton du cookie httpOnly, invariant #14) le salon du gérant, la
+**file du jour** (`GET /api/salons/[id]/queue`) et les **coiffeuses disponibles** (`GET /api/salons/
+[id]/employees`, filtrées `ACTIVE`), puis rend le tableau (`QueueBoard`) : heure, cliente, prestation(s),
+sélecteur de coiffeuse, badge de statut dérivé, actions.
+
+**Portée** : liste les RDV **existants** du jour (`CONFIRMED`/`COMPLETED`) — ni les demandes non
+confirmées, ni les annulés/absents. **Statuts dérivés** (jamais recalculés côté front, le backend est
+l'autorité) — `en attente` (confirmé, pas encore démarré) · `en cours` (démarré) · `terminée`
+(réalisé, sans paiement) · `payée` (réalisé, avec un paiement validé).
+
+**Actions**, chacune visible seulement quand sa précondition est remplie (`domain/queue/queue.ts` —
+miroir des préconditions serveur, qui restent l'arbitre en cas de désynchronisation, `409` sinon) :
+« Marquer l'arrivée » (`POST .../arrival`, idempotent) ; le **sélecteur de coiffeuse** (`PUT .../
+hairdresser`, réutilise #25 — première UI câblée sur cette route) ; « Démarrer » (`POST .../start`,
+exige arrivée pointée **et** coiffeuse assignée) ; « Terminer » (réutilise `POST .../status` →
+`COMPLETED`, #25) ; « Marquer payée » (ouvre `RecordPaymentForm` **lié au RDV**, réutilise
+`POST /api/salons/[id]/payments`, #33 — le sélecteur de prestation est masqué, le gérant saisit le
+montant total, le backend rejette tout écart).
+
+**Auto-refresh** (`<AutoRefresh />`, réutilisé du Dashboard Manager #148) : la file se rafraîchit
+seule (`router.refresh()`, visibility-aware) sans action manuelle. Messages d'erreur **neutres** ;
+aucune PII au-delà des noms d'affichage (`client_name`/`hairdresser_name`, jamais `client_id`).
 
 ### Ajouter une section
 

@@ -201,6 +201,11 @@ class SalonMember(Base):
         nullable=False,
         server_default=text(f"'{enums.UserStatus.ACTIVE.value}'"),
     )
+    # Champs professionnels facultatifs (Dashboard Manager, gestion des
+    # coiffeuses) : texte libre composé par le gérant, aucune contrainte
+    # fermée au MVP. Migration 0011.
+    specialties: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hired_at: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime.datetime] = _created_at()
     updated_at: Mapped[datetime.datetime] = _updated_at()
 
@@ -309,6 +314,17 @@ class Appointment(Base):
     )
     cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     client_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Pointage réel de la file d'attente (gérant, Dashboard Manager) : distinct
+    # du `status` ci-dessus — « En attente »/« En cours » sont **dérivés** de la
+    # présence de ces horodatages côté domaine (`domain/queue.py`), sans étendre
+    # la machine à états `AppointmentStatus` d'une valeur `IN_PROGRESS`.
+    # Migration 0011.
+    arrived_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Créneau dérivé (fuseau d'Abidjan = UTC+0, d'où `tsrange` plutôt que `tstzrange`),
     # support de la contrainte anti double-réservation.
     slot: Mapped[object] = mapped_column(

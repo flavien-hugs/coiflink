@@ -79,8 +79,8 @@ class TestAuditAction:
     def test_campaign_created_value(self) -> None:
         assert AuditAction.CAMPAIGN_CREATED == "CAMPAIGN_CREATED"
 
-    def test_exactly_fifteen_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 15
+    def test_exactly_twenty_one_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 21
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -107,6 +107,12 @@ class TestAuditAction:
             "PAYMENT_RECORDED",
             "CASH_ADJUSTED",
             "CAMPAIGN_CREATED",
+            "EMPLOYEE_CREATED",
+            "EMPLOYEE_UPDATED",
+            "EMPLOYEE_DEACTIVATED",
+            "EMPLOYEE_REACTIVATED",
+            "APPOINTMENT_ARRIVED",
+            "APPOINTMENT_STARTED",
         }
 
 

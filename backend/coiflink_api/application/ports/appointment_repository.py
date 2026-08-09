@@ -29,6 +29,7 @@ from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.client_segments import ClientVisitProfile
 from coiflink_api.domain.dashboard import InProgressService
 from coiflink_api.domain.hairdresser_performance import HairdresserActivityCounts
+from coiflink_api.domain.queue import QueueAppointmentRow
 from coiflink_api.domain.service_demand import ServiceDemand
 
 
@@ -405,6 +406,63 @@ class AppointmentRepository(Protocol):
         un même compte membre de deux salons est mesuré **par salon**. L'index
         `ix_appointments_salon_id (salon_id, appointment_date)` couvre le filtre.
         Lecture pure (aucun `flush`, aucun audit).
+        """
+        ...
+
+    def mark_arrived(
+        self,
+        appointment_id: uuid.UUID,
+        salon_id: uuid.UUID,
+        *,
+        now: datetime.datetime,
+    ) -> Appointment:
+        """Pose `arrived_at` sur le RDV `CONFIRMED` du salon (file d'attente, #150).
+
+        Écriture **conditionnée** au salon **et** au statut `CONFIRMED`
+        (`WHERE id = :id AND salon_id = :salon_id AND status = 'CONFIRMED'`) :
+        si aucune ligne ne correspond (RDV disparu, hors salon, ou déjà
+        réalisé/annulé), lève `domain.errors.InvalidAppointmentTransition`.
+        **Idempotent** : si `arrived_at` est déjà posé, la valeur existante est
+        **conservée** (pas de second horodatage sur un double clic) — l'appel
+        reste un succès. Retourne l'entité relue (avec ses `BookedService`).
+        """
+        ...
+
+    def mark_started(
+        self,
+        appointment_id: uuid.UUID,
+        salon_id: uuid.UUID,
+        *,
+        now: datetime.datetime,
+    ) -> Appointment:
+        """Pose `started_at` sur le RDV `CONFIRMED` du salon (file d'attente, #150).
+
+        Écriture **conditionnée** au salon **et** au statut `CONFIRMED` : si
+        aucune ligne ne correspond, lève `domain.errors.
+        InvalidAppointmentTransition`. Les préconditions métier (arrivée déjà
+        pointée, coiffeuse déjà assignée) sont vérifiées **par le cas
+        d'usage** (`StartAppointmentService`) avant l'appel — ce dépôt ne les
+        revalide pas. **Idempotent** comme `mark_arrived`. Retourne l'entité
+        relue.
+        """
+        ...
+
+    def list_queue_details(
+        self, salon_id: uuid.UUID, *, day: datetime.date
+    ) -> tuple[QueueAppointmentRow, ...]:
+        """RDV `CONFIRMED`/`COMPLETED` du salon pour `day`, enrichis des noms (#150).
+
+        Miroir de `list_in_progress_details` (#148) : deux lectures bornées
+        (RDV + noms client/coiffeur via `users`, puis noms de prestation via
+        `appointment_services`/`services` — pour ne pas dupliquer les lignes
+        du join un-à-plusieurs). Filtre `appointment_date == day` et
+        `status ∈ domain.queue.QUEUE_APPOINTMENT_STATUSES` (ni `PENDING` non
+        confirmé, ni `CANCELLED`/`NO_SHOW`). Émet **uniquement** des noms
+        d'affichage (jamais `client_id`/`user_id`, patron #43/#36) ;
+        `hairdresser_id` reste exposé (opaque, le gérant agit sur la ligne).
+        L'isolation §11.2 est imposée **en SQL** (`WHERE salon_id`). Trié par
+        `start_time` croissant. Lecture pure — ne résout **pas** le paiement
+        (responsabilité de `PaymentRepository`, combinée par le cas d'usage).
         """
         ...
 

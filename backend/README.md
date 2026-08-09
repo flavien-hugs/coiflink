@@ -334,31 +334,69 @@ Conventions :
 - **ne jamais ajouter un chemin à `PUBLIC_ROUTE_PATHS` sans revue de sécurité** — c'est ouvrir une
   route à Internet.
 
-## Employés — création d'un compte coiffeur (US-1.4, #13 — [ADR-0016](../docs/adr/0016-comptes-employes-appartenance-salon.md))
+## Employés — gestion des coiffeuses (US-1.4, #13/#150 — [ADR-0016](../docs/adr/0016-comptes-employes-appartenance-salon.md))
 
-`POST /salons/{salon_id}/employees` permet à un **gérant** de créer le compte d'un **coiffeur**
-(`role=HAIRDRESSER`) rattaché à **son** salon. C'est une **route protégée**, gardée par la permission
-`EMPLOYEE_MANAGE` (matrice §4.1 — seul le `MANAGER` la possède) **et** par la portée salon
-(`require_salon_scope`) : un gérant ne peut créer un employé que sur un salon de son périmètre.
+Toutes les routes ci-dessous sont **protégées** par la permission `EMPLOYEE_MANAGE` (matrice §4.1 —
+seul le `MANAGER` la possède) **et** par la portée salon (`require_salon_scope`) : un gérant ne gère
+d'employés que sur **son** salon (accès hors périmètre → `403` générique, aucun oracle d'existence).
+
+### Créer un compte coiffeur
+
+`POST /salons/{salon_id}/employees` crée le compte d'un **coiffeur** (`role=HAIRDRESSER`) rattaché à
+**son** salon.
 
 - **Corps** (JSON) : `full_name`, `phone`, `password` (mot de passe **initial**, ≥ 8 caractères),
-  `email` (optionnel). **Aucun champ `role`** : le rôle `HAIRDRESSER` est **imposé côté serveur**
+  `email` (optionnel), `specialties`/`hired_at` (optionnels, #150 — prestations maîtrisées en texte
+  libre, date d'embauche). **Aucun champ `role`** : le rôle `HAIRDRESSER` est **imposé côté serveur**
   (anti-élévation de privilège) — un `role` fourni dans le corps est ignoré.
-- **Réponse** : `201` + l'utilisateur créé (**sans secret** : ni mot de passe ni condensat) ;
+- **Réponse** : `201` + la coiffeuse créée (**sans secret** : ni mot de passe ni condensat) ;
   `role="HAIRDRESSER"`, `status="ACTIVE"`.
-- **Erreurs** : `401` (non authentifié) ; `403` (rôle insuffisant **ou** salon hors périmètre —
-  **message générique identique**, aucun oracle d'existence) ; `409` (téléphone/e-mail déjà pris, ou
-  employé déjà membre du salon) ; `422` (nom/téléphone/mot de passe/e-mail invalides) ; `503`
-  (`JWT_SECRET` non configuré).
+- **Erreurs** : `401` ; `403` ; `409` (téléphone/e-mail déjà pris, ou employé déjà membre du salon) ;
+  `422` (nom/téléphone/mot de passe/e-mail/spécialités invalides) ; `503` (`JWT_SECRET` non configuré).
 
 **Appartenance & portée.** La création écrit une ligne dans la table d'appartenance `salon_members`
-(créée par la migration `0002`), qui devient la **source d'autorité de la portée** du coiffeur
-(PRD §11.2) : il « voit » son salon **dès sa création**, sans dépendre d'un rendez-vous assigné. Un
-membre passé `INACTIVE` perd sa portée. La création utilisateur **et** l'appartenance sont écrites
-dans la **même transaction** — si l'une échoue, aucune n'est persistée (pas de compte orphelin).
+(créée par la migration `0002`, étendue par `0011`), qui devient la **source d'autorité de la
+portée** du coiffeur (PRD §11.2) : il « voit » son salon **dès sa création**, sans dépendre d'un
+rendez-vous assigné. La création utilisateur, l'appartenance **et** l'entrée d'audit
+`EMPLOYEE_CREATED` sont écrites dans la **même transaction** — si l'une échoue, aucune n'est
+persistée (pas de compte orphelin).
 
 **Connexion du coiffeur.** Aucune route dédiée : le coiffeur se connecte via `POST /auth/login`
 (#10) avec son téléphone/e-mail + mot de passe initial, puis peut le changer via le reset OTP (#11).
+
+### Lister / charger une coiffeuse
+
+- `GET /salons/{salon_id}/employees` → `200` + la liste des coiffeuses du salon (`role=HAIRDRESSER`),
+  triée par nom d'affichage. Liste **vide** = état normal (aucune erreur).
+- `GET /salons/{salon_id}/employees/{employee_id}` → `200` + la coiffeuse, ou `404` si inexistante
+  **ou** hors salon (indiscernables, §11.2).
+
+Chaque coiffeuse expose `id`, `full_name`, `phone`, `email`, `role`, `status`, `specialties`,
+`hired_at`, `created_at`. **`status` reflète `salon_members.status`** (disponibilité aux
+affectations) — **pas** `users.status` (compte global).
+
+### Modifier le profil
+
+`PUT /salons/{salon_id}/employees/{employee_id}` remplace **intégralement** identité (`full_name`,
+`phone`, `email`) et champs pro (`specialties`, `hired_at`) — sémantique *replace* (comme la
+modification RDV #23/fiche client #144). **Aucun** champ `role`/`status` : la disponibilité se
+pilote via les deux routes ci-dessous, jamais ici.
+
+- **Erreurs** : `404` (hors salon) ; `409` (téléphone/e-mail déjà pris par un **autre** compte —
+  unicité **globale** `users`, distincte de l'unicité salon-scopée de `customer_profiles`) ; `422`.
+- Journalise `EMPLOYEE_UPDATED` avec un **diff neutre** (`{"changed": [...]}`, noms de champs
+  seulement — jamais une valeur, §11.3/§11.4).
+
+### Activer / désactiver (disponibilité aux affectations)
+
+- `DELETE /salons/{salon_id}/employees/{employee_id}` → `salon_members.status = INACTIVE`
+  (idempotent). Retire la coiffeuse de l'éligibilité aux **nouvelles** affectations de ce salon
+  (`_require_salon_hairdresser`, réutilisé par la réservation #21 et l'assignation manuelle #25) —
+  **ne bloque pas sa connexion** (`users.status` inchangé) ni ses RDV déjà assignés.
+- `POST /salons/{salon_id}/employees/{employee_id}/reactivate` → `salon_members.status = ACTIVE`
+  (idempotent).
+- Les deux journalisent respectivement `EMPLOYEE_DEACTIVATED`/`EMPLOYEE_REACTIVATED` (métadonnées
+  vides, aucune valeur sensible).
 
 ## Salons — création & médias (US-2.1, #15 — [ADR-0017](../docs/adr/0017-creation-salon-medias-et-reservabilite.md))
 
@@ -1379,11 +1417,82 @@ d'arrivée/début/fin :
   `CONFIRMED` du jour dont le créneau est passé sans clôture), `prolonged_wait` (RDV `PENDING` du jour
   dont le début est dépassé) — ne renvoyées que si leur effectif est `> 0`, ordre d'affichage stable.
 
-> **Non représenté au MVP.** « Arrivée cliente », « début » et « fin » de prestation **n'ont aucune
-> source horodatée** (pas de pointage) : la timeline `dashboard/activity` reste bornée aux faits
+> **Non représenté au MVP (dashboard).** « Arrivée cliente », « début » et « fin » de prestation
+> **n'ont pas de source horodatée dans `dashboard/activity`** : la timeline reste bornée aux faits
 > **réellement horodatés** — paiements et notifications salon `NEW_BOOKING`/`CANCELLATION`/
-> `APPOINTMENT_UPDATE` (#47/#48, libellé neutre). Un vrai suivi arrivée/début/fin (pointage, borne §17,
-> QR §16.7) est un épic distinct, hors MVP (§21). Voir [ADR-0039](../docs/adr/0039-dashboard-manager-activite-salon.md).
+> `APPOINTMENT_UPDATE` (#47/#48, libellé neutre). Le pointage réel arrivée/début existe **depuis #150**
+> (`arrived_at`/`started_at`, ci-dessous) mais alimente la **file d'attente**, pas cette timeline —
+> les deux lectures restent volontairement séparées. Voir [ADR-0039](../docs/adr/0039-dashboard-manager-activite-salon.md).
+
+## File d'attente & pointage réel (§7.2, #150)
+
+Vue opérationnelle de la journée pour le gérant : la liste des rendez-vous **existants** (confirmés ou
+réalisés du jour) avec leur statut de file dérivé, plus deux actions de **pointage manuel** (arrivée,
+début de prestation). Complète le Dashboard Manager (#148) sans le modifier : aucune nouvelle
+dépendance, mêmes conventions RBAC/isolation.
+
+| Méthode | Chemin | Permission | Réponse |
+| --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/queue?day` | `APPOINTMENT_READ_SALON` | `200` liste triée par heure \| `401` \| `403` \| `422` jour mal formé |
+| `POST` | `/salons/{salon_id}/appointments/{id}/arrival` | `APPOINTMENT_UPDATE_STATUS` | `200` RDV à jour (idempotent) \| `401` \| `403` \| `404` \| `409` non `CONFIRMED` |
+| `POST` | `/salons/{salon_id}/appointments/{id}/start` | `APPOINTMENT_UPDATE_STATUS` | `200` \| `401` \| `403` \| `404` \| `409` arrivée/coiffeuse manquante ou non `CONFIRMED` |
+
+**Portée : RDV existants uniquement.** La file liste les RDV du jour dont `status ∈ {CONFIRMED,
+COMPLETED}` — ni `PENDING` (non confirmé), ni `CANCELLED`/`NO_SHOW`. Aucune création de RDV « walk-in »
+sans réservation (décision produit, hors périmètre #150).
+
+**Pointage réel — deux colonnes, pas un nouveau statut (migration `0011`).** `appointments.arrived_at`/
+`started_at` (`TIMESTAMPTZ NULL`) sont posées par les deux actions ci-dessus, **indépendamment** de
+`status` (`AppointmentStatus` reste à cinq valeurs, `domain/appointment.py` inchangé) :
+
+- **`waiting`** (« En attente ») = `CONFIRMED` et `started_at IS NULL`. `arrived_at` est **informatif**
+  (affiché) — il ne fait pas franchir d'étape à lui seul.
+- **`in_progress`** (« En cours ») = `CONFIRMED` et `started_at IS NOT NULL`.
+- **`completed`** (« Terminée ») = `COMPLETED` **sans** paiement validé rattaché.
+- **`paid`** (« Payée ») = `COMPLETED` **avec** un paiement `VALIDATED`/`ADJUSTED` rattaché — dérivé du
+  **paiement réel** (réutilise l'encaissement #33/#34, `PaymentRepository.list_paid_appointment_ids`,
+  même prédicat que les écarts de caisse #36) : aucun drapeau `paid` n'est stocké sur le RDV.
+
+**Actions.** « Marquer l'arrivée » (`POST .../arrival`) et « Démarrer la prestation »
+(`POST .../start`) sont **idempotentes** : un second appel ne décale pas l'horodatage déjà posé (pas de
+double-clic accidentel). Démarrer exige l'arrivée déjà pointée **et** une coiffeuse déjà assignée
+(`AppointmentArrivalRequired`/`AppointmentHairdresserRequired` → `409` sinon) ; l'assignation elle-même
+réutilise `PUT .../hairdresser` (#25, ci-dessus). « Terminer » réutilise `POST .../status`
+(`target=COMPLETED`, #25) ; « Marquer payée » réutilise `POST /salons/{id}/payments` (#33) avec
+`appointment_id` — **aucune nouvelle route d'écriture** pour ces deux dernières étapes.
+
+Chaque ligne de la file (`GET .../queue`) porte `appointment_id`, `client_name`, `service_names`,
+`hairdresser_id`/`hairdresser_name`, `start_time`/`end_time`, `status`, `queue_status`, `arrived_at`/
+`started_at` — noms d'affichage seuls (§11.3, patron #43/#36), jamais `client_id`/contact.
+`hairdresser_id` reste exposé (opaque, non-PII) : le gérant en a besoin pour l'assignation. Journalise
+`APPOINTMENT_ARRIVED`/`APPOINTMENT_STARTED` (métadonnées vides — aucune valeur, §11.4).
+
+```bash
+# File du jour (défaut : aujourd'hui) → 200
+curl -G "$API/salons/$SALON_ID/queue" -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Pointer l'arrivée d'une cliente → 200 (idempotent)
+curl -X POST "$API/salons/$SALON_ID/appointments/$APPOINTMENT_ID/arrival" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+```json
+[
+  {
+    "appointment_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "client_name": "Awa Koné",
+    "service_names": ["Tresses"],
+    "hairdresser_id": "9c858901-8a57-4791-81fe-4c455b099bc9",
+    "hairdresser_name": "Fatou Diarra",
+    "start_time": "09:00:00",
+    "end_time": "10:30:00",
+    "status": "CONFIRMED",
+    "queue_status": "in_progress",
+    "arrived_at": "2026-08-09T08:55:00Z",
+    "started_at": "2026-08-09T09:02:00Z"
+  }
+]
+```
 
 **Émission maîtrisée (§11.3).** `kpis`/`revenue-series`/`attendance-series` sont **counts-only**
 (compteurs, montants en chaîne décimale, dates — aucune PII, `client_id` groupé mais jamais émis).

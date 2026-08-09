@@ -48,6 +48,25 @@ class EmployeeAlreadyInSalon(DomainError):
     """
 
 
+class InvalidEmployeeSpecialties(DomainError):
+    """Le champ « spécialités » d'une coiffeuse dépasse la borne applicative (#150).
+
+    Levée par `domain/employee.py::normalize_specialties` quand le texte —
+    **composé par le gérant** — dépasse `SPECIALTIES_MAX_LENGTH` (colonne
+    `TEXT`, borne applicative). Message **neutre** — l'adapter entrant la
+    traduit en `422`.
+    """
+
+
+class EmployeeNotFound(DomainError):
+    """La coiffeuse visée n'est pas membre `salon_members` de ce salon (#150).
+
+    N'est traduite en `404` **qu'après** validation de la portée : une
+    coiffeuse hors périmètre a déjà reçu un `403` générique (aucun oracle
+    d'existence, §11.2).
+    """
+
+
 class InvalidSalonName(DomainError):
     """Le nom du salon fourni est vide ou hors bornes (US-2.1, #15)."""
 
@@ -265,6 +284,26 @@ class InvalidAppointmentTransition(DomainError):
     l'assignation n'a plus de sens). Message **neutre** — l'adapter entrant la
     traduit en `409 Conflict` (état de la ressource, cohérent avec
     `AppointmentNotModifiable`/`AppointmentNotCancellable`).
+    """
+
+
+class AppointmentArrivalRequired(DomainError):
+    """La prestation ne peut démarrer sans arrivée pointée (file d'attente, #150).
+
+    Levée quand le gérant tente de démarrer une prestation (`started_at`) alors
+    que l'arrivée de la cliente (`arrived_at`) n'a pas encore été enregistrée —
+    l'ordre du pointage (arrivée → début) est imposé serveur, jamais un champ
+    soumis. Message **neutre** — l'adapter entrant la traduit en `409 Conflict`.
+    """
+
+
+class AppointmentHairdresserRequired(DomainError):
+    """La prestation ne peut démarrer sans coiffeuse assignée (file d'attente, #150).
+
+    Levée quand le gérant tente de démarrer une prestation dont
+    `hairdresser_id` est `NULL` : une prestation « en cours » sans coiffeuse
+    n'a pas de sens métier. Message **neutre** — l'adapter entrant la traduit
+    en `409 Conflict`.
     """
 
 
@@ -533,6 +572,8 @@ __all__ = [
     "PhoneAlreadyInUse",
     "EmailAlreadyInUse",
     "EmployeeAlreadyInSalon",
+    "InvalidEmployeeSpecialties",
+    "EmployeeNotFound",
     "InvalidSalonName",
     "InvalidLocation",
     "InvalidOpeningHours",
@@ -578,6 +619,8 @@ __all__ = [
     "AppointmentNotModifiable",
     "AppointmentNotCancellable",
     "InvalidAppointmentTransition",
+    "AppointmentArrivalRequired",
+    "AppointmentHairdresserRequired",
     "InvalidOtp",
     "OtpExpired",
     "InvalidCredentials",

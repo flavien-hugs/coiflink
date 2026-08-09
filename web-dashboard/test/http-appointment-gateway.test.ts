@@ -419,6 +419,85 @@ describe("createHttpAppointmentGateway().setStatus() — corps de la requête", 
 });
 
 // ---------------------------------------------------------------------------
+// assignHairdresser (#25, câblage front #150)
+// ---------------------------------------------------------------------------
+
+describe("createHttpAppointmentGateway().assignHairdresser()", () => {
+  it("sans accessToken → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await createHttpAppointmentGateway({ accessToken: null }).assignHairdresser(
+      SALON_ID,
+      APPT_ID,
+      "hairdresser-1",
+    );
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("200 → RDV mis à jour avec le hairdresserId", async () => {
+    stubFetch(200, { ...FAKE_APPT_PAYLOAD, hairdresser_id: "hairdresser-1" });
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).assignHairdresser(
+      SALON_ID,
+      APPT_ID,
+      "hairdresser-1",
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.appointment.hairdresserId).toBe("hairdresser-1");
+  });
+
+  it("hairdresserId null → désassignation, corps { hairdresser_id: null }", async () => {
+    stubFetch(200, FAKE_APPT_PAYLOAD);
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).assignHairdresser(
+      SALON_ID,
+      APPT_ID,
+      null,
+    );
+    const [, options] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    const body = JSON.parse(options.body as string) as Record<string, unknown>;
+    expect(body).toEqual({ hairdresser_id: null });
+  });
+
+  it("utilise la méthode PUT sur .../hairdresser", async () => {
+    stubFetch(200, FAKE_APPT_PAYLOAD);
+    await createHttpAppointmentGateway({ accessToken: TOKEN }).assignHairdresser(
+      SALON_ID,
+      APPT_ID,
+      "hairdresser-1",
+    );
+    const [url, options] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toContain(`/salons/${SALON_ID}/appointments/${APPT_ID}/hairdresser`);
+    expect(options.method).toBe("PUT");
+  });
+
+  it("404 coiffeur hors salon → not-found", async () => {
+    stubFetch(404, {});
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).assignHairdresser(
+      SALON_ID,
+      APPT_ID,
+      "hairdresser-1",
+    );
+    expect(result).toEqual({ ok: false, reason: "not-found" });
+  });
+
+  it("409 conflit d'agenda → conflict", async () => {
+    stubFetch(409, {});
+    const result = await createHttpAppointmentGateway({ accessToken: TOKEN }).assignHairdresser(
+      SALON_ID,
+      APPT_ID,
+      "hairdresser-1",
+    );
+    expect(result).toEqual({ ok: false, reason: "conflict" });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // listAssigned — sans jeton (US-3.6, #27)
 // ---------------------------------------------------------------------------
 

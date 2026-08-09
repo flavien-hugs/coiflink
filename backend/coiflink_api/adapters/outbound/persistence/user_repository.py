@@ -153,6 +153,58 @@ class SqlUserRepository:
         row.password_hash = new_password_hash
         self._session.flush()
 
+    def update_identity(
+        self,
+        user_id: uuid.UUID | str,
+        *,
+        full_name: str,
+        phone: str,
+        email: str | None,
+    ) -> User | None:
+        """Remplace nom/téléphone/e-mail du compte (édition employé, gérant).
+
+        Retraduit la violation de contrainte unique **globale** (comme
+        `create`) : `uq_users_phone` → `PhoneAlreadyInUse`, `uq_users_email` →
+        `EmailAlreadyInUse`. `None` si l'`id` n'existe pas ou est illisible.
+        """
+
+        try:
+            pk = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+        except (ValueError, TypeError):
+            return None
+        row = self._session.get(models.User, pk)
+        if row is None:
+            return None
+
+        row.full_name = full_name
+        row.phone = phone
+        row.email = email
+        try:
+            self._session.flush()
+        except IntegrityError as exc:
+            self._session.rollback()
+            detail = str(getattr(exc, "orig", exc))
+            if "uq_users_phone" in detail:
+                raise PhoneAlreadyInUse(
+                    "Ce numéro de téléphone est déjà associé à un compte."
+                ) from exc
+            if "uq_users_email" in detail:
+                raise EmailAlreadyInUse(
+                    "Cette adresse e-mail est déjà associée à un compte."
+                ) from exc
+            raise
+
+        self._session.refresh(row)
+        return User(
+            id=row.id,
+            full_name=row.full_name,
+            phone=row.phone,
+            email=row.email,
+            role=row.role,
+            status=row.status,
+            created_at=row.created_at,
+        )
+
 
 def _to_credentials(row: "models.User | None") -> UserCredentials | None:
     """Mappe une ligne ORM `User` vers `UserCredentials` (avec `password_hash`).

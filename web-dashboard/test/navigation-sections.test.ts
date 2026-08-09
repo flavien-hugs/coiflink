@@ -10,8 +10,8 @@ import {
 } from "../src/domain/navigation/sections";
 
 describe("DASHBOARD_SECTIONS", () => {
-  it("contient les 7 sections du §7.2", () => {
-    expect(DASHBOARD_SECTIONS).toHaveLength(7);
+  it("contient les 8 sections du §7.2 (+ file d'attente, #150)", () => {
+    expect(DASHBOARD_SECTIONS).toHaveLength(8);
   });
 
   it("déclare les catégories de navigation attendues", () => {
@@ -37,6 +37,7 @@ describe("DASHBOARD_SECTIONS", () => {
     expect(keys).toContain("prestations");
     expect(keys).toContain("encaissements");
     expect(keys).toContain("employes");
+    expect(keys).toContain("file-attente");
     expect(keys).toContain("parametres");
   });
 
@@ -78,11 +79,22 @@ describe("DASHBOARD_SECTIONS", () => {
     expect(encaissements?.href).toBe("/gerant/encaissements");
   });
 
-  it("marque les sections M2–M5 restantes 'coming-soon'", () => {
-    const comingSoon = ["employes"];
-    for (const key of comingSoon) {
-      const section = DASHBOARD_SECTIONS.find((s) => s.key === key);
-      expect(section?.status).toBe("coming-soon");
+  it("marque 'employes' comme 'available' (gestion des coiffeuses, #13/#150)", () => {
+    const employes = DASHBOARD_SECTIONS.find((s) => s.key === "employes");
+    expect(employes).toBeDefined();
+    expect(employes?.status).toBe("available");
+  });
+
+  it("marque 'file-attente' comme 'available' (pointage réel, #150)", () => {
+    const fileAttente = DASHBOARD_SECTIONS.find((s) => s.key === "file-attente");
+    expect(fileAttente).toBeDefined();
+    expect(fileAttente?.status).toBe("available");
+    expect(fileAttente?.href).toBe("/gerant/file-attente");
+  });
+
+  it("ne marque plus aucune section 'coming-soon' (M1 complet)", () => {
+    for (const section of DASHBOARD_SECTIONS) {
+      expect(section.status).toBe("available");
     }
   });
 
