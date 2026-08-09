@@ -793,6 +793,48 @@ ses `services` (`name` + `price_at_booking`) et son `total_amount` — ainsi qu'
   volée (`domain/visit.py::build_history`) ; les colonnes homonymes de `customer_profiles` **restent à
   leurs défauts** (aucune dénormalisation, aucune migration). Lecture pure : **aucun** audit.
 
+## Clients — historique des paiements (fiche client)
+
+Le gérant **consulte l'historique des paiements d'un client** — tous statuts confondus
+(`PENDING`/`VALIDATED`/`CANCELLED`/`ADJUSTED`), c'est justement l'objet de la colonne « statut ». Une
+route **de lecture** s'ajoute à la tranche « clients », sous le même préfixe fiche-scopé et **protégée**
+par `CUSTOMER_MANAGE` + portée salon (rien n'entre dans `PUBLIC_ROUTE_PATHS`). Miroir de l'historique des
+visites (#29), sur `payments` plutôt que `appointments`.
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/customers/{customer_id}/payments` | `CUSTOMER_MANAGE` + portée | `200` historique \| `401` \| `403` \| `404` fiche hors salon | — (lecture) |
+
+```bash
+curl "$API/salons/$SALON_ID/customers/$CUSTOMER_ID/payments" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+```jsonc
+// 200 — paiements du compte lié, plus récent d'abord
+{
+  "customer_id": "…uuid…",
+  "items": [
+    { "payment_id": "…", "created_at": "2026-07-20T09:30:00Z", "amount": "5000.00", "currency": "XOF", "status": "VALIDATED" }
+  ]
+}
+```
+
+- **Tous statuts, aucun filtre.** Contrairement à l'historique des visites (borné à `COMPLETED`), la
+  lecture renvoie **tous** les paiements du compte lié — `PENDING`/`VALIDATED`/`CANCELLED`/`ADJUSTED` —
+  triés `created_at DESC`. Le montant reste `NUMERIC(12,2)` sérialisé en chaîne décimale (jamais de
+  flottant), devise **XOF** (§9.6).
+- **Lien fiche → paiement encapsulé (anti-oracle ADR-0026).** Le pont
+  `customer_profiles.user_id == payments.client_id` (même `salon_id`) est calculé **entièrement en
+  SQL** (`domain/visit.py::CustomerPayment`) ; `user_id`/`client_id`/`recorded_by`/`reference` ne sont
+  **jamais** renvoyés ni journalisés. Une **fiche walk-in** (`user_id = NULL`) ou sans paiement
+  rattaché renvoie `200` avec `items: []` — comportement **normal**, indiscernable d'une fiche liée
+  sans paiement (aucun signal sur l'existence d'un compte).
+- **Isolation §11.2 en profondeur.** `require_salon_scope` (403 générique) **et** fiche résolue via
+  `(salon_id, customer_id)` (réutilise `GetCustomer` → `404` **après** portée) **et** paiements
+  refiltrés `salon_id`/`client_id` en SQL : jamais les paiements du même compte dans un **autre**
+  salon. Lecture pure : **aucun** audit.
+
 ## Clients — prestations préférées (US-4.3, #31)
 
 Le gérant **connaît les prestations préférées d'un client** — les prestations les **plus fréquentes**,

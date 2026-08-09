@@ -9,6 +9,7 @@ import type {
   CustomerInput,
   CustomerProfileInput,
 } from "@/src/domain/customer/customer";
+import type { PaymentHistory } from "@/src/domain/customer/payment";
 import type { CustomerServiceStats } from "@/src/domain/customer/stats";
 import type { VisitHistory } from "@/src/domain/customer/visit";
 
@@ -48,6 +49,16 @@ export type GetCustomerResult =
 // réalisée renvoie `ok: true` avec un historique **vide** (pas une erreur).
 export type CustomerHistoryResult =
   | { ok: true; history: VisitHistory }
+  | {
+      ok: false;
+      reason: "forbidden" | "unauthenticated" | "not-found" | "unavailable";
+    };
+
+// Historique des paiements d'une fiche (fiche client). `not-found` = `404`
+// (fiche absente, portée validée) ; une fiche walk-in ou sans paiement renvoie
+// `ok: true` avec une liste **vide** (pas une erreur).
+export type CustomerPaymentsResult =
+  | { ok: true; history: PaymentHistory }
   | {
       ok: false;
       reason: "forbidden" | "unauthenticated" | "not-found" | "unavailable";
@@ -121,6 +132,8 @@ export interface CustomerGateway {
   get(salonId: string, customerId: string): Promise<GetCustomerResult>;
   // Proxifie `GET /salons/{id}/customers/{customerId}/appointments` (historique).
   history(salonId: string, customerId: string): Promise<CustomerHistoryResult>;
+  // Proxifie `GET /salons/{id}/customers/{customerId}/payments` (historique des paiements).
+  payments(salonId: string, customerId: string): Promise<CustomerPaymentsResult>;
   // Proxifie `GET /salons/{id}/customers/{customerId}/stats` (prestations préférées).
   stats(salonId: string, customerId: string): Promise<CustomerStatsResult>;
   // Proxifie `PUT /salons/{id}/customers/{customerId}/notes` (édite la note privée ;

@@ -1241,6 +1241,10 @@ class FakeCustomerRepository:
         # le lien fiche ↔ compte est encapsulé — une fiche sans entrée ici renvoie
         # une liste vide (équivalent d'une fiche walk-in ou sans visite réalisée).
         self._visits: dict[uuid.UUID, tuple] = {}
+        # Paiements du compte lié par fiche (fiche client), même convention que
+        # `_visits` : pas d'`user_id` dans le fake, une fiche sans entrée ici
+        # renvoie une liste vide (walk-in ou sans paiement).
+        self._payments: dict[uuid.UUID, tuple] = {}
         self.created: list = []
         self.last_visits_call: tuple | None = None
         self.raise_conflict = raise_conflict
@@ -1249,6 +1253,11 @@ class FakeCustomerRepository:
         """Amorce l'historique de visites d'une fiche (helper de test, #29)."""
 
         self._visits[customer_id] = visits
+
+    def set_payments(self, customer_id: uuid.UUID, payments: tuple) -> None:
+        """Amorce l'historique de paiements d'une fiche (helper de test, fiche client)."""
+
+        self._payments[customer_id] = payments
 
     def create(self, customer):  # type: ignore[no-untyped-def]
         from coiflink_api.domain.customer import Customer
@@ -1373,6 +1382,13 @@ class FakeCustomerRepository:
         visits = self._visits.get(customer_id, ())
         # Le dépôt SQL filtre le statut en base ; le fake reproduit ce filtre.
         return tuple(v for v in visits if v.status in statuses)
+
+    def list_payments(self, salon_id, customer_id):  # type: ignore[no-untyped-def]
+        customer = self._customers.get(customer_id)
+        if customer is None or customer.salon_id != salon_id:  # type: ignore[union-attr]
+            # Fiche hors salon/inexistante : aucun paiement reliable (isolation §11.2).
+            return ()
+        return self._payments.get(customer_id, ())
 
 
 class FakeCampaignRepository:

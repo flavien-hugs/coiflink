@@ -44,6 +44,7 @@ from coiflink_api.domain.customer import (
 from coiflink_api.domain.errors import CustomerAlreadyExists, CustomerNotFound
 from coiflink_api.domain.visit import (
     HISTORY_STATUSES,
+    CustomerPayment,
     CustomerServiceStats,
     VisitHistory,
     build_history,
@@ -355,6 +356,30 @@ class GetCustomerVisitHistory:
         return build_history(visits)
 
 
+class GetCustomerPaymentHistory:
+    """Historique des paiements d'une fiche (lecture — pas d'audit, fiche client).
+
+    Lecture **fiche-scopée**, miroir de `GetCustomerVisitHistory` : la fiche est
+    d'abord résolue **dans le salon** (`GetCustomer` → `CustomerNotFound`/`404`
+    **après** portée, sans oracle), puis les paiements du compte lié sont lus via
+    le port (le lien `user_id` reste encapsulé côté dépôt, la lecture refiltre
+    `salon_id`). Tous statuts confondus — aucune agrégation, aucune écriture,
+    aucun audit.
+    """
+
+    def __init__(self, repository: CustomerRepository) -> None:
+        self._repository = repository
+
+    def execute(
+        self, salon_id: uuid.UUID, customer_id: uuid.UUID
+    ) -> tuple[CustomerPayment, ...]:
+        # 1. Résout la fiche DANS le salon (404 après portée si hors salon/inconnue).
+        GetCustomer(self._repository).execute(salon_id, customer_id)
+        # 2. Lit les paiements liés — `user_id` encapsulé côté dépôt, salon_id
+        #    refiltré en SQL (défense en profondeur §11.2).
+        return self._repository.list_payments(salon_id, customer_id)
+
+
 class GetCustomerServiceStats:
     """Prestations préférées d'une fiche (lecture — pas d'audit, US-4.3, #31).
 
@@ -392,5 +417,6 @@ __all__ = [
     "ListSalonCustomers",
     "GetCustomer",
     "GetCustomerVisitHistory",
+    "GetCustomerPaymentHistory",
     "GetCustomerServiceStats",
 ]

@@ -239,6 +239,23 @@ explicite** (« Aucune visite terminée pour ce client ») — pas une erreur. `
 `GET /api/salons/[id]/customers/[customerId]/appointments` proxifie la lecture avec des messages
 neutres.
 
+### Clients — historique des paiements (fiche client)
+
+La page de détail `/gerant/clients/[customerId]` charge en parallèle (dans le même `Promise.all` que
+`get`/`history`/`stats`) l'**historique des paiements** du client (`payments` →
+`GET /salons/{id}/customers/{id}/payments`) et rend, dans un onglet **« Paiements »** (`Tabs`), un
+tableau **date · montant · statut**, du plus récent au plus ancien, **tous statuts confondus**
+(`CustomerPaymentHistory`). Le domaine `src/domain/customer/payment.ts` porte les types et réutilise
+les formateurs déjà éprouvés de `domain/payments/transaction.ts` (US-5.2 #35) —
+`formatTransactionDateTime`/`paymentStatusLabel` — plutôt que de les dupliquer ; le badge de statut
+reprend les mêmes tons que l'historique des transactions salon (`transaction-history.tsx`). Le
+**backend reste l'autorité des montants** (`NUMERIC(12,2)` figé, devise `XOF`), le front **formate**
+seulement. Une fiche walk-in ou sans paiement affiche un **état vide explicite** (« Aucun paiement
+enregistré pour ce client ») — pas une erreur. `client_id`/`user_id`/`recorded_by`/`reference` ne sont
+**jamais** exposés (anti-oracle ADR-0026). Fetch **serveur direct** (patron `history`/`stats`, aucun
+Route Handler BFF) ; un échec **non-`not-found`** (`403`/réseau) **dégrade seulement ce panneau** (état
+neutre local) sans casser la fiche ni l'historique des visites.
+
 ### Clients — prestations préférées (#31)
 
 La page de détail `/gerant/clients/[customerId]` charge en parallèle (dans le même `Promise.all` que

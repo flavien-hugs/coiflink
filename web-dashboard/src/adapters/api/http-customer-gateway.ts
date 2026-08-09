@@ -13,6 +13,7 @@ import type {
   CustomerGateway,
   CustomerHistoryResult,
   CustomerListOptions,
+  CustomerPaymentsResult,
   CustomerStatsResult,
   GetCustomerResult,
   ListCustomersResult,
@@ -24,6 +25,7 @@ import type {
   CustomerInput,
   CustomerProfileInput,
 } from "@/src/domain/customer/customer";
+import type { PaymentHistory } from "@/src/domain/customer/payment";
 import type { CustomerServiceStats } from "@/src/domain/customer/stats";
 import type { VisitHistory } from "@/src/domain/customer/visit";
 import { resolveApiBaseUrl } from "./config";
@@ -114,6 +116,38 @@ function toHistory(payload: CustomerHistoryPayload): VisitHistory {
     lastVisitAt: payload.last_visit_at,
     totalAmount: payload.total_amount,
     currency: payload.currency,
+  };
+}
+
+// Forme du corps `CustomerPaymentHistoryResponse` renvoyé par le backend
+// (fiche client). `client_id`/`user_id`/`recorded_by`/`reference` ne sont
+// **pas** exposés (anti-oracle ADR-0026).
+interface CustomerPaymentPayload {
+  payment_id: string;
+  created_at: string;
+  amount: string;
+  currency: string;
+  status: string;
+}
+
+interface CustomerPaymentHistoryPayload {
+  customer_id: string;
+  items: CustomerPaymentPayload[];
+}
+
+// Projette la réponse backend (snake_case) sur le read model de domaine (camelCase).
+function toPaymentHistory(
+  payload: CustomerPaymentHistoryPayload,
+): PaymentHistory {
+  return {
+    customerId: payload.customer_id,
+    payments: payload.items.map((item) => ({
+      paymentId: item.payment_id,
+      createdAt: item.created_at,
+      amount: item.amount,
+      currency: item.currency,
+      status: item.status,
+    })),
   };
 }
 
@@ -324,6 +358,40 @@ export function createHttpCustomerGateway(
       if (response.status === 200) {
         const payload = (await response.json()) as CustomerHistoryPayload;
         return { ok: true, history: toHistory(payload) };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "not-found" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async payments(
+      salonId: string,
+      customerId: string,
+    ): Promise<CustomerPaymentsResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `${customersUrl(salonId)}/${encodeURIComponent(customerId)}/payments`,
+          { headers: { ...authHeader() }, cache: "no-store" },
+        );
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as CustomerPaymentHistoryPayload;
+        return { ok: true, history: toPaymentHistory(payload) };
       }
       if (response.status === 401) {
         return { ok: false, reason: "unauthenticated" };

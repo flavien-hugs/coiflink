@@ -27,6 +27,7 @@ from coiflink_api.application.customers import (
     CreateCustomer,
     CustomerCommand,
     GetCustomer,
+    GetCustomerPaymentHistory,
     GetCustomerServiceStats,
     GetCustomerVisitHistory,
     ListSalonCustomers,
@@ -44,7 +45,12 @@ from coiflink_api.domain.errors import (
     InvalidCustomerNotes,
     InvalidPhone,
 )
-from coiflink_api.domain.visit import HISTORY_STATUSES, CustomerVisit, VisitService
+from coiflink_api.domain.visit import (
+    HISTORY_STATUSES,
+    CustomerPayment,
+    CustomerVisit,
+    VisitService,
+)
 
 from .conftest import FakeAuditLog, FakeCustomerRepository
 
@@ -426,6 +432,10 @@ _DATE_OLDER = datetime.date(2026, 6, 15)
 _TIME_09 = datetime.time(9, 0, 0)
 _TIME_10 = datetime.time(10, 0, 0)
 
+_PAYMENT_ID_1 = uuid.UUID("55555555-5555-0000-0000-000000000005")
+_PAYMENT_ID_2 = uuid.UUID("66666666-6666-0000-0000-000000000006")
+_PAYMENT_CREATED_AT = datetime.datetime(2026, 7, 20, 9, 30, tzinfo=datetime.timezone.utc)
+
 
 def _make_completed_visit(
     appointment_id: uuid.UUID,
@@ -585,6 +595,81 @@ class TestGetCustomerVisitHistory:
         with pytest.raises(CustomerNotFound):
             GetCustomerVisitHistory(repo).execute(_SALON_ID, uuid.uuid4())
         assert repo.last_visits_call is None
+
+
+# ---------------------------------------------------------------------------
+# GetCustomerPaymentHistory (fiche client)
+# ---------------------------------------------------------------------------
+
+
+def _make_payment(
+    payment_id: uuid.UUID,
+    *,
+    created_at: datetime.datetime = _PAYMENT_CREATED_AT,
+    amount: str = "5000.00",
+    status: str = "VALIDATED",
+) -> CustomerPayment:
+    return CustomerPayment(
+        payment_id=payment_id,
+        created_at=created_at,
+        amount=decimal.Decimal(amount),
+        currency="XOF",
+        status=status,
+    )
+
+
+class TestGetCustomerPaymentHistory:
+    def _create_customer(
+        self, repo: FakeCustomerRepository, salon_id: uuid.UUID
+    ) -> object:
+        audit = FakeAuditLog()
+        return CreateCustomer(repo, audit).execute(
+            salon_id, CustomerCommand(full_name="Awa Koné"), actor_user_id=_ACTOR_ID
+        )
+
+    def test_raises_not_found_for_unknown_customer(self) -> None:
+        repo = FakeCustomerRepository()
+        with pytest.raises(CustomerNotFound):
+            GetCustomerPaymentHistory(repo).execute(_SALON_ID, uuid.uuid4())
+
+    def test_raises_not_found_for_customer_in_other_salon(self) -> None:
+        """Isolation §11.2 : fiche d'un autre salon indiscernable d'une inexistante."""
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _OTHER_SALON_ID)
+        with pytest.raises(CustomerNotFound):
+            GetCustomerPaymentHistory(repo).execute(_SALON_ID, customer.id)
+
+    def test_walk_in_customer_returns_empty_payments(self) -> None:
+        """Fiche walk-in (aucun paiement amorcé) → liste vide (comportement normal)."""
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        payments = GetCustomerPaymentHistory(repo).execute(_SALON_ID, customer.id)
+        assert payments == ()
+
+    def test_returns_payments_set_on_repository(self) -> None:
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        payment = _make_payment(_PAYMENT_ID_1)
+        repo.set_payments(customer.id, (payment,))
+        payments = GetCustomerPaymentHistory(repo).execute(_SALON_ID, customer.id)
+        assert payments == (payment,)
+
+    def test_all_statuses_returned_unfiltered(self) -> None:
+        """Contrairement aux visites, le use case ne filtre aucun statut de paiement."""
+        repo = FakeCustomerRepository()
+        customer = self._create_customer(repo, _SALON_ID)
+        validated = _make_payment(_PAYMENT_ID_1, status="VALIDATED")
+        pending = _make_payment(_PAYMENT_ID_2, status="PENDING")
+        repo.set_payments(customer.id, (validated, pending))
+        payments = GetCustomerPaymentHistory(repo).execute(_SALON_ID, customer.id)
+        statuses = {p.status for p in payments}
+        assert statuses == {"VALIDATED", "PENDING"}
+
+    def test_not_found_raised_before_payments_query(self) -> None:
+        """`CustomerNotFound` levée avant tout appel `list_payments` (économie de requête)."""
+        repo = FakeCustomerRepository()
+        with pytest.raises(CustomerNotFound):
+            GetCustomerPaymentHistory(repo).execute(_SALON_ID, uuid.uuid4())
 
 
 # ---------------------------------------------------------------------------
