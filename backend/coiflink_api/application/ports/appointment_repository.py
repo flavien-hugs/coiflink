@@ -27,6 +27,7 @@ from coiflink_api.domain.appointment import (
 )
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.client_segments import ClientVisitProfile
+from coiflink_api.domain.dashboard import InProgressService
 from coiflink_api.domain.hairdresser_performance import HairdresserActivityCounts
 from coiflink_api.domain.service_demand import ServiceDemand
 
@@ -227,6 +228,83 @@ class AppointmentRepository(Protocol):
         défense en profondeur de la garde HTTP `require_salon_scope` : la lecture ne
         peut jamais compter un RDV d'un autre salon. L'index `ix_appointments_salon_id
         (salon_id, appointment_date)` couvre le filtre.
+        """
+        ...
+
+    def count_by_status_in_range(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        statuses: tuple[str, ...],
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> Mapping[str, int]:
+        """Décompte des RDV du salon **par statut** sur une plage de dates (#148).
+
+        Miroir « plage » de `count_by_status_for_day` (#39) : renvoie `{status: count}`
+        pour les RDV dont `appointment_date` est dans `[date_from, date_to]`
+        **inclus** et dont `status ∈ statuses`, agrégés **en base** (`GROUP BY status`).
+        Base du KPI « clients en attente » (`statuses=("PENDING",)`) et de son évolution
+        (appelé sur la période **et** la période précédente). Un statut sans RDV est
+        **absent** de la map (le cas d'usage retombe sur `0`). L'isolation §11.2 est
+        imposée **en SQL** (`WHERE salon_id`) ; la lecture ne rapatrie **aucune** ligne
+        ni PII (pas de `client_id`). Lecture pure.
+        """
+        ...
+
+    def count_distinct_completed_clients(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        statuses: tuple[str, ...],
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> int:
+        """Nombre de **comptes distincts** ayant un RDV réalisé sur la période (#148).
+
+        `COUNT(DISTINCT client_id)` des RDV du salon dont `status ∈ statuses` (le cas
+        d'usage impose `HISTORY_STATUSES` — RDV `COMPLETED`, une « visite » §8.1) et dont
+        `appointment_date` est dans `[date_from, date_to]` **inclus**. Base du KPI
+        « nombre de clientes » et de son évolution (période **et** période précédente).
+        Le `client_id` est **compté mais jamais émis** (anti-oracle §11.1/§11.3) : seul
+        un entier quitte la base. L'isolation §11.2 est imposée **en SQL**
+        (`WHERE salon_id`). Lecture pure.
+        """
+        ...
+
+    def attendance_series(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> Mapping[datetime.date, int]:
+        """Fréquentation du salon **par jour civil** sur la période (graphique, #148).
+
+        Renvoie `{appointment_date: count}` — nombre de RDV du salon (tous statuts) par
+        jour, agrégé **en base** (`GROUP BY appointment_date`). Un jour sans RDV est
+        **absent** de la map (le domaine `build_series` le complète à `0` pour un axe
+        continu). L'isolation §11.2 est imposée **en SQL** (`WHERE salon_id`) ; la
+        lecture ne rapatrie **aucune** ligne ni PII — seulement `(jour, compte)`. L'index
+        `ix_appointments_salon_id (salon_id, appointment_date)` couvre le filtre. Lecture
+        pure.
+        """
+        ...
+
+    def list_in_progress_details(
+        self, salon_id: uuid.UUID, *, now: datetime.datetime
+    ) -> tuple[InProgressService, ...]:
+        """RDV `CONFIRMED` **en cours maintenant**, enrichis des noms d'affichage (#148).
+
+        Un RDV est « en cours » si son créneau `[date+start, date+end)` **contient**
+        `now` (naïf, fuseau salon `Africa/Abidjan` = UTC+0) — dérivation `is_in_progress`
+        appliquée **en SQL** (`date+start <= now < date+end`), sans statut nouveau ni
+        colonne d'horodatage. Résout, par jointures **contraintes au salon**, les
+        **noms d'affichage** du client (`users.full_name`), de la/des prestation(s)
+        (`services.name`) et du coiffeur assigné (`users.full_name`, LEFT) — **jamais**
+        `client_id`/`user_id` ni contact (patron #43/#36). L'isolation §11.2 est imposée
+        **en SQL** (`WHERE appointments.salon_id`), en défense en profondeur de la garde
+        HTTP. Trié par `start_time` croissant. Lecture pure.
         """
         ...
 

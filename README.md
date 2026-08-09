@@ -353,7 +353,15 @@ dérivent **du planning** (`appointments` assignés), le CA dérive **de la cais
 **nominatif** — il émet le nom d'affichage de l'employé (`users.full_name`, convention #34), **jamais** son
 contact ni aucune PII client (§11.3, voir
 [ADR-0031](./docs/adr/0031-performance-des-coiffeurs.md)). Le dashboard `/gerant` ajoute un panneau
-**« Performance des coiffeurs »** (une ligne par coiffeur) **sous** les clients actifs. Les **KPI
+**« Performance des coiffeurs »** (une ligne par coiffeur) **sous** les clients actifs. Le **Dashboard
+Manager — activité du salon** (#148, §7.2) est livré : un écran d'activité consolidé au-dessus de
+l'Épic 6 — quatre **cartes KPI** avec évolution (clients en attente, prestations en cours, chiffre
+d'affaires, nombre de clientes), un **filtre de période** unifié (aujourd'hui/semaine/mois/
+personnalisée), deux **graphiques SVG** (CA, fréquentation), la **liste des prestations en cours**, une
+**timeline des dernières activités** et des **alertes importantes** — **entièrement dérivé en lecture**
+(« en cours » = `CONFIRMED` ∩ `slot @> now`, « en attente » = `PENDING`, **aucune** migration ni nouveau
+statut) et **auto-actualisé** (polling visibility-aware, jeton jamais exposé), voir
+[ADR-0039](./docs/adr/0039-dashboard-manager-activite-salon.md). Les **KPI
 globaux de la plateforme** (#44, US-6.6) sont livrés côté backend : `GET /admin/kpis` renvoie un
 **instantané unique** (non paginé) de **scalaires globaux consolidés** sur toute la plateforme —
 **salons inscrits** (`salons_total`) et **actifs** (`salons_active`), **clients inscrits**

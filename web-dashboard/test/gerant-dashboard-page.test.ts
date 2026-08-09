@@ -16,6 +16,10 @@ vi.mock("next/headers", () => ({
   cookies: vi.fn(),
 }));
 
+vi.mock("next/navigation", () => ({
+  useRouter: vi.fn(() => ({ refresh: vi.fn() })),
+}));
+
 import { cookies } from "next/headers";
 import GerantDashboardPage from "../app/(gerant)/gerant/page";
 import { SESSION_COOKIE } from "../src/adapters/api/session-cookie-names";
@@ -55,6 +59,121 @@ const FAKE_REVENUE = {
   week: { date_from: "2026-07-27", date_to: "2026-08-02", total: "210000.00" },
   month: { date_from: "2026-08-01", date_to: "2026-08-31", total: "185000.00" },
 };
+
+// Corps des lectures d'activité (#148, snake_case) : KPI, séries, prestations en cours,
+// timeline et alertes. Les chemins de succès de l'écran d'activité doivent les stubber,
+// sinon les mappers dégradent chaque panneau en état d'erreur (aucune assertion positive).
+const FAKE_KPIS = {
+  period: { kind: "today", date_from: todayIso(), date_to: todayIso() },
+  waiting_clients: { current: 3, previous: 1, delta: 2, direction: "up" },
+  in_progress: { current: 2 },
+  revenue: {
+    current: "45000.00",
+    previous: "30000.00",
+    delta: "15000.00",
+    direction: "up",
+    currency: "XOF",
+  },
+  clients_count: { current: 7, previous: 7, delta: 0, direction: "flat" },
+};
+
+const FAKE_REVENUE_SERIES = {
+  currency: "XOF",
+  date_from: todayIso(),
+  date_to: todayIso(),
+  buckets: [{ bucket_start: todayIso(), bucket_end: todayIso(), total: "45000.00" }],
+};
+
+const FAKE_ATTENDANCE_SERIES = {
+  date_from: todayIso(),
+  date_to: todayIso(),
+  buckets: [{ bucket_start: todayIso(), bucket_end: todayIso(), count: 4 }],
+};
+
+const FAKE_IN_PROGRESS = {
+  as_of: `${todayIso()}T10:00:00Z`,
+  items: [
+    {
+      appointment_id: "apt-dash-1",
+      client_name: "Awa K.",
+      service_names: ["Tresses"],
+      hairdresser_name: "Fatou",
+      start_time: "14:00:00",
+      end_time: "15:00:00",
+      status: "CONFIRMED",
+    },
+  ],
+};
+
+const FAKE_ACTIVITY = {
+  items: [
+    {
+      occurred_at: `${todayIso()}T09:30:00Z`,
+      kind: "payment",
+      label: "Paiement enregistré",
+      amount: "5000.00",
+      client_name: "Awa K.",
+      currency: "XOF",
+    },
+  ],
+};
+
+const FAKE_ALERTS = {
+  items: [{ kind: "late", severity: "warning", count: 2 }],
+};
+
+// Socle analytique #41/#42/#43 : stubs minimaux (état vide légitime) pour que la page se
+// charge entièrement sans URL non stubbée sur le chemin de succès de l'écran d'activité.
+const FAKE_SERVICE_DEMAND = {
+  currency: "XOF",
+  date_from: null,
+  date_to: null,
+  by_volume: [],
+  by_revenue: [],
+};
+
+const FAKE_ACTIVE_CLIENTS = {
+  date_from: todayIso(),
+  date_to: todayIso(),
+  new: 0,
+  recurring: 0,
+  inactive: 0,
+  active: 0,
+};
+
+const FAKE_HAIRDRESSER_PERF = {
+  currency: "XOF",
+  date_from: todayIso(),
+  date_to: todayIso(),
+  hairdressers: [],
+};
+
+// Jeu complet de handlers d'un écran d'activité **peuplé** (#148) : socle requis
+// (#39/#40) + lectures d'activité + socle analytique détaillé, tous en 200.
+function fullActivityStubs() {
+  return [
+    { match: "/salons", status: 200, body: [FAKE_SALON] },
+    {
+      match: "daily-summary",
+      status: 200,
+      body: {
+        date: todayIso(),
+        total: 3,
+        by_status: { PENDING: 1, CONFIRMED: 2, CANCELLED: 0, COMPLETED: 0, NO_SHOW: 0 },
+      },
+    },
+    { match: "revenue/summary", status: 200, body: FAKE_REVENUE },
+    { match: "service-demand", status: 200, body: FAKE_SERVICE_DEMAND },
+    { match: "active-clients", status: 200, body: FAKE_ACTIVE_CLIENTS },
+    { match: "hairdresser-performance", status: 200, body: FAKE_HAIRDRESSER_PERF },
+    { match: "dashboard/kpis", status: 200, body: FAKE_KPIS },
+    { match: "dashboard/revenue-series", status: 200, body: FAKE_REVENUE_SERIES },
+    { match: "dashboard/attendance-series", status: 200, body: FAKE_ATTENDANCE_SERIES },
+    { match: "dashboard/in-progress", status: 200, body: FAKE_IN_PROGRESS },
+    { match: "dashboard/activity", status: 200, body: FAKE_ACTIVITY },
+    { match: "dashboard/alerts", status: 200, body: FAKE_ALERTS },
+  ];
+}
 
 type MockStore = {
   get: ReturnType<typeof vi.fn>;

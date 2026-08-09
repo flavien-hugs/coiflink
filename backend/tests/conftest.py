@@ -762,6 +762,12 @@ class FakeNotificationRepository:
     def __init__(self) -> None:
         self.enqueued: list = []
         self.cancel_calls: list = []
+        # Notifications salon pré-chargées pour `list_for_salon` (#148).
+        self.salon_notifications: tuple = ()
+
+    def list_for_salon(self, salon_id, *, limit):  # type: ignore[no-untyped-def]
+        """Lecture salon des notifications (timeline d'activité, #148)."""
+        return tuple(self.salon_notifications[:limit])
 
     def enqueue(self, notification) -> None:  # type: ignore[no-untyped-def]
         self.enqueued.append(notification)
@@ -824,6 +830,9 @@ class FakeAppointmentRepository:
         # Résultats configurables pour `performance_by_hairdresser` (US-6.5 #43).
         self.performance_results: tuple = ()
         self.performance_by_hairdresser_calls: list[dict] = []
+        # Résultats configurables pour `list_in_progress_details` (dashboard #148).
+        self.in_progress_details: tuple = ()
+        self.list_in_progress_details_calls: list[dict] = []
         self._appointments: dict = {}
         for appt in (appointments or []):
             self._appointments[appt.id] = appt
@@ -1083,6 +1092,67 @@ class FakeAppointmentRepository:
             if appt.salon_id == salon_id and appt.date == day:
                 counts[appt.status] = counts.get(appt.status, 0) + 1
         return counts
+
+    def count_by_status_in_range(  # type: ignore[no-untyped-def]
+        self, salon_id, *, statuses, date_from, date_to
+    ):
+        """Décompte des RDV du salon par statut sur une plage (dashboard #148).
+
+        Refiltre `salon_id` + plage + `statuses` (isolation §11.2) — miroir du SQL.
+        """
+        counts: dict = {}
+        for appt in self._appointments.values():
+            if (
+                appt.salon_id == salon_id
+                and date_from <= appt.date <= date_to
+                and appt.status in statuses
+            ):
+                counts[appt.status] = counts.get(appt.status, 0) + 1
+        return counts
+
+    def count_distinct_completed_clients(  # type: ignore[no-untyped-def]
+        self, salon_id, *, statuses, date_from, date_to
+    ):
+        """Comptes distincts avec un RDV réalisé sur la période (dashboard #148).
+
+        `client_id` est compté **jamais émis** — seul l'entier quitte le fake.
+        """
+        return len({
+            appt.client_id
+            for appt in self._appointments.values()
+            if (
+                appt.salon_id == salon_id
+                and date_from <= appt.date <= date_to
+                and appt.status in statuses
+            )
+        })
+
+    def attendance_series(  # type: ignore[no-untyped-def]
+        self, salon_id, *, date_from, date_to
+    ):
+        """Fréquentation par jour civil du salon (graphique, dashboard #148).
+
+        Retourne `{appointment_date: count}` — tous statuts, isolation §11.2.
+        """
+        counts: dict = {}
+        for appt in self._appointments.values():
+            if appt.salon_id == salon_id and date_from <= appt.date <= date_to:
+                counts[appt.date] = counts.get(appt.date, 0) + 1
+        return counts
+
+    def list_in_progress_details(  # type: ignore[no-untyped-def]
+        self, salon_id, *, now
+    ):
+        """Retourne `in_progress_details` (préconfiguré) et enregistre l'appel (#148).
+
+        Le fake ne ré-agrège pas depuis `_appointments` : les tests configurent
+        `in_progress_details` (tuple d'`InProgressService`) directement. L'isolation
+        SQL réelle et les joins de noms sont testés en e2e.
+        """
+        self.list_in_progress_details_calls.append(
+            {"salon_id": salon_id, "now": now}
+        )
+        return self.in_progress_details
 
     def demand_by_service(  # type: ignore[no-untyped-def]
         self, salon_id, *, statuses, date_from=None, date_to=None
@@ -1549,6 +1619,8 @@ class FakeCashJournalRepository:
         # CA net attribué par coiffeur, préconfigurable (US-6.5 #43) — `{uuid: Decimal}`.
         self.net_by_hairdresser: dict = {}
         self.net_revenue_by_hairdresser_calls: list[dict] = []
+        # Série CA préconfigurable par jour (dashboard #148) — `{date: Decimal}`.
+        self.revenue_series_data: dict = {}
 
     def append(self, entry):  # type: ignore[no-untyped-def]
         from coiflink_api.domain.cash_journal import CashJournalEntry
@@ -1590,6 +1662,16 @@ class FakeCashJournalRepository:
         fake plus spécialisé (`FakeRevenueCashJournalRepository`).
         """
         return decimal.Decimal("0.00")
+
+    def net_revenue_series(  # type: ignore[no-untyped-def]
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ):
+        """CA net par jour civil (série, fake : `revenue_series_data` préconfiguré, #148)."""
+        return dict(self.revenue_series_data)
 
     def net_revenue_by_hairdresser(  # type: ignore[no-untyped-def]
         self,

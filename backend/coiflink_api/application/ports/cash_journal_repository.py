@@ -85,6 +85,28 @@ class CashJournalRepository(Protocol):
         """
         ...
 
+    def net_revenue_series(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> Mapping[datetime.date, decimal.Decimal]:
+        """CA net du salon **par jour civil** sur la période (graphique d'évolution, #148).
+
+        Variante « série » de `net_revenue_between` : renvoie `{jour: net_amount}` — la
+        somme **signée** des lignes `cash_journal` `PAYMENT`/`ADJUSTMENT` du salon,
+        regroupée par **jour civil** `Africa/Abidjan` (UTC+0 : `date(created_at)` = le
+        jour civil, aucune conversion). Ne conserve que les lignes dont `created_at` est
+        dans `[jour_début_utc(date_from), jour_fin_utc(date_to)]`. CA **net des
+        corrections** (#34), cohérent avec #40. Un jour sans opération est **absent** de
+        la map (le domaine `build_series` le complète à `0.00` pour un axe continu).
+        Isolation §11.2 **imposée en SQL** (`WHERE salon_id`), couverte par
+        `ix_cash_journal_salon_id`. `Decimal` quantifié au centime, **aucune** PII.
+        Lecture pure (aucun `flush`).
+        """
+        ...
+
     def net_revenue_by_hairdresser(
         self,
         salon_id: uuid.UUID,

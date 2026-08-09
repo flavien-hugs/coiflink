@@ -21,9 +21,10 @@ import decimal
 import uuid
 from collections.abc import Mapping
 
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import case, cast, delete, func, select
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.appointment import (
@@ -34,6 +35,7 @@ from coiflink_api.domain.appointment import (
 )
 from coiflink_api.domain.availability import SlotRange
 from coiflink_api.domain.client_segments import ClientVisitProfile
+from coiflink_api.domain.dashboard import InProgressService
 from coiflink_api.domain.enums import AppointmentStatus
 from coiflink_api.domain.errors import (
     AppointmentNotCancellable,
@@ -478,6 +480,164 @@ class SqlAppointmentRepository:
             .group_by(models.Appointment.status)
         ).all()
         return {status: count for status, count in rows}
+
+    def count_by_status_in_range(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        statuses: tuple[str, ...],
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> Mapping[str, int]:
+        """Décompte `GROUP BY status` des RDV du salon sur `[date_from, date_to]` (#148).
+
+        Miroir « plage » de `count_by_status_for_day`. L'isolation §11.2 est ré-affirmée
+        **en SQL** (`salon_id = :salon_id`) ; le filtre `status IN statuses` est **décidé
+        serveur** (le KPI « en attente » impose `PENDING`). La lecture **agrège en base**
+        et ne rapatrie **aucune** ligne ni PII — seulement `(status, count)`. L'index
+        `ix_appointments_salon_id (salon_id, appointment_date)` couvre le filtre.
+        """
+
+        rows = self._session.execute(
+            select(models.Appointment.status, func.count())
+            .where(
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.status.in_(statuses),
+                models.Appointment.appointment_date.between(date_from, date_to),
+            )
+            .group_by(models.Appointment.status)
+        ).all()
+        return {status: count for status, count in rows}
+
+    def count_distinct_completed_clients(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        statuses: tuple[str, ...],
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> int:
+        """`COUNT(DISTINCT client_id)` des RDV réalisés du salon sur la période (#148).
+
+        Le `client_id` est **compté mais jamais sélectionné** (anti-oracle §11.1/§11.3) :
+        seul un entier quitte la base. `status IN statuses` est **décidé serveur** (le
+        KPI « nombre de clientes » impose `COMPLETED`). Isolation §11.2 ré-affirmée
+        **en SQL** ; agrégat en base, aucune ligne ni PII rapatriée. L'index
+        `ix_appointments_salon_id` couvre le filtre. Lecture pure.
+        """
+
+        stmt = (
+            select(func.count(func.distinct(models.Appointment.client_id)))
+            .where(
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.status.in_(statuses),
+                models.Appointment.appointment_date.between(date_from, date_to),
+            )
+        )
+        return int(self._session.scalar(stmt) or 0)
+
+    def attendance_series(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> Mapping[datetime.date, int]:
+        """Fréquentation du salon **par jour civil** (`GROUP BY appointment_date`, #148).
+
+        Compte les RDV du salon (tous statuts) par jour dans `[date_from, date_to]`
+        **inclus**. Un jour sans RDV est **absent** de la map (le domaine `build_series`
+        le complète à `0`). Isolation §11.2 ré-affirmée **en SQL** ; agrégat en base,
+        aucune ligne ni PII. L'index `ix_appointments_salon_id (salon_id,
+        appointment_date)` couvre le filtre. Lecture pure.
+        """
+
+        rows = self._session.execute(
+            select(models.Appointment.appointment_date, func.count())
+            .where(
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.appointment_date.between(date_from, date_to),
+            )
+            .group_by(models.Appointment.appointment_date)
+        ).all()
+        return {day: int(count) for day, count in rows}
+
+    def list_in_progress_details(
+        self, salon_id: uuid.UUID, *, now: datetime.datetime
+    ) -> tuple[InProgressService, ...]:
+        """RDV `CONFIRMED` **en cours** (`slot @> now`), enrichis des noms (#148).
+
+        Un RDV est « en cours » si la colonne générée `slot` (TSRANGE `[start, end)`)
+        **contient** `now` (naïf, fuseau salon `Africa/Abidjan` = UTC+0) — la dérivation
+        `is_in_progress` appliquée **en SQL**, sans statut ni horodatage nouveau. Deux
+        lectures bornées (patron `performance_by_hairdresser`) : d'abord les RDV en cours
+        avec le **nom d'affichage** du client (`users`) et du coiffeur (`users`, LEFT) ;
+        puis, séparément, les **noms de prestation** (`services.name`) par RDV, pour ne
+        pas dupliquer les lignes via le join un-à-plusieurs `appointment_services`. Émet
+        **uniquement** des noms d'affichage (jamais `client_id`/`user_id`/contact, patron
+        #43/#36). Isolation §11.2 ré-affirmée **en SQL** (`WHERE appointments.salon_id`).
+        Trié `start_time` croissant. Lecture pure.
+        """
+
+        client = aliased(models.User)
+        hairdresser = aliased(models.User)
+        now_ts = cast(now, TIMESTAMP(timezone=False))
+        rows = self._session.execute(
+            select(
+                models.Appointment.id,
+                client.full_name.label("client_name"),
+                hairdresser.full_name.label("hairdresser_name"),
+                models.Appointment.start_time,
+                models.Appointment.end_time,
+                models.Appointment.status,
+            )
+            .outerjoin(client, client.id == models.Appointment.client_id)
+            .outerjoin(
+                hairdresser, hairdresser.id == models.Appointment.hairdresser_id
+            )
+            .where(
+                models.Appointment.salon_id == salon_id,
+                models.Appointment.status == AppointmentStatus.CONFIRMED.value,
+                models.Appointment.slot.op("@>")(now_ts),
+            )
+            .order_by(
+                models.Appointment.start_time.asc(),
+                models.Appointment.id.asc(),
+            )
+        ).all()
+        if not rows:
+            return ()
+
+        appointment_ids = [row.id for row in rows]
+        service_rows = self._session.execute(
+            select(models.AppointmentService.appointment_id, models.Service.name)
+            .join(
+                models.Service,
+                (models.Service.id == models.AppointmentService.service_id)
+                & (models.Service.salon_id == models.AppointmentService.salon_id),
+            )
+            .where(
+                models.AppointmentService.salon_id == salon_id,
+                models.AppointmentService.appointment_id.in_(appointment_ids),
+            )
+            .order_by(models.Service.name.asc())
+        ).all()
+        names_by_appointment: dict[uuid.UUID, list[str]] = {}
+        for appointment_id, name in service_rows:
+            names_by_appointment.setdefault(appointment_id, []).append(name)
+
+        return tuple(
+            InProgressService(
+                appointment_id=str(row.id),
+                client_name=row.client_name,
+                service_names=tuple(names_by_appointment.get(row.id, ())),
+                hairdresser_name=row.hairdresser_name,
+                start_time=row.start_time,
+                end_time=row.end_time,
+                status=row.status,
+            )
+            for row in rows
+        )
 
     def demand_by_service(
         self,

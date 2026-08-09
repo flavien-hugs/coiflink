@@ -34,11 +34,22 @@ isolation §11.2) :
   **nominatif** : il émet le `hairdresser_id` + le **nom d'affichage** de l'employé
   (`users.full_name`, convention #34), jamais son contact.
 
+- **`GET /salons/{salon_id}/dashboard/…`** — **Dashboard Manager · activité du salon**
+  (§7.2, #148), garde `STATS_READ_SALON`. Consolide, au-dessus du socle #39–#43, un
+  écran d'activité « temps réel » sur données **réelles** (aucun mock) : `dashboard/kpis`
+  (4 KPI + évolution), `dashboard/revenue-series` / `dashboard/attendance-series` (deux
+  graphiques), `dashboard/in-progress` (prestations en cours, noms d'affichage),
+  `dashboard/activity` (timeline des faits horodatés) et `dashboard/alerts` (alertes
+  dérivées). Filtre de période unifié (`today`/`week`/`month`/`custom`) résolu **côté
+  serveur** ; « en cours » **dérivé** (`CONFIRMED` ∩ `slot @> now`), « en attente » =
+  RDV `PENDING` — **aucun** statut ni migration nouveaux (spec/ADR-0039).
+
 **Router `stats` dédié (spec §Open Questions 6).** Cette surface porte la permission
 `STATS_READ_SALON` (statistiques du salon), distincte de la caisse
 (`PAYMENT_RECORD`/`CASH_JOURNAL_READ`, servie par `payments.py`). `STATS_READ_SALON` a
-désormais **cinq** consommateurs : RDV du jour (#39), CA (#40), prestations les plus
-demandées (#41), clients actifs (#42) et performance des coiffeurs (#43).
+désormais **six** consommateurs : RDV du jour (#39), CA (#40), prestations les plus
+demandées (#41), clients actifs (#42), performance des coiffeurs (#43) et le tableau de
+bord d'activité (#148, six routes `dashboard/*`).
 
 **Non-PII (§11.3), lecture pure.** Les réponses ne portent **que** des montants
 (`Decimal` en chaîne), des compteurs, des libellés de prestation, des dates et une
@@ -69,6 +80,12 @@ from coiflink_api.adapters.outbound.persistence.appointment_repository import (
 from coiflink_api.adapters.outbound.persistence.cash_journal_repository import (
     SqlCashJournalEntryRepository,
 )
+from coiflink_api.adapters.outbound.persistence.notification_repository import (
+    SqlNotificationRepository,
+)
+from coiflink_api.adapters.outbound.persistence.payment_repository import (
+    SqlPaymentRepository,
+)
 from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.application.ports.appointment_repository import (
     AppointmentRepository,
@@ -76,7 +93,22 @@ from coiflink_api.application.ports.appointment_repository import (
 from coiflink_api.application.ports.cash_journal_repository import (
     CashJournalRepository,
 )
+from coiflink_api.application.ports.notification_repository import (
+    NotificationRepository,
+)
+from coiflink_api.application.ports.payment_repository import PaymentRepository
 from coiflink_api.application.client_segments import SummarizeActiveClients
+from coiflink_api.application.dashboard import (
+    ACTIVITY_LIMIT_DEFAULT,
+    ACTIVITY_LIMIT_MAX,
+    ACTIVITY_LIMIT_MIN,
+    ListDashboardAlerts,
+    ListInProgressServices,
+    ListRecentActivity,
+    SummarizeAttendanceSeries,
+    SummarizeDashboardKpis,
+    SummarizeRevenueSeries,
+)
 from coiflink_api.application.hairdresser_performance import (
     SummarizeHairdresserPerformance,
 )
@@ -84,10 +116,21 @@ from coiflink_api.application.revenue import SummarizeRevenue
 from coiflink_api.application.service_demand import SummarizeServiceDemand
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.client_segments import ClientSegments
+from coiflink_api.domain.dashboard import (
+    ActivityEvent,
+    Alert,
+    DashboardKpis,
+    Evolution,
+    InProgressService,
+    SeriesBucket,
+    resolve_period,
+)
+from coiflink_api.domain.errors import InvalidDashboardPeriod
 from coiflink_api.domain.hairdresser_performance import (
     HairdresserPerformance,
     HairdresserPerformanceReport,
 )
+from coiflink_api.domain.payment import DEFAULT_CURRENCY
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
 from coiflink_api.domain.revenue import (
@@ -235,6 +278,222 @@ class HairdresserPerformanceResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Schémas Pydantic — **Dashboard Manager · activité du salon** (#148).
+#
+# Toutes les réponses `dashboard/*` sont **explicites** (jamais `orm_mode`/`extra`).
+# Les endpoints de compteurs/montants/séries (`kpis`, `revenue-series`,
+# `attendance-series`) ne portent **aucune** PII ; les vues opérationnelles
+# (`in-progress`, `activity`, `alerts`) n'émettent que des **noms d'affichage**
+# maîtrisés (`users.full_name`/`services.name`, patron #43/#36) — jamais `client_id`,
+# contact, ni ligne de RDV/paiement. Montants en `Decimal` (chaîne, `NUMERIC(12,2)`).
+# --------------------------------------------------------------------------- #
+class DashboardPeriodResponse(BaseModel):
+    """Période **résolue** du tableau de bord : genre + bornes de jour civil (#148).
+
+    `kind` échoie le genre demandé (`today`/`week`/`month`/`custom`) ;
+    `date_from`/`date_to` sont les bornes **inclusives** résolues côté serveur
+    (`Africa/Abidjan`, UTC+0). **Aucune PII.**
+    """
+
+    kind: str = Field(examples=["today"])
+    date_from: datetime.date = Field(examples=["2026-08-07"])
+    date_to: datetime.date = Field(examples=["2026-08-07"])
+
+
+class EvolutionCountResponse(BaseModel):
+    """Évolution d'un **compteur** (KPI) vs période précédente de même longueur (#148).
+
+    `current`/`previous` sont des entiers ; `delta = current - previous` ; `direction`
+    vaut `up`/`down`/`flat` (autorité serveur — le front n'a rien à recalculer).
+    **Aucune PII** (compteurs seuls).
+    """
+
+    current: int = Field(examples=[3])
+    previous: int = Field(examples=[5])
+    delta: int = Field(examples=[-2])
+    direction: str = Field(examples=["down"])
+
+
+class InProgressCountResponse(BaseModel):
+    """Compteur **instantané** des prestations en cours **maintenant** (#148).
+
+    Pas d'évolution (l'issue ne liste que « nombre actuel ») : la valeur est un
+    « maintenant » dérivé (`CONFIRMED` ∩ créneau contenant l'instant présent).
+    """
+
+    current: int = Field(examples=[2])
+
+
+class EvolutionMoneyResponse(BaseModel):
+    """Évolution d'un **montant** (chiffre d'affaires) vs période précédente (#148).
+
+    `current`/`previous`/`delta` sont des `Decimal` sérialisés en **chaîne**
+    (`NUMERIC(12,2)`, jamais un flottant) ; ils **peuvent être négatifs** (corrections
+    #34). `direction` vaut `up`/`down`/`flat`. `currency` = devise unique (XOF).
+    **Aucune PII.**
+    """
+
+    current: decimal.Decimal = Field(examples=["125000.00"])
+    previous: decimal.Decimal = Field(examples=["98000.00"])
+    delta: decimal.Decimal = Field(examples=["27000.00"])
+    direction: str = Field(examples=["up"])
+    currency: str = Field(examples=["XOF"])
+
+
+class DashboardKpisResponse(BaseModel):
+    """Les **4 cartes KPI** du tableau de bord d'activité (#148) — counts-only.
+
+    `waiting_clients` (RDV `PENDING` sur la période), `revenue` (net `cash_journal`)
+    et `clients_count` (comptes distincts `COMPLETED`) portent leur **évolution** vs la
+    période précédente ; `in_progress` est un **instantané** (sans évolution). Ne porte
+    que des compteurs, un montant, une devise et des dates (§11.3) : **jamais** de
+    `client_id`, nom, téléphone, ni ligne de RDV/paiement.
+    """
+
+    period: DashboardPeriodResponse
+    waiting_clients: EvolutionCountResponse
+    in_progress: InProgressCountResponse
+    revenue: EvolutionMoneyResponse
+    clients_count: EvolutionCountResponse
+
+
+class RevenueSeriesBucketResponse(BaseModel):
+    """Un point de la série d'**évolution du CA** : bornes de jour + net (#148).
+
+    `total` est le net `cash_journal` (`PAYMENT`/`ADJUSTMENT`) du jour, `Decimal` en
+    **chaîne** ; les jours vides valent `"0.00"` (axe continu). **Aucune PII.**
+    """
+
+    bucket_start: datetime.date = Field(examples=["2026-08-07"])
+    bucket_end: datetime.date = Field(examples=["2026-08-07"])
+    total: decimal.Decimal = Field(examples=["35000.00"])
+
+
+class RevenueSeriesResponse(BaseModel):
+    """Série temporelle du **chiffre d'affaires** du salon (graphique, #148).
+
+    `buckets` = un point par **jour civil** de la période (jours vides à `"0.00"`),
+    pour un axe continu. Ne porte que des dates, des montants (chaînes décimales) et la
+    devise (§11.3) : **aucune PII**.
+    """
+
+    currency: str = Field(examples=["XOF"])
+    date_from: datetime.date = Field(examples=["2026-08-01"])
+    date_to: datetime.date = Field(examples=["2026-08-07"])
+    buckets: list[RevenueSeriesBucketResponse]
+
+
+class AttendanceSeriesBucketResponse(BaseModel):
+    """Un point de la série de **fréquentation** : bornes de jour + nombre de RDV (#148).
+
+    `count` = nombre de RDV du salon (tous statuts) du jour ; les jours vides valent
+    `0` (axe continu). **Aucune PII** (compteur seul).
+    """
+
+    bucket_start: datetime.date = Field(examples=["2026-08-07"])
+    bucket_end: datetime.date = Field(examples=["2026-08-07"])
+    count: int = Field(examples=[12])
+
+
+class AttendanceSeriesResponse(BaseModel):
+    """Série temporelle de la **fréquentation** du salon (graphique, #148).
+
+    `buckets` = un point par **jour civil** de la période (jours vides à `0`). Ne porte
+    que des dates et des compteurs (§11.3) : **aucune PII**.
+    """
+
+    date_from: datetime.date = Field(examples=["2026-08-01"])
+    date_to: datetime.date = Field(examples=["2026-08-07"])
+    buckets: list[AttendanceSeriesBucketResponse]
+
+
+class InProgressItemResponse(BaseModel):
+    """Une prestation **en cours maintenant** (liste opérationnelle, #148).
+
+    Émet **uniquement** des **noms d'affichage** (`client_name`, `service_names`,
+    `hairdresser_name` = `users.full_name`/`services.name`, patron #43/#36) — **jamais**
+    `client_id`/`user_id` ni contact. `status` vaut toujours `CONFIRMED` au MVP
+    (« en cours » est **dérivé**, pas stocké), renvoyé pour transparence.
+    """
+
+    appointment_id: str = Field(examples=["7c9e6679-7425-40de-944b-e07fc1f90ae7"])
+    client_name: str | None = Field(default=None, examples=["Awa Koné"])
+    service_names: list[str] = Field(examples=[["Coupe femme", "Coloration"]])
+    hairdresser_name: str | None = Field(default=None, examples=["Fatou D."])
+    start_time: datetime.time = Field(examples=["14:00:00"])
+    end_time: datetime.time = Field(examples=["15:30:00"])
+    status: str = Field(examples=["CONFIRMED"])
+
+
+class InProgressResponse(BaseModel):
+    """Liste des prestations **en cours maintenant** du salon (#148).
+
+    `as_of` = instant de la lecture (`Africa/Abidjan`) ; `items` = les RDV `CONFIRMED`
+    dont le créneau contient cet instant, triés par heure de début. N'émet que des
+    **noms d'affichage** maîtrisés — jamais `client_id`/contact (§11.3). Liste **vide**
+    si aucune prestation en cours (état légitime).
+    """
+
+    as_of: datetime.datetime = Field(examples=["2026-08-07T14:32:00+00:00"])
+    items: list[InProgressItemResponse]
+
+
+class ActivityItemResponse(BaseModel):
+    """Un évènement de la timeline « Transactions récentes » (§7.2), horodaté (#148).
+
+    Borné aux faits **réellement horodatés** (`payment`/`new_booking`/`cancellation`/
+    `appointment_update`). `amount`/`client_name`/`currency` ne sont portés que par les
+    **paiements** (nom d'affichage maîtrisé, patron #36) ; les autres genres portent un
+    `label` **neutre** (message templaté sans PII, ADR-0006). « Arrivée cliente / début
+    / fin de prestation » **ne figurent pas** (aucune source, §148 Non-Goals).
+    """
+
+    occurred_at: datetime.datetime = Field(examples=["2026-08-07T14:05:00+00:00"])
+    kind: str = Field(examples=["payment"])
+    label: str = Field(examples=["Paiement enregistré"])
+    amount: decimal.Decimal | None = Field(default=None, examples=["15000.00"])
+    client_name: str | None = Field(default=None, examples=["Awa Koné"])
+    currency: str | None = Field(default=None, examples=["XOF"])
+
+
+class ActivityResponse(BaseModel):
+    """Timeline « Transactions récentes » (§7.2) — faits horodatés, top-N (#148).
+
+    `items` = flux **fusionné, trié par horodatage décroissant et borné** (paiements +
+    notifications salon `NEW_BOOKING`/`CANCELLATION`/`APPOINTMENT_UPDATE`). N'émet que
+    des libellés neutres et, pour les paiements, un montant + un nom d'affichage
+    (§11.3). Liste **vide** si aucune activité récente (état légitime).
+    """
+
+    items: list[ActivityItemResponse]
+
+
+class AlertItemResponse(BaseModel):
+    """Une alerte importante (§7.2) **dérivée** de faits réels, counts-first (#148).
+
+    `kind` : `payment_anomaly` (écart de caisse #36), `late` (RDV `CONFIRMED` dont le
+    créneau est passé sans clôture) ou `prolonged_wait` (RDV `PENDING` du jour dont le
+    début est dépassé). `severity` = `info`/`warning`/`critical` ; `count` = effectif
+    concerné (> 0 par construction). **Aucune PII** (counts-only).
+    """
+
+    kind: str = Field(examples=["payment_anomaly"])
+    severity: str = Field(examples=["warning"])
+    count: int = Field(examples=[3])
+
+
+class AlertsResponse(BaseModel):
+    """Alertes importantes du salon (§7.2), dérivées de faits réels (#148).
+
+    `items` = les alertes dont l'effectif est **> 0** (une alerte à `0` n'est pas
+    « importante »), dans un ordre d'affichage stable (autorité serveur). Counts-only,
+    **aucune PII**. Liste **vide** si aucune alerte (état légitime).
+    """
+
+    items: list[AlertItemResponse]
+
+
+# --------------------------------------------------------------------------- #
 # Injection de dépendances (surchargeable en test via `app.dependency_overrides`).
 # --------------------------------------------------------------------------- #
 def get_cash_journal_repository(
@@ -257,10 +516,77 @@ def get_appointment_repository(
     return SqlAppointmentRepository(session)
 
 
+def get_payment_repository(
+    session: Annotated[Session, Depends(get_session)],
+) -> PaymentRepository:
+    """Dépôt des paiements adossé à la session de la requête (lecture seule, #148).
+
+    Alimente la timeline d'activité (`list_for_salon`) et l'alerte « anomalie de
+    paiement » (`count_completed_without_payment`, #36). Local au router `stats` pour
+    rester surchargeable indépendamment en test via `app.dependency_overrides`.
+    """
+
+    return SqlPaymentRepository(session)
+
+
+def get_notification_repository(
+    session: Annotated[Session, Depends(get_session)],
+) -> NotificationRepository:
+    """Dépôt des notifications adossé à la session de la requête (lecture seule, #148).
+
+    Alimente la timeline d'activité (`list_for_salon` — lecture salon différée #47/#48,
+    contenu **neutre** ADR-0006). Local au router `stats` pour rester surchargeable
+    indépendamment en test via `app.dependency_overrides`.
+    """
+
+    return SqlNotificationRepository(session)
+
+
 def _today() -> datetime.date:
     """Jour civil courant dans le fuseau du salon (Africa/Abidjan, convention #21)."""
 
     return datetime.datetime.now(SALON_TIMEZONE).date()
+
+
+def _now_salon() -> datetime.datetime:
+    """Instant présent **aware** dans le fuseau du salon (Africa/Abidjan, UTC+0, #148).
+
+    Sa version naïve (`.replace(tzinfo=None)`) alimente la dérivation « en cours »
+    (`is_in_progress`, `has_started`) et le prédicat SQL `slot @> now` — cohérents avec
+    les colonnes naïves `appointment_date`+`start_time` et la colonne générée `slot`.
+    """
+
+    return datetime.datetime.now(SALON_TIMEZONE)
+
+
+def _resolve_dashboard_period(
+    period: str,
+    *,
+    reference: datetime.date | None,
+    date_from: datetime.date | None,
+    date_to: datetime.date | None,
+) -> tuple[datetime.date, datetime.date]:
+    """Résout le filtre de période unifié en bornes de jour civil, ou `422` (#148).
+
+    Délègue à `domain/dashboard.py::resolve_period` (`today`/`week`/`month`/`custom`),
+    avec `reference` par défaut = jour courant du salon. Traduit
+    `InvalidDashboardPeriod` (genre inconnu, `custom` sans bornes, `date_to <
+    date_from`) en `422` **neutre** (message métier sans PII ni valeur saisie).
+    """
+
+    resolved_reference = reference if reference is not None else _today()
+    try:
+        return resolve_period(
+            period,
+            reference=resolved_reference,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except InvalidDashboardPeriod as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
 
 
 def _period_response(period: RevenuePeriodTotal) -> RevenuePeriodResponse:
@@ -350,6 +676,135 @@ def _hairdresser_performance_response(
         hairdressers=[
             _hairdresser_performance_item(entry) for entry in report.entries
         ],
+    )
+
+
+def _evolution_count(evolution: Evolution) -> EvolutionCountResponse:
+    """Projette une `Evolution` de **compteur** (KPI entier) en réponse (#148)."""
+
+    return EvolutionCountResponse(
+        current=int(evolution.current),
+        previous=int(evolution.previous),
+        delta=int(evolution.delta),
+        direction=evolution.direction,
+    )
+
+
+def _evolution_money(evolution: Evolution, currency: str) -> EvolutionMoneyResponse:
+    """Projette une `Evolution` de **montant** (CA `Decimal`) en réponse (#148)."""
+
+    return EvolutionMoneyResponse(
+        current=decimal.Decimal(evolution.current),
+        previous=decimal.Decimal(evolution.previous),
+        delta=decimal.Decimal(evolution.delta),
+        direction=evolution.direction,
+        currency=currency,
+    )
+
+
+def _kpis_response(kpis: DashboardKpis, *, kind: str) -> DashboardKpisResponse:
+    """Assemble la réponse des **4 KPI** + évolution (autorité serveur, #148)."""
+
+    return DashboardKpisResponse(
+        period=DashboardPeriodResponse(
+            kind=kind, date_from=kpis.date_from, date_to=kpis.date_to
+        ),
+        waiting_clients=_evolution_count(kpis.waiting_clients),
+        in_progress=InProgressCountResponse(current=kpis.in_progress),
+        revenue=_evolution_money(kpis.revenue, kpis.currency),
+        clients_count=_evolution_count(kpis.clients_count),
+    )
+
+
+def _revenue_series_response(
+    buckets: tuple[SeriesBucket, ...],
+    *,
+    date_from: datetime.date,
+    date_to: datetime.date,
+    currency: str,
+) -> RevenueSeriesResponse:
+    """Assemble la série du CA (montants `Decimal`, jours vides à `0.00`, #148)."""
+
+    return RevenueSeriesResponse(
+        currency=currency,
+        date_from=date_from,
+        date_to=date_to,
+        buckets=[
+            RevenueSeriesBucketResponse(
+                bucket_start=bucket.bucket_start,
+                bucket_end=bucket.bucket_end,
+                total=decimal.Decimal(bucket.value),
+            )
+            for bucket in buckets
+        ],
+    )
+
+
+def _attendance_series_response(
+    buckets: tuple[SeriesBucket, ...],
+    *,
+    date_from: datetime.date,
+    date_to: datetime.date,
+) -> AttendanceSeriesResponse:
+    """Assemble la série de fréquentation (compteurs, jours vides à `0`, #148)."""
+
+    return AttendanceSeriesResponse(
+        date_from=date_from,
+        date_to=date_to,
+        buckets=[
+            AttendanceSeriesBucketResponse(
+                bucket_start=bucket.bucket_start,
+                bucket_end=bucket.bucket_end,
+                count=int(bucket.value),
+            )
+            for bucket in buckets
+        ],
+    )
+
+
+def _in_progress_item(item: InProgressService) -> InProgressItemResponse:
+    """Projette une prestation en cours (noms d'affichage seuls, #148)."""
+
+    return InProgressItemResponse(
+        appointment_id=item.appointment_id,
+        client_name=item.client_name,
+        service_names=list(item.service_names),
+        hairdresser_name=item.hairdresser_name,
+        start_time=item.start_time,
+        end_time=item.end_time,
+        status=item.status,
+    )
+
+
+def _in_progress_response(
+    items: tuple[InProgressService, ...], *, as_of: datetime.datetime
+) -> InProgressResponse:
+    """Assemble la liste des prestations en cours + l'instant de lecture (#148)."""
+
+    return InProgressResponse(
+        as_of=as_of, items=[_in_progress_item(item) for item in items]
+    )
+
+
+def _activity_item(event: ActivityEvent) -> ActivityItemResponse:
+    """Projette un évènement de timeline (montant/nom seuls sur paiement, #148)."""
+
+    has_amount = event.amount is not None
+    return ActivityItemResponse(
+        occurred_at=event.occurred_at,
+        kind=event.kind,
+        label=event.label,
+        amount=event.amount,
+        client_name=event.client_name,
+        currency=event.currency if has_amount else None,
+    )
+
+
+def _alert_item(alert: Alert) -> AlertItemResponse:
+    """Projette une alerte dérivée (counts-only, #148)."""
+
+    return AlertItemResponse(
+        kind=alert.kind, severity=alert.severity, count=alert.count
     )
 
 
@@ -616,6 +1071,310 @@ def get_hairdresser_performance(
     return _hairdresser_performance_response(
         report, date_from=date_from, date_to=date_to
     )
+
+
+# --------------------------------------------------------------------------- #
+# Routes — **Dashboard Manager · activité du salon** (#148).
+#
+# Sixième+ consommateur de `STATS_READ_SALON` (MANAGER seul) + `require_salon_scope`
+# (isolation §11.2). Toutes sous le préfixe `/salons/{salon_id}/dashboard/` (segment
+# **distinct** de `customers`/`services`/`payments`/`appointments`). Deny-by-default :
+# rien n'entre dans `PUBLIC_ROUTE_PATHS`. Lecture pure — aucune écriture, aucun audit.
+# --------------------------------------------------------------------------- #
+@router.get(
+    "/{salon_id}/dashboard/kpis",
+    response_model=DashboardKpisResponse,
+    summary="Dashboard Manager — 4 KPI d'activité du salon + évolution (§7.2, #148)",
+    responses={
+        200: {"description": "Les 4 KPI du salon (+ évolution) sur la période"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {"description": "`period`/`date_from`/`date_to` mal formé ou incohérent"},
+    },
+)
+def get_dashboard_kpis(
+    salon_id: uuid.UUID,
+    appointment_repo: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    cash_journal_repo: Annotated[
+        CashJournalRepository, Depends(get_cash_journal_repository)
+    ],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.STATS_READ_SALON))
+    ],
+    period: Annotated[
+        str,
+        Query(description="Filtre : today | week | month | custom (défaut today)"),
+    ] = "today",
+    date_from: Annotated[
+        datetime.date | None,
+        Query(description="Premier jour inclus (requis si period=custom)"),
+    ] = None,
+    date_to: Annotated[
+        datetime.date | None,
+        Query(description="Dernier jour inclus (requis si period=custom)"),
+    ] = None,
+    reference: Annotated[
+        datetime.date | None,
+        Query(description="Date de référence des périodes relatives ; absent = aujourd'hui"),
+    ] = None,
+) -> DashboardKpisResponse:
+    """Les **4 cartes KPI** du tableau de bord d'activité + évolution (§7.2, #148).
+
+    Route **salon-scopée** (`require_salon_scope` + `STATS_READ_SALON`, **sixième**
+    consommateur de cette permission `MANAGER` après #39–#43) : le `salon_id` vient du
+    chemin, et les dépôts refiltrent `salon_id` en SQL (défense en profondeur §11.2). Un
+    salon hors périmètre est un `403` **indiscernable** (aucun oracle). Le segment
+    `dashboard` est **distinct** des routes `revenue/summary`/`service-demand`/…
+
+    Le **filtre de période** (`today`/`week`/`month`/`custom`, défaut `today`) est
+    résolu **côté serveur** en bornes de jour civil (`Africa/Abidjan`, convention #21) ;
+    `custom` exige ses deux bornes et `date_to ≥ date_from` (sinon `422`). Les KPI
+    « clients en attente » (RDV `PENDING`), « chiffre d'affaires » (net `cash_journal`)
+    et « nombre de clientes » (comptes distincts `COMPLETED`) portent leur **évolution**
+    vs la **période précédente de même longueur** ; « prestations en cours » est un
+    **instantané** (`CONFIRMED` ∩ créneau contenant l'instant présent) — sans évolution.
+    Les statuts sont **imposés serveur**. Agrégats calculés **en base** : la réponse ne
+    porte que des compteurs, un montant, une devise et des dates (§11.3), **aucune PII**.
+    Un salon **sans activité** → KPI à `0` (état vide légitime, ≠ erreur). Lecture pure.
+    """
+
+    date_from_resolved, date_to_resolved = _resolve_dashboard_period(
+        period, reference=reference, date_from=date_from, date_to=date_to
+    )
+    kpis = SummarizeDashboardKpis(appointment_repo, cash_journal_repo).execute(
+        salon_id,
+        date_from=date_from_resolved,
+        date_to=date_to_resolved,
+        now=_now_salon().replace(tzinfo=None),
+    )
+    return _kpis_response(kpis, kind=period)
+
+
+@router.get(
+    "/{salon_id}/dashboard/revenue-series",
+    response_model=RevenueSeriesResponse,
+    summary="Dashboard Manager — série d'évolution du chiffre d'affaires (§7.2, #148)",
+    responses={
+        200: {"description": "Série du CA net du salon par jour civil de la période"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {"description": "`period`/`date_from`/`date_to` mal formé ou incohérent"},
+    },
+)
+def get_dashboard_revenue_series(
+    salon_id: uuid.UUID,
+    cash_journal_repo: Annotated[
+        CashJournalRepository, Depends(get_cash_journal_repository)
+    ],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.STATS_READ_SALON))
+    ],
+    period: Annotated[
+        str,
+        Query(description="Filtre : today | week | month | custom (défaut today)"),
+    ] = "today",
+    date_from: Annotated[datetime.date | None, Query()] = None,
+    date_to: Annotated[datetime.date | None, Query()] = None,
+    reference: Annotated[datetime.date | None, Query()] = None,
+) -> RevenueSeriesResponse:
+    """Série temporelle du **chiffre d'affaires** du salon (graphique d'évolution, #148).
+
+    Route **salon-scopée** (`STATS_READ_SALON` + `require_salon_scope`). Le net
+    `cash_journal` (`PAYMENT`/`ADJUSTMENT`, #34) est agrégé **en base** par **jour
+    civil** de la période résolue ; les jours vides valent `0.00` (axe continu). La
+    réponse ne porte que des dates, des montants (chaînes décimales) et la devise
+    (§11.3), **aucune PII**. Filtre de période & `422` identiques à `dashboard/kpis`.
+    """
+
+    date_from_resolved, date_to_resolved = _resolve_dashboard_period(
+        period, reference=reference, date_from=date_from, date_to=date_to
+    )
+    buckets = SummarizeRevenueSeries(cash_journal_repo).execute(
+        salon_id, date_from=date_from_resolved, date_to=date_to_resolved
+    )
+    return _revenue_series_response(
+        buckets,
+        date_from=date_from_resolved,
+        date_to=date_to_resolved,
+        currency=DEFAULT_CURRENCY,
+    )
+
+
+@router.get(
+    "/{salon_id}/dashboard/attendance-series",
+    response_model=AttendanceSeriesResponse,
+    summary="Dashboard Manager — série de fréquentation du salon (§7.2, #148)",
+    responses={
+        200: {"description": "Série du nombre de RDV du salon par jour de la période"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {"description": "`period`/`date_from`/`date_to` mal formé ou incohérent"},
+    },
+)
+def get_dashboard_attendance_series(
+    salon_id: uuid.UUID,
+    appointment_repo: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.STATS_READ_SALON))
+    ],
+    period: Annotated[
+        str,
+        Query(description="Filtre : today | week | month | custom (défaut today)"),
+    ] = "today",
+    date_from: Annotated[datetime.date | None, Query()] = None,
+    date_to: Annotated[datetime.date | None, Query()] = None,
+    reference: Annotated[datetime.date | None, Query()] = None,
+) -> AttendanceSeriesResponse:
+    """Série temporelle de la **fréquentation** du salon (graphique, #148).
+
+    Route **salon-scopée** (`STATS_READ_SALON` + `require_salon_scope`). Le nombre de
+    RDV du salon (tous statuts) est agrégé **en base** par **jour civil** de la période
+    résolue ; les jours vides valent `0` (axe continu). La réponse ne porte que des
+    dates et des compteurs (§11.3), **aucune PII**. Filtre de période & `422` identiques
+    à `dashboard/kpis`.
+    """
+
+    date_from_resolved, date_to_resolved = _resolve_dashboard_period(
+        period, reference=reference, date_from=date_from, date_to=date_to
+    )
+    buckets = SummarizeAttendanceSeries(appointment_repo).execute(
+        salon_id, date_from=date_from_resolved, date_to=date_to_resolved
+    )
+    return _attendance_series_response(
+        buckets, date_from=date_from_resolved, date_to=date_to_resolved
+    )
+
+
+@router.get(
+    "/{salon_id}/dashboard/in-progress",
+    response_model=InProgressResponse,
+    summary="Dashboard Manager — prestations en cours maintenant (§7.2, #148)",
+    responses={
+        200: {"description": "RDV CONFIRMED en cours (noms d'affichage), triés par heure"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+    },
+)
+def get_dashboard_in_progress(
+    salon_id: uuid.UUID,
+    appointment_repo: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.STATS_READ_SALON))
+    ],
+) -> InProgressResponse:
+    """Liste des **prestations en cours maintenant** du salon, avec noms (§7.2, #148).
+
+    Route **salon-scopée** (`STATS_READ_SALON` + `require_salon_scope`). Renvoie les RDV
+    `CONFIRMED` dont le créneau `[début, fin)` **contient l'instant présent**
+    (`slot @> now`, dérivation « en cours » — aucun statut ni horodatage nouveau),
+    enrichis des **noms d'affichage** (cliente `users.full_name`, prestation(s)
+    `services.name`, professionnelle `users.full_name`, patron #43/#36) — **jamais**
+    `client_id`/contact. Instantané (`as_of`), indépendant du filtre de période. Liste
+    **vide** si aucune prestation en cours (état légitime). Lecture pure.
+    """
+
+    now_aware = _now_salon()
+    items = ListInProgressServices(appointment_repo).execute(
+        salon_id, now=now_aware.replace(tzinfo=None)
+    )
+    return _in_progress_response(items, as_of=now_aware)
+
+
+@router.get(
+    "/{salon_id}/dashboard/activity",
+    response_model=ActivityResponse,
+    summary="Dashboard Manager — timeline des dernières activités (§7.2, #148)",
+    responses={
+        200: {"description": "Flux fusionné des faits horodatés, trié décroissant (top-N)"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        422: {"description": "`limit` hors bornes"},
+    },
+)
+def get_dashboard_activity(
+    salon_id: uuid.UUID,
+    payment_repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
+    notification_repo: Annotated[
+        NotificationRepository, Depends(get_notification_repository)
+    ],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.STATS_READ_SALON))
+    ],
+    limit: Annotated[
+        int,
+        Query(
+            ge=ACTIVITY_LIMIT_MIN,
+            le=ACTIVITY_LIMIT_MAX,
+            description="Nombre maximal d'évènements (top-N)",
+        ),
+    ] = ACTIVITY_LIMIT_DEFAULT,
+) -> ActivityResponse:
+    """Timeline « Transactions récentes » (§7.2) — faits **réellement horodatés** (#148).
+
+    Route **salon-scopée** (`STATS_READ_SALON` + `require_salon_scope`). Fusionne, triés
+    par horodatage **décroissant** et bornés (top-N) : les **paiements** (montant + nom
+    d'affichage, patron #36) et les **notifications salon**
+    `NEW_BOOKING`/`CANCELLATION`/`APPOINTMENT_UPDATE` (#47/#48, libellé **neutre**
+    ADR-0006). « Arrivée cliente / début / fin de prestation » **ne figurent pas**
+    (aucune source horodatée, §148 Non-Goals). N'émet un nom d'affichage **que** pour
+    les paiements (§11.3). Liste **vide** si aucune activité (état légitime). Lecture pure.
+    """
+
+    events = ListRecentActivity(payment_repo, notification_repo).execute(
+        salon_id, limit=limit
+    )
+    return ActivityResponse(items=[_activity_item(event) for event in events])
+
+
+@router.get(
+    "/{salon_id}/dashboard/alerts",
+    response_model=AlertsResponse,
+    summary="Dashboard Manager — alertes importantes du salon (§7.2, #148)",
+    responses={
+        200: {"description": "Alertes dérivées de faits réels (count > 0), ordre stable"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+    },
+)
+def get_dashboard_alerts(
+    salon_id: uuid.UUID,
+    appointment_repo: Annotated[
+        AppointmentRepository, Depends(get_appointment_repository)
+    ],
+    payment_repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
+    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.STATS_READ_SALON))
+    ],
+) -> AlertsResponse:
+    """Alertes importantes (§7.2) **dérivées** de faits réels, counts-first (#148).
+
+    Route **salon-scopée** (`STATS_READ_SALON` + `require_salon_scope`). Dérive trois
+    alertes : **`payment_anomaly`** (écarts de caisse #36 — RDV `COMPLETED` sans
+    paiement), **`late`** (RDV `CONFIRMED` du jour dont le créneau est **passé** sans
+    clôture) et **`prolonged_wait`** (RDV `PENDING` du jour dont le début est
+    **dépassé** sans confirmation). Ne renvoie que les alertes dont l'effectif est
+    **> 0**, dans un ordre d'affichage stable. Counts-only, **aucune PII**. L'alerte
+    « anomalie de paiement » réutilise le dépôt paiements (#36) — le `MANAGER` détient
+    `STATS_READ_SALON` **et** `CASH_JOURNAL_READ` ; l'écran d'activité reste sous une
+    permission unique (cohérence). Lecture pure.
+    """
+
+    alerts = ListDashboardAlerts(appointment_repo, payment_repo).execute(
+        salon_id, now=_now_salon().replace(tzinfo=None)
+    )
+    return AlertsResponse(items=[_alert_item(alert) for alert in alerts])
 
 
 __all__ = ["router"]

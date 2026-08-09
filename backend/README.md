@@ -1278,6 +1278,78 @@ curl -G "$API/salons/$SALON_ID/hairdresser-performance" \
 }
 ```
 
+## Dashboard Manager — activité du salon (§7.2, #148 — [ADR-0039](../docs/adr/0039-dashboard-manager-activite-salon.md))
+
+Écran d'activité « temps réel » consolidé au-dessus du socle analytique #39–#43 : quatre **cartes KPI**
+(+ évolution vs période précédente), deux **graphiques** (CA, fréquentation), une **liste des
+prestations en cours**, une **timeline des dernières activités** et des **alertes importantes**, sous
+`/salons/{salon_id}/dashboard/*`. **Sixième+** usage de `STATS_READ_SALON` (§4.1, **seul le `MANAGER`**)
+après RDV du jour (#39), CA (#40), prestations demandées (#41), clients actifs (#42) et performance des
+coiffeurs (#43) — même garde `require_salon_scope`, même router `stats.py` (aucun nouveau router monté).
+**Entièrement dérivé en lecture** : aucune migration, aucun nouveau statut, aucun audit §11.4.
+
+| Méthode | Chemin | Réponse | PII |
+| --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/dashboard/kpis?period&date_from&date_to&reference` | `200` 4 KPI + évolution \| `401` \| `403` \| `422` période mal formée | Non |
+| `GET` | `/salons/{salon_id}/dashboard/revenue-series?period&date_from&date_to&reference` | `200` buckets `{bucket_start,bucket_end,total}` \| `401` \| `403` \| `422` | Non |
+| `GET` | `/salons/{salon_id}/dashboard/attendance-series?period&date_from&date_to&reference` | `200` buckets `{bucket_start,bucket_end,count}` \| `401` \| `403` \| `422` | Non |
+| `GET` | `/salons/{salon_id}/dashboard/in-progress` | `200` liste `{client_name,service_names,hairdresser_name,start_time,end_time,status}` \| `401` \| `403` | Nom d'affichage |
+| `GET` | `/salons/{salon_id}/dashboard/activity?limit` | `200` flux fusionné `{occurred_at,kind,label,amount?,client_name?}` \| `401` \| `403` \| `422` | Nom d'affichage (paiements) |
+| `GET` | `/salons/{salon_id}/dashboard/alerts` | `200` `{kind,severity,count}` \| `401` \| `403` | Non |
+
+**Définitions dérivées (ADR-0039, aucune migration).** Le modèle MVP n'a que cinq statuts de RDV
+(`PENDING/CONFIRMED/CANCELLED/COMPLETED/NO_SHOW`, PRD §9.4) et aucune colonne d'horodatage
+d'arrivée/début/fin :
+
+- **« Prestations en cours »** = RDV `CONFIRMED` dont le créneau contient l'instant présent — le
+  prédicat SQL réel `slot @> now::timestamp` sur la colonne générée `slot` (déjà présente pour
+  l'exclusion anti-double-réservation #21), fuseau salon `Africa/Abidjan` = UTC+0. **Instantané**, sans
+  évolution.
+- **« Clients en attente »** = RDV `PENDING` sur la période (la source « queue » la plus proche
+  existante) — aucune salle d'attente walk-in (§16.7/§17, hors MVP).
+- **« Nombre de clientes »** = comptes distincts (`COUNT(DISTINCT client_id)`) ayant un RDV `COMPLETED`
+  sur la période (une **visite**, §8.1, cohérent avec `active = new + recurring` de #42).
+- **Filtre de période** = `today | week | month | custom`, résolu **côté serveur** en bornes de jour
+  civil (réutilise `day_bounds`/`week_bounds`/`month_bounds` de #40) ; **évolution** = comparaison à la
+  **période précédente de même longueur**, calculée serveur (le front n'a rien à recalculer).
+- **Alertes** — `payment_anomaly` (écarts de caisse #36, RDV `COMPLETED` sans paiement), `late` (RDV
+  `CONFIRMED` du jour dont le créneau est passé sans clôture), `prolonged_wait` (RDV `PENDING` du jour
+  dont le début est dépassé) — ne renvoyées que si leur effectif est `> 0`, ordre d'affichage stable.
+
+> **Non représenté au MVP.** « Arrivée cliente », « début » et « fin » de prestation **n'ont aucune
+> source horodatée** (pas de pointage) : la timeline `dashboard/activity` reste bornée aux faits
+> **réellement horodatés** — paiements et notifications salon `NEW_BOOKING`/`CANCELLATION`/
+> `APPOINTMENT_UPDATE` (#47/#48, libellé neutre). Un vrai suivi arrivée/début/fin (pointage, borne §17,
+> QR §16.7) est un épic distinct, hors MVP (§21). Voir [ADR-0039](../docs/adr/0039-dashboard-manager-activite-salon.md).
+
+**Émission maîtrisée (§11.3).** `kpis`/`revenue-series`/`attendance-series` sont **counts-only**
+(compteurs, montants en chaîne décimale, dates — aucune PII, `client_id` groupé mais jamais émis).
+`in-progress`/`activity` émettent **uniquement** un nom d'affichage (`users.full_name`,
+`services.name`, patron #43/#36) — jamais `client_id`/`user_id`/contact. Isolation §11.2 en profondeur
+(`WHERE salon_id` réaffirmé en SQL) sur chaque route. Graphiques rendus en **SVG inline** côté serveur
+(aucune nouvelle dépendance) ; auto-refresh **polling visibility-aware** côté web (`router.refresh()`,
+jeton jamais exposé) — voir `web-dashboard/README.md`.
+
+```bash
+# 4 KPI + évolution, période = aujourd'hui (défaut) → 200
+curl -G "$API/salons/$SALON_ID/dashboard/kpis" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Prestations en cours maintenant (noms d'affichage) → 200
+curl -G "$API/salons/$SALON_ID/dashboard/in-progress" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+```json
+{
+  "period": { "kind": "today", "date_from": "2026-08-09", "date_to": "2026-08-09" },
+  "waiting_clients": { "current": 3, "previous": 5, "delta": -2, "direction": "down" },
+  "in_progress": { "current": 2 },
+  "revenue": { "current": "125000.00", "previous": "98000.00", "delta": "27000.00", "direction": "up", "currency": "XOF" },
+  "clients_count": { "current": 18, "previous": 15, "delta": 3, "direction": "up" }
+}
+```
+
 ## Notifications — confirmation de RDV (US-7.1, #45 — [ADR-0033](../docs/adr/0033-notification-confirmation-rdv.md))
 
 À la **création d'un rendez-vous** (`POST /salons/{salon_id}/appointments`, #21), une **confirmation**
