@@ -135,6 +135,14 @@ l'encaissement (M4) et les KPI (M5) dépendent de la boucle de rendez-vous (M3).
   *Acceptation :* prestations CRUD par salon ; durée et prix obligatoires ; modification journalisée (§11.4).
   *Dépend de :* #15.
 
+- **Prestations · Illustration téléversable** · `feature` · **Livré**
+  Extension de #17 : image PNG/JPEG/WEBP par prestation, téléversée directement navigateur → stockage
+  objet (URL signée, ADR-0005, miroir logo salon #15), attachement dédié découplé de la création/
+  modification générale, affichée sur le catalogue gérant et destinée à la borne cliente. Demande ad
+  hoc (aucune issue GitHub créée en amont).
+  *Livré via :* [PR #151](https://github.com/flavien-hugs/coiflink/pull/151) (mergée sur `main`).
+  *Dépend de :* #17.
+
 - **#18 — Recherche & liste des salons (côté client)** · `Must` · `M` · `feature` `ux`
   Écran de recherche/liste des salons (§7.1, parcours §5.1). Seuls les salons actifs sont visibles (§8.3).
   *Acceptation :* un client liste/recherche les salons actifs ; un salon désactivé n'apparaît pas.
