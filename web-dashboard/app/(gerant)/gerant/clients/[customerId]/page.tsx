@@ -16,10 +16,12 @@ import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-stor
 import { createHttpCustomerGateway } from "@/src/adapters/api/http-customer-gateway";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { CustomerNoteForm } from "@/src/adapters/ui/customer-note-form";
+import { CustomerPaymentHistory } from "@/src/adapters/ui/customer-payment-history";
 import { CustomerServiceStatsPanel } from "@/src/adapters/ui/customer-service-stats";
 import { CustomerVisitHistory } from "@/src/adapters/ui/customer-visit-history";
 import { Tabs } from "@/src/adapters/ui/tabs";
 import { genderLabel, type Customer } from "@/src/domain/customer/customer";
+import type { PaymentHistory } from "@/src/domain/customer/payment";
 import type { CustomerServiceStats } from "@/src/domain/customer/stats";
 import type { VisitHistory } from "@/src/domain/customer/visit";
 
@@ -51,16 +53,18 @@ export default async function CustomerDetailPage({
   }
 
   const gateway = createHttpCustomerGateway({ accessToken });
-  const [customerResult, historyResult, statsResult] = await Promise.all([
+  const [customerResult, historyResult, statsResult, paymentsResult] = await Promise.all([
     gateway.get(salon.id, customerId),
     gateway.history(salon.id, customerId),
     gateway.stats(salon.id, customerId),
+    gateway.payments(salon.id, customerId),
   ]);
 
   if (
     (!customerResult.ok && customerResult.reason === "not-found") ||
     (!historyResult.ok && historyResult.reason === "not-found") ||
-    (!statsResult.ok && statsResult.reason === "not-found")
+    (!statsResult.ok && statsResult.reason === "not-found") ||
+    (!paymentsResult.ok && paymentsResult.reason === "not-found")
   ) {
     return (
       <Shell>
@@ -77,11 +81,15 @@ export default async function CustomerDetailPage({
     );
   }
 
-  // Dégradation **locale** du panneau « préférées » : un échec non-`not-found`
-  // (403 hors motif de portée, réseau) n'empêche pas d'afficher la fiche et
-  // l'historique — le panneau rend alors un état neutre (spec § Open Questions §6).
+  // Dégradation **locale** des panneaux « préférées » et « paiements » : un
+  // échec non-`not-found` (403 hors motif de portée, réseau) n'empêche pas
+  // d'afficher la fiche et l'historique — le panneau rend alors un état
+  // neutre (spec § Open Questions §6).
   const stats: CustomerServiceStats | null = statsResult.ok
     ? statsResult.stats
+    : null;
+  const payments: PaymentHistory | null = paymentsResult.ok
+    ? paymentsResult.history
     : null;
 
   return (
@@ -101,6 +109,11 @@ export default async function CustomerDetailPage({
             key: "history",
             label: "Historique des visites",
             content: <History history={historyResult.history} />,
+          },
+          {
+            key: "payments",
+            label: "Paiements",
+            content: <Payments payments={payments} />,
           },
           {
             key: "favourites",
@@ -176,6 +189,25 @@ function History({ history }: { history: VisitHistory }) {
         leurs prestations et montants.
       </p>
       <CustomerVisitHistory history={history} />
+    </div>
+  );
+}
+
+function Payments({ payments }: { payments: PaymentHistory | null }) {
+  if (payments === null) {
+    return (
+      <div className="rounded-2xl border border-border bg-surface p-10 text-center text-sm text-muted shadow-soft">
+        Impossible de charger les paiements de ce client pour le moment.
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-5">
+      <p className="max-w-prose text-sm text-muted">
+        Les paiements de ce client, du plus récent au plus ancien, tous statuts
+        confondus.
+      </p>
+      <CustomerPaymentHistory history={payments} />
     </div>
   );
 }

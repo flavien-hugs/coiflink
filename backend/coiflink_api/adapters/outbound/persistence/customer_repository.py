@@ -37,7 +37,12 @@ from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import 
 )
 from coiflink_api.domain.customer import Customer, CustomerFilter, CustomerToCreate
 from coiflink_api.domain.errors import CustomerAlreadyExists, CustomerNotFound
-from coiflink_api.domain.visit import CustomerVisit, VisitService, visit_total
+from coiflink_api.domain.visit import (
+    CustomerPayment,
+    CustomerVisit,
+    VisitService,
+    visit_total,
+)
 
 # Index unique partiel garantissant l'unicité du téléphone **dans un salon** (0005).
 _PHONE_UNIQUE_INDEX = "uq_customer_profiles_salon_phone"
@@ -342,6 +347,55 @@ class SqlCustomerRepository:
         _flush()
 
         return tuple(visits)
+
+    def list_payments(
+        self, salon_id: uuid.UUID, customer_id: uuid.UUID
+    ) -> tuple[CustomerPayment, ...]:
+        """Paiements du compte lié à la fiche `(salon_id, customer_id)`, triés récent d'abord.
+
+        Miroir de `list_visits` : le lien `customer_profiles.user_id ==
+        payments.client_id` est calculé **entièrement en SQL** et **jamais**
+        exposé (anti-oracle ADR-0026). Fiche introuvable dans le salon **ou**
+        walk-in (`user_id IS NULL`) → tuple vide (aucun paiement reliable, pas
+        une erreur). Tous statuts confondus (`PENDING`/`VALIDATED`/`CANCELLED`/
+        `ADJUSTED`) — c'est justement la colonne affichée. **Lecture seule** :
+        aucun flush.
+        """
+
+        user_id = self._session.scalar(
+            select(models.CustomerProfile.user_id).where(
+                models.CustomerProfile.id == customer_id,
+                models.CustomerProfile.salon_id == salon_id,
+            )
+        )
+        if user_id is None:
+            return ()
+
+        rows = self._session.execute(
+            select(
+                models.Payment.id,
+                models.Payment.created_at,
+                models.Payment.amount,
+                models.Payment.currency,
+                models.Payment.status,
+            )
+            .where(
+                models.Payment.salon_id == salon_id,
+                models.Payment.client_id == user_id,
+            )
+            .order_by(models.Payment.created_at.desc(), models.Payment.id.desc())
+        ).all()
+
+        return tuple(
+            CustomerPayment(
+                payment_id=row.id,
+                created_at=row.created_at,
+                amount=row.amount,
+                currency=row.currency,
+                status=row.status,
+            )
+            for row in rows
+        )
 
 
 def _is_phone_duplicate(exc: IntegrityError) -> bool:

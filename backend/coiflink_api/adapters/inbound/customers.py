@@ -53,6 +53,7 @@ from coiflink_api.application.customers import (
     CreateCustomer,
     CustomerCommand,
     GetCustomer,
+    GetCustomerPaymentHistory,
     GetCustomerServiceStats,
     GetCustomerVisitHistory,
     ListSalonCustomers,
@@ -86,6 +87,7 @@ from coiflink_api.domain.errors import (
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
 from coiflink_api.domain.visit import (
+    CustomerPayment,
     CustomerServiceStats,
     CustomerVisit,
     VisitHistory,
@@ -255,6 +257,36 @@ class CustomerVisitHistoryResponse(BaseModel):
     currency: str
 
 
+class CustomerPaymentResponse(BaseModel):
+    """Un paiement du compte lié à une fiche (fiche client).
+
+    `status` reflète l'état réel du paiement (`PENDING`/`VALIDATED`/
+    `CANCELLED`/`ADJUSTED`, §9.6) — tous statuts sont renvoyés, c'est
+    justement l'utilité de cette colonne. **`client_id`/`user_id`/
+    `recorded_by`/`reference` ne sont pas exposés** (anti-oracle ADR-0026,
+    miroir `CustomerVisitResponse`).
+    """
+
+    payment_id: uuid.UUID
+    created_at: datetime.datetime
+    amount: decimal.Decimal
+    currency: str
+    status: str
+
+
+class CustomerPaymentHistoryResponse(BaseModel):
+    """Historique des paiements d'une fiche (fiche client, miroir #29).
+
+    `items` est trié **date décroissante** (plus récent d'abord). Fiche
+    walk-in ou sans paiement → `items: []` (comportement normal, pas une
+    erreur). **`user_id`/`client_id` ne sont jamais exposés** (anti-oracle
+    ADR-0026).
+    """
+
+    customer_id: uuid.UUID
+    items: list[CustomerPaymentResponse]
+
+
 class ServiceFrequencyResponse(BaseModel):
     """Une prestation dans le classement des préférences d'un client (US-4.3, #31).
 
@@ -356,6 +388,25 @@ def _history_response(
         last_visit_at=history.last_visit_at,
         total_amount=history.total_amount,
         currency=history.currency,
+    )
+
+
+def _payment_response(payment: CustomerPayment) -> CustomerPaymentResponse:
+    return CustomerPaymentResponse(
+        payment_id=payment.payment_id,
+        created_at=payment.created_at,
+        amount=payment.amount,
+        currency=payment.currency,
+        status=payment.status,
+    )
+
+
+def _payment_history_response(
+    customer_id: uuid.UUID, payments: tuple[CustomerPayment, ...]
+) -> CustomerPaymentHistoryResponse:
+    return CustomerPaymentHistoryResponse(
+        customer_id=customer_id,
+        items=[_payment_response(payment) for payment in payments],
     )
 
 
@@ -669,6 +720,45 @@ def get_customer_history(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
     return _history_response(customer_id, history)
+
+
+@router.get(
+    "/{salon_id}/customers/{customer_id}/payments",
+    response_model=CustomerPaymentHistoryResponse,
+    summary="Historique des paiements d'un client (fiche client)",
+    responses={
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "Fiche introuvable (portée déjà validée)"},
+    },
+)
+def get_customer_payments(
+    salon_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    repository: Annotated[CustomerRepository, Depends(get_customer_repository)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.CUSTOMER_MANAGE))
+    ],
+) -> CustomerPaymentHistoryResponse:
+    """Historique des paiements de la fiche `(salon_id, customer_id)` (fiche client).
+
+    Lecture **fiche-scopée**, miroir de `get_customer_history` (#29) : la fiche
+    est résolue dans le salon (`404` **après** portée si hors salon/inconnue,
+    sans oracle) puis ses paiements liés sont lus (lien `user_id` encapsulé
+    côté dépôt, `salon_id` refiltré en SQL), **tous statuts confondus**
+    (`PENDING`/`VALIDATED`/`CANCELLED`/`ADJUSTED`). Une fiche walk-in ou sans
+    paiement → `items: []` (comportement normal). Aucune écriture, aucun audit
+    — ni `user_id`/`client_id` exposés.
+    """
+
+    try:
+        payments = GetCustomerPaymentHistory(repository).execute(salon_id, customer_id)
+    except CustomerNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return _payment_history_response(customer_id, payments)
 
 
 @router.get(

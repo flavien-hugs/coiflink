@@ -107,6 +107,26 @@ def visit_total(services: tuple[VisitService, ...]) -> decimal.Decimal:
 
 
 @dataclass(frozen=True)
+class CustomerPayment:
+    """Un paiement du compte lié à une fiche, vue « historique » (fiche client).
+
+    `status` reflète l'état réel du paiement (`PENDING`/`VALIDATED`/`CANCELLED`/
+    `ADJUSTED`, §9.6) — contrairement aux visites (toujours `COMPLETED`), un
+    paiement affiché ici peut être dans n'importe quel état : c'est justement
+    l'utilité de la colonne « statut ». Ni `client_id`, ni `user_id`, ni
+    `recorded_by`/`reference` ne sont portés : le lien fiche ↔ compte reste
+    encapsulé dans le dépôt (anti-oracle §11.1/§11.3, ADR-0026, patron
+    `CustomerVisit`).
+    """
+
+    payment_id: uuid.UUID
+    created_at: datetime.datetime
+    amount: decimal.Decimal
+    currency: str
+    status: str
+
+
+@dataclass(frozen=True)
 class ServiceFrequency:
     """Une prestation dans le classement des préférences d'un client (US-4.3, #31).
 
@@ -246,6 +266,7 @@ __all__ = [
     "VisitService",
     "CustomerVisit",
     "VisitHistory",
+    "CustomerPayment",
     "ServiceFrequency",
     "CustomerServiceStats",
     "visit_total",

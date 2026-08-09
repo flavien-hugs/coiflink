@@ -702,6 +702,191 @@ describe("createHttpCustomerGateway().stats() — codes de statut", () => {
 });
 
 // ---------------------------------------------------------------------------
+// payments() — historique des paiements (fiche client)
+// ---------------------------------------------------------------------------
+
+const FAKE_PAYMENT_PAYLOAD = {
+  customer_id: CUSTOMER_ID,
+  items: [
+    {
+      payment_id: "payment-uuid-001",
+      created_at: "2026-07-20T09:30:00Z",
+      amount: "5000.00",
+      currency: "XOF",
+      status: "VALIDATED",
+    },
+  ],
+};
+
+describe("createHttpCustomerGateway().payments() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpCustomerGateway({ accessToken: null }).payments(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accessToken undefined → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpCustomerGateway({}).payments(SALON_ID, CUSTOMER_ID);
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("createHttpCustomerGateway().payments() — codes de statut", () => {
+  it("200 → ok:true avec les paiements transformés (snake_case → camelCase)", async () => {
+    stubFetch(200, FAKE_PAYMENT_PAYLOAD);
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).payments(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.history.customerId).toBe(CUSTOMER_ID);
+      expect(result.history.payments).toHaveLength(1);
+      expect(result.history.payments[0].paymentId).toBe("payment-uuid-001");
+      expect(result.history.payments[0].createdAt).toBe("2026-07-20T09:30:00Z");
+      expect(result.history.payments[0].amount).toBe("5000.00");
+      expect(result.history.payments[0].currency).toBe("XOF");
+      expect(result.history.payments[0].status).toBe("VALIDATED");
+    }
+  });
+
+  it("200 liste vide (fiche walk-in) → ok:true avec payments []", async () => {
+    stubFetch(200, { customer_id: CUSTOMER_ID, items: [] });
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).payments(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.history.payments).toHaveLength(0);
+    }
+  });
+
+  it("200 → le jeton n'est pas inclus dans le résultat", async () => {
+    stubFetch(200, FAKE_PAYMENT_PAYLOAD);
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).payments(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(TOKEN);
+  });
+
+  it("200 → user_id, client_id et recorded_by absents du résultat (anti-oracle ADR-0026)", async () => {
+    stubFetch(200, FAKE_PAYMENT_PAYLOAD);
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).payments(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("user_id");
+    expect(serialized).not.toContain("client_id");
+    expect(serialized).not.toContain("recorded_by");
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).payments(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unauthenticated");
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).payments(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("forbidden");
+  });
+
+  it("404 → not-found", async () => {
+    stubFetch(404, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).payments(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("not-found");
+  });
+
+  it("503 → unavailable", async () => {
+    stubFetch(503, {});
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).payments(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("erreur réseau → unavailable", async () => {
+    stubFetchNetworkError();
+
+    const result = await createHttpCustomerGateway({ accessToken: TOKEN }).payments(
+      SALON_ID,
+      CUSTOMER_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("appel réseau inclut l'en-tête Authorization", async () => {
+    const fetchMock = stubFetch(200, FAKE_PAYMENT_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).payments(SALON_ID, CUSTOMER_ID);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init?.headers as Record<string, string>;
+    expect(headers?.["Authorization"]).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("l'URL appelée contient /payments", async () => {
+    const fetchMock = stubFetch(200, FAKE_PAYMENT_PAYLOAD);
+
+    await createHttpCustomerGateway({ accessToken: TOKEN }).payments(SALON_ID, CUSTOMER_ID);
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/payments");
+    expect(url).toContain(SALON_ID);
+    expect(url).toContain(CUSTOMER_ID);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // updateNote() — note privée (US-4.5, #32)
 // ---------------------------------------------------------------------------
 

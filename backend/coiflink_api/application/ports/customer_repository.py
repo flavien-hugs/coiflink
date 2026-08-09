@@ -18,7 +18,7 @@ import uuid
 from typing import Protocol
 
 from coiflink_api.domain.customer import Customer, CustomerFilter, CustomerToCreate
-from coiflink_api.domain.visit import CustomerVisit
+from coiflink_api.domain.visit import CustomerPayment, CustomerVisit
 
 # Bornes de pagination de la liste (garde de coût §12.1 — patron catalogue #18).
 CUSTOMER_LIMIT_DEFAULT = 50
@@ -138,6 +138,28 @@ class CustomerRepository(Protocol):
 
         **Isolation §11.2** : les RDV sont refiltrés sur `salon_id` (jamais les RDV
         du même compte dans un **autre** salon — cloisonnement strict).
+        """
+        ...
+
+    def list_payments(
+        self, salon_id: uuid.UUID, customer_id: uuid.UUID
+    ) -> tuple[CustomerPayment, ...]:
+        """Paiements du **compte lié** à la fiche `(salon_id, customer_id)` (fiche client).
+
+        Renvoie les paiements du salon rattachés au compte utilisateur lié à la
+        fiche, **tous statuts confondus** (`PENDING`/`VALIDATED`/`CANCELLED`/
+        `ADJUSTED`) — c'est la colonne « statut » elle-même qui distingue ces
+        états à l'affichage —, triés **date décroissante** (plus récent d'abord).
+
+        **Encapsule le lien `user_id`** (anti-oracle ADR-0026, miroir
+        `list_visits`) : le pont `customer_profiles.user_id ==
+        payments.client_id` est calculé **entièrement en SQL** ; l'`user_id`/
+        `client_id` ne quitte **jamais** la couche de persistance. Si la fiche
+        est walk-in (`user_id IS NULL`) ou introuvable dans le salon, renvoie un
+        **tuple vide** — pas une erreur.
+
+        **Isolation §11.2** : les paiements sont refiltrés sur `salon_id`
+        (jamais un paiement du même compte dans un **autre** salon).
         """
         ...
 
