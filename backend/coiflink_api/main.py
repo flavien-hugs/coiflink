@@ -201,9 +201,16 @@ app.include_router(admin_router)
 #   - GET /salons/{id}/hairdresser-performance — performance par coiffeur : prestations
 #     réalisées + taux d'annulation (planning), CA généré (caisse nette **attribuée**
 #     via payments → appointments.hairdresser_id). Seul endpoint stats **nominatif**
-#     (nom d'affichage employé, jamais son contact).
-# STATS_READ_SALON a donc cinq consommateurs (#39 RDV du jour, #40 CA, #41 demande,
-# #42 clients actifs, #43 performance des coiffeurs). Lecture pure : aucune écriture,
-# aucun audit, aucune PII (§11.3). Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` :
-# une donnée d'exploitation salon n'est jamais publique.
+#     (nom d'affichage employé, jamais son contact) ;
+#   - GET /salons/{id}/dashboard/{kpis,revenue-series,attendance-series,in-progress,
+#     activity,alerts} — Dashboard Manager · activité du salon (§7.2, #148) : 4 KPI +
+#     évolution, deux graphiques (séries CA/fréquentation), prestations en cours (noms
+#     d'affichage), timeline des faits horodatés et alertes dérivées. Filtre de période
+#     unifié résolu serveur ; « en cours » dérivé (CONFIRMED ∩ slot @> now), « en
+#     attente » = PENDING — aucun statut ni migration nouveaux.
+# STATS_READ_SALON a donc six consommateurs (#39 RDV du jour, #40 CA, #41 demande,
+# #42 clients actifs, #43 performance des coiffeurs, #148 dashboard d'activité). Lecture
+# pure : aucune écriture, aucun audit, aucune PII counts-only / nom d'affichage maîtrisé
+# sur les vues opérationnelles (§11.3). Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS`
+# : une donnée d'exploitation salon n'est jamais publique.
 app.include_router(stats_router)

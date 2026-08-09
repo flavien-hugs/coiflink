@@ -91,7 +91,22 @@ _SERVICE_ID = uuid.UUID("44444444-0000-0000-0000-000000000004")
 _OPENING_HOURS_DICT = to_jsonb(
     parse_opening_hours({"weekly": {"mon": [{"start": "09:00", "end": "17:00"}]}})
 )
-_DATE = "2026-08-10"  # lundi
+
+
+def _next_monday_with_buffer() -> str:
+    """Prochain lundi (jour couvert par les horaires ci-dessus), au moins 2 jours dans
+    le futur — marge suffisante pour que les 3 rappels 24h/2h/30min (#46) restent
+    futurs quelle que soit l'heure d'exécution des tests. Une date figée finit toujours
+    par devenir trop proche ; ce calcul est relatif à `date.today()`.
+    """
+    today = datetime.date.today()
+    days_ahead = (7 - today.weekday()) % 7 or 7
+    if days_ahead < 2:
+        days_ahead += 7
+    return (today + datetime.timedelta(days=days_ahead)).isoformat()
+
+
+_DATE = _next_monday_with_buffer()  # lundi
 _AVAIL_URL = f"/catalog/salons/{_SALON_ID}/availability"
 _BOOK_URL = f"/salons/{_SALON_ID}/appointments"
 _MODIFY_APPT_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")
@@ -307,13 +322,14 @@ class TestGetAvailability:
         assert resp.status_code == 422
 
     def test_booked_slot_absent_from_response(self) -> None:
+        booked_date = datetime.date.fromisoformat(_DATE)
         booked_slot = SlotRange(
-            date=datetime.date(2026, 8, 10),
+            date=booked_date,
             start=datetime.time(9, 0),
             end=datetime.time(10, 0),
         )
         appts = FakeAppointmentRepository(
-            booked={(_SALON_ID, None, datetime.date(2026, 8, 10)): [booked_slot]}
+            booked={(_SALON_ID, None, booked_date): [booked_slot]}
         )
         resp = _client(appts=appts).get(self._url())
         slots = resp.json()["slots"]
@@ -620,13 +636,14 @@ class TestGetAvailabilityExtra:
         # Un créneau réservé pour le coiffeur A ne doit pas apparaître comme occupé
         # dans la disponibilité du coiffeur B.
         other_hairdresser = uuid.UUID("88888888-0000-0000-0000-000000000008")
+        booked_date = datetime.date.fromisoformat(_DATE)
         booked = SlotRange(
-            date=datetime.date(2026, 8, 10),
+            date=booked_date,
             start=datetime.time(9, 0),
             end=datetime.time(10, 0),
         )
         appts = FakeAppointmentRepository(
-            booked={(_SALON_ID, _HAIRDRESSER_ID, datetime.date(2026, 8, 10)): [booked]}
+            booked={(_SALON_ID, _HAIRDRESSER_ID, booked_date): [booked]}
         )
         url = (
             f"{_AVAIL_URL}?date={_DATE}&service_id={_SERVICE_ID}"

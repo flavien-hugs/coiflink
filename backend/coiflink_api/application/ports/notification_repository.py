@@ -27,11 +27,27 @@ from __future__ import annotations
 import uuid
 from typing import Protocol
 
-from coiflink_api.domain.notification import NotificationToCreate
+from coiflink_api.domain.notification import NotificationToCreate, SalonNotification
 
 
 class NotificationRepository(Protocol):
     """Contrat d'écriture (et d'annulation) des notifications."""
+
+    def list_for_salon(
+        self, salon_id: uuid.UUID, *, limit: int
+    ) -> tuple[SalonNotification, ...]:
+        """Dernières notifications **du salon**, de la plus récente à la plus ancienne (#148).
+
+        Lecture **bornée** (`limit`, top-N) des lignes `notifications` dont
+        `salon_id = :salon_id`, triées `created_at DESC, id DESC` (déterministe).
+        Projette **uniquement** `(created_at, type, title, message, appointment_id)` —
+        contenu **déjà neutre** (ADR-0006), **jamais** `user_id`, canal ni destinataire.
+        Alimente la timeline d'activité (§7.2) ; **matérialise** la lecture salon
+        différée par #47/#48 (parité, **sans** remise). L'isolation §11.2 est imposée
+        **en SQL** (`WHERE salon_id`), couverte par `ix_notifications_salon_id
+        (salon_id, created_at)`. Lecture pure (aucun `flush`).
+        """
+        ...
 
     def enqueue(self, notification: NotificationToCreate) -> None:
         """Persiste une notification dans la même unité de travail (sans acheminer).

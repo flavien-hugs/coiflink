@@ -383,6 +383,18 @@ class InvalidDiscrepancyFilter(DomainError):
     """
 
 
+class InvalidDashboardPeriod(DomainError):
+    """La période demandée par le tableau de bord d'activité est invalide (#148).
+
+    Levée par `domain/dashboard.py::resolve_period` quand `period=custom` est demandé
+    sans les deux bornes (`date_from`/`date_to`), quand la plage est incohérente
+    (`date_to < date_from`) ou quand le genre de période est inconnu. Les bornes sont
+    des **jours civils** `Africa/Abidjan` (UTC+0, convention #21). Message **neutre**
+    — il ne reprend **jamais** la valeur saisie (§11.3). L'adapter entrant la traduit
+    en `422`.
+    """
+
+
 class InvalidPlatformSummaryFilter(DomainError):
     """Un critère de filtrage de la supervision agrégée est invalide (US-5.6, #37).
 
@@ -549,6 +561,7 @@ __all__ = [
     "InvalidAdjustment",
     "InvalidTransactionFilter",
     "InvalidDiscrepancyFilter",
+    "InvalidDashboardPeriod",
     "InvalidPlatformSummaryFilter",
     "InvalidCustomerFilter",
     "InvalidServiceFilter",

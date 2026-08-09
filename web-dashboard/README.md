@@ -128,6 +128,44 @@ performance des coiffeurs **dégrade localement** (message neutre) sans casser l
 BFF ajouté : fetch serveur direct (patron du planning), via `http-stats-gateway` (étendu des méthodes
 `serviceDemand`, `activeClients` et `hairdresserPerformance`).
 
+### Tableau de bord — écran d'activité du salon (§7.2, #148 — [ADR-0039](../docs/adr/0039-dashboard-manager-activite-salon.md))
+
+Au-dessus de l'analytique détaillée #39–#43, la même page **`/gerant`** rend un **écran d'activité**
+consolidé « temps réel » sur données réelles (aucun mock) :
+
+- un **sélecteur de période** (`period-filter.tsx`) — **Aujourd'hui · Semaine · Mois · Personnalisée** —
+  qui pilote les `searchParams` de `/gerant` (`period`/`date_from`/`date_to`, `src/domain/dashboard/
+  period.ts`) : chaque changement redemande un **rendu serveur** (jamais un filtrage en mémoire) ;
+- **quatre cartes KPI** (`dashboard-kpi-cards.tsx`, via `GET dashboard/kpis`) — clients en attente,
+  prestations en cours, chiffre d'affaires, nombre de clientes — chacune avec un **badge d'évolution**
+  (↑/↓/→, couleur sémantique) vs la période précédente, sauf « prestations en cours » (instantané, sans
+  badge) ;
+- deux **graphiques SVG inline** rendus **côté serveur** (`revenue-chart.tsx`/`attendance-chart.tsx`,
+  `dashboard-bar-chart.tsx` en commun) — évolution du CA et fréquentation — **sans nouvelle dépendance**
+  (aucune librairie de charting, cf. ADR-0039), avec `aria-label` + table de secours accessible ; état
+  vide si la série est tout-à-zéro ;
+- la **liste des prestations en cours** (`in-progress-list.tsx`, via `GET dashboard/in-progress`) —
+  cliente · prestation(s) · professionnelle · heure de début/fin · statut, noms d'affichage uniquement ;
+- la **timeline des dernières activités** (`activity-timeline.tsx`, via `GET dashboard/activity`) —
+  paiements et notifications salon (nouvelle réservation/annulation/modification), triés du plus récent
+  au plus ancien, icône par genre ; « arrivée / début / fin de prestation » ne sont **pas** représentés
+  (aucune source, voir backend README) ;
+- le panneau **alertes importantes** (`alerts-panel.tsx`, via `GET dashboard/alerts`) — anomalie de
+  paiement, retard, attente prolongée — badge de sévérité + compteur, message actionnable.
+
+**Auto-refresh** (`auto-refresh.tsx`) : un intervalle (`setInterval`, ≥ 30 s) déclenche
+`router.refresh()`, qui **re-exécute le Server Component** — le jeton du cookie httpOnly reste lu
+**côté serveur**, jamais exposé au navigateur (invariant #14). Le rafraîchissement **se met en pause**
+quand l'onglet est masqué (`document.visibilityState`, Page Visibility API) : aucun appel superflu.
+
+**États.** `app/(gerant)/gerant/loading.tsx` + `dashboard-skeleton.tsx` couvrent le chargement initial et
+les changements de période ; chaque panneau a un état vide explicite (« Aucun client en attente »,
+« Aucune prestation en cours actuellement », « Aucune activité récente », « Aucune alerte ») ; une panne
+d'**un seul** panneau **dégrade localement** (`null`, message neutre, patron #41) sans casser le reste de
+l'écran. `http-stats-gateway.ts` est étendu de six méthodes (`dashboardKpis`, `revenueSeries`,
+`attendanceSeries`, `inProgress`, `activity`, `alerts`) — même union discriminée `{ok:true,…}|{ok:false,
+reason}`, jeton **serveur** jamais exposé, `cache: "no-store"`, mapping `200/401/403/422/503`.
+
 ### Paramètres — création & consultation du salon (#15)
 
 La section **Paramètres** (`/gerant/parametres`, Server Component) charge les salons du gérant **côté

@@ -36,6 +36,11 @@ from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.cash_journal import CashJournalEntry, CashJournalToAppend
 from coiflink_api.domain.enums import CashOperationType
 from coiflink_api.domain.payment import DEFAULT_CURRENCY
+from coiflink_api.domain.time_window import (
+    SALON_TIMEZONE,
+    day_end_utc,
+    day_start_utc,
+)
 
 # Précision de quantification du CA agrégé : le centime (miroir de `NUMERIC(12,2)`),
 # pour rester en `Decimal` (jamais un flottant), comme `SqlPlatformTransactionRepository`.
@@ -136,6 +141,46 @@ class SqlCashJournalEntryRepository:
         )
         total = self._session.scalar(stmt) or 0
         return decimal.Decimal(total).quantize(_AMOUNT_QUANTUM)
+
+    def net_revenue_series(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> Mapping[datetime.date, decimal.Decimal]:
+        """CA net du salon **par jour civil** sur la période (graphique d'évolution, #148).
+
+        Somme **signée** des lignes `PAYMENT`/`ADJUSTMENT` du salon dont `created_at` est
+        dans `[jour_début_utc(date_from), jour_fin_utc(date_to)]`, regroupée par **jour
+        civil** `Africa/Abidjan` (`date(created_at AT TIME ZONE 'Africa/Abidjan')`). CA
+        **net des corrections** (#34), parité #40. Un jour sans opération est **absent**
+        de la map (le domaine `build_series` le complète à `0.00`). Isolation §11.2
+        **réaffirmée en SQL** (`WHERE salon_id`), couverte par `ix_cash_journal_salon_id`.
+        Agrégat calculé **en base** ; `Decimal` quantifié au centime, aucune PII. Lecture
+        pure (aucun `flush`).
+        """
+
+        bucket = func.date(
+            func.timezone(SALON_TIMEZONE.key, models.CashJournal.created_at)
+        ).label("bucket")
+        stmt = (
+            select(
+                bucket,
+                func.coalesce(func.sum(models.CashJournal.amount), 0).label("net"),
+            )
+            .where(
+                models.CashJournal.salon_id == salon_id,
+                models.CashJournal.created_at >= day_start_utc(date_from),
+                models.CashJournal.created_at <= day_end_utc(date_to),
+                models.CashJournal.operation_type.in_(_REVENUE_OPERATION_TYPES),
+            )
+            .group_by(bucket)
+        )
+        return {
+            row.bucket: decimal.Decimal(row.net or 0).quantize(_AMOUNT_QUANTUM)
+            for row in self._session.execute(stmt).all()
+        }
 
     def net_revenue_by_hairdresser(
         self,

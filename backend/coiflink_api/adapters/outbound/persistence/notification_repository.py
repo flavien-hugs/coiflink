@@ -20,12 +20,12 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.enums import NotificationStatus, NotificationType
-from coiflink_api.domain.notification import NotificationToCreate
+from coiflink_api.domain.notification import NotificationToCreate, SalonNotification
 
 
 def _as_timestamptz(value: datetime.datetime | None) -> datetime.datetime | None:
@@ -46,6 +46,47 @@ class SqlNotificationRepository:
 
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def list_for_salon(
+        self, salon_id: uuid.UUID, *, limit: int
+    ) -> tuple[SalonNotification, ...]:
+        """Dernières notifications **du salon**, de la plus récente à la plus ancienne (#148).
+
+        `SELECT` **borné** (`limit`, top-N) sur `notifications` filtré `salon_id`, trié
+        `created_at DESC, id DESC` (déterministe). Projette **uniquement**
+        `(created_at, type, title, message, appointment_id)` — contenu **déjà neutre**
+        (ADR-0006), jamais `user_id`/canal/destinataire. Isolation §11.2 imposée **en
+        SQL** (`WHERE salon_id`), couverte par `ix_notifications_salon_id (salon_id,
+        created_at)`. Lecture pure (aucun `flush`).
+        """
+
+        stmt = (
+            select(
+                models.Notification.created_at,
+                models.Notification.type,
+                models.Notification.title,
+                models.Notification.message,
+                models.Notification.appointment_id,
+            )
+            .where(models.Notification.salon_id == salon_id)
+            .order_by(
+                models.Notification.created_at.desc(),
+                models.Notification.id.desc(),
+            )
+            .limit(limit)
+        )
+        return tuple(
+            SalonNotification(
+                created_at=created_at,
+                type=type_,
+                title=title,
+                message=message,
+                appointment_id=appointment_id,
+            )
+            for created_at, type_, title, message, appointment_id in (
+                self._session.execute(stmt).all()
+            )
+        )
 
     def enqueue(self, notification: NotificationToCreate) -> None:
         """Insère une notification dans la même unité de travail que le RDV.

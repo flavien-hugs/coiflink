@@ -114,6 +114,25 @@ class NotificationToCreate:
 
 
 @dataclass(frozen=True)
+class SalonNotification:
+    """Ligne de notification du salon en **lecture** (timeline d'activité, #148).
+
+    Projection **minimale et neutre** d'une ligne `notifications` du salon, pour la
+    timeline « Transactions récentes » (§7.2) : `created_at` (horodatage réel), `type`
+    (`NEW_BOOKING`/`CANCELLATION`/`APPOINTMENT_UPDATE`…), `appointment_id` (opaque) et
+    le `title`/`message` **déjà templatés et neutres** (aucune PII, ADR-0006). Ne porte
+    **jamais** `user_id`, canal, ni destinataire. Matérialise la lecture salon différée
+    par #47/#48 (parité, **sans** remise).
+    """
+
+    created_at: datetime.datetime
+    type: str
+    title: str
+    message: str
+    appointment_id: uuid.UUID | None = None
+
+
+@dataclass(frozen=True)
 class ChannelAvailability:
     """Signaux **non-PII** de disponibilité de canal (des booléens, jamais la valeur).
 
@@ -402,6 +421,7 @@ __all__ = [
     "SALON_MODIFICATION_TITLE",
     "SALON_MODIFICATION_MESSAGE",
     "NotificationToCreate",
+    "SalonNotification",
     "ChannelAvailability",
     "resolve_notification_channel",
     "resolve_confirmation_channel",
