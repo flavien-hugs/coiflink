@@ -268,6 +268,10 @@ class Service(Base):
     price: Mapped[decimal.Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Stocke une **clé d'objet** S3-compatible (`services/{salon_id}/{uuid}.png`),
+    # jamais une URL : l'URL signée est calculée à la lecture (ADR-0005, miroir
+    # `Salon.logo_object_key`). Migration 0010.
+    image_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
     )

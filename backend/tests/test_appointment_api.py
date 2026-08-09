@@ -154,6 +154,7 @@ def _make_service(
         duration_minutes=duration_minutes,
         category="Coupe",
         is_active=is_active,
+        image_object_key=None,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )

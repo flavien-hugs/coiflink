@@ -23,9 +23,11 @@ import uuid
 import pytest
 
 from coiflink_api.application.services import (
+    AttachServiceImage,
     CreateService,
     DeactivateService,
     GetService,
+    IssueServiceImageUploadUrl,
     ListSalonServices,
     ReactivateService,
     ServiceCommand,
@@ -33,14 +35,16 @@ from coiflink_api.application.services import (
 )
 from coiflink_api.domain.audit import AuditAction, AuditEntry
 from coiflink_api.domain.errors import (
+    InvalidMediaType,
     InvalidServiceDuration,
     InvalidServiceName,
     InvalidServicePrice,
+    MediaKeyMismatch,
     ServiceNotFound,
 )
 from coiflink_api.domain.service import ServiceFilter
 
-from .conftest import FakeAuditLog, FakeServiceRepository
+from .conftest import FakeAuditLog, FakeMediaStorage, FakeServiceRepository
 
 # ---------------------------------------------------------------------------
 # Constantes partagées
@@ -768,5 +772,158 @@ class TestReactivateService:
         with pytest.raises(ServiceNotFound):
             ReactivateService(repo, audit).execute(
                 _SALON_ID, uuid.uuid4(), actor_user_id=_ACTOR_ID
+            )
+        assert audit.recorded == []
+
+
+# ---------------------------------------------------------------------------
+# IssueServiceImageUploadUrl
+# ---------------------------------------------------------------------------
+
+
+class TestIssueServiceImageUploadUrl:
+    def test_returns_presigned_upload(self) -> None:
+        storage = FakeMediaStorage()
+        result = IssueServiceImageUploadUrl(storage).execute(_SALON_ID, "image/png")
+        assert result.method == "PUT"
+        assert result.expires_in == 900
+
+    def test_object_key_starts_with_services_salon_prefix(self) -> None:
+        storage = FakeMediaStorage()
+        result = IssueServiceImageUploadUrl(storage).execute(_SALON_ID, "image/png")
+        assert result.object_key.startswith(f"services/{_SALON_ID}/")
+
+    def test_object_key_ends_with_mime_extension(self) -> None:
+        storage = FakeMediaStorage()
+        result = IssueServiceImageUploadUrl(storage).execute(_SALON_ID, "image/jpeg")
+        assert result.object_key.endswith(".jpg")
+
+    def test_invalid_content_type_raises(self) -> None:
+        storage = FakeMediaStorage()
+        with pytest.raises(InvalidMediaType):
+            IssueServiceImageUploadUrl(storage).execute(_SALON_ID, "image/gif")
+
+    def test_storage_called_once(self) -> None:
+        storage = FakeMediaStorage()
+        IssueServiceImageUploadUrl(storage).execute(_SALON_ID, "image/png")
+        assert len(storage.uploads) == 1
+
+
+# ---------------------------------------------------------------------------
+# AttachServiceImage
+# ---------------------------------------------------------------------------
+
+
+class TestAttachServiceImage:
+    def _create(self, repo: FakeServiceRepository, audit: FakeAuditLog):  # type: ignore[no-untyped-def]
+        return CreateService(repo, audit).execute(
+            _SALON_ID, _VALID_COMMAND, actor_user_id=_ACTOR_ID
+        )
+
+    def test_valid_key_attached(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = self._create(repo, audit)
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        AttachServiceImage(repo, audit).execute(
+            _SALON_ID, service.id, key, actor_user_id=_ACTOR_ID
+        )
+        updated = repo.find_by_id(_SALON_ID, service.id)
+        assert updated is not None
+        assert updated.image_object_key == key
+
+    def test_null_key_clears_image(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = self._create(repo, audit)
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        AttachServiceImage(repo, audit).execute(
+            _SALON_ID, service.id, key, actor_user_id=_ACTOR_ID
+        )
+        AttachServiceImage(repo, audit).execute(
+            _SALON_ID, service.id, None, actor_user_id=_ACTOR_ID
+        )
+        updated = repo.find_by_id(_SALON_ID, service.id)
+        assert updated is not None
+        assert updated.image_object_key is None
+
+    def test_key_with_wrong_salon_prefix_raises(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = self._create(repo, audit)
+        bad_key = f"services/{_OTHER_SALON_ID}/{uuid.uuid4()}.png"
+        with pytest.raises(MediaKeyMismatch):
+            AttachServiceImage(repo, audit).execute(
+                _SALON_ID, service.id, bad_key, actor_user_id=_ACTOR_ID
+            )
+
+    def test_unknown_service_raises_not_found(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        with pytest.raises(ServiceNotFound):
+            AttachServiceImage(repo, audit).execute(
+                _SALON_ID, uuid.uuid4(), key, actor_user_id=_ACTOR_ID
+            )
+
+    def test_old_image_deleted_from_storage(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        storage = FakeMediaStorage()
+        service = self._create(repo, audit)
+        old_key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        repo.set_image(_SALON_ID, service.id, old_key)
+        new_key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        AttachServiceImage(repo, audit, storage).execute(
+            _SALON_ID, service.id, new_key, actor_user_id=_ACTOR_ID
+        )
+        assert old_key in storage.deleted
+
+    def test_no_deletion_when_storage_none(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = self._create(repo, audit)
+        old_key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        repo.set_image(_SALON_ID, service.id, old_key)
+        new_key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        # Ne doit pas lever d'exception même sans stockage.
+        AttachServiceImage(repo, audit).execute(
+            _SALON_ID, service.id, new_key, actor_user_id=_ACTOR_ID
+        )
+
+    def test_same_key_is_not_deleted_from_storage(self) -> None:
+        """Ré-attacher la même clé (idempotent) : l'objet ne doit pas être supprimé."""
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        storage = FakeMediaStorage()
+        service = self._create(repo, audit)
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        repo.set_image(_SALON_ID, service.id, key)
+        AttachServiceImage(repo, audit, storage).execute(
+            _SALON_ID, service.id, key, actor_user_id=_ACTOR_ID
+        )
+        assert key not in storage.deleted
+
+    def test_audit_action_is_service_updated(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        service = self._create(repo, audit)
+        audit.recorded.clear()
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        AttachServiceImage(repo, audit).execute(
+            _SALON_ID, service.id, key, actor_user_id=_ACTOR_ID
+        )
+        assert len(audit.recorded) == 1
+        entry: AuditEntry = audit.recorded[0]
+        assert entry.action == AuditAction.SERVICE_UPDATED.value
+        assert entry.metadata == {"changed": ["image_object_key"]}
+
+    def test_no_audit_if_service_not_found(self) -> None:
+        repo = FakeServiceRepository()
+        audit = FakeAuditLog()
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        with pytest.raises(ServiceNotFound):
+            AttachServiceImage(repo, audit).execute(
+                _SALON_ID, uuid.uuid4(), key, actor_user_id=_ACTOR_ID
             )
         assert audit.recorded == []

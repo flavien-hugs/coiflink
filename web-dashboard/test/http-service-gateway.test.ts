@@ -23,8 +23,19 @@ const FAKE_SERVICE_PAYLOAD = {
   duration_minutes: 30,
   category: "Coupe",
   is_active: true,
+  image_url: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
+};
+
+// Forme du corps `ServiceImageUploadUrlResponse` renvoyé par le **backend**
+// (le gateway appelle le backend directement, jamais un Route Handler BFF).
+const FAKE_UPLOAD_URL_PAYLOAD = {
+  url: "https://fake-bucket.local/upload/services/salon-uuid-123/abc.png",
+  method: "PUT",
+  headers: { "Content-Type": "image/png" },
+  object_key: "services/salon-uuid-123/abc.png",
+  expires_in: 900,
 };
 
 const VALID_INPUT: ServiceInput = {
@@ -674,6 +685,254 @@ describe("createHttpServiceGateway().reactivate() — codes de statut", () => {
     const result = await createHttpServiceGateway({ accessToken: secretToken }).reactivate(
       SALON_ID,
       SERVICE_ID,
+    );
+    expect(JSON.stringify(result)).not.toContain(secretToken);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issueImageUploadUrl — sans jeton
+// ---------------------------------------------------------------------------
+
+describe("createHttpServiceGateway().issueImageUploadUrl() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpServiceGateway({ accessToken: null }).issueImageUploadUrl(
+      SALON_ID,
+      "image/png",
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issueImageUploadUrl — codes de statut
+// ---------------------------------------------------------------------------
+
+describe("createHttpServiceGateway().issueImageUploadUrl() — codes de statut", () => {
+  it("200 → ok:true avec l'upload transformé (snake_case → camelCase)", async () => {
+    stubFetch(200, FAKE_UPLOAD_URL_PAYLOAD);
+
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).issueImageUploadUrl(
+      SALON_ID,
+      "image/png",
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.upload.method).toBe("PUT");
+      expect(result.upload.objectKey).toBe("services/salon-uuid-123/abc.png");
+      expect(result.upload.expiresIn).toBe(900);
+      expect(result.upload.headers).toEqual({ "Content-Type": "image/png" });
+    }
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).issueImageUploadUrl(
+      SALON_ID,
+      "image/png",
+    );
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).issueImageUploadUrl(
+      SALON_ID,
+      "image/png",
+    );
+    expect(result).toEqual({ ok: false, reason: "forbidden" });
+  });
+
+  it("422 → invalid", async () => {
+    stubFetch(422, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).issueImageUploadUrl(
+      SALON_ID,
+      "image/gif",
+    );
+    expect(result).toEqual({ ok: false, reason: "invalid" });
+  });
+
+  it("503 → unavailable", async () => {
+    stubFetch(503, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).issueImageUploadUrl(
+      SALON_ID,
+      "image/png",
+    );
+    expect(result).toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("erreur réseau → unavailable", async () => {
+    stubFetchNetworkError();
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).issueImageUploadUrl(
+      SALON_ID,
+      "image/png",
+    );
+    expect(result).toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("le corps envoyé contient le content_type en snake_case", async () => {
+    const fetchMock = stubFetch(200, FAKE_UPLOAD_URL_PAYLOAD);
+
+    await createHttpServiceGateway({ accessToken: TOKEN }).issueImageUploadUrl(
+      SALON_ID,
+      "image/webp",
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sentBody = JSON.parse(init.body as string);
+    expect(sentBody).toEqual({ content_type: "image/webp" });
+  });
+
+  it("l'URL cible /services/media/upload-url", async () => {
+    const fetchMock = stubFetch(200, FAKE_UPLOAD_URL_PAYLOAD);
+
+    await createHttpServiceGateway({ accessToken: TOKEN }).issueImageUploadUrl(
+      SALON_ID,
+      "image/png",
+    );
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain(SALON_ID);
+    expect(url.endsWith("/services/media/upload-url")).toBe(true);
+  });
+
+  it("le jeton ne figure pas dans le résultat", async () => {
+    stubFetch(200, FAKE_UPLOAD_URL_PAYLOAD);
+    const secretToken = "super-secret-token-xyz";
+    const result = await createHttpServiceGateway({
+      accessToken: secretToken,
+    }).issueImageUploadUrl(SALON_ID, "image/png");
+    expect(JSON.stringify(result)).not.toContain(secretToken);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachImage — sans jeton
+// ---------------------------------------------------------------------------
+
+describe("createHttpServiceGateway().attachImage() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpServiceGateway({ accessToken: null }).attachImage(
+      SALON_ID,
+      SERVICE_ID,
+      "services/salon-uuid-123/abc.png",
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachImage — codes de statut
+// ---------------------------------------------------------------------------
+
+describe("createHttpServiceGateway().attachImage() — codes de statut", () => {
+  it("200 → ok:true avec la prestation (image_url incluse)", async () => {
+    stubFetch(200, {
+      ...FAKE_SERVICE_PAYLOAD,
+      image_url: "https://fake-bucket.local/download/abc.png?sig=fake",
+    });
+
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+      SALON_ID,
+      SERVICE_ID,
+      "services/salon-uuid-123/abc.png",
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.service.imageUrl).toBe(
+        "https://fake-bucket.local/download/abc.png?sig=fake",
+      );
+    }
+  });
+
+  it("objectKey null envoyé tel quel (efface l'illustration)", async () => {
+    const fetchMock = stubFetch(200, FAKE_SERVICE_PAYLOAD);
+
+    await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+      SALON_ID,
+      SERVICE_ID,
+      null,
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sentBody = JSON.parse(init.body as string);
+    expect(sentBody).toEqual({ object_key: null });
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+      SALON_ID,
+      SERVICE_ID,
+      "k",
+    );
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+      SALON_ID,
+      SERVICE_ID,
+      "k",
+    );
+    expect(result).toEqual({ ok: false, reason: "forbidden" });
+  });
+
+  it("404 → not-found", async () => {
+    stubFetch(404, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+      SALON_ID,
+      SERVICE_ID,
+      "k",
+    );
+    expect(result).toEqual({ ok: false, reason: "not-found" });
+  });
+
+  it("422 → invalid (clé hors préfixe du salon)", async () => {
+    stubFetch(422, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+      SALON_ID,
+      SERVICE_ID,
+      "services/other-salon/abc.png",
+    );
+    expect(result).toEqual({ ok: false, reason: "invalid" });
+  });
+
+  it("l'URL cible .../services/{serviceId}/image", async () => {
+    const fetchMock = stubFetch(200, FAKE_SERVICE_PAYLOAD);
+
+    await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+      "my-salon",
+      "my-service",
+      "k",
+    );
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("my-salon");
+    expect(url).toContain("my-service");
+    expect(url.endsWith("/image")).toBe(true);
+  });
+
+  it("le jeton ne figure pas dans le résultat", async () => {
+    stubFetch(200, FAKE_SERVICE_PAYLOAD);
+    const secretToken = "super-secret-token-xyz";
+    const result = await createHttpServiceGateway({ accessToken: secretToken }).attachImage(
+      SALON_ID,
+      SERVICE_ID,
+      "k",
     );
     expect(JSON.stringify(result)).not.toContain(secretToken);
   });

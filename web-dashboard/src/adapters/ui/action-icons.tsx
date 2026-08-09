@@ -196,3 +196,13 @@ export function HashIcon({ className = "" }: IconProps) {
     </svg>
   );
 }
+
+export function ImageIcon({ className = "" }: IconProps) {
+  return (
+    <svg {...ICON_PROPS} className={`size-4 ${className}`}>
+      <rect x="2.5" y="3.5" width="15" height="13" rx="1.5" />
+      <circle cx="7" cy="8" r="1.4" />
+      <path d="M3.5 14.5 8 10l2.5 2.5L14 9l3 3.5" strokeLinejoin="round" />
+    </svg>
+  );
+}

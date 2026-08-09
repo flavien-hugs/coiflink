@@ -10,6 +10,22 @@
 
 export const SERVICE_NAME_MAX_LENGTH = 255;
 export const CATEGORY_MAX_LENGTH = 128;
+
+// Liste blanche des types MIME acceptés pour l'illustration d'une prestation —
+// **parité stricte** avec `domain.salon.ALLOWED_IMAGE_TYPES` (backend, ADR-0005) :
+// rejet côté client immédiat (retour instantané), le backend reste l'autorité
+// (revalide le MIME avant d'émettre l'URL signée).
+export const ALLOWED_SERVICE_IMAGE_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+] as const;
+
+export function isAllowedServiceImageType(contentType: string): boolean {
+  return (ALLOWED_SERVICE_IMAGE_TYPES as readonly string[]).includes(
+    contentType.trim().toLowerCase(),
+  );
+}
 // Aligné sur la colonne `NUMERIC(12,2)` : au plus 99999999.99, 2 décimales.
 export const PRICE_MAX = 99999999.99;
 // Robustesse : une prestation ne dure pas plus d'une journée (budget PRD §12).
@@ -25,6 +41,10 @@ export interface Service {
   durationMinutes: number;
   category: string | null;
   isActive: boolean;
+  // URL **signée** de lecture de l'illustration (ou `null` si aucune image ou
+  // stockage non configuré) — jamais la clé d'objet brute (ADR-0005). Attachée
+  // séparément (`ServiceGateway.attachImage`), jamais via `create`/`update`.
+  imageUrl: string | null;
   createdAt: string;
   updatedAt: string;
 }

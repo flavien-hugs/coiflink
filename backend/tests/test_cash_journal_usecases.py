@@ -89,6 +89,7 @@ def _service_repo_for(price: decimal.Decimal) -> FakeServiceRepository:
         duration_minutes=30,
         category=None,
         is_active=True,
+        image_object_key=None,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )
@@ -602,6 +603,7 @@ def _make_inactive_service_repo() -> FakeServiceRepository:
         duration_minutes=30,
         category=None,
         is_active=False,
+        image_object_key=None,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )

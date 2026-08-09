@@ -41,6 +41,24 @@ export type DeactivateServiceResult =
       reason: "forbidden" | "unauthenticated" | "not-found" | "unavailable";
     };
 
+// Instructions de téléversement direct navigateur → stockage objet (ADR-0005).
+// `invalid` = `422` (type MIME hors liste blanche), `unavailable` couvre aussi
+// le `503` (stockage objet non configuré côté backend).
+export interface PresignedUpload {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  objectKey: string;
+  expiresIn: number;
+}
+
+export type IssueImageUploadUrlResult =
+  | { ok: true; upload: PresignedUpload }
+  | {
+      ok: false;
+      reason: "invalid" | "forbidden" | "unauthenticated" | "unavailable";
+    };
+
 export interface ServiceGateway {
   // Proxifie `GET /salons/{id}/services` (actives et désactivées, vue gérant),
   // filtrable via `options` (`q`/`category`/`createdFrom`/`createdTo`).
@@ -57,4 +75,18 @@ export interface ServiceGateway {
   deactivate(salonId: string, serviceId: string): Promise<DeactivateServiceResult>;
   // Proxifie `POST /salons/{id}/services/{serviceId}/reactivate` (§11.4) ; renvoie la prestation.
   reactivate(salonId: string, serviceId: string): Promise<MutateServiceResult>;
+  // Proxifie `POST /salons/{id}/services/media/upload-url` : émet une URL
+  // signée de téléversement direct navigateur → stockage objet (ADR-0005).
+  // Le binaire ne transite **jamais** par l'API/BFF.
+  issueImageUploadUrl(
+    salonId: string,
+    contentType: string,
+  ): Promise<IssueImageUploadUrlResult>;
+  // Proxifie `PUT /salons/{id}/services/{serviceId}/image` : attache la clé
+  // **préalablement téléversée** (ou `null` pour effacer l'illustration).
+  attachImage(
+    salonId: string,
+    serviceId: string,
+    objectKey: string | null,
+  ): Promise<MutateServiceResult>;
 }

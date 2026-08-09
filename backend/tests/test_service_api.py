@@ -43,6 +43,7 @@ from .conftest import (
     TEST_JWT_SECRET,
     FakeAuditLog,
     FakeAuthUserRepository,
+    FakeMediaStorage,
     FakeServiceRepository,
     FakeSalonScopeRepository,
     make_access_token,
@@ -93,6 +94,14 @@ def _service_url(salon_id: uuid.UUID, service_id: uuid.UUID) -> str:
     return f"/salons/{salon_id}/services/{service_id}"
 
 
+def _upload_url_url(salon_id: uuid.UUID) -> str:
+    return f"/salons/{salon_id}/services/media/upload-url"
+
+
+def _image_url(salon_id: uuid.UUID, service_id: uuid.UUID) -> str:
+    return f"/salons/{salon_id}/services/{service_id}/image"
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -133,6 +142,73 @@ def manager_client(
     try:
         yield TestClient(app)
     finally:
+        app.dependency_overrides.pop(get_service_repository, None)
+        app.dependency_overrides.pop(get_audit_log, None)
+        app.dependency_overrides.pop(get_user_repository, None)
+        app.dependency_overrides.pop(get_access_policy, None)
+
+
+@pytest.fixture()
+def manager_client_with_storage(
+    service_repo: FakeServiceRepository,
+    audit_log: FakeAuditLog,
+) -> Generator[tuple[TestClient, FakeMediaStorage], None, None]:
+    """MANAGER authentifié, stockage média **configuré** (`FakeMediaStorage`)."""
+    creds = _creds(_MANAGER_ID, Role.MANAGER.value)
+    user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
+    scope_repo = FakeSalonScopeRepository(scopes={_MANAGER_ID: frozenset({_SALON_ID})})
+    storage = FakeMediaStorage()
+
+    original_storage = getattr(app.state, "media_storage", None)
+    app.state.media_storage = storage
+    app.dependency_overrides[get_service_repository] = lambda: service_repo
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    app.dependency_overrides[get_user_repository] = lambda: user_repo
+    app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+    try:
+        yield TestClient(app), storage
+    finally:
+        app.state.media_storage = original_storage
+        app.dependency_overrides.pop(get_service_repository, None)
+        app.dependency_overrides.pop(get_audit_log, None)
+        app.dependency_overrides.pop(get_user_repository, None)
+        app.dependency_overrides.pop(get_access_policy, None)
+
+
+@pytest.fixture()
+def manager_client_with_service_and_storage(
+    service_repo: FakeServiceRepository,
+    audit_log: FakeAuditLog,
+) -> Generator[tuple[TestClient, uuid.UUID, FakeMediaStorage], None, None]:
+    """MANAGER, une prestation pré-créée, stockage média **configuré**."""
+    from coiflink_api.application.services import CreateService, ServiceCommand
+
+    service = CreateService(service_repo, audit_log).execute(
+        _SALON_ID,
+        ServiceCommand(
+            name="Coupe homme",
+            price=decimal.Decimal("5000.00"),
+            duration_minutes=30,
+        ),
+        actor_user_id=_MANAGER_ID,
+    )
+    audit_log.recorded.clear()
+
+    creds = _creds(_MANAGER_ID, Role.MANAGER.value)
+    user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
+    scope_repo = FakeSalonScopeRepository(scopes={_MANAGER_ID: frozenset({_SALON_ID})})
+    storage = FakeMediaStorage()
+
+    original_storage = getattr(app.state, "media_storage", None)
+    app.state.media_storage = storage
+    app.dependency_overrides[get_service_repository] = lambda: service_repo
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    app.dependency_overrides[get_user_repository] = lambda: user_repo
+    app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+    try:
+        yield TestClient(app), service.id, storage
+    finally:
+        app.state.media_storage = original_storage
         app.dependency_overrides.pop(get_service_repository, None)
         app.dependency_overrides.pop(get_audit_log, None)
         app.dependency_overrides.pop(get_user_repository, None)
@@ -994,6 +1070,207 @@ class TestReactivateService:
 # ---------------------------------------------------------------------------
 # Deny-by-default (invariant RBAC)
 # ---------------------------------------------------------------------------
+
+
+class TestServiceImageUploadUrl:
+    def test_returns_200_with_presigned_fields(
+        self, manager_client_with_storage: tuple[TestClient, FakeMediaStorage]
+    ) -> None:
+        client, _storage = manager_client_with_storage
+        r = client.post(
+            _upload_url_url(_SALON_ID),
+            json={"content_type": "image/png"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["method"] == "PUT"
+        assert body["object_key"].startswith(f"services/{_SALON_ID}/")
+        assert body["expires_in"] == 900
+
+    def test_invalid_mime_returns_422(
+        self, manager_client_with_storage: tuple[TestClient, FakeMediaStorage]
+    ) -> None:
+        client, _storage = manager_client_with_storage
+        r = client.post(
+            _upload_url_url(_SALON_ID),
+            json={"content_type": "image/gif"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+
+    def test_no_token_returns_401(
+        self, manager_client_with_storage: tuple[TestClient, FakeMediaStorage]
+    ) -> None:
+        client, _storage = manager_client_with_storage
+        r = client.post(_upload_url_url(_SALON_ID), json={"content_type": "image/png"})
+        assert r.status_code == 401
+
+    def test_manager_out_of_scope_returns_403(
+        self, manager_client_with_storage: tuple[TestClient, FakeMediaStorage]
+    ) -> None:
+        client, _storage = manager_client_with_storage
+        r = client.post(
+            _upload_url_url(_OTHER_SALON_ID),
+            json={"content_type": "image/png"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 403
+
+    def test_storage_none_returns_503(
+        self,
+        service_repo: FakeServiceRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Sans stockage objet configuré, l'émission d'URL est indisponible (503)."""
+        creds = _creds(_MANAGER_ID, Role.MANAGER.value)
+        user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
+        scope_repo = FakeSalonScopeRepository(scopes={_MANAGER_ID: frozenset({_SALON_ID})})
+
+        original_storage = getattr(app.state, "media_storage", None)
+        app.state.media_storage = None
+        app.dependency_overrides[get_service_repository] = lambda: service_repo
+        app.dependency_overrides[get_audit_log] = lambda: audit_log
+        app.dependency_overrides[get_user_repository] = lambda: user_repo
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+        try:
+            client = TestClient(app)
+            r = client.post(
+                _upload_url_url(_SALON_ID),
+                json={"content_type": "image/png"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+            assert r.status_code == 503
+        finally:
+            app.state.media_storage = original_storage
+            app.dependency_overrides.pop(get_service_repository, None)
+            app.dependency_overrides.pop(get_audit_log, None)
+            app.dependency_overrides.pop(get_user_repository, None)
+            app.dependency_overrides.pop(get_access_policy, None)
+
+
+class TestAttachServiceImage:
+    def test_valid_key_returns_200_with_image_url(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        r = client.put(
+            _image_url(_SALON_ID, service_id),
+            json={"object_key": key},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 200
+        assert r.json()["image_url"] is not None
+
+    def test_key_from_other_salon_returns_422(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        bad_key = f"services/{_OTHER_SALON_ID}/{uuid.uuid4()}.png"
+        r = client.put(
+            _image_url(_SALON_ID, service_id),
+            json={"object_key": bad_key},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
+
+    def test_null_key_clears_image(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        client.put(
+            _image_url(_SALON_ID, service_id),
+            json={"object_key": key},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        r = client.put(
+            _image_url(_SALON_ID, service_id),
+            json={"object_key": None},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 200
+        assert r.json()["image_url"] is None
+
+    def test_unknown_service_returns_404(
+        self, manager_client_with_storage: tuple[TestClient, FakeMediaStorage]
+    ) -> None:
+        client, _storage = manager_client_with_storage
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        r = client.put(
+            _image_url(_SALON_ID, uuid.uuid4()),
+            json={"object_key": key},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 404
+
+    def test_no_token_returns_401(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        r = client.put(
+            _image_url(_SALON_ID, service_id), json={"object_key": None}
+        )
+        assert r.status_code == 401
+
+    def test_manager_out_of_scope_returns_403(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        r = client.put(
+            _image_url(_OTHER_SALON_ID, service_id),
+            json={"object_key": None},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 403
+
+    def test_audit_entry_recorded(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+        audit_log: FakeAuditLog,
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        client.put(
+            _image_url(_SALON_ID, service_id),
+            json={"object_key": key},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert len(audit_log.recorded) == 1
+        assert audit_log.recorded[0].metadata == {"changed": ["image_object_key"]}
+
+
+class TestServiceImageRoutesDoNotCollide:
+    def test_upload_url_and_service_id_route_are_distinct(
+        self, manager_client_with_storage: tuple[TestClient, FakeMediaStorage]
+    ) -> None:
+        """`.../services/media/upload-url` n'est jamais confondue avec `.../services/{id}`."""
+        client, _storage = manager_client_with_storage
+        r = client.get(
+            _service_url(_SALON_ID, uuid.uuid4()),
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        # « media » n'existe pas comme prestation : 404 (portée déjà validée),
+        # jamais une collision avec la route littérale `media/upload-url`.
+        assert r.status_code == 404
 
 
 class TestDenyByDefault:
