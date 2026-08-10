@@ -37,6 +37,10 @@ _EXPECTED_PUBLIC_PATHS = frozenset(
         "/auth/register/manager",
         "/auth/login",
         "/auth/refresh",
+        # Authentification d'une borne kiosque (#155, US-8.1) — endpoint d'auth,
+        # rate-limité, `401` générique constant (ADR-0041). Le provisioning des
+        # bornes (`/salons/{id}/kiosk-devices`) reste protégé, jamais public.
+        "/auth/kiosk/login",
         "/auth/password/reset/request",
         "/auth/password/reset/confirm",
         "/catalog/salons",
@@ -135,3 +139,69 @@ def test_message_response_carries_only_a_detail() -> None:
     from coiflink_api.adapters.inbound.auth import MessageResponse
 
     assert set(MessageResponse.model_fields) == {"detail"}
+
+
+# --------------------------------------------------------------------------- #
+# 3. Schémas de réponse bornes kiosque — §11.3 (US-8.1, #155)
+# --------------------------------------------------------------------------- #
+
+def test_kiosk_device_response_has_no_secret_field() -> None:
+    """`KioskDeviceResponse` (GET/DELETE) ne déclare aucun champ secret (§11.3).
+
+    La vue publique exposée sur les routes `GET`/`DELETE` ne porte **jamais** le
+    secret de device ni son condensat — seul le `ProvisionKioskDeviceResponse`
+    (`POST 201`) peut exposer `secret`, et uniquement lors de la création.
+    """
+
+    from coiflink_api.adapters.inbound.kiosk_devices import KioskDeviceResponse
+
+    fields = set(KioskDeviceResponse.model_fields)
+    for forbidden in ("secret", "password_hash", "hash"):
+        assert forbidden not in fields, (
+            f"KioskDeviceResponse expose le champ sensible « {forbidden} »."
+        )
+
+
+def test_provision_kiosk_response_has_secret_but_no_hash() -> None:
+    """`ProvisionKioskDeviceResponse` (`POST 201`) expose `secret` mais jamais le condensat.
+
+    Le secret n'apparaît **qu'ici, une seule fois** (invariant de non-relecture) —
+    jamais dans `GET`/`DELETE` qui utilisent `KioskDeviceResponse` (sans `secret`).
+    """
+
+    from coiflink_api.adapters.inbound.kiosk_devices import ProvisionKioskDeviceResponse
+
+    fields = set(ProvisionKioskDeviceResponse.model_fields)
+    assert "secret" in fields, "Le secret doit figurer dans la réponse 201 (provisioning)."
+    assert "password_hash" not in fields, (
+        "Le condensat argon2id ne doit jamais être exposé dans un schéma de réponse."
+    )
+
+
+def test_kiosk_provision_path_is_not_public() -> None:
+    """`/salons/{salon_id}/kiosk-devices` est **protégée** — jamais dans la liste blanche.
+
+    Le provisioning des bornes exige `KIOSK_PROVISION` (gérant uniquement) : le
+    chemin ne peut pas figurer dans `PUBLIC_ROUTE_PATHS` (deny-by-default, ADR-0015).
+    """
+
+    from coiflink_api.adapters.inbound.security import is_public_path
+
+    assert not is_public_path("/salons/{salon_id}/kiosk-devices"), (
+        "Le provisioning des bornes ne doit jamais être accessible publiquement."
+    )
+
+
+def test_kiosk_login_path_is_public_and_auth_family() -> None:
+    """`/auth/kiosk/login` est bien dans la liste blanche (endpoint d'auth, rate-limité).
+
+    Cette route est l'**unique** entrée publique liée aux bornes : le device échange
+    son credential longue durée contre une paire JWT courte. Elle est déjà couverte
+    par `test_public_route_paths_matches_expected_set` — on confirme ici l'invariant
+    de famille (`/auth/…`) au niveau des bornes.
+    """
+
+    from coiflink_api.adapters.inbound.security import PUBLIC_ROUTE_PATHS, is_public_path
+
+    assert "/auth/kiosk/login" in PUBLIC_ROUTE_PATHS
+    assert is_public_path("/auth/kiosk/login")

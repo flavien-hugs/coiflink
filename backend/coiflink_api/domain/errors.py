@@ -307,6 +307,35 @@ class AppointmentHairdresserRequired(DomainError):
     """
 
 
+class InvalidKioskDeviceLabel(DomainError):
+    """Le libellé d'une borne kiosque est vide ou hors bornes (US-8.1, #155).
+
+    Levée par `domain/kiosk_device.py::validate_device_label` quand le libellé —
+    **composé par le gérant** (ex. « Borne entrée ») — est vide après `strip()`
+    ou dépasse `DEVICE_LABEL_MAX_LENGTH` (aligné `users.full_name`, `String(255)`).
+    Message **neutre** — l'adapter entrant la traduit en `422`.
+    """
+
+
+class KioskDeviceNotFound(DomainError):
+    """La borne kiosque visée n'existe pas pour ce salon (US-8.1, #155).
+
+    N'est traduite en `404` **qu'après** validation de la portée : une borne hors
+    périmètre a déjà reçu un `403` générique (aucun oracle d'existence, §11.2). Une
+    borne d'un autre salon est **indiscernable** d'une borne inexistante.
+    """
+
+
+class KioskDeviceRevoked(DomainError):
+    """La borne kiosque visée a été révoquée (compte de service suspendu, US-8.1, #155).
+
+    Une borne révoquée (`users.status = SUSPENDED`, `salon_members.status =
+    INACTIVE`) perd tout accès à la requête suivante (relecture du statut,
+    `get_current_principal`). Message **neutre** — jamais exposé par
+    `/auth/kiosk/login` (qui répond un `401` générique constant, sans oracle).
+    """
+
+
 class InvalidPaymentAmount(DomainError):
     """Le montant du paiement est absent, non numérique ou hors bornes (US-5.1/5.3).
 
@@ -591,6 +620,9 @@ __all__ = [
     "InvalidCustomerNotes",
     "CustomerNotFound",
     "CustomerAlreadyExists",
+    "InvalidKioskDeviceLabel",
+    "KioskDeviceNotFound",
+    "KioskDeviceRevoked",
     "InvalidPaymentAmount",
     "InvalidPaymentMethod",
     "InvalidPaymentCurrency",

@@ -114,12 +114,12 @@ class TestCanAccessSalon:
         # Même avec une portée généreuse, CLIENT n'a pas accès aux données d'un salon
         assert can_access_salon(p, _SALON_A, SalonScope.platform()) is False
 
-    @pytest.mark.parametrize("role", [Role.CLIENT, Role.HAIRDRESSER, Role.MANAGER, Role.ADMIN])
+    @pytest.mark.parametrize("role", [Role.CLIENT, Role.HAIRDRESSER, Role.MANAGER, Role.ADMIN, Role.KIOSK])
     def test_inactive_account_denied_for_all_roles(self, role: Role) -> None:
         p = _p(role.value, status=UserStatus.INACTIVE.value)
         assert can_access_salon(p, _SALON_A, SalonScope.platform()) is False
 
-    @pytest.mark.parametrize("role", [Role.CLIENT, Role.HAIRDRESSER, Role.MANAGER, Role.ADMIN])
+    @pytest.mark.parametrize("role", [Role.CLIENT, Role.HAIRDRESSER, Role.MANAGER, Role.ADMIN, Role.KIOSK])
     def test_suspended_account_denied_for_all_roles(self, role: Role) -> None:
         p = _p(role.value, status=UserStatus.SUSPENDED.value)
         assert can_access_salon(p, _SALON_A, SalonScope.platform()) is False
@@ -133,6 +133,30 @@ class TestCanAccessSalon:
     def test_unknown_role_denied(self) -> None:
         p = _p("GHOST_ROLE")
         assert can_access_salon(p, _SALON_A, SalonScope.platform()) is False
+
+    # --- KIOSK (borne kiosque, US-8.1, #155) ---
+
+    def test_kiosk_in_scope_true(self) -> None:
+        """La borne accède à son salon de rattachement (portée mono-salon, §11.2)."""
+        p = _p(Role.KIOSK.value)
+        scope = SalonScope.of([_SALON_A])
+        assert can_access_salon(p, _SALON_A, scope) is True
+
+    def test_kiosk_outside_scope_false(self) -> None:
+        """La borne est refusée sur un salon hors sa portée (isolation §11.2)."""
+        p = _p(Role.KIOSK.value)
+        scope = SalonScope.of([_SALON_A])
+        assert can_access_salon(p, _SALON_B, scope) is False
+
+    def test_kiosk_empty_scope_false(self) -> None:
+        p = _p(Role.KIOSK.value)
+        assert can_access_salon(p, _SALON_A, SalonScope.empty()) is False
+
+    def test_kiosk_cross_salon_isolation(self) -> None:
+        """Une borne du salon A ne peut pas accéder au salon B (isolation inter-salons)."""
+        p = _p(Role.KIOSK.value)
+        scope_a = SalonScope.of([_SALON_A])
+        assert can_access_salon(p, _SALON_B, scope_a) is False
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +221,7 @@ class TestCanAccessAppointment:
         appt_b = _appt(salon_id=_SALON_B, client_id=_CLIENT_ID)
         assert can_access_appointment(p, appt_b, scope) is False
 
-    @pytest.mark.parametrize("role", [Role.CLIENT, Role.HAIRDRESSER, Role.MANAGER, Role.ADMIN])
+    @pytest.mark.parametrize("role", [Role.CLIENT, Role.HAIRDRESSER, Role.MANAGER, Role.ADMIN, Role.KIOSK])
     def test_inactive_account_denied_for_all_roles(self, role: Role) -> None:
         p = _p(role.value, status=UserStatus.INACTIVE.value)
         assert can_access_appointment(p, _appt(), SalonScope.platform()) is False
@@ -205,3 +229,15 @@ class TestCanAccessAppointment:
     def test_unknown_role_denied(self) -> None:
         p = _p("INVENTED_ROLE")
         assert can_access_appointment(p, _appt(), SalonScope.platform()) is False
+
+    def test_kiosk_cannot_access_appointment(self) -> None:
+        """La borne KIOSK n'a pas accès aux rendez-vous (rôle non prévu, §11.2, #155).
+
+        `can_access_appointment` ne connaît pas `KIOSK` — la borne utilise ses trois
+        permissions dédiées (`CUSTOMER_LOOKUP_KIOSK`, `CUSTOMER_CREATE_WALKIN`,
+        `QUEUE_TICKET_CREATE`) mais **jamais** `APPOINTMENT_BOOK` ni la lecture
+        d'un rendez-vous existant. Le refus est donc la règle de base (deny-by-default).
+        """
+        p = _p(Role.KIOSK.value)
+        scope = SalonScope.of([_SALON_A])
+        assert can_access_appointment(p, _appt(salon_id=_SALON_A), scope) is False

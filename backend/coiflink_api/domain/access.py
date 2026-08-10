@@ -83,16 +83,23 @@ def can_access_salon(
 ) -> bool:
     """Vrai si ce compte peut accéder aux données de ce salon (PRD §11.2).
 
-    `ADMIN` : toujours (supervision). `MANAGER` / `HAIRDRESSER` : uniquement si le
-    salon est dans leur portée. `CLIENT` : jamais — un client n'a pas de portée
-    *salon* (il accède à **ses** rendez-vous, pas aux données d'un salon).
+    `ADMIN` : toujours (supervision). `MANAGER` / `HAIRDRESSER` / `KIOSK` :
+    uniquement si le salon est dans leur portée. Pour une borne `KIOSK` (US-8.1,
+    #155), cette portée est son **rattachement d'appartenance** `salon_members`
+    (mono-salon figé au provisioning) — jamais déduite d'un paramètre de requête.
+    `CLIENT` : jamais — un client n'a pas de portée *salon* (il accède à **ses**
+    rendez-vous, pas aux données d'un salon).
     """
 
     if not principal.is_active:
         return False
     if principal.role == Role.ADMIN.value:
         return True
-    if principal.role in (Role.MANAGER.value, Role.HAIRDRESSER.value):
+    if principal.role in (
+        Role.MANAGER.value,
+        Role.HAIRDRESSER.value,
+        Role.KIOSK.value,
+    ):
         return scope.covers(salon_id)
     return False
 

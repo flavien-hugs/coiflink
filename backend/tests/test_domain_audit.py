@@ -17,6 +17,7 @@ from coiflink_api.domain.audit import (
     ENTITY_TYPE_APPOINTMENT,
     ENTITY_TYPE_CASH_JOURNAL,
     ENTITY_TYPE_CUSTOMER,
+    ENTITY_TYPE_KIOSK_DEVICE,
     ENTITY_TYPE_PAYMENT,
     ENTITY_TYPE_SALON,
     ENTITY_TYPE_SERVICE,
@@ -79,8 +80,14 @@ class TestAuditAction:
     def test_campaign_created_value(self) -> None:
         assert AuditAction.CAMPAIGN_CREATED == "CAMPAIGN_CREATED"
 
-    def test_exactly_twenty_one_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 21
+    def test_kiosk_device_provisioned_value(self) -> None:
+        assert AuditAction.KIOSK_DEVICE_PROVISIONED == "KIOSK_DEVICE_PROVISIONED"
+
+    def test_kiosk_device_revoked_value(self) -> None:
+        assert AuditAction.KIOSK_DEVICE_REVOKED == "KIOSK_DEVICE_REVOKED"
+
+    def test_exactly_twenty_three_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 23
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -113,6 +120,8 @@ class TestAuditAction:
             "EMPLOYEE_REACTIVATED",
             "APPOINTMENT_ARRIVED",
             "APPOINTMENT_STARTED",
+            "KIOSK_DEVICE_PROVISIONED",
+            "KIOSK_DEVICE_REVOKED",
         }
 
 
@@ -259,3 +268,16 @@ class TestEntityTypeCashJournal:
 
     def test_value_is_cash_journal(self) -> None:
         assert ENTITY_TYPE_CASH_JOURNAL == "cash_journal"
+
+
+# ---------------------------------------------------------------------------
+# ENTITY_TYPE_KIOSK_DEVICE (US-8.1, #155)
+# ---------------------------------------------------------------------------
+
+
+class TestEntityTypeKioskDevice:
+    def test_value_is_string(self) -> None:
+        assert isinstance(ENTITY_TYPE_KIOSK_DEVICE, str)
+
+    def test_value_is_kiosk_device(self) -> None:
+        assert ENTITY_TYPE_KIOSK_DEVICE == "kiosk_device"

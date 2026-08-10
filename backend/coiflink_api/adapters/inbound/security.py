@@ -108,6 +108,15 @@ PUBLIC_ROUTE_PATHS: frozenset[str] = frozenset(
         "/auth/register/manager",
         "/auth/login",
         "/auth/refresh",
+        # Authentification d'une borne kiosque (#155, US-8.1) — décision de sécurité
+        # revue (spec §F, ADR-0041) : c'est un **endpoint d'authentification**, au
+        # même titre que `/auth/login`. Il échange un credential de device
+        # `(device_id, secret)` contre une paire JWT courte au rôle `KIOSK` ; il est
+        # rate-limité par `device_id` et répond un `401` **générique constant** pour
+        # tout échec (device inconnu, secret faux, device révoqué) — aucun oracle.
+        # Les routes de **provisioning** (`/salons/{id}/kiosk-devices`) restent, elles,
+        # protégées (`KIOSK_PROVISION` + portée salon) — jamais publiques.
+        "/auth/kiosk/login",
         "/auth/password/reset/request",
         "/auth/password/reset/confirm",
         # Catalogue client (#18) — décision de sécurité revue (spec §A.2, ADR-0015) :

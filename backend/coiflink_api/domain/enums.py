@@ -29,12 +29,23 @@ class _StrEnum(str, Enum):
 
 @unique
 class Role(_StrEnum):
-    """Rôles utilisateur (PRD §9.1)."""
+    """Rôles utilisateur (PRD §9.1) + identité de terminal (US-8.1, #155).
+
+    `KIOSK` est un **compte de service** — jamais un humain : c'est l'identité
+    d'une **borne kiosque** en libre-service (jalon M7). Une borne s'authentifie
+    avec un credential de device longue durée (`POST /auth/kiosk/login`), obtient
+    une paire JWT courte au rôle `KIOSK` et ne détient que trois permissions
+    dédiées et minimales (`CUSTOMER_LOOKUP_KIOSK`, `CUSTOMER_CREATE_WALKIN`,
+    `QUEUE_TICKET_CREATE`) — jamais `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK`
+    (moindre privilège strict, cf. `domain/permissions.py` et ADR-0041).
+    """
 
     CLIENT = "CLIENT"
     HAIRDRESSER = "HAIRDRESSER"
     MANAGER = "MANAGER"
     ADMIN = "ADMIN"
+    # Compte de service d'une borne kiosque (jalon M7, US-8.1) : jamais un humain.
+    KIOSK = "KIOSK"
 
 
 @unique

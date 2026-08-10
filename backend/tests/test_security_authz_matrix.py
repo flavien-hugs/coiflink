@@ -62,8 +62,20 @@ _USER_ID = uuid.UUID(FAKE_ACCESS_CLAIMS.sub)
 # Cibles syntaxiques (UUID valides) — jamais résolues en base : le refus tombe en amont.
 _SALON_ID = uuid.UUID("50000000-0000-0000-0000-0000000000a1")
 _PAYMENT_ID = uuid.UUID("50000000-0000-0000-0000-0000000000b2")
+_DEVICE_ID = uuid.UUID("50000000-0000-0000-0000-0000000000c3")
 
-_ALL_ROLES: tuple[Role, ...] = (Role.CLIENT, Role.HAIRDRESSER, Role.MANAGER, Role.ADMIN)
+# `Role.KIOSK` (borne kiosque, US-8.1 #155) est inclus ici : la dérivation
+# `denied = _ALL_ROLES - allowed` (plus bas) l'exerce alors **automatiquement** en
+# `403` sur chaque route échantillonnée — dont la création de fiche
+# (`CUSTOMER_MANAGE`) et la réservation (`APPOINTMENT_BOOK`). C'est le « test RBAC
+# négatif ajouté à la matrice existante » du critère d'acceptation de l'issue.
+_ALL_ROLES: tuple[Role, ...] = (
+    Role.CLIENT,
+    Role.HAIRDRESSER,
+    Role.MANAGER,
+    Role.ADMIN,
+    Role.KIOSK,
+)
 
 _FORBIDDEN_DETAIL = "Accès refusé."
 
@@ -109,6 +121,13 @@ _MATRIX: tuple[_Route, ...] = (
     _Route("GET", "/admin/kpis", Permission.STATS_READ_PLATFORM),
     _Route("GET", "/me/receipts", Permission.PAYMENT_READ_OWN),
     _Route("GET", "/appointments/history", Permission.APPOINTMENT_READ_OWN),
+    # Borne kiosque (US-8.1, #155) : seul `MANAGER` détient `KIOSK_PROVISION`.
+    # CLIENT, HAIRDRESSER, ADMIN **et KIOSK lui-même** sont donc dans le jeu de
+    # rôles refusés — c'est le « test RBAC négatif ajouté à la matrice » du critère
+    # d'acceptation de l'issue.
+    _Route("POST", f"/salons/{_SALON_ID}/kiosk-devices", Permission.KIOSK_PROVISION),
+    _Route("GET",  f"/salons/{_SALON_ID}/kiosk-devices", Permission.KIOSK_PROVISION),
+    _Route("DELETE", f"/salons/{_SALON_ID}/kiosk-devices/{_DEVICE_ID}", Permission.KIOSK_PROVISION),
 )
 
 

@@ -48,6 +48,9 @@ ENTITY_TYPE_CAMPAIGN = "campaign"
 # Type d'entité journalisée pour les coiffeuses (appartenance salon, §11.4) — #150.
 ENTITY_TYPE_SALON_MEMBER = "salon_member"
 
+# Type d'entité journalisée pour les bornes kiosque (provisioning §11.4) — #155.
+ENTITY_TYPE_KIOSK_DEVICE = "kiosk_device"
+
 
 @unique
 class AuditAction(_StrEnum):
@@ -137,6 +140,14 @@ class AuditAction(_StrEnum):
     APPOINTMENT_ARRIVED = "APPOINTMENT_ARRIVED"
     APPOINTMENT_STARTED = "APPOINTMENT_STARTED"
 
+    # Borne kiosque — provisioning §11.4 — #155 (US-8.1). Provisionner ou révoquer
+    # une borne est un **acte sensible du gérant** (`KIOSK_PROVISION`) : il crée /
+    # suspend un compte de service durable, il mérite donc sa trace. L'entrée reste
+    # **neutre** — `metadata` est vide : ni le secret, ni son condensat, ni le
+    # libellé de la borne n'entrent au journal (§11.3/§11.4).
+    KIOSK_DEVICE_PROVISIONED = "KIOSK_DEVICE_PROVISIONED"
+    KIOSK_DEVICE_REVOKED = "KIOSK_DEVICE_REVOKED"
+
 
 @dataclass(frozen=True)
 class AuditEntry:
@@ -167,6 +178,7 @@ __all__ = [
     "ENTITY_TYPE_CASH_JOURNAL",
     "ENTITY_TYPE_CAMPAIGN",
     "ENTITY_TYPE_SALON_MEMBER",
+    "ENTITY_TYPE_KIOSK_DEVICE",
     "AuditAction",
     "AuditEntry",
 ]
