@@ -26,10 +26,13 @@
 | **M4 — Clients, encaissement & caisse** | Sprint 4 | Fiches clients, paiements liés aux prestations, journal de caisse horodaté. | Épics 4, 5 |
 | **M5 — Dashboard & notifications** | Sprint 5 | KPI gérant/admin + notifications confirmation/rappel/annulation. | Épics 6, 7 |
 | **M6 — Tests, corrections & production** | Sprint 6 | Durcissement, e2e, perf, déploiement et pilote 10 salons. | (transverse) |
+| **M7 — Borne client (kiosque libre-service)** | Post-MVP | Un client sans rendez-vous s'enregistre seul sur une borne tactile en salon et reçoit un ticket imprimé avec numéro de passage. | Épic 8 |
 
 **Chemin critique :** M0 → M1 → M2 → M3 → M4/M5 → M6.
 M3 ne peut démarrer tant que le modèle de données (#3) et l'auth/RBAC (M1) ne sont pas figés ;
 l'encaissement (M4) et les KPI (M5) dépendent de la boucle de rendez-vous (M3).
+M7 est promu depuis « Hors périmètre MVP » (PRD §17) : il démarre après M1 (RBAC), M2 (catalogue
+public) et M4 (fiches clients), et réutilise la file d'attente livrée par la PR #152 (issue de M4/M5).
 
 ---
 
@@ -402,8 +405,98 @@ l'encaissement (M4) et les KPI (M5) dépendent de la boucle de rendez-vous (M3).
 
 ---
 
+## M7 — Borne client (kiosque libre-service) (Post-MVP) — Épic 8
+
+> **Contexte :** promu depuis « Hors périmètre MVP » (PRD §17 « Borne Intelligente d'Accueil »).
+> Le PRD (Risque 5) recommandait explicitement de « lancer d'abord sans borne » et de la piloter sur
+> 2-3 salons avant généralisation — ce jalon reprend ce conseil en limitant volontairement le scope.
+>
+> **Scope de ce jalon (walk-in uniquement) :** un client **sans rendez-vous** s'identifie par
+> téléphone (ou crée une fiche) sur une borne tactile physique installée en salon, choisit une
+> prestation, reçoit un numéro de passage avec temps d'attente estimé, et un **ticket papier
+> imprimé** (évolution assumée par rapport au « ticket numérique + SMS/WhatsApp » du PRD §17.3).
+>
+> **Explicitement hors scope de M7** (restent différés, non repris dans « Hors périmètre MVP » car
+> réévaluables plus tard) : vérification/check-in d'un rendez-vous existant depuis la borne,
+> identification par QR code ou code de réservation (PRD §17.3), affichage temps réel des coiffeurs
+> disponibles avant affectation, paiement autonome sur la borne (« Version future » du PRD lui-même).
+>
+> **Critères de sortie :** un client sans rendez-vous s'enregistre seul sur une borne tactile en
+> salon, sans intervention du personnel d'accueil, et reçoit un ticket imprimé.
+
+- **#155 — US-8.1 · Rôle & authentification borne** · `Must` · `M` · `feature` `security`
+  Nouveau rôle `KIOSK` scopé à un salon, avec un identifiant device longue durée distinct des JWT
+  personnels : le RBAC actuel sépare `CUSTOMER_MANAGE` (MANAGER uniquement) et `APPOINTMENT_BOOK`
+  (CLIENT uniquement), aucun rôle existant ne convient à un terminal public partagé. Permissions
+  minimales et dédiées ; ADR requise (même exigence que l'anti-oracle ADR-0026).
+  *Acceptation :* un device provisionné pour le salon X s'authentifie avec un scope limité (lecture
+  catalogue, recherche téléphone restreinte, création de ticket walk-in) ; il ne peut obtenir ni
+  `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK` complets ; test RBAC négatif ajouté à la matrice existante.
+  *Dépend de :* #12.
+
+- **#156 — US-8.2 · Identification téléphone & création client walk-in** · `Must` · `M` · `feature`
+  Nouveau `find_by_phone` (port + repository + endpoint) sur `CustomerProfile`, réservé au rôle
+  `KIOSK`, sans jamais interroger `users` par téléphone (préserve l'anti-oracle ADR-0026) ; ouverture
+  ciblée de la création de fiche client à ce même rôle.
+  *Acceptation :* la borne retrouve une fiche existante par téléphone (salon de la borne uniquement)
+  et n'affiche que le prénom du client ; si absente, crée une fiche nom/prénom/téléphone sans mot de
+  passe ; isolation par salon respectée (§11.2).
+  *Dépend de :* #155, #28.
+
+- **#157 — US-8.3 · Ticket de passage walk-in & estimation d'attente** · `Must` · `L` · `feature`
+  Nouveau domaine `QueueTicket` (numéro séquentiel par salon/jour, statut, estimation d'attente),
+  indépendant d'`Appointment` (pas de détournement de créneaux planifiés), avec un endpoint
+  public/kiosk « rejoindre la file » et une formule V1 d'ETA (position dans la file × durée moyenne
+  des prestations des tickets en attente et en cours ÷ coiffeuses actives). Pontable vers un `Appointment` uniquement quand une
+  coiffeuse démarre réellement la prestation, pour réutiliser la file d'attente livrée en PR #152.
+  *Acceptation :* un ticket walk-in reçoit un numéro séquentiel, une heure d'émission et un temps
+  d'attente estimé ; il apparaît dans la file gérant existante une fois pris en charge ; aucune
+  régression sur la file des rendez-vous planifiés.
+  *Dépend de :* #155, #156.
+
+- **#158 — US-8.4 · Photo de prestation dans le catalogue public** · `Should` · `S` · `feature`
+  Ajoute `image_url` (URL signée) à `PublicServiceResponse`/`PublicServiceView`, en réutilisant la
+  résolution d'URL déjà utilisée côté gérant — la donnée (`image_object_key`) existe déjà en base.
+  *Acceptation :* le catalogue public retourne une URL de photo quand une image est renseignée ;
+  aucune régression sur les consommateurs existants de l'endpoint.
+  *Dépend de :* aucune.
+
+- **#159 — US-8.5 · Mode kiosque de l'app mobile** · `Must` · `L` · `feature` `ux`
+  Nouveau point d'entrée `main_kiosk.dart` (`--dart-define=APP_MODE=kiosk`), écrans
+  accueil/identification/création/choix-prestation/confirmation en gros boutons tactiles adaptés à un
+  usage à distance de bras, avec un timer d'inactivité global ramenant automatiquement à l'accueil.
+  *Acceptation :* US-001, US-002 (UI), US-003 (UI), US-004 (UI), US-005 et US-008 couvertes ; aucune
+  session personnelle active en fin de parcours ; retour automatique après 60 s d'inactivité, timer
+  suspendu pendant l'impression du ticket.
+  *Dépend de :* #155, #156, #157, #158.
+
+- **#160 — US-8.6 · Impression du ticket sur imprimante thermique** · `Must` · `M` · `feature`
+  Nouveau port `TicketPrinterGateway` côté mobile + adaptateur ESC/POS Bluetooth ou USB, gabarit
+  visuel de ticket dérivé de celui de l'impression de reçu (PR #154) porté en widget Flutter, avec
+  gestion explicite des erreurs imprimante (hors ligne, plus de papier).
+  *Acceptation :* le ticket imprimé contient salon, numéro, date, heure et prestation (US-007) ; un
+  échec d'impression est signalé clairement au client sans bloquer le retour à l'accueil.
+  *Dépend de :* #157, #159.
+
+- **#161 — US-8.7 · ADR, documentation & procédure de provisioning borne** · `Should` · `S` · `docs` `infra`
+  ADR sur le modèle d'authentification borne et l'architecture `QueueTicket` ; procédure de
+  provisioning d'un device (PIN gérant, sortie du mode kiosque, mise à jour applicative) ; mise à jour
+  du PRD/BACKLOG une fois le jalon livré.
+  *Acceptation :* les ADR d'authentification borne et d'architecture `QueueTicket` sont committées
+  dans `docs/adr/` et indexées ; procédure de provisioning documentée et vérifiée sur au moins un
+  device physique.
+  *Dépend de :* #155, #156, #157, #158, #159, #160.
+
+---
+
 ## Hors périmètre MVP (§21 / §22 « Won't Have »)
 
 Reportés en V2+ (suivis ailleurs, **pas** dans ce backlog MVP) : paiement Mobile Money automatisé,
-borne intelligente d'accueil (§17), IA de recommandation, gestion de stock, multi-salons avancé,
-marketplace produits, programme de fidélité, QR code de présence.
+IA de recommandation, gestion de stock, multi-salons avancé, marketplace produits, programme de
+fidélité, QR code de présence.
+
+> La **borne intelligente d'accueil (§17)** n'est plus listée ici : son sous-ensemble « walk-in sans
+> rendez-vous » a été promu au jalon **M7** ci-dessus. Restent différés hors de M7 (réévaluables plus
+> tard, pas nécessairement « Won't Have ») : check-in d'un rendez-vous existant depuis la borne,
+> identification par QR code/code de réservation, affichage temps réel des coiffeurs disponibles, et
+> le paiement autonome sur la borne (déjà noté « Version future » par le PRD §17.3 lui-même).
