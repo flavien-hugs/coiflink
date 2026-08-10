@@ -269,8 +269,9 @@ implicite** — ses droits de supervision sont listés, donc auditables.
 | --- | --- |
 | `CLIENT` | Consulter salons et prestations, réserver, lire **ses** rendez-vous, consulter **ses** reçus de paiement (`PAYMENT_READ_OWN`) |
 | `HAIRDRESSER` | Lire **son** salon et les RDV qui lui sont **assignés**, mettre à jour leur statut |
-| `MANAGER` | Gérer **son** salon : prestations, employés, RDV, fiches clients, caisse, statistiques |
+| `MANAGER` | Gérer **son** salon : prestations, employés, RDV, fiches clients, caisse, statistiques, **provisionner les bornes kiosque** (`KIOSK_PROVISION`, #155) |
 | `ADMIN` | Supervision plateforme : lire tous les salons, les (dés)activer, gérer les comptes, KPI globaux |
+| `KIOSK` | **Borne kiosque** (compte de service, #155) : **exactement** `CUSTOMER_LOOKUP_KIOSK` + `CUSTOMER_CREATE_WALKIN` + `QUEUE_TICKET_CREATE` — **jamais** `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK` |
 
 La **permission** dit *ce que* le rôle peut faire ; la **portée** (`domain/access.py`, PRD §11.2) dit
 *sur quelles données* : un gérant n'accède qu'aux salons dont il est **propriétaire**, un coiffeur
@@ -397,6 +398,57 @@ pilote via les deux routes ci-dessous, jamais ici.
   (idempotent).
 - Les deux journalisent respectivement `EMPLOYEE_DEACTIVATED`/`EMPLOYEE_REACTIVATED` (métadonnées
   vides, aucune valeur sensible).
+
+## Borne kiosque — rôle, provisioning & authentification (US-8.1, #155 — [ADR-0041](../docs/adr/0041-authentification-borne-kiosque.md))
+
+Une **borne kiosque** (terminal public en salon, jalon M7) s'authentifie **en son nom propre**, sans
+qu'aucun humain ne s'y connecte. Elle est un **compte de service** au rôle `KIOSK` (cinquième membre de
+l'énumération fermée `Role`), scopé à **un** salon, détenant **exactement** trois permissions dédiées
+(`CUSTOMER_LOOKUP_KIOSK`, `CUSTOMER_CREATE_WALKIN`, `QUEUE_TICKET_CREATE`) — **jamais** `CUSTOMER_MANAGE`
+ni `APPOINTMENT_BOOK` (moindre privilège strict). La lecture du catalogue passe par les routes
+**publiques** `/catalog/...` (aucune permission dédiée).
+
+| Méthode | Chemin | Garde | Réponses |
+| --- | --- | --- | --- |
+| `POST` | `/salons/{salon_id}/kiosk-devices` | `KIOSK_PROVISION` + portée salon | `201` device **+ secret (une fois)** · `401` · `403` · `422` |
+| `GET` | `/salons/{salon_id}/kiosk-devices` | `KIOSK_PROVISION` + portée salon | `200` liste (sans secret) · `401` · `403` |
+| `DELETE` | `/salons/{salon_id}/kiosk-devices/{device_id}` | `KIOSK_PROVISION` + portée salon | `200` device révoqué · `401` · `403` · `404` |
+| `POST` | `/auth/kiosk/login` | **publique-listée**, rate-limitée | `200` paire JWT + `salon_id` · `401` générique · `429` |
+
+**Provisioning** (gérant, `KIOSK_PROVISION` — seul le `MANAGER`) : crée un compte de service `KIOSK`
+(ligne `users` + rattachement `salon_members`, écritures atomiques) et **génère** un secret aléatoire
+(`secrets.token_urlsafe(32)`, 256 bits). ⚠ **Le secret n'est affiché qu'une fois** (réponse `201`) — il
+n'est stocké que **haché** (argon2id), jamais journalisé, jamais relisible. Provisioning et révocation
+sont journalisés (`KIOSK_DEVICE_PROVISIONED` / `KIOSK_DEVICE_REVOKED`, `metadata` vide).
+
+```bash
+# Provisionner une borne (gérant authentifié) — le secret n'est présent que dans cette réponse.
+curl -sS -X POST "$API/salons/$SALON_ID/kiosk-devices" \
+  -H "Authorization: Bearer $MANAGER_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"Borne entrée"}'
+# → 201 {"id":"…","salon_id":"…","label":"Borne entrée","status":"ACTIVE","created_at":"…","secret":"k7Yw…Qc"}
+
+# La borne échange (device_id, secret) contre une paire JWT courte + son salon_id.
+curl -sS -X POST "$API/auth/kiosk/login" \
+  -H "Content-Type: application/json" \
+  -d '{"device_id":"<id>","secret":"k7Yw…Qc"}'
+# → 200 {"access_token":"…","refresh_token":"…","token_type":"bearer","expires_in":900,"salon_id":"…"}
+
+# Lister les bornes du salon (jamais de secret) ; révoquer une borne (effet immédiat).
+curl -sS "$API/salons/$SALON_ID/kiosk-devices" -H "Authorization: Bearer $MANAGER_ACCESS_TOKEN"
+curl -sS -X DELETE "$API/salons/$SALON_ID/kiosk-devices/<id>" -H "Authorization: Bearer $MANAGER_ACCESS_TOKEN"
+```
+
+**Cycle de vie d'un device** : *provisionné* (`users.status = ACTIVE`, `salon_members.status = ACTIVE`)
+→ *actif* (échange son secret contre des JWT courts, portée = son salon) → *révoqué* (`DELETE` :
+`users.status = SUSPENDED` **et** `salon_members.status = INACTIVE`). La révocation est **logique**
+(jamais une suppression, traçabilité §11.4) et à **effet immédiat** : la relecture du statut par requête
+(`get_current_principal`) coupe l'accès dès la requête suivante, et `/auth/kiosk/login` répond alors le
+`401` générique. **Ce qui est long est révocable, ce qui est porteur est court** : le secret de device
+(stocké côté borne, #159/#161) est durable et révocable ; les JWT émis restent courts (accès 15 min).
+Tout échec de `/auth/kiosk/login` (device inconnu, secret faux, device révoqué) renvoie le **même** `401`
+générique — aucun oracle sur l'existence ou l'état d'une borne.
 
 ## Salons — création & médias (US-2.1, #15 — [ADR-0017](../docs/adr/0017-creation-salon-medias-et-reservabilite.md))
 

@@ -55,8 +55,9 @@ numérique simple, rapide et adaptée au terrain.
 6. **Tableau de bord** — KPI gérant et admin
 7. **Notifications** — confirmation, rappel, annulation
 
-Hors MVP (V2+) : Mobile Money automatisé, borne intelligente, IA de recommandation, gestion de
-stock, multi-salons avancé, fidélité (cf. PRD §16, §21).
+Hors MVP (V2+) : Mobile Money automatisé, IA de recommandation, gestion de stock, multi-salons
+avancé, fidélité (cf. PRD §16, §21). La **borne libre-service (PRD §17)** est partiellement en
+scope : le sous-ensemble « walk-in sans rendez-vous » est livré au jalon **M7** (Épic 8 — #155–#161).
 
 ## 4. Architecture & stack
 
@@ -482,6 +483,19 @@ introduit : `deploy/railway/*.json` restent inchangés, les secrets `production`
 **optionnel/différé** — non câblé, non impliqué. Le **provisionnement réel** de `production`, l'activation
 des sauvegardes et la configuration du monitoring sont des opérations d'exploitation à mener par un
 opérateur disposant de l'accès restreint (via `use-railway`/MCP `railway`).
+**M7 est amorcé** avec le **rôle et l'authentification de la borne kiosque** (#155, US-8.1, voir
+[ADR-0041](./docs/adr/0041-authentification-borne-kiosque.md)) : un cinquième rôle **`KIOSK`** (compte de
+service scopé à un salon, migration `0013` régénérant les `CHECK` `role`) dote la **borne libre-service**
+(PRD §17) d'une identité de terminal dédiée — permissions **minimales** (`CUSTOMER_LOOKUP_KIOSK`,
+`CUSTOMER_CREATE_WALKIN`, `QUEUE_TICKET_CREATE`), **jamais** `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK`. Le
+gérant **provisionne** ses bornes (`POST /salons/{id}/kiosk-devices`, permission `KIOSK_PROVISION`,
+`MANAGER` seul) : le backend crée un compte de service (`users` + `salon_members`) et retourne **une seule
+fois** un **secret de device** (256 bits, stocké **haché** argon2id, jamais relisible). La borne échange
+`(device_id, secret)` contre une paire **JWT courte** via `POST /auth/kiosk/login` (publique-listée,
+rate-limitée, `401` générique) qui lui renvoie son `salon_id`. Ce qui est **long** est le secret
+révocable ; les jetons restent **courts** — la **révocation** (suspension du compte de service) coupe
+l'accès **à la requête suivante** (relecture du statut en base). Le parcours walk-in (recherche
+téléphone/fiche #156, ticket de passage #157) et l'app borne (#159) poseront leurs gardes sur ce socle.
 
 ---
 
@@ -536,13 +550,14 @@ scripts/run-issue.sh --help                  # liste complète des options
 | **M4** | 4 | Clients, encaissement & journal de caisse | #28–#38 |
 | **M5** | 5 | Tableau de bord & notifications | #39–#49 |
 | **M6** | 6 | Tests, durcissement, déploiement, pilote | #50–#55 |
+| **M7** | Post-MVP | Borne libre-service (kiosque walk-in) | #155–#161 |
 
-Chemin critique : **M0 → M1 → M2 → M3 → M4/M5 → M6**.
+Chemin critique : **M0 → M1 → M2 → M3 → M4/M5 → M6 → M7**.
 
 ## 9. Références
 
 - [prd-coiflink.md](./prd-coiflink.md) — exigences produit (source de vérité)
-- [BACKLOG.md](./BACKLOG.md) — backlog livrable (55 issues, M0–M6)
+- [BACKLOG.md](./BACKLOG.md) — backlog livrable (M0–M6, plus M7 Borne client #155–#161)
 - [docs/guides/](./docs/guides/README.md) — guides utilisateur (parcours Must) : [guide gérant](./docs/guides/guide-gerant.md) · [guide client](./docs/guides/guide-client.md)
 - [docs/environnements-et-secrets.md](./docs/environnements-et-secrets.md) — environnements, politique de secrets, runbook `staging`, sauvegardes (#5)
 - [docs/mise-en-production.md](./docs/mise-en-production.md) — mise en production : runbook `production`, monitoring & alerting, journal de vérification des sauvegardes, rollback (#54)

@@ -34,6 +34,9 @@ from coiflink_api.adapters.inbound.security import (
     get_user_repository,
 )
 from coiflink_api.adapters.outbound.notifications.otp_sender_stub import StubOtpSender
+from coiflink_api.adapters.outbound.persistence.kiosk_device_repository import (
+    SqlKioskDeviceRepository,
+)
 from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.adapters.outbound.persistence.user_repository import (
     SqlUserRepository,
@@ -47,6 +50,10 @@ from coiflink_api.application.authentication import (
     AuthenticateUser,
     LoginCommand,
     RefreshTokens,
+)
+from coiflink_api.application.kiosk_authentication import (
+    AuthenticateKioskDevice,
+    KioskLoginCommand,
 )
 from coiflink_api.application.password_reset import (
     ConfirmPasswordReset,
@@ -429,6 +436,131 @@ def refresh(
 
 
 # --------------------------------------------------------------------------- #
+# Authentification d'une borne kiosque (US-8.1, #155 — credential de device).
+# Échange `(device_id, secret)` contre une paire JWT **standard et courte** au
+# rôle KIOSK. Route **publique-listée** (endpoint d'authentification, comme
+# `/auth/login`) et rate-limitée par `device_id`. Réponse générique unique pour
+# tout échec (device inconnu, secret faux, device révoqué) — aucun oracle.
+# --------------------------------------------------------------------------- #
+class KioskLoginRequest(BaseModel):
+    """Corps de `POST /auth/kiosk/login`. `secret` n'est jamais renvoyé ni journalisé."""
+
+    device_id: str = Field(
+        min_length=1, max_length=64, examples=["11111111-1111-1111-1111-111111111111"]
+    )
+    # `min_length=1` (jamais la longueur exacte du secret) : un secret malformé doit
+    # produire le **même** 401 générique qu'un secret faux (anti-énumération).
+    secret: str = Field(min_length=1, max_length=512, examples=["k7Yw…Qc"])
+
+
+class KioskTokenResponse(TokenResponse):
+    """Paire de jetons émise à une borne + `salon_id` (mécanisme du jalon M7).
+
+    Ajoute `salon_id` à `TokenResponse` : la borne apprend son salon au
+    provisioning (un APK unique pour toutes les bornes, pas de `--dart-define` de
+    salon par device en production). **Aucun** secret serveur n'apparaît.
+    """
+
+    salon_id: uuid.UUID
+
+
+def get_kiosk_login_rate_limiter(request: Request) -> LoginRateLimiter:
+    """Limiteur anti-bruteforce **dédié au login kiosque** (singleton `app.state`).
+
+    Distinct du limiteur de connexion personnelle : verrouiller une borne ne doit
+    pas verrouiller les connexions humaines (et inversement). Repli sûr avec les
+    seuils de connexion d'`AuthConfig` si l'état n'est pas configuré.
+    """
+
+    limiter = getattr(request.app.state, "kiosk_login_rate_limiter", None)
+    if limiter is None:
+        config: AuthConfig = (
+            getattr(request.app.state, "auth_config", None) or AuthConfig()
+        )
+        limiter = InMemoryLoginRateLimiter(
+            max_attempts=config.login_max_attempts,
+            window=config.login_window,
+            lockout=config.login_lockout,
+        )
+        request.app.state.kiosk_login_rate_limiter = limiter
+    return limiter
+
+
+def get_authenticate_kiosk_device(
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+    hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
+    token_service: Annotated[TokenService, Depends(get_token_service)],
+    rate_limiter: Annotated[LoginRateLimiter, Depends(get_kiosk_login_rate_limiter)],
+) -> AuthenticateKioskDevice:
+    """Assemble le cas d'usage d'**authentification borne** (aucune règle métier ici)."""
+
+    return AuthenticateKioskDevice(
+        SqlKioskDeviceRepository(session),
+        hasher,
+        token_service,
+        rate_limiter,
+        dummy_hash=getattr(request.app.state, "login_dummy_hash", None),
+    )
+
+
+@router.post(
+    "/kiosk/login",
+    response_model=KioskTokenResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Connexion d'une borne kiosque (device_id + secret) — émet un JWT + refresh",
+    responses={
+        200: {"description": "Paire de jetons + salon_id de la borne"},
+        401: {"description": "Credential invalide (device inconnu, secret faux ou révoqué) — générique"},
+        429: {"description": "Trop de tentatives (anti-bruteforce par device)"},
+        503: {"description": "JWT_SECRET non configuré"},
+    },
+)
+def kiosk_login(
+    payload: KioskLoginRequest,
+    request: Request,
+    usecase: Annotated[AuthenticateKioskDevice, Depends(get_authenticate_kiosk_device)],
+) -> KioskTokenResponse:
+    """Authentifie une borne et émet une paire de jetons ; `401` générique / `429` si bruteforce.
+
+    La réponse porte le `salon_id` du device. Tout échec (device inconnu, secret
+    faux, device révoqué) renvoie le **même** `401` générique — aucun oracle sur
+    l'existence ou l'état d'une borne.
+    """
+
+    command = KioskLoginCommand(
+        device_id=payload.device_id,
+        secret=payload.secret,
+        client_ip=_client_ip(request),
+    )
+    try:
+        result = usecase.execute(command)
+    except TooManyLoginAttempts as exc:
+        headers = (
+            {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Trop de tentatives de connexion. Réessayez plus tard.",
+            headers=headers,
+        ) from exc
+    except InvalidCredentials as exc:
+        # Message générique constant (jamais str(exc)) : aucune énumération de bornes.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS_DETAIL
+        ) from exc
+
+    pair = result.tokens
+    return KioskTokenResponse(
+        access_token=pair.access_token,
+        refresh_token=pair.refresh_token,
+        token_type=pair.token_type,
+        expires_in=pair.expires_in,
+        salon_id=result.salon_id,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Réinitialisation du mot de passe par OTP (US-1.3, issue #11).
 # Parcours en deux étapes : demande d'un code (SMS **ou** e-mail), puis
 # confirmation (code + nouveau mot de passe qui invalide l'ancien). Réponses
@@ -671,6 +803,8 @@ __all__ = [
     "LoginRequest",
     "RefreshRequest",
     "TokenResponse",
+    "KioskLoginRequest",
+    "KioskTokenResponse",
     "PasswordResetRequestSchema",
     "PasswordResetConfirmSchema",
     "MessageResponse",

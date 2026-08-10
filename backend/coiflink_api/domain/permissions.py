@@ -64,6 +64,21 @@ class Permission(_StrEnum):
     # Fiches clients.
     CUSTOMER_MANAGE = "CUSTOMER_MANAGE"
 
+    # Borne kiosque (US-8.1, #155) — permissions **minimales et dédiées** du rôle
+    # `KIOSK`, distinctes de `CUSTOMER_MANAGE`/`APPOINTMENT_BOOK` (moindre privilège
+    # d'un terminal public partagé, ADR-0041) :
+    # - `CUSTOMER_LOOKUP_KIOSK` : rechercher une fiche `CustomerProfile` par
+    #   téléphone, restreinte au salon de la borne, réponse minimale (consommée par #156) ;
+    # - `CUSTOMER_CREATE_WALKIN` : créer une fiche walk-in (nom/prénom/téléphone)
+    #   **sans** compte ni mot de passe (consommée par #156) ;
+    # - `QUEUE_TICKET_CREATE` : créer un ticket de passage walk-in (consommée par #157) ;
+    # - `KIOSK_PROVISION` : provisionner/lister/révoquer les bornes de **son** salon
+    #   (consommée par #155, **MANAGER** uniquement).
+    CUSTOMER_LOOKUP_KIOSK = "CUSTOMER_LOOKUP_KIOSK"
+    CUSTOMER_CREATE_WALKIN = "CUSTOMER_CREATE_WALKIN"
+    QUEUE_TICKET_CREATE = "QUEUE_TICKET_CREATE"
+    KIOSK_PROVISION = "KIOSK_PROVISION"
+
     # Caisse.
     PAYMENT_RECORD = "PAYMENT_RECORD"
     CASH_JOURNAL_READ = "CASH_JOURNAL_READ"
@@ -122,6 +137,21 @@ ROLE_PERMISSIONS: Mapping[Role, frozenset[Permission]] = {
             Permission.PAYMENT_RECORD,
             Permission.CASH_JOURNAL_READ,
             Permission.STATS_READ_SALON,
+            # Provisioning des bornes kiosque de son salon (US-8.1, #155) — seul
+            # ajout au gérant : aucun retrait, aucun élargissement d'un droit existant.
+            Permission.KIOSK_PROVISION,
+        }
+    ),
+    # Borne kiosque (US-8.1, #155) : compte de service d'un **terminal public
+    # partagé**, scopé à un salon. Détient **exactement** ces trois permissions
+    # dédiées — ni `CUSTOMER_MANAGE` (fiches complètes, notes privées, caisse), ni
+    # `APPOINTMENT_BOOK` (réservation au nom d'un compte), ni aucune lecture gérant.
+    # C'est le cœur du critère d'acceptation négatif de l'issue (ADR-0041).
+    Role.KIOSK: frozenset(
+        {
+            Permission.CUSTOMER_LOOKUP_KIOSK,
+            Permission.CUSTOMER_CREATE_WALKIN,
+            Permission.QUEUE_TICKET_CREATE,
         }
     ),
     # Admin CoifLink : **supervision plateforme** (voir tous les salons, les

@@ -25,6 +25,7 @@ from coiflink_api.adapters.inbound.catalog import router as catalog_router
 from coiflink_api.adapters.inbound.customers import router as customers_router
 from coiflink_api.adapters.inbound.employees import router as employees_router
 from coiflink_api.adapters.inbound.health import router as health_router
+from coiflink_api.adapters.inbound.kiosk_devices import router as kiosk_devices_router
 from coiflink_api.adapters.inbound.payments import router as payments_router
 from coiflink_api.adapters.inbound.receipts import router as receipts_router
 from coiflink_api.adapters.inbound.salons import router as salons_router
@@ -122,6 +123,16 @@ app.include_router(auth_router)
 # Gestion des employés (#13) : route protégée par RBAC (EMPLOYEE_MANAGE + portée
 # salon) — le use case est assemblé par DI dans l'adapter (mêmes patrons que `auth`).
 app.include_router(employees_router)
+# Bornes kiosque (#155, US-8.1) : provisioning/liste/révocation sous
+# /salons/{id}/kiosk-devices. Routes protégées par RBAC (KIOSK_PROVISION, détenue
+# par le seul MANAGER + portée salon §11.2) ; provisioning/révocation journalisés
+# (KIOSK_DEVICE_PROVISIONED/REVOKED, metadata vide) dans la même unité de travail.
+# Le compte de service KIOSK (role fixé serveur) ne détient jamais CUSTOMER_MANAGE
+# ni APPOINTMENT_BOOK (moindre privilège, ADR-0041). L'authentification du device
+# (POST /auth/kiosk/login) est portée par le routeur `auth` (publique-listée) ; rien
+# ici n'est ajouté à `security.PUBLIC_ROUTE_PATHS` (une borne n'est jamais
+# provisionnable publiquement).
+app.include_router(kiosk_devices_router)
 # Gestion des salons (#15) : création rattachée au gérant + consultation + médias.
 # Routes protégées par RBAC (SALON_CREATE/READ/UPDATE + portée salon).
 app.include_router(salons_router)
