@@ -22,7 +22,7 @@ import decimal
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, func, select, text
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
@@ -52,7 +52,27 @@ class SqlPaymentRepository:
         self._session = session
 
     def create(self, payment: PaymentToCreate) -> Payment:
-        """Insère le paiement (statut `VALIDATED`, US-5.1) — `flush` sans `commit`."""
+        """Insère le paiement (statut `VALIDATED`, US-5.1) — `flush` sans `commit`.
+
+        Alloue au passage un `receipt_number` séquentiel par salon (impression
+        gérant, ADR-0040) : un verrou consultatif **transactionnel** par salon
+        (`pg_advisory_xact_lock`, relâché au commit/rollback géré par
+        `get_session`) sérialise les créations concurrentes du même salon avant de
+        lire `MAX(receipt_number) + 1` — pas de nouvelle table de compteur, pas de
+        nouvelle frontière de transaction. Ce numéro reste **hors** du dataclass
+        domaine `Payment`/`PaymentToCreate` (voir `domain/receipt.py` pour sa
+        lecture) : seule la ligne ORM le porte.
+        """
+
+        self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:salon_id))"),
+            {"salon_id": str(payment.salon_id)},
+        )
+        next_receipt_number = self._session.execute(
+            select(func.coalesce(func.max(models.Payment.receipt_number), 0) + 1).where(
+                models.Payment.salon_id == payment.salon_id
+            )
+        ).scalar_one()
 
         row = models.Payment(
             salon_id=payment.salon_id,
@@ -65,6 +85,7 @@ class SqlPaymentRepository:
             status=payment.status,
             recorded_by=payment.recorded_by,
             reference=payment.reference,
+            receipt_number=next_receipt_number,
         )
         self._session.add(row)
         # `flush` déclenche l'INSERT (et les contraintes) sans committer.

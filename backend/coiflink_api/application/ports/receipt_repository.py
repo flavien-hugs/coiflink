@@ -67,6 +67,22 @@ class ReceiptRepository(Protocol):
         """
         ...
 
+    def get_receipt_for_salon(
+        self, salon_id: uuid.UUID, payment_id: uuid.UUID
+    ) -> Receipt | None:
+        """Retourne le reçu `(salon_id, payment_id)` ou `None` (impression gérant, ADR-0040).
+
+        Portée **salon** (pas `client_id`) : un paiement **comptoir sans client
+        rattaché** reste imprimable par le gérant, contrairement à la lecture
+        d'appartenance client ci-dessus. `None` que le paiement n'existe pas **ou**
+        appartienne à un autre salon — non-oracle §11.3, même filtre que
+        `PaymentRepository.get`. Peuple `Receipt.client_name`/`client_phone` (résolus
+        `client_id → users.full_name/phone`, `None` si paiement sans client) — ces
+        champs restent **toujours** `None` sur la lecture d'appartenance client
+        ci-dessus. **Aucune** écriture.
+        """
+        ...
+
 
 __all__ = [
     "ReceiptRepository",

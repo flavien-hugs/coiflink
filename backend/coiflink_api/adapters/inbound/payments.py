@@ -19,7 +19,12 @@ isolation §11.2) :
 - **`POST /salons/{salon_id}/payments/{payment_id}/adjustments`** — correction
   (US-5.3, #34), garde `PAYMENT_RECORD`. **Insère** une ligne `ADJUSTMENT` (delta
   signé) rattachée au paiement d'origine et passe ce dernier à `ADJUSTED` — **sans
-  jamais** le supprimer ni le réécrire (§8.2).
+  jamais** le supprimer ni le réécrire (§8.2) ;
+- **`GET /salons/{salon_id}/payments/{payment_id}/receipt`** — reçu imprimable
+  (impression gérant, ADR-0040), garde `CASH_JOURNAL_READ`. Projection dérivée du
+  paiement (même domaine `Receipt` que le reçu client #38), portée **salon** —
+  inclut les paiements comptoir sans client rattaché, `client_name`/`client_phone`
+  résolus pour identifier la cliente sur le ticket remis en main.
 
 **Aucun** verbe destructif (`DELETE`/`PUT`/`PATCH`) n'est exposé sur `payments` ou
 `cash_journal` : un paiement validé n'est jamais supprimé, une ligne de journal
@@ -53,6 +58,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from coiflink_api.adapters.inbound.receipts import get_receipt_repository
 from coiflink_api.adapters.inbound.security import (
     require_permission,
     require_salon_scope,
@@ -88,6 +94,8 @@ from coiflink_api.application.ports.payment_repository import (
     PaymentRepository,
 )
 from coiflink_api.application.discrepancies import ListCashDiscrepancies
+from coiflink_api.application.ports.receipt_repository import ReceiptRepository
+from coiflink_api.application.receipts import GetSalonReceipt
 from coiflink_api.application.transactions import ListTransactions
 from coiflink_api.application.ports.service_repository import ServiceRepository
 from coiflink_api.domain.access import SalonScope
@@ -118,6 +126,7 @@ from coiflink_api.domain.payment import (
     REFERENCE_MAX_LENGTH,
     Payment,
 )
+from coiflink_api.domain.receipt import Receipt
 from coiflink_api.domain.transaction import Transaction, validate_transaction_filter
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
@@ -291,6 +300,39 @@ class AdjustmentResponse(BaseModel):
     payment: PaymentResponse
 
 
+class ManagerReceiptLineResponse(BaseModel):
+    """Ligne de prestation d'un reçu imprimable : libellé + montant figé."""
+
+    service_name: str
+    amount: decimal.Decimal
+
+
+class ManagerReceiptResponse(BaseModel):
+    """Reçu imprimable d'un paiement, vu par le **gérant** (impression, ADR-0040).
+
+    Étend la projection client (`ReceiptResponse`) de `client_name`/`client_phone`
+    — utiles pour identifier la cliente sur le ticket remis en main, **jamais**
+    exposés côté client (il connaît déjà sa propre identité). `client` est `null`
+    pour un paiement comptoir sans compte rattaché. Montants en **chaîne
+    décimale** (jamais de flottant).
+    """
+
+    receipt_number: str
+    payment_id: uuid.UUID
+    salon_id: uuid.UUID
+    salon_name: str
+    client_name: str | None
+    client_phone: str | None
+    amount: decimal.Decimal
+    currency: str
+    payment_method: str
+    status: str
+    reference: str | None
+    paid_at: datetime.datetime
+    appointment_id: uuid.UUID | None
+    lines: list[ManagerReceiptLineResponse]
+
+
 # --------------------------------------------------------------------------- #
 # Injection de dépendances (surchargeable en test via `app.dependency_overrides`).
 # --------------------------------------------------------------------------- #
@@ -408,6 +450,28 @@ def _entry_response(entry: CashJournalEntry) -> CashJournalEntryResponse:
         performed_by_name=entry.performed_by_name,
         description=entry.description,
         created_at=entry.created_at,
+    )
+
+
+def _manager_receipt_response(receipt: Receipt) -> ManagerReceiptResponse:
+    return ManagerReceiptResponse(
+        receipt_number=receipt.receipt_number,
+        payment_id=receipt.payment_id,
+        salon_id=receipt.salon_id,
+        salon_name=receipt.salon_name,
+        client_name=receipt.client_name,
+        client_phone=receipt.client_phone,
+        amount=receipt.amount,
+        currency=receipt.currency,
+        payment_method=receipt.payment_method,
+        status=receipt.status,
+        reference=receipt.reference,
+        paid_at=receipt.paid_at,
+        appointment_id=receipt.appointment_id,
+        lines=[
+            ManagerReceiptLineResponse(service_name=line.service_name, amount=line.amount)
+            for line in receipt.lines
+        ],
     )
 
 
@@ -696,6 +760,44 @@ def adjust_payment(
     except PaymentNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return AdjustmentResponse(entry=_entry_response(entry), payment=_payment_response(payment))
+
+
+@router.get(
+    "/{salon_id}/payments/{payment_id}/receipt",
+    response_model=ManagerReceiptResponse,
+    summary="Reçu imprimable d'un paiement du salon (gérant, impression, ADR-0040)",
+    responses={
+        200: {"description": "Reçu du paiement (salon, nom/téléphone client si rattaché)"},
+        401: {"description": "Jeton absent, invalide ou expiré"},
+        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        404: {"description": "Paiement introuvable ou hors du salon (neutre)"},
+    },
+)
+def get_payment_receipt(
+    salon_id: uuid.UUID,
+    payment_id: uuid.UUID,
+    receipts: Annotated[ReceiptRepository, Depends(get_receipt_repository)],
+    _scope: Annotated[SalonScope, Depends(require_salon_scope)],
+    _principal: Annotated[
+        Principal, Depends(require_permission(Permission.CASH_JOURNAL_READ))
+    ],
+) -> ManagerReceiptResponse:
+    """Retourne le reçu imprimable `(salon_id, payment_id)` — `404` **neutre** sinon.
+
+    Portée **salon** (`CASH_JOURNAL_READ`, même garde que l'historique/le journal —
+    aucune nouvelle permission) : contrairement à `GET /me/receipts/{payment_id}`
+    (appartenance client), inclut les paiements comptoir **sans** client rattaché
+    (`client_name`/`client_phone` alors `null`). Un paiement d'un autre salon ou
+    inexistant est un `404` **indiscernable** (non-oracle §11.3). Lecture seule,
+    consulter/imprimer un reçu n'est pas une action journalisée §11.4.
+    """
+
+    receipt = GetSalonReceipt(receipts).execute(salon_id, payment_id)
+    if receipt is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Reçu introuvable."
+        )
+    return _manager_receipt_response(receipt)
 
 
 __all__ = ["router"]

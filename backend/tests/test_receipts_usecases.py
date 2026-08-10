@@ -49,9 +49,10 @@ def _make_receipt(
     lines: tuple[ReceiptLine, ...] = (),
     paid_at: datetime.datetime = _PAID_AT_RECENT,
     reference: str | None = None,
+    receipt_number: int = 1,
 ) -> Receipt:
     return Receipt(
-        receipt_number=format_receipt_number(payment_id),
+        receipt_number=format_receipt_number(receipt_number),
         payment_id=payment_id,
         salon_id=_SALON_ID,
         salon_name=salon_name,

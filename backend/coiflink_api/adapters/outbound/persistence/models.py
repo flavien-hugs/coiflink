@@ -491,6 +491,9 @@ class Payment(Base):
     # Utilisateur responsable de l'encaissement (PRD §8.2) — obligatoire.
     recorded_by: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
     reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Numéro de reçu séquentiel par salon (impression gérant, migration 0012) — alloué
+    # atomiquement à la création (`SqlPaymentRepository.create`), jamais recalculé en lecture.
+    receipt_number: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime.datetime] = _created_at()
 
     __table_args__ = (
@@ -517,6 +520,9 @@ class Payment(Base):
         ),
         # Cible de la FK composite (salon_id, transaction_id) du journal de caisse.
         UniqueConstraint("salon_id", "id", name="uq_payments_salon_id"),
+        UniqueConstraint(
+            "salon_id", "receipt_number", name="uq_payments_salon_receipt_number"
+        ),
         enum_check("payment_method", enums.PaymentMethod, name="payment_method"),
         enum_check("status", enums.PaymentStatus, name="status"),
         CheckConstraint("amount >= 0", name="amount_positive"),

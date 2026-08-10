@@ -12,7 +12,8 @@
 import { useRouter } from "next/navigation";
 import { useState, useTransition, type FormEvent, type ReactNode } from "react";
 
-import { FilterIcon, RefreshIcon } from "@/src/adapters/ui/action-icons";
+import { FilterIcon, PrinterIcon, RefreshIcon } from "@/src/adapters/ui/action-icons";
+import { ReceiptPrintModal } from "@/src/adapters/ui/receipt-print-modal";
 import { SearchableSelect, SearchIcon } from "@/src/adapters/ui/searchable-select";
 import { formatXof, paymentMethodLabel, PAYMENT_METHOD_OPTIONS } from "@/src/domain/payments/payment";
 import {
@@ -33,6 +34,9 @@ const CELL = "px-4 py-3 text-sm";
 
 export interface TransactionHistoryProps {
   basePath: string;
+  // Salon courant — nécessaire pour ouvrir le reçu imprimable d'une ligne
+  // (ADR-0040) : `GET /salons/{salonId}/payments/{id}/receipt`.
+  salonId: string;
   // Valeurs courantes (lues des `searchParams` côté serveur), pré-remplies.
   dateFrom: string;
   dateTo: string;
@@ -48,6 +52,7 @@ export interface TransactionHistoryProps {
 
 export function TransactionHistory({
   basePath,
+  salonId,
   dateFrom,
   dateTo,
   paymentMethod,
@@ -59,6 +64,7 @@ export function TransactionHistory({
   const router = useRouter();
   const [isRefreshing, startRefresh] = useTransition();
   const [values, setValues] = useState({ dateFrom, dateTo, paymentMethod, q });
+  const [printingPaymentId, setPrintingPaymentId] = useState<string | null>(null);
 
   function set(key: keyof typeof values, value: string) {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -190,6 +196,9 @@ export function TransactionHistory({
                 <th className={CELL} scope="col">Montant</th>
                 <th className={CELL} scope="col">Mode</th>
                 <th className={CELL} scope="col">Statut</th>
+                <th className={`${CELL} w-12`} scope="col">
+                  <span className="sr-only">Reçu</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -210,11 +219,22 @@ export function TransactionHistory({
                   <td className={CELL}>
                     <StatusBadge status={transaction.status} />
                   </td>
+                  <td className={CELL}>
+                    <button
+                      type="button"
+                      onClick={() => setPrintingPaymentId(transaction.id)}
+                      aria-label="Imprimer le reçu"
+                      title="Imprimer le reçu"
+                      className="inline-flex size-8 cursor-pointer items-center justify-center rounded-lg border border-border bg-surface text-muted transition hover:border-accent/40 hover:text-foreground"
+                    >
+                      <PrinterIcon className="shrink-0" />
+                    </button>
+                  </td>
                 </tr>
               ))}
               {transactions.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted">
+                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-muted">
                     Aucune transaction ne correspond à ces filtres.
                   </td>
                 </tr>
@@ -223,6 +243,14 @@ export function TransactionHistory({
           </table>
         </div>
       </div>
+
+      {printingPaymentId ? (
+        <ReceiptPrintModal
+          salonId={salonId}
+          paymentId={printingPaymentId}
+          onClose={() => setPrintingPaymentId(null)}
+        />
+      ) : null}
     </div>
   );
 }

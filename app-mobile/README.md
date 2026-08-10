@@ -179,3 +179,30 @@ Découpage (extension **additive** du chemin rendez-vous) :
 
 **Garde-fous (§11)** : l'adapter ne journalise **ni** URL, **ni** corps, **ni** jeton, **ni** PII ; les
 échecs deviennent des exceptions **neutres**. Aucune donnée de gestion ni RDV d'un tiers n'est exposée.
+
+## Mes reçus — reçus de paiement (US-5.5, #38 · [ADR-0040](../docs/adr/0040-impression-recu-encaissement-gerant.md))
+
+L'écran **« Mes reçus »** (`adapters/ui/receipts/receipts_screen.dart`) liste, **en lecture seule**, les
+reçus de paiement du client via `GET /me/receipts` (déjà livré par #38 — **aucun** changement backend
+pour cette tranche) : salon, numéro de reçu (`REC-000042`), date, montant. Tapoter un reçu ouvre son
+détail (`receipt_detail_screen.dart`, `GET /me/receipts/{payment_id}`) : prestations, mode de paiement,
+statut, référence, et un bouton **« Partager »** qui envoie un texte formaté au partage natif du
+téléphone (`share_plus`) — **aucune** impression thermique réelle depuis le mobile (réservée au gérant,
+ADR-0040). Un bouton **« Mes reçus »** sur l'accueil ouvre l'écran (patron « Mon historique »).
+
+Découpage :
+
+- `domain/receipt/receipt.dart` — `Receipt`/`ReceiptLine`, domaine pur ;
+- `application/ports/receipt_gateway.dart` — `ReceiptGateway` (`myReceipts`, `receiptDetail`) +
+  exceptions neutres (`UnauthorizedException`, `ReceiptNotFoundException`) ;
+- `application/use_cases/list_my_receipts.dart` / `get_receipt_detail.dart` — délégation pure ;
+- `adapters/data/http_receipt_gateway.dart` — mapping `200 → Receipt(s)`, `401 → Unauthorized`,
+  `404 → ReceiptNotFoundException` (détail), défaut → `ReceiptGatewayException` neutre ;
+- `adapters/ui/receipts/receipts_screen.dart` + `receipt_detail_screen.dart` — écrans lecture seule
+  (chargement, liste **vide** ≠ erreur, non-authentifié → `onRequireLogin`, `401` → session invalidée,
+  `404` → « Retour à la liste », erreur réseau → réessayer) ;
+- `adapters/ui/receipts/receipt_share_text.dart` — formatage pur du texte partagé, testable sans
+  harnais widget.
+
+**Garde-fous (§11)** : l'adapter ne journalise **ni** URL, **ni** corps, **ni** jeton, **ni** PII. Le
+texte partagé ne contient **aucun** jeton.

@@ -24,6 +24,14 @@ Points de sécurité/qualité de donnée (PRD §11.2/§11.3) :
   prestations qu'il a réglées) — jamais `recorded_by`, ni un autre client, ni une
   donnée de gestion.
 
+Depuis l'impression du reçu côté gérant (ADR-0040), la **même** projection sert
+deux lectures distinctes : `get_receipt_for_client` (client, appartenance) et
+`get_receipt_for_salon` (gérant, portée salon — voir
+`application/ports/receipt_repository.py`). `client_name`/`client_phone` ne sont
+peuplés que par la lecture gérante (le client connaît déjà sa propre identité) ;
+c'est à l'adapter entrant client (`adapters/inbound/receipts.py`) de ne **jamais**
+les exposer même s'ils étaient renseignés.
+
 Aucune de ces règles ne connaît HTTP : l'adapter entrant traduit la projection en
 schéma de réponse (cf. `adapters/inbound/receipts.py`).
 """
@@ -77,19 +85,26 @@ class Receipt:
     paid_at: datetime.datetime
     appointment_id: uuid.UUID | None
     lines: tuple[ReceiptLine, ...] = ()
+    # Renseignés **uniquement** par la lecture gérante (`get_receipt_for_salon`,
+    # ADR-0040) — un client connaît déjà sa propre identité, la lecture
+    # d'appartenance (`get_receipt_for_client`) les laisse toujours à `None`.
+    client_name: str | None = None
+    client_phone: str | None = None
 
 
-def format_receipt_number(payment_id: uuid.UUID) -> str:
-    """Numéro de reçu **stable et déterministe** dérivé de l'identifiant de paiement.
+def format_receipt_number(receipt_number: int) -> str:
+    """Numéro de reçu **présentable**, dérivé du compteur séquentiel par salon.
 
-    Fonction **pure** (sans I/O, sans compteur base) : le `payment.id` canonique
-    est l'identifiant stable du reçu — deux appels pour le même paiement donnent
-    **toujours** la même valeur, sans nouvelle colonne ni écriture (voir spec
-    *Open Questions* §3). Centralisée ici pour qu'un éventuel libellé cosmétique
-    `REC-…` ne se décide qu'à **un** endroit.
+    Fonction **pure** (sans I/O) : `receipt_number` est déjà alloué de façon
+    atomique à la création du paiement (`SqlPaymentRepository.create`, verrou
+    consultatif par salon) ; ici on ne fait que le **formater** en un libellé
+    stable (`REC-000042`), centralisé pour qu'un futur changement de gabarit ne se
+    décide qu'à **un** endroit. Remplace l'ancien identifiant dérivé de l'UUID du
+    paiement (ADR-0030 §Open Question 3) — décision assumée dans ADR-0040 : un
+    reçu imprimé et remis en main a besoin d'un numéro court et présentable.
     """
 
-    return str(payment_id)
+    return f"REC-{receipt_number:06d}"
 
 
 __all__ = [

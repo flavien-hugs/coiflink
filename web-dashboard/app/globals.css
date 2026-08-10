@@ -82,3 +82,26 @@ body {
 .coiflink-page-surface {
   background-color: var(--background);
 }
+
+/* Impression du reçu (gérant, ADR-0040) : n'imprimer que le bloc du reçu,
+   à une largeur d'imprimante thermique (80mm par défaut, ajustable) — tout le
+   reste de la page (y compris les boutons du modal) est masqué. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .receipt-print-area,
+  .receipt-print-area * {
+    visibility: visible;
+  }
+  .receipt-print-area {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 80mm;
+    padding: 4mm;
+  }
+  .receipt-print-no-print {
+    display: none !important;
+  }
+}

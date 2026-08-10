@@ -98,9 +98,12 @@ def _make_receipt(
     appointment_id: uuid.UUID | None = None,
     lines: tuple[ReceiptLine, ...] = (),
     reference: str | None = None,
+    receipt_number: int = 1,
+    client_name: str | None = None,
+    client_phone: str | None = None,
 ) -> Receipt:
     return Receipt(
-        receipt_number=format_receipt_number(payment_id),
+        receipt_number=format_receipt_number(receipt_number),
         payment_id=payment_id,
         salon_id=_SALON_ID,
         salon_name="Salon Élégance",
@@ -112,6 +115,8 @@ def _make_receipt(
         paid_at=_PAID_AT,
         appointment_id=appointment_id,
         lines=lines,
+        client_name=client_name,
+        client_phone=client_phone,
     )
 
 
@@ -544,3 +549,136 @@ class TestReceiptsNotPublic:
                 if method in destructive:
                     bad.append(f"{method} {route.path}")
         assert bad == [], f"Verbes destructifs sur /me/receipts : {bad}"
+
+
+# ---------------------------------------------------------------------------
+# GET /salons/{salon_id}/payments/{payment_id}/receipt — reçu gérant (ADR-0040)
+# ---------------------------------------------------------------------------
+
+_MANAGER_RECEIPT_URL = f"/salons/{_SALON_ID}/payments/{_PAYMENT_ID}/receipt"
+
+
+def _make_manager_receipt(
+    *,
+    client_name: str | None = "Awa Koné",
+    client_phone: str | None = "+2250700000001",
+) -> Receipt:
+    return _make_receipt(client_name=client_name, client_phone=client_phone)
+
+
+class TestManagerReceiptEndpoint:
+    """`GET /salons/{id}/payments/{id}/receipt` : gérant, `CASH_JOURNAL_READ` (ADR-0040)."""
+
+    def _client_with_scope(
+        self, receipt_repo: FakeReceiptRepository
+    ) -> TestClient:
+        creds = _creds(_MANAGER_ID, Role.MANAGER.value)
+        user_repo = FakeAuthUserRepository(credentials_by_id={str(_MANAGER_ID): creds})
+        scope_repo = FakeSalonScopeRepository(scopes={_MANAGER_ID: frozenset({_SALON_ID})})
+        app.dependency_overrides[get_receipt_repository] = lambda: receipt_repo
+        app.dependency_overrides[get_user_repository] = lambda: user_repo
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+        return TestClient(app, raise_server_exceptions=False)
+
+    def _teardown(self) -> None:
+        app.dependency_overrides.pop(get_receipt_repository, None)
+        app.dependency_overrides.pop(get_user_repository, None)
+        app.dependency_overrides.pop(get_access_policy, None)
+
+    def test_returns_200_with_client_identity(
+        self, receipt_repo: FakeReceiptRepository
+    ) -> None:
+        receipt_repo._by_salon[_SALON_ID] = (_make_manager_receipt(),)
+        c = self._client_with_scope(receipt_repo)
+        try:
+            r = c.get(
+                _MANAGER_RECEIPT_URL, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
+            )
+            assert r.status_code == 200
+            body = r.json()
+            assert body["client_name"] == "Awa Koné"
+            assert body["client_phone"] == "+2250700000001"
+        finally:
+            self._teardown()
+
+    def test_walk_in_payment_has_null_client(
+        self, receipt_repo: FakeReceiptRepository
+    ) -> None:
+        receipt_repo._by_salon[_SALON_ID] = (
+            _make_manager_receipt(client_name=None, client_phone=None),
+        )
+        c = self._client_with_scope(receipt_repo)
+        try:
+            r = c.get(
+                _MANAGER_RECEIPT_URL, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
+            )
+            body = r.json()
+            assert body["client_name"] is None
+            assert body["client_phone"] is None
+        finally:
+            self._teardown()
+
+    def test_amount_is_decimal_string(self, receipt_repo: FakeReceiptRepository) -> None:
+        receipt_repo._by_salon[_SALON_ID] = (
+            _make_manager_receipt(),
+        )
+        c = self._client_with_scope(receipt_repo)
+        try:
+            r = c.get(
+                _MANAGER_RECEIPT_URL, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
+            )
+            assert isinstance(r.json()["amount"], str)
+        finally:
+            self._teardown()
+
+    def test_unknown_payment_returns_404(
+        self, receipt_repo: FakeReceiptRepository
+    ) -> None:
+        """Reçu jamais seedé (`_by_salon` vide) → 404 neutre, pas de trace serveur."""
+        c = self._client_with_scope(receipt_repo)
+        try:
+            r = c.get(
+                _MANAGER_RECEIPT_URL, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
+            )
+            assert r.status_code == 404
+        finally:
+            self._teardown()
+
+    def test_manager_without_scope_gets_403(
+        self, receipt_repo: FakeReceiptRepository
+    ) -> None:
+        """Gérant authentifié mais **sans** portée sur ce salon → 403 (avant tout accès au dépôt)."""
+        receipt_repo._by_salon[_SALON_ID] = (_make_manager_receipt(),)
+        creds = _creds(_MANAGER_ID, Role.MANAGER.value)
+        user_repo = FakeAuthUserRepository(credentials_by_id={str(_MANAGER_ID): creds})
+        scope_repo = FakeSalonScopeRepository()  # aucune portée accordée
+        app.dependency_overrides[get_receipt_repository] = lambda: receipt_repo
+        app.dependency_overrides[get_user_repository] = lambda: user_repo
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+        try:
+            r = TestClient(app, raise_server_exceptions=False).get(
+                _MANAGER_RECEIPT_URL, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
+            )
+            assert r.status_code == 403
+        finally:
+            self._teardown()
+
+    def test_client_role_gets_403(self, receipt_repo: FakeReceiptRepository) -> None:
+        """Un CLIENT (même détenteur de `PAYMENT_READ_OWN`) n'a pas `CASH_JOURNAL_READ`."""
+        creds = _creds(_CLIENT_ID, Role.CLIENT.value)
+        user_repo = FakeAuthUserRepository(credentials_by_id={str(_CLIENT_ID): creds})
+        scope_repo = FakeSalonScopeRepository()
+        app.dependency_overrides[get_receipt_repository] = lambda: receipt_repo
+        app.dependency_overrides[get_user_repository] = lambda: user_repo
+        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+        try:
+            r = TestClient(app, raise_server_exceptions=False).get(
+                _MANAGER_RECEIPT_URL, headers={"Authorization": f"Bearer {_CLIENT_TOKEN}"}
+            )
+            assert r.status_code == 403
+        finally:
+            self._teardown()
+
+    def test_no_token_returns_401(self) -> None:
+        r = TestClient(app).get(_MANAGER_RECEIPT_URL)
+        assert r.status_code == 401

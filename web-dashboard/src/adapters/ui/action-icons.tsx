@@ -113,6 +113,16 @@ export function ClockIcon({ className = "" }: IconProps) {
   );
 }
 
+export function PrinterIcon({ className = "" }: IconProps) {
+  return (
+    <svg {...ICON_PROPS} className={`size-4 ${className}`}>
+      <path d="M5.5 7.5v-4h9v4" />
+      <rect x="2.5" y="7.5" width="15" height="6.5" rx="1.5" />
+      <path d="M5.5 12.5v4h9v-4" />
+    </svg>
+  );
+}
+
 export function PhoneIcon({ className = "" }: IconProps) {
   return (
     <svg {...ICON_PROPS} className={`size-4 ${className}`}>

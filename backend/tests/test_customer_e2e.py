@@ -460,11 +460,13 @@ def _insert_payment(
         }
         columns = (
             "id, salon_id, client_id, appointment_id, amount, payment_method, "
-            "recorded_by, status"
+            "recorded_by, status, receipt_number"
         )
         values = (
             ":id, :salon_id, :client_id, :appointment_id, :amount, 'CASH', "
-            ":recorded_by, :status"
+            ":recorded_by, :status, "
+            "(SELECT COALESCE(MAX(receipt_number), 0) + 1 FROM payments "
+            "WHERE salon_id = :salon_id)"
         )
         if created_at is not None:
             columns += ", created_at"
