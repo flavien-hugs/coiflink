@@ -13,6 +13,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../../application/ports/salon_catalog_gateway.dart';
+import '../../domain/salon/hairdresser.dart';
 import '../../domain/salon/opening_hours.dart';
 import '../../domain/salon/salon_detail.dart';
 import '../../domain/salon/salon_service.dart';
@@ -127,6 +128,8 @@ class HttpSalonCatalogGateway implements SalonCatalogGateway {
     final rawServices =
         (json['services'] as List<dynamic>? ?? const <dynamic>[]);
     final rawPhotos = (json['photos'] as List<dynamic>? ?? const <dynamic>[]);
+    final rawHairdressers =
+        (json['hairdressers'] as List<dynamic>? ?? const <dynamic>[]);
     return SalonDetail(
       id: json['id'] as String,
       name: json['name'] as String,
@@ -148,6 +151,9 @@ class HttpSalonCatalogGateway implements SalonCatalogGateway {
       services: rawServices
           .map((s) => _serviceFromJson(s as Map<String, dynamic>))
           .toList(growable: false),
+      hairdressers: rawHairdressers
+          .map((h) => _hairdresserFromJson(h as Map<String, dynamic>))
+          .toList(growable: false),
     );
   }
 
@@ -167,6 +173,14 @@ class HttpSalonCatalogGateway implements SalonCatalogGateway {
       price: json['price']?.toString(),
       durationMinutes: (json['duration_minutes'] as num?)?.toInt(),
       category: json['category'] as String?,
+    );
+  }
+
+  static Hairdresser _hairdresserFromJson(Map<String, dynamic> json) {
+    return Hairdresser(
+      id: json['id'] as String,
+      fullName: json['full_name'] as String,
+      specialties: json['specialties'] as String?,
     );
   }
 

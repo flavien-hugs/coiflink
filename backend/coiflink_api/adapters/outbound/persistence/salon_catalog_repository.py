@@ -20,6 +20,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
+from coiflink_api.adapters.outbound.persistence.salon_member_repository import (
+    _to_employee,
+)
 from coiflink_api.adapters.outbound.persistence.salon_repository import (
     _photo_to_domain,
     _to_domain,
@@ -28,7 +31,8 @@ from coiflink_api.adapters.outbound.persistence.service_repository import (
     _to_domain as _service_to_domain,
 )
 from coiflink_api.application.ports.salon_catalog_repository import SalonSearchQuery
-from coiflink_api.domain.enums import SalonStatus
+from coiflink_api.domain.employee import Employee
+from coiflink_api.domain.enums import Role, SalonStatus, UserStatus
 from coiflink_api.domain.salon import Salon, SalonPhoto
 from coiflink_api.domain.service import Service
 
@@ -97,6 +101,21 @@ class SqlSalonCatalogRepository:
         return tuple(
             _service_to_domain(row) for row in self._session.scalars(stmt).all()
         )
+
+    def list_active_hairdressers(self, salon_id: uuid.UUID) -> tuple[Employee, ...]:
+        """Coiffeuses `ACTIVE` du salon, triées par nom (filtre `status` en SQL)."""
+
+        rows = self._session.execute(
+            select(models.SalonMember, models.User)
+            .join(models.User, models.User.id == models.SalonMember.user_id)
+            .where(
+                models.SalonMember.salon_id == salon_id,
+                models.SalonMember.role == Role.HAIRDRESSER.value,
+                models.SalonMember.status == UserStatus.ACTIVE.value,
+            )
+            .order_by(models.User.full_name.asc())
+        ).all()
+        return tuple(_to_employee(member, user) for member, user in rows)
 
     def list_photos(self, salon_id: uuid.UUID) -> tuple[SalonPhoto, ...]:
         """Photos du salon, ordonnées par `position` croissante (galerie fiche)."""

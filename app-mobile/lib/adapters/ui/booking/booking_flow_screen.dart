@@ -1,13 +1,16 @@
 // Écran UI : tunnel de réservation guidé (§7.1, #22).
 //
 // Parcours en étapes ouvert depuis la fiche salon (#19), au-dessus des endpoints
-// livrés par #21 : prestation → date → créneau → commentaire → confirmation.
-// Consomme les cas d'usage `CheckAvailability` / `BookAppointment` (injectés) ;
-// aucune règle métier ni appel HTTP direct ici.
+// livrés par #21 : prestation → coiffeuse (optionnel, #150) → date → créneau →
+// commentaire → confirmation. Consomme les cas d'usage `CheckAvailability` /
+// `BookAppointment` (injectés) ; aucune règle métier ni appel HTTP direct ici.
 //
 // MVP #22 (voir ADR-0024) : **une seule** prestation par réservation (cohérent
-// avec la disponibilité mono-`service_id`), réservation **au niveau salon** (pas
-// de `hairdresser_id`), horizon de date borné, repère **UTC+0** (Africa/Abidjan).
+// avec la disponibilité mono-`service_id`), horizon de date borné, repère
+// **UTC+0** (Africa/Abidjan). Depuis #150 : le client peut **optionnellement**
+// choisir une coiffeuse `ACTIVE` du salon (`SalonDetail.hairdressers`) ; sans
+// choix (« Peu importe »), la réservation reste **au niveau salon**
+// (`hairdresserId = null`), comportement inchangé.
 //
 // États honnêtes : chargement des créneaux, aucun créneau (jour fermé/complet),
 // erreur réseau (réessayer), `409` créneau pris (retour à l'étape créneaux
@@ -24,6 +27,7 @@ import '../../../application/use_cases/check_availability.dart';
 import '../../../application/use_cases/modify_appointment.dart';
 import '../../../domain/appointment/appointment.dart';
 import '../../../domain/appointment/availability_slot.dart';
+import '../../../domain/salon/hairdresser.dart';
 import '../../../domain/salon/salon_detail.dart';
 import '../../../domain/salon/salon_service.dart';
 import 'booking_confirmation_screen.dart';
@@ -80,14 +84,16 @@ class BookingFlowScreen extends StatefulWidget {
 
 class _BookingFlowScreenState extends State<BookingFlowScreen> {
   static const int _stepService = 0;
-  static const int _stepDate = 1;
-  static const int _stepSlot = 2;
-  static const int _stepNote = 3;
-  static const int _stepConfirm = 4;
+  static const int _stepHairdresser = 1;
+  static const int _stepDate = 2;
+  static const int _stepSlot = 3;
+  static const int _stepNote = 4;
+  static const int _stepConfirm = 5;
 
   int _step = _stepService;
 
   SalonService? _service;
+  Hairdresser? _hairdresser;
   DateTime? _date;
   AvailabilitySlot? _slot;
   final TextEditingController _note = TextEditingController();
@@ -123,6 +129,15 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           }
         }
       }
+      final hairdresserId = appointment.hairdresserId;
+      if (hairdresserId != null) {
+        for (final hairdresser in widget.salon.hairdressers) {
+          if (hairdresser.id == hairdresserId) {
+            _hairdresser = hairdresser;
+            break;
+          }
+        }
+      }
     }
   }
 
@@ -139,6 +154,9 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     switch (_step) {
       case _stepService:
         return _service != null;
+      case _stepHairdresser:
+        // Choix **optionnel** (#150) : « Peu importe » (null) fait déjà progresser.
+        return true;
       case _stepDate:
         return _date != null;
       case _stepSlot:
@@ -184,6 +202,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         salonId: widget.salon.id,
         date: date,
         serviceId: service.id,
+        hairdresserId: _hairdresser?.id,
       );
       if (!mounted) return;
       setState(() {
@@ -239,6 +258,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       date: _date!,
       startTime: _slot!.start,
       serviceIds: <String>[_service!.id],
+      hairdresserId: _hairdresser?.id,
       clientNote: _note.text,
     );
 
@@ -356,6 +376,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           selected: _service,
           onSelected: (s) => setState(() => _service = s),
         );
+      case _stepHairdresser:
+        return _HairdresserStep(
+          hairdressers: widget.salon.hairdressers,
+          selected: _hairdresser,
+          onSelected: (h) => setState(() => _hairdresser = h),
+        );
       case _stepDate:
         return _DateStep(
           selected: _date,
@@ -377,6 +403,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         return _ConfirmStep(
           salonName: widget.salon.name,
           service: _service!,
+          hairdresser: _hairdresser,
           date: _date!,
           slot: _slot!,
           note: _note.text,
@@ -428,6 +455,7 @@ class _StepIndicator extends StatelessWidget {
 
   static const List<String> _titles = <String>[
     'Prestation',
+    'Coiffeuse',
     'Date',
     'Créneau',
     'Commentaire',
@@ -502,6 +530,61 @@ class _ServiceStep extends StatelessWidget {
         '${service.price} FCFA',
     ];
     return parts.join(' · ');
+  }
+}
+
+class _HairdresserStep extends StatelessWidget {
+  const _HairdresserStep({
+    required this.hairdressers,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final List<Hairdresser> hairdressers;
+  final Hairdresser? selected;
+  final ValueChanged<Hairdresser?> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(8),
+      children: <Widget>[
+        ListTile(
+          selected: selected == null,
+          onTap: () => onSelected(null),
+          leading: Icon(
+            selected == null
+                ? Icons.radio_button_checked
+                : Icons.radio_button_unchecked,
+          ),
+          title: const Text('Peu importe'),
+          subtitle: const Text('Le salon assigne une coiffeuse disponible.'),
+        ),
+        if (hairdressers.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+            child: Text(
+              'Aucune coiffeuse à choisir pour ce salon actuellement.',
+              textAlign: TextAlign.center,
+            ),
+          )
+        else
+          for (final hairdresser in hairdressers)
+            ListTile(
+              selected: selected?.id == hairdresser.id,
+              onTap: () => onSelected(hairdresser),
+              leading: Icon(
+                selected?.id == hairdresser.id
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+              ),
+              title: Text(hairdresser.fullName),
+              subtitle: (hairdresser.specialties ?? '').trim().isEmpty
+                  ? null
+                  : Text(hairdresser.specialties!.trim()),
+            ),
+      ],
+    );
   }
 }
 
@@ -649,6 +732,7 @@ class _ConfirmStep extends StatelessWidget {
   const _ConfirmStep({
     required this.salonName,
     required this.service,
+    this.hairdresser,
     required this.date,
     required this.slot,
     required this.note,
@@ -657,6 +741,7 @@ class _ConfirmStep extends StatelessWidget {
 
   final String salonName;
   final SalonService service;
+  final Hairdresser? hairdresser;
   final DateTime date;
   final AvailabilitySlot slot;
   final String note;
@@ -675,6 +760,10 @@ class _ConfirmStep extends StatelessWidget {
         const SizedBox(height: 16),
         _Line(label: 'Salon', value: salonName),
         _Line(label: 'Prestation', value: service.name),
+        _Line(
+          label: 'Coiffeuse',
+          value: hairdresser?.fullName ?? 'Peu importe',
+        ),
         _Line(label: 'Date', value: formatFullDate(date)),
         _Line(label: 'Créneau', value: '${slot.start} – ${slot.end}'),
         if (trimmedNote.isNotEmpty) _Line(label: 'Commentaire', value: trimmedNote),

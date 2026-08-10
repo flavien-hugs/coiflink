@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from coiflink_api.adapters.inbound.catalog import get_salon_catalog_repository
 from coiflink_api.adapters.inbound.salons import get_optional_media_storage
 from coiflink_api.adapters.inbound.security import unprotected_routes
+from coiflink_api.domain.employee import Employee
 from coiflink_api.domain.enums import SalonStatus
 from coiflink_api.domain.salon import Salon, SalonPhoto
 from coiflink_api.domain.service import Service
@@ -85,6 +86,25 @@ def _make_service(
         image_object_key=None,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
+    )
+
+
+def _make_hairdresser(
+    *,
+    full_name: str = "Awa Koné",
+    specialties: str | None = "Tresses",
+    status: str = "ACTIVE",
+) -> Employee:
+    return Employee(
+        id=uuid.uuid4(),
+        full_name=full_name,
+        phone="+2250799999999",
+        email="awa.hairdresser@example.com",
+        role="HAIRDRESSER",
+        status=status,
+        specialties=specialties,
+        hired_at=None,
+        created_at=_CREATED_AT,
     )
 
 
@@ -201,6 +221,63 @@ def test_opening_hours_null_when_not_configured() -> None:
     data = resp.json()
     assert data["opening_hours"] is None
     assert data["is_bookable"] is False
+
+
+# ---------------------------------------------------------------------------
+# Coiffeuses actives (#150) — choix optionnel à la réservation
+# ---------------------------------------------------------------------------
+
+
+def test_active_hairdressers_included() -> None:
+    salon = _make_salon()
+    hairdresser = _make_hairdresser(full_name="Awa Koné", specialties="Tresses")
+    repo = FakeSalonCatalogRepository(
+        [salon], hairdressers={salon.id: [hairdresser]}
+    )
+    resp = _client(repo).get(_url(salon.id))
+
+    data = resp.json()
+    assert len(data["hairdressers"]) == 1
+    assert data["hairdressers"][0]["full_name"] == "Awa Koné"
+    assert data["hairdressers"][0]["specialties"] == "Tresses"
+
+
+def test_inactive_hairdresser_excluded() -> None:
+    salon = _make_salon()
+    hairdressers = {
+        salon.id: [
+            _make_hairdresser(full_name="Awa Koné", status="ACTIVE"),
+            _make_hairdresser(full_name="Fatou Diarra", status="INACTIVE"),
+        ]
+    }
+    resp = _client(
+        FakeSalonCatalogRepository([salon], hairdressers=hairdressers)
+    ).get(_url(salon.id))
+
+    names = {h["full_name"] for h in resp.json()["hairdressers"]}
+    assert names == {"Awa Koné"}
+
+
+def test_hairdressers_empty_list_always_in_response() -> None:
+    """`hairdressers` est toujours présent dans la réponse, même vide (contrat stable)."""
+    salon = _make_salon()
+    resp = _client(FakeSalonCatalogRepository([salon])).get(_url(salon.id))
+    data = resp.json()
+    assert "hairdressers" in data
+    assert data["hairdressers"] == []
+
+
+def test_hairdresser_item_has_no_management_fields() -> None:
+    """Anti-PII (§A.4) : ni téléphone, ni e-mail, ni statut, ni date d'embauche."""
+    salon = _make_salon()
+    repo = FakeSalonCatalogRepository(
+        [salon], hairdressers={salon.id: [_make_hairdresser()]}
+    )
+    resp = _client(repo).get(_url(salon.id))
+    hairdresser = resp.json()["hairdressers"][0]
+    assert set(hairdresser.keys()) == {"id", "full_name", "specialties"}
+    assert "+2250799999999" not in resp.text
+    assert "awa.hairdresser@example.com" not in resp.text
 
 
 # ---------------------------------------------------------------------------
