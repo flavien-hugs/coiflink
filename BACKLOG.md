@@ -200,6 +200,15 @@ l'encaissement (M4) et les KPI (M5) dépendent de la boucle de rendez-vous (M3).
   *Acceptation :* un coiffeur voit uniquement son planning ; aucun accès aux RDV non assignés.
   *Dépend de :* #13, #26.
 
+- **Réservation · Choix optionnel d'une coiffeuse (client)** · `feature` · **Livré**
+  Étend #22 : la fiche salon publique (#19) expose les coiffeuses `ACTIVE` du salon (projection
+  minimale id/nom/spécialités, jamais de PII de gestion) et le tunnel de réservation mobile ajoute une
+  étape dédiée pour en choisir une optionnellement — « Peu importe » laisse le salon assigner, la
+  réservation au niveau salon sans coiffeuse reste inchangée. Demande ad hoc (aucune issue GitHub créée
+  en amont).
+  *Livré via :* [PR #153](https://github.com/flavien-hugs/coiflink/pull/153) (mergée sur `main`).
+  *Dépend de :* #19, #22, #152.
+
 ---
 
 ## M4 — Clients, encaissement & caisse (Sprint 4) — Épics 4 & 5
