@@ -167,6 +167,7 @@ function HistorySection({
   return (
     <TransactionHistory
       basePath={HISTORY_BASE_PATH}
+      salonId={salonId}
       dateFrom={filter.dateFrom ?? ""}
       dateTo={filter.dateTo ?? ""}
       paymentMethod={filter.paymentMethod ?? ""}

@@ -4,6 +4,7 @@
 // (US-5.1, #33). Implémenté par un adapter dans `src/adapters/api/`.
 
 import type { Payment, PaymentDraft } from "@/src/domain/payments/payment";
+import type { ManagerReceipt } from "@/src/domain/payments/receipt";
 import type {
   TransactionFilterInput,
   TransactionPage,
@@ -39,6 +40,15 @@ export type ListTransactionsResult =
       reason: "invalid" | "forbidden" | "unauthenticated" | "unavailable";
     };
 
+// Résultat du reçu imprimable d'un paiement (gérant, ADR-0040). `not-found` = `404`
+// (paiement hors salon/inexistant, neutre) ; les autres motifs sont **génériques**.
+export type GetReceiptResult =
+  | { ok: true; receipt: ManagerReceipt }
+  | {
+      ok: false;
+      reason: "not-found" | "forbidden" | "unauthenticated" | "unavailable";
+    };
+
 export interface PaymentGateway {
   // Proxifie `POST /salons/{id}/payments` ; renvoie le paiement `VALIDATED` créé.
   // Le montant est vérifié **cohérent** avec la prestation/RDV lié côté backend.
@@ -53,4 +63,9 @@ export interface PaymentGateway {
     filter: TransactionFilterInput,
     page?: TransactionPageOptions,
   ): Promise<ListTransactionsResult>;
+
+  // Proxifie `GET /salons/{id}/payments/{id}/receipt` : reçu imprimable d'un
+  // paiement du salon (ADR-0040) — nom/téléphone client si rattaché, `null`
+  // pour un paiement comptoir.
+  getReceipt(salonId: string, paymentId: string): Promise<GetReceiptResult>;
 }

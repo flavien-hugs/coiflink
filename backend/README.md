@@ -1134,6 +1134,46 @@ curl -G "$API/me/receipts" -H "Authorization: Bearer $CLIENT_ACCESS_TOKEN"
 curl "$API/me/receipts/$PAYMENT_ID" -H "Authorization: Bearer $CLIENT_ACCESS_TOKEN"
 ```
 
+## Impression du reçu (gérant) (ADR-0040)
+
+Le **gérant** peut consulter/imprimer le reçu d'un paiement de son salon, pour le remettre
+physiquement à la cliente : `GET /salons/{salon_id}/payments/{payment_id}/receipt`, gardé par
+`require_salon_scope` + `CASH_JOURNAL_READ` (§4.1, **même permission** que l'historique des
+transactions #35 et le journal de caisse #34 — aucune permission nouvelle). Voir
+[ADR-0040](../docs/adr/0040-impression-recu-encaissement-gerant.md), qui étend
+[ADR-0030](../docs/adr/0030-recu-numerique-remise-differee.md) (#38) sans la remplacer.
+
+Réutilise la **même** projection `Receipt`/`ReceiptLine` que le reçu client, via une seconde méthode de
+lecture du dépôt (`get_receipt_for_salon`, portée **salon** au lieu de `client_id`) — inclut donc les
+paiements **comptoir sans client rattaché** (`client_id` nul), invisibles du reçu client. Étend la
+projection de `client_name`/`client_phone` (résolus `client_id → users.full_name/phone`, `null` pour un
+paiement comptoir) — **jamais** exposés côté client (il connaît déjà sa propre identité).
+
+**Numéro de reçu séquentiel par salon.** Depuis la migration `0012`, `payments.receipt_number`
+(`INTEGER`, `UNIQUE (salon_id, receipt_number)`) remplace l'ancien identifiant dérivé de l'UUID du
+paiement (révision assumée de ADR-0030 §Open Question 3) : `format_receipt_number` renvoie désormais
+un libellé court `REC-000042`, identique sur le reçu client **et** le reçu gérant. Alloué **de façon
+atomique** à la création du paiement (`SqlPaymentRepository.create`) via un verrou consultatif
+transactionnel par salon (`pg_advisory_xact_lock`), sans nouvelle table de compteur.
+
+| Méthode | Chemin | Garde(s) | Réponse | Audit §11.4 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/salons/{salon_id}/payments/{payment_id}/receipt` | `CASH_JOURNAL_READ` + portée | `200` reçu (nom/téléphone client si rattaché) \| `401` \| `403` \| `404` (hors salon/inexistant, neutre) | *(aucun — lecture)* |
+
+```bash
+# Reçu imprimable d'un paiement du salon → 200
+curl "$API/salons/$SALON_ID/payments/$PAYMENT_ID/receipt" -H "Authorization: Bearer $MANAGER_ACCESS_TOKEN"
+```
+
+**Impression : aperçu navigateur, succès *best-effort*.** Le web-dashboard imprime via `window.print()`
++ CSS `@media print` scopée (largeur 80mm par défaut) — aucun PDF serveur. L'état « imprimé » se déduit
+de l'évènement `afterprint` (dialogue d'impression fermé) : un signal best-effort, pas une confirmation
+matérielle (le navigateur ne peut pas savoir si le ticket est réellement sorti de l'imprimante).
+
+**Côté client mobile**, l'écran « Mes reçus » (liste + détail, bouton « Partager ») consomme les
+endpoints **déjà livrés** par #38 (`GET /me/receipts*`) — **aucun** changement backend pour cette
+tranche, pas d'impression thermique réelle depuis le téléphone (partage natif uniquement).
+
 ## Chiffre d'affaires jour/semaine/mois (US-6.2, #40)
 
 Le gérant **voit ses revenus** : `GET /salons/{salon_id}/revenue/summary` renvoie, pour une **date de

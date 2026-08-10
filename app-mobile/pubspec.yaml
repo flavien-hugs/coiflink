@@ -38,6 +38,7 @@ dependencies:
   # Client HTTP de la couche data (#18) : appelle GET /catalog/salons.
   # Première dépendance réseau du paquet ; aucune donnée sensible n'y transite.
   http: ^1.2.0
+  share_plus: ^13.3.0
 
 dev_dependencies:
   flutter_test:

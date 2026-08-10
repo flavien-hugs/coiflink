@@ -1,12 +1,15 @@
-"""Tests unitaires — projection domaine `Receipt`/`ReceiptLine` (US-5.5, #38).
+"""Tests unitaires — projection domaine `Receipt`/`ReceiptLine` (US-5.5, #38 · ADR-0040).
 
 Couvre :
 - construction `Receipt`/`ReceiptLine` (valeurs attendues, immutabilité `frozen`) ;
-- `format_receipt_number` : déterministe, pure, renvoie `str(payment_id)` ;
+- `format_receipt_number` : pure, déterministe, formate un compteur séquentiel
+  (`int`) en libellé `REC-000042` (impression gérant, ADR-0040 — remplace l'ancien
+  format dérivé de l'UUID du paiement) ;
 - montants portés en `Decimal` (jamais float) ;
 - `Receipt` sans ligne (paiement simple sans prestation liée) ;
 - `Receipt` multi-lignes (RDV avec plusieurs prestations) ;
-- `receipt_number` stable : deux appels pour le même `payment_id` → même valeur ;
+- `client_name`/`client_phone` : `None` par défaut (lecture client), renseignables
+  (lecture gérante) ;
 - `DEFAULT_CURRENCY` est XOF.
 """
 
@@ -40,28 +43,27 @@ def test_default_currency_is_xof() -> None:
 
 
 # ---------------------------------------------------------------------------
-# format_receipt_number — pure, déterministe
+# format_receipt_number — pure, déterministe (ADR-0040)
 # ---------------------------------------------------------------------------
 
-def test_format_receipt_number_returns_string_of_uuid() -> None:
-    pid = uuid.UUID("12345678-1234-5678-1234-567812345678")
-    assert format_receipt_number(pid) == str(pid)
+def test_format_receipt_number_formats_zero_padded_label() -> None:
+    assert format_receipt_number(42) == "REC-000042"
 
 
 def test_format_receipt_number_is_deterministic() -> None:
-    pid = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    assert format_receipt_number(pid) == format_receipt_number(pid)
+    assert format_receipt_number(7) == format_receipt_number(7)
 
 
 def test_format_receipt_number_returns_str() -> None:
-    result = format_receipt_number(_PAYMENT_ID)
-    assert isinstance(result, str)
+    assert isinstance(format_receipt_number(1), str)
 
 
-def test_format_receipt_number_different_ids_give_different_numbers() -> None:
-    id1 = uuid.UUID("11111111-0000-0000-0000-000000000001")
-    id2 = uuid.UUID("22222222-0000-0000-0000-000000000002")
-    assert format_receipt_number(id1) != format_receipt_number(id2)
+def test_format_receipt_number_different_numbers_give_different_labels() -> None:
+    assert format_receipt_number(1) != format_receipt_number(2)
+
+
+def test_format_receipt_number_pads_small_numbers() -> None:
+    assert format_receipt_number(1) == "REC-000001"
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +96,11 @@ def _make_receipt(
     lines: tuple[ReceiptLine, ...] = (),
     appointment_id: uuid.UUID | None = None,
     reference: str | None = None,
+    client_name: str | None = None,
+    client_phone: str | None = None,
 ) -> Receipt:
     return Receipt(
-        receipt_number=format_receipt_number(_PAYMENT_ID),
+        receipt_number=format_receipt_number(1),
         payment_id=_PAYMENT_ID,
         salon_id=_SALON_ID,
         salon_name="Salon Élégance",
@@ -108,6 +112,8 @@ def _make_receipt(
         paid_at=_PAID_AT,
         appointment_id=appointment_id,
         lines=lines,
+        client_name=client_name,
+        client_phone=client_phone,
     )
 
 
@@ -139,7 +145,25 @@ def test_receipt_is_frozen() -> None:
 
 def test_receipt_receipt_number_equals_format_result() -> None:
     r = _make_receipt()
-    assert r.receipt_number == format_receipt_number(_PAYMENT_ID)
+    assert r.receipt_number == format_receipt_number(1)
+
+
+# ---------------------------------------------------------------------------
+# Receipt — client_name / client_phone (impression gérant, ADR-0040)
+# ---------------------------------------------------------------------------
+
+def test_receipt_client_identity_defaults_to_none() -> None:
+    """Lecture client (`get_receipt_for_client`) : jamais renseignés."""
+    r = _make_receipt()
+    assert r.client_name is None
+    assert r.client_phone is None
+
+
+def test_receipt_client_identity_settable_for_manager_view() -> None:
+    """Lecture gérante (`get_receipt_for_salon`) : nom/téléphone de la cliente."""
+    r = _make_receipt(client_name="Awa Koné", client_phone="+2250700000001")
+    assert r.client_name == "Awa Koné"
+    assert r.client_phone == "+2250700000001"
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +240,7 @@ def test_two_receipts_with_same_data_are_equal() -> None:
 def test_two_receipts_with_different_amounts_are_not_equal() -> None:
     r1 = _make_receipt()
     r2 = Receipt(
-        receipt_number=format_receipt_number(_PAYMENT_ID),
+        receipt_number=format_receipt_number(1),
         payment_id=_PAYMENT_ID,
         salon_id=_SALON_ID,
         salon_name="Salon Élégance",

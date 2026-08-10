@@ -11,11 +11,13 @@
 // résultat renvoyé.
 
 import type {
+  GetReceiptResult,
   ListTransactionsResult,
   PaymentGateway,
   RecordPaymentResult,
 } from "@/src/application/ports/payment-gateway";
 import type { Payment, PaymentDraft } from "@/src/domain/payments/payment";
+import type { ManagerReceipt, ManagerReceiptLine } from "@/src/domain/payments/receipt";
 import {
   serializeTransactionFilter,
   type Transaction,
@@ -84,6 +86,45 @@ function toPayment(payload: PaymentResponsePayload): Payment {
 
 function toTransaction(payload: TransactionResponsePayload): Transaction {
   return { ...toPayment(payload), clientName: payload.client_name };
+}
+
+// Forme du corps `ManagerReceiptResponse` renvoyé par le backend (ADR-0040).
+interface ManagerReceiptResponsePayload {
+  receipt_number: string;
+  payment_id: string;
+  salon_id: string;
+  salon_name: string;
+  client_name: string | null;
+  client_phone: string | null;
+  amount: string;
+  currency: string;
+  payment_method: string;
+  status: string;
+  reference: string | null;
+  paid_at: string;
+  lines: { service_name: string; amount: string }[];
+}
+
+function toManagerReceipt(payload: ManagerReceiptResponsePayload): ManagerReceipt {
+  const lines: ManagerReceiptLine[] = payload.lines.map((line) => ({
+    serviceName: line.service_name,
+    amount: line.amount,
+  }));
+  return {
+    receiptNumber: payload.receipt_number,
+    paymentId: payload.payment_id,
+    salonId: payload.salon_id,
+    salonName: payload.salon_name,
+    clientName: payload.client_name,
+    clientPhone: payload.client_phone,
+    amount: payload.amount,
+    currency: payload.currency,
+    paymentMethod: payload.payment_method,
+    status: payload.status,
+    reference: payload.reference,
+    paidAt: payload.paid_at,
+    lines,
+  };
 }
 
 // Corps envoyé au backend (snake_case). `salon_id`/`recorded_by`/`status`/`id`
@@ -204,6 +245,38 @@ export function createHttpPaymentGateway(
       }
       if (response.status === 422) {
         return { ok: false, reason: "invalid" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async getReceipt(salonId: string, paymentId: string): Promise<GetReceiptResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      const url = `${paymentsUrl(salonId)}/${encodeURIComponent(paymentId)}/receipt`;
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          headers: { ...authHeader() },
+          cache: "no-store",
+        });
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 200) {
+        const payload = (await response.json()) as ManagerReceiptResponsePayload;
+        return { ok: true, receipt: toManagerReceipt(payload) };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "not-found" };
       }
       return { ok: false, reason: "unavailable" };
     },

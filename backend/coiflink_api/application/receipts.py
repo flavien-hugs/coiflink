@@ -73,4 +73,23 @@ class GetMyReceipt:
         return self._receipt_repo.get_receipt_for_client(actor_user_id, payment_id)
 
 
-__all__ = ["ListMyReceipts", "GetMyReceipt"]
+class GetSalonReceipt:
+    """Reçu précis d'un paiement du **salon du gérant** — impression (ADR-0040).
+
+    Portée **salon**, pas `client_id` : inclut les paiements comptoir sans client
+    rattaché (contrairement à `GetMyReceipt`). `None` si le paiement n'existe pas
+    **ou** appartient à un autre salon — indiscernable (§11.3, `require_salon_scope`
+    a déjà validé que l'acteur gère bien `salon_id` en amont). Lecture pure : aucune
+    écriture, aucun audit — consulter/imprimer un reçu n'est pas une action §11.4.
+    """
+
+    def __init__(self, receipt_repo: ReceiptRepository) -> None:
+        self._receipt_repo = receipt_repo
+
+    def execute(self, salon_id: uuid.UUID, payment_id: uuid.UUID) -> Receipt | None:
+        """Retourne le reçu du salon ou `None` (paiement inexistant/autre salon)."""
+
+        return self._receipt_repo.get_receipt_for_salon(salon_id, payment_id)
+
+
+__all__ = ["ListMyReceipts", "GetMyReceipt", "GetSalonReceipt"]

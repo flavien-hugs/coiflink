@@ -522,3 +522,157 @@ describe("createHttpPaymentGateway().listTransactions() — codes de statut", ()
     expect(url).not.toContain("?");
   });
 });
+
+// ---------------------------------------------------------------------------
+// getReceipt() — reçu imprimable du gérant (ADR-0040)
+// ---------------------------------------------------------------------------
+
+const FAKE_RECEIPT_PAYLOAD = {
+  receipt_number: "REC-000001",
+  payment_id: PAYMENT_ID,
+  salon_id: SALON_ID,
+  salon_name: "Salon Élégance",
+  client_name: "Awa Koné",
+  client_phone: "+2250700000001",
+  amount: "5000.00",
+  currency: "XOF",
+  payment_method: "CASH",
+  status: "VALIDATED",
+  reference: null,
+  paid_at: "2026-03-15T10:00:00Z",
+  lines: [{ service_name: "Coupe homme", amount: "5000.00" }],
+};
+
+describe("createHttpPaymentGateway().getReceipt() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpPaymentGateway({ accessToken: null }).getReceipt(
+      SALON_ID,
+      PAYMENT_ID,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("createHttpPaymentGateway().getReceipt() — codes de statut", () => {
+  it("200 → ok:true avec le reçu projeté en camelCase", async () => {
+    stubFetch(200, FAKE_RECEIPT_PAYLOAD);
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).getReceipt(
+      SALON_ID,
+      PAYMENT_ID,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.receipt.receiptNumber).toBe("REC-000001");
+      expect(result.receipt.salonName).toBe("Salon Élégance");
+      expect(result.receipt.clientName).toBe("Awa Koné");
+      expect(result.receipt.clientPhone).toBe("+2250700000001");
+      expect(result.receipt.lines).toEqual([
+        { serviceName: "Coupe homme", amount: "5000.00" },
+      ]);
+    }
+  });
+
+  it("200 → client_name/client_phone null (paiement comptoir) préservés", async () => {
+    stubFetch(200, { ...FAKE_RECEIPT_PAYLOAD, client_name: null, client_phone: null });
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).getReceipt(
+      SALON_ID,
+      PAYMENT_ID,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.receipt.clientName).toBeNull();
+      expect(result.receipt.clientPhone).toBeNull();
+    }
+  });
+
+  it("404 → not-found", async () => {
+    stubFetch(404, {});
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).getReceipt(
+      SALON_ID,
+      PAYMENT_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("not-found");
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).getReceipt(
+      SALON_ID,
+      PAYMENT_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unauthenticated");
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).getReceipt(
+      SALON_ID,
+      PAYMENT_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("forbidden");
+  });
+
+  it("503 → unavailable", async () => {
+    stubFetch(503, {});
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).getReceipt(
+      SALON_ID,
+      PAYMENT_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("erreur réseau → unavailable", async () => {
+    stubFetchNetworkError();
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).getReceipt(
+      SALON_ID,
+      PAYMENT_ID,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("appel réseau inclut l'en-tête Authorization et l'URL /receipt", async () => {
+    const fetchMock = stubFetch(200, FAKE_RECEIPT_PAYLOAD);
+
+    await createHttpPaymentGateway({ accessToken: TOKEN }).getReceipt(SALON_ID, PAYMENT_ID);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(`/salons/${SALON_ID}/payments/${PAYMENT_ID}/receipt`);
+    const headers = init?.headers as Record<string, string>;
+    expect(headers?.["Authorization"]).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("200 → le jeton n'est pas inclus dans le résultat", async () => {
+    stubFetch(200, FAKE_RECEIPT_PAYLOAD);
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).getReceipt(
+      SALON_ID,
+      PAYMENT_ID,
+    );
+
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+  });
+});

@@ -309,8 +309,10 @@ def _insert_payment(
             text(
                 "INSERT INTO payments "
                 "(id, salon_id, appointment_id, amount, currency, payment_method, "
-                "status, recorded_by) "
-                "VALUES (:id, :salon_id, :appt, :amount, 'XOF', :method, :status, :by)"
+                "status, recorded_by, receipt_number) "
+                "VALUES (:id, :salon_id, :appt, :amount, 'XOF', :method, :status, :by, "
+                "(SELECT COALESCE(MAX(receipt_number), 0) + 1 FROM payments "
+                "WHERE salon_id = :salon_id))"
             ),
             {
                 "id": payment_id,

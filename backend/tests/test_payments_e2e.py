@@ -43,8 +43,10 @@ from __future__ import annotations
 import datetime
 import decimal
 import os
+import threading
 import uuid
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -61,8 +63,11 @@ from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenSe
 from coiflink_api.adapters.outbound.security.login_rate_limiter_memory import (
     InMemoryLoginRateLimiter,
 )
+from coiflink_api.domain.payment import PaymentToCreate
 from coiflink_api.domain.transaction import validate_transaction_filter
 from coiflink_api.main import app as main_app
+
+_TIMEOUT_SECONDS = 30
 
 # ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -1126,3 +1131,300 @@ class TestListTransactionsE2E:
 
         resp = _e2e_client.get(_payments_url(salon_id))
         assert resp.status_code == 401
+
+
+def _receipt_url(salon_id: str, payment_id: str) -> str:
+    return f"/salons/{salon_id}/payments/{payment_id}/receipt"
+
+
+# ─── Groupe e2e : reçu imprimable côté gérant (ADR-0040) ─────────────────────
+
+
+@pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
+class TestManagerReceiptE2E:
+    """`GET /salons/{id}/payments/{id}/receipt` : pile complète (SQL réel)."""
+
+    def test_receipt_includes_client_identity_when_rattache(
+        self, _e2e_client: TestClient
+    ) -> None:
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+        client_id = _register_client(_e2e_client)
+
+        resp = _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "CASH",
+                "service_id": service_id,
+                "client_id": client_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        payment_id = resp.json()["id"]
+
+        receipt_resp = _e2e_client.get(
+            _receipt_url(salon_id, payment_id),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert receipt_resp.status_code == 200
+        body = receipt_resp.json()
+        assert body["client_name"] == "Client E2E Paiements"
+        assert body["client_phone"] is not None
+        assert body["receipt_number"].startswith("REC-")
+        assert body["lines"][0]["service_name"] == "Coupe homme"
+
+    def test_receipt_walk_in_payment_has_null_client(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Paiement comptoir (sans `client_id`) : reçu imprimable, `client_name`/`phone` null."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        resp = _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "CASH",
+                "service_id": service_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        payment_id = resp.json()["id"]
+
+        receipt_resp = _e2e_client.get(
+            _receipt_url(salon_id, payment_id),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert receipt_resp.status_code == 200
+        body = receipt_resp.json()
+        assert body["client_name"] is None
+        assert body["client_phone"] is None
+
+    def test_receipt_number_sequential_within_salon(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Deux paiements successifs du même salon → numéros de reçu consécutifs."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        numbers = []
+        for _ in range(2):
+            resp = _e2e_client.post(
+                _payments_url(salon_id),
+                json={
+                    "amount": _SERVICE_PRICE,
+                    "payment_method": "CASH",
+                    "service_id": service_id,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            payment_id = resp.json()["id"]
+            receipt_resp = _e2e_client.get(
+                _receipt_url(salon_id, payment_id),
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            numbers.append(receipt_resp.json()["receipt_number"])
+
+        assert numbers == ["REC-000001", "REC-000002"]
+
+    def test_receipt_number_independent_per_salon(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Deux salons distincts numérotent chacun à partir de 1 (pas de compteur global)."""
+        _register_manager(_e2e_client, phone=_PHONE_A_LOCAL)
+        token_a = _login(_e2e_client, phone=_PHONE_A_LOCAL)
+        salon_a = _create_salon(_e2e_client, token_a, name=_SALON_NAME_A)
+        service_a = _create_service(_e2e_client, token_a, salon_a)
+
+        _register_manager(_e2e_client, phone=_PHONE_B_LOCAL)
+        token_b = _login(_e2e_client, phone=_PHONE_B_LOCAL)
+        salon_b = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
+        service_b = _create_service(_e2e_client, token_b, salon_b)
+
+        resp_a = _e2e_client.post(
+            _payments_url(salon_a),
+            json={"amount": _SERVICE_PRICE, "payment_method": "CASH", "service_id": service_a},
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        resp_b = _e2e_client.post(
+            _payments_url(salon_b),
+            json={"amount": _SERVICE_PRICE, "payment_method": "CASH", "service_id": service_b},
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+
+        receipt_a = _e2e_client.get(
+            _receipt_url(salon_a, resp_a.json()["id"]),
+            headers={"Authorization": f"Bearer {token_a}"},
+        ).json()
+        receipt_b = _e2e_client.get(
+            _receipt_url(salon_b, resp_b.json()["id"]),
+            headers={"Authorization": f"Bearer {token_b}"},
+        ).json()
+
+        assert receipt_a["receipt_number"] == "REC-000001"
+        assert receipt_b["receipt_number"] == "REC-000001"
+
+    def test_receipt_cross_salon_returns_404(self, _e2e_client: TestClient) -> None:
+        """Le gérant B (sur **son propre** salon B) ne peut pas lire le reçu d'un
+        paiement du salon A — `require_salon_scope` valide sa portée sur `salon_b`
+        (légitime), puis `GetSalonReceipt` renvoie `None` (le paiement n'est pas
+        du salon B) → `404` neutre, indiscernable d'un paiement inexistant."""
+        _register_manager(_e2e_client, phone=_PHONE_A_LOCAL)
+        token_a = _login(_e2e_client, phone=_PHONE_A_LOCAL)
+        salon_a = _create_salon(_e2e_client, token_a, name=_SALON_NAME_A)
+        service_a = _create_service(_e2e_client, token_a, salon_a)
+
+        resp = _e2e_client.post(
+            _payments_url(salon_a),
+            json={"amount": _SERVICE_PRICE, "payment_method": "CASH", "service_id": service_a},
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        payment_id = resp.json()["id"]
+
+        _register_manager(_e2e_client, phone=_PHONE_B_LOCAL)
+        token_b = _login(_e2e_client, phone=_PHONE_B_LOCAL)
+        salon_b = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
+
+        cross_resp = _e2e_client.get(
+            _receipt_url(salon_b, payment_id),
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+        assert cross_resp.status_code == 404
+
+    def test_receipt_nonexistent_payment_returns_404(
+        self, _e2e_client: TestClient
+    ) -> None:
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+
+        resp = _e2e_client.get(
+            _receipt_url(salon_id, str(uuid.uuid4())),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 404
+
+    def test_receipt_no_token_returns_401(self, _e2e_client: TestClient) -> None:
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+        resp = _e2e_client.post(
+            _payments_url(salon_id),
+            json={"amount": _SERVICE_PRICE, "payment_method": "CASH", "service_id": service_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        payment_id = resp.json()["id"]
+
+        resp = _e2e_client.get(_receipt_url(salon_id, payment_id))
+        assert resp.status_code == 401
+
+
+# ─── Groupe e2e : allocation concurrente du numéro de reçu (ADR-0040) ────────
+
+
+@pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
+class TestReceiptNumberConcurrencyE2E:
+    """Deux créations de paiement simultanées, même salon, deux connexions réelles.
+
+    Le verrou consultatif transactionnel (`pg_advisory_xact_lock`,
+    `SqlPaymentRepository.create`) sérialise les deux threads : la seconde
+    transaction **attend** que la première commette (relâchant le verrou) avant
+    de lire `MAX(receipt_number)`, plutôt que d'échouer comme dans le conflit de
+    créneau (#21) — c'est l'invariant testé : **aucune collision**, deux numéros
+    consécutifs.
+    """
+
+    def test_two_concurrent_payments_same_salon_get_distinct_consecutive_numbers(
+        self, _e2e_client: TestClient
+    ) -> None:
+        manager_id = _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        sessionmaker_ = get_sessionmaker()
+        barrier = threading.Barrier(2)
+
+        def record() -> int:
+            session = sessionmaker_()
+            try:
+                repository = SqlPaymentRepository(session)
+                barrier.wait(timeout=_TIMEOUT_SECONDS)
+                payment = repository.create(
+                    PaymentToCreate(
+                        salon_id=uuid.UUID(salon_id),
+                        amount=decimal.Decimal(_SERVICE_PRICE),
+                        payment_method="CASH",
+                        recorded_by=uuid.UUID(manager_id),
+                        service_id=uuid.UUID(service_id),
+                    )
+                )
+                session.commit()
+                return session.execute(
+                    text("SELECT receipt_number FROM payments WHERE id = :pid"),
+                    {"pid": str(payment.id)},
+                ).scalar_one()
+            finally:
+                session.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(record), pool.submit(record)]
+            numbers = sorted(f.result(timeout=_TIMEOUT_SECONDS) for f in futures)
+
+        assert numbers == [1, 2]
+
+    def test_two_salons_concurrent_payments_each_start_at_one(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Deux salons distincts, créations simultanées : aucune interférence de verrou."""
+        manager_a = _register_manager(_e2e_client, phone=_PHONE_A_LOCAL)
+        token_a = _login(_e2e_client, phone=_PHONE_A_LOCAL)
+        salon_a = _create_salon(_e2e_client, token_a, name=_SALON_NAME_A)
+        service_a = _create_service(_e2e_client, token_a, salon_a)
+
+        manager_b = _register_manager(_e2e_client, phone=_PHONE_B_LOCAL)
+        token_b = _login(_e2e_client, phone=_PHONE_B_LOCAL)
+        salon_b = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
+        service_b = _create_service(_e2e_client, token_b, salon_b)
+
+        sessionmaker_ = get_sessionmaker()
+        barrier = threading.Barrier(2)
+
+        def record(salon_id: str, manager_id: str, service_id: str) -> int:
+            session = sessionmaker_()
+            try:
+                repository = SqlPaymentRepository(session)
+                barrier.wait(timeout=_TIMEOUT_SECONDS)
+                payment = repository.create(
+                    PaymentToCreate(
+                        salon_id=uuid.UUID(salon_id),
+                        amount=decimal.Decimal(_SERVICE_PRICE),
+                        payment_method="CASH",
+                        recorded_by=uuid.UUID(manager_id),
+                        service_id=uuid.UUID(service_id),
+                    )
+                )
+                session.commit()
+                return session.execute(
+                    text("SELECT receipt_number FROM payments WHERE id = :pid"),
+                    {"pid": str(payment.id)},
+                ).scalar_one()
+            finally:
+                session.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(record, salon_a, manager_a, service_a),
+                pool.submit(record, salon_b, manager_b, service_b),
+            ]
+            numbers = sorted(f.result(timeout=_TIMEOUT_SECONDS) for f in futures)
+
+        assert numbers == [1, 1]

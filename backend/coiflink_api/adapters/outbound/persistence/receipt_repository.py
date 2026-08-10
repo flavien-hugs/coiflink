@@ -91,9 +91,45 @@ class SqlReceiptRepository:
         payment, salon_name = row
         return self._to_receipt(payment, salon_name)
 
-    def _to_receipt(self, payment: models.Payment, salon_name: str) -> Receipt:
+    def get_receipt_for_salon(
+        self, salon_id: uuid.UUID, payment_id: uuid.UUID
+    ) -> Receipt | None:
+        """Reçu `(salon_id, payment_id)` ou `None` (impression gérant, ADR-0040).
+
+        Portée **salon**, pas `client_id` : inclut les paiements comptoir sans
+        client (`outerjoin` sur `User`, jamais `join` — un `client_id` `NULL` ne
+        doit pas exclure la ligne). Peuple `client_name`/`client_phone` — seule
+        cette lecture les renseigne (§11.3 : le client n'a pas besoin qu'on lui
+        rappelle sa propre identité).
+        """
+
+        stmt = (
+            select(models.Payment, models.Salon.name, models.User.full_name, models.User.phone)
+            .join(models.Salon, models.Salon.id == models.Payment.salon_id)
+            .outerjoin(models.User, models.User.id == models.Payment.client_id)
+            .where(
+                models.Payment.salon_id == salon_id,
+                models.Payment.id == payment_id,
+            )
+        )
+        row = self._session.execute(stmt).first()
+        if row is None:
+            return None
+        payment, salon_name, client_name, client_phone = row
+        return self._to_receipt(
+            payment, salon_name, client_name=client_name, client_phone=client_phone
+        )
+
+    def _to_receipt(
+        self,
+        payment: models.Payment,
+        salon_name: str,
+        *,
+        client_name: str | None = None,
+        client_phone: str | None = None,
+    ) -> Receipt:
         return Receipt(
-            receipt_number=format_receipt_number(payment.id),
+            receipt_number=format_receipt_number(payment.receipt_number),
             payment_id=payment.id,
             salon_id=payment.salon_id,
             salon_name=salon_name,
@@ -105,6 +141,8 @@ class SqlReceiptRepository:
             paid_at=payment.created_at,
             appointment_id=payment.appointment_id,
             lines=self._lines_for_payment(payment),
+            client_name=client_name,
+            client_phone=client_phone,
         )
 
     def _lines_for_payment(

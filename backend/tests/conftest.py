@@ -1928,9 +1928,15 @@ class FakeReceiptRepository:
     """
 
     def __init__(
-        self, receipts_by_client: dict | None = None
+        self,
+        receipts_by_client: dict | None = None,
+        *,
+        receipts_by_salon: dict | None = None,
     ) -> None:
         self._by_client: dict = dict(receipts_by_client or {})
+        # Miroir salon-scopé (impression gérant, ADR-0040) — inclut les reçus de
+        # paiements comptoir sans client, absents de `_by_client`.
+        self._by_salon: dict = dict(receipts_by_salon or {})
 
     def list_receipts_for_client(self, client_id, *, limit, offset):  # type: ignore[no-untyped-def]
         receipts = self._by_client.get(client_id, ())
@@ -1941,6 +1947,12 @@ class FakeReceiptRepository:
 
     def get_receipt_for_client(self, client_id, payment_id):  # type: ignore[no-untyped-def]
         for receipt in self._by_client.get(client_id, ()):
+            if receipt.payment_id == payment_id:
+                return receipt
+        return None
+
+    def get_receipt_for_salon(self, salon_id, payment_id):  # type: ignore[no-untyped-def]
+        for receipt in self._by_salon.get(salon_id, ()):
             if receipt.payment_id == payment_id:
                 return receipt
         return None
