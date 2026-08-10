@@ -102,6 +102,19 @@ class PublicServiceResponse(BaseModel):
     category: str | None
 
 
+class PublicHairdresserResponse(BaseModel):
+    """Coiffeuse **de vitrine** proposée à la réservation (#150).
+
+    Projection minimale : **aucun** `phone`, `email`, `hired_at` ni `status`
+    (donnée de gestion, spec §A.4). Seules les coiffeuses `ACTIVE` remontent
+    (filtre au dépôt).
+    """
+
+    id: uuid.UUID
+    full_name: str
+    specialties: str | None
+
+
 class PublicSalonPhotoResponse(BaseModel):
     """Photo de la galerie : `url` **signée** (durée limitée) ou `null`.
 
@@ -118,9 +131,11 @@ class PublicSalonDetailResponse(BaseModel):
 
     Étend la vitrine (`PublicSalonResponse`) : `phone` (donnée d'établissement,
     reportée de #18), `photos` signées, `opening_hours` (JSONB normalisé publié tel
-    quel, `null` si non configuré) et `services` (prestations `ACTIVE` + prix +
-    durée). **Jamais** `owner_id`, `status`, `is_active`/`salon_id` de prestation,
-    timestamps ni clé d'objet brute (spec §A.4).
+    quel, `null` si non configuré), `services` (prestations `ACTIVE` + prix +
+    durée) et `hairdressers` (coiffeuses `ACTIVE`, #150 — choix optionnel à la
+    réservation, #22). **Jamais** `owner_id`, `status`, `is_active`/`salon_id` de
+    prestation, timestamps, clé d'objet brute ni PII de gestion des employés
+    (spec §A.4).
     """
 
     id: object
@@ -136,6 +151,7 @@ class PublicSalonDetailResponse(BaseModel):
     photos: list[PublicSalonPhotoResponse]
     opening_hours: dict | None
     services: list[PublicServiceResponse]
+    hairdressers: list[PublicHairdresserResponse]
     is_bookable: bool
 
 
@@ -198,6 +214,14 @@ def _public_salon_detail_response(
                 category=service.category,
             )
             for service in view.services
+        ],
+        hairdressers=[
+            PublicHairdresserResponse(
+                id=hairdresser.id,
+                full_name=hairdresser.full_name,
+                specialties=hairdresser.specialties,
+            )
+            for hairdresser in view.hairdressers
         ],
         is_bookable=view.is_bookable,
     )
@@ -288,9 +312,10 @@ def get_public_salon(
     """Fiche publique d'un salon **`ACTIVE` uniquement** (§8.3).
 
     Agrège identité + localisation complète (`phone` compris), horaires (#16),
-    prestations **actives** avec prix et durée (#17), logo/photos signés et
-    l'indicateur `is_bookable`. C'est le **point d'entrée** de la réservation
-    (#21+ non livré). Un salon `INACTIVE`/`SUSPENDED` ou inexistant renvoie **404**
+    prestations **actives** avec prix et durée (#17), coiffeuses **actives**
+    proposables au choix (#150), logo/photos signés et l'indicateur `is_bookable`.
+    C'est le **point d'entrée** de la réservation (#22). Un salon
+    `INACTIVE`/`SUSPENDED` ou inexistant renvoie **404**
     (« absent du catalogue », pas d'oracle d'existence, §8.3) ; un `salon_id` mal
     formé est rejeté en `422` par FastAPI. La réponse n'expose aucune donnée de
     gestion (`owner_id`, `status`, `is_active`) ni clé d'objet brute.

@@ -804,10 +804,12 @@ class FakeSalonCatalogRepository:
         salons: list | None = None,
         services: dict | None = None,
         photos: dict | None = None,
+        hairdressers: dict | None = None,
     ) -> None:
         self._salons: list = list(salons or [])
         self._services: dict = dict(services or {})
         self._photos: dict = dict(photos or {})
+        self._hairdressers: dict = dict(hairdressers or {})
 
     def _active_matching(self, query) -> list:  # type: ignore[no-untyped-def]
         active = [s for s in self._salons if s.status == "ACTIVE"]
@@ -843,6 +845,12 @@ class FakeSalonCatalogRepository:
 
     def list_photos(self, salon_id):  # type: ignore[no-untyped-def]
         return tuple(self._photos.get(salon_id, []))
+
+    def list_active_hairdressers(self, salon_id):  # type: ignore[no-untyped-def]
+        hairdressers = [
+            h for h in self._hairdressers.get(salon_id, []) if h.status == "ACTIVE"
+        ]
+        return tuple(sorted(hairdressers, key=lambda h: h.full_name))
 
 
 class FakeAuditLog:

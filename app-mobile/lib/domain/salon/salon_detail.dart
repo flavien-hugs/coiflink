@@ -3,9 +3,11 @@
 // Domaine **pur** : aucune dépendance à Flutter ni à un client HTTP (ADR-0008).
 // Reflète la projection de détail renvoyée par `GET /catalog/salons/{id}` pour un
 // salon `ACTIVE` : identité + localisation complète (avec `phone`), horaires,
-// prestations actives, logo/photos signés et `isBookable`. N'expose jamais
-// l'`owner_id`, le `status` ni de donnée de gestion (spec §A.4).
+// prestations actives, coiffeuses actives (#150) proposables au choix, logo/
+// photos signés et `isBookable`. N'expose jamais l'`owner_id`, le `status` ni de
+// donnée de gestion (spec §A.4).
 
+import 'hairdresser.dart';
 import 'opening_hours.dart';
 import 'salon_service.dart';
 
@@ -35,6 +37,7 @@ class SalonDetail {
     this.photos = const <SalonPhoto>[],
     this.openingHours,
     this.services = const <SalonService>[],
+    this.hairdressers = const <Hairdresser>[],
   });
 
   /// Identifiant opaque du salon (UUID côté backend).
@@ -70,6 +73,10 @@ class SalonDetail {
 
   /// Prestations `ACTIVE` du salon (avec prix et durée) — peut être vide.
   final List<SalonService> services;
+
+  /// Coiffeuses `ACTIVE` du salon, choix optionnel à la réservation (#150) —
+  /// peut être vide (réservation au niveau salon toujours possible, #22).
+  final List<Hairdresser> hairdressers;
 
   /// Localisation lisible : « commune, ville » (parties absentes omises).
   String get locationLabel {

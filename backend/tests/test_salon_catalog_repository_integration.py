@@ -36,15 +36,20 @@ from sqlalchemy.orm import Session, sessionmaker
 from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import (
     SqlSalonCatalogRepository,
 )
+from coiflink_api.adapters.outbound.persistence.salon_member_repository import (
+    SqlSalonMemberRepository,
+)
 from coiflink_api.adapters.outbound.persistence.salon_repository import SqlSalonRepository
 from coiflink_api.adapters.outbound.persistence.service_repository import SqlServiceRepository
 from coiflink_api.adapters.outbound.persistence.session import normalize_dsn
 from coiflink_api.adapters.outbound.persistence.user_repository import SqlUserRepository
 from coiflink_api.application.ports.salon_catalog_repository import SalonSearchQuery
 from coiflink_api.application.registration import RegisterCommand, RegisterUser
-from coiflink_api.domain.enums import Role, SalonStatus
+from coiflink_api.domain.enums import Role, SalonStatus, UserStatus
+from coiflink_api.domain.membership import SalonMembershipToCreate
 from coiflink_api.domain.salon import SalonToCreate
 from coiflink_api.domain.service import ServiceToCreate
+from coiflink_api.domain.user import UserToCreate
 
 from .conftest import FakeHasher
 
@@ -60,6 +65,9 @@ pytestmark = pytest.mark.skipif(
 _OWNER_PHONE_LOCAL = "0709998001"
 _OWNER_PHONE_E164_PREFIX = "+2250709998"
 _SALON_NAME_PREFIX = "Salon Intégration Catalogue "
+
+# Plage réservée aux coiffeuses de test (#150) — distincte de l'owner ci-dessus.
+_HAIRDRESSER_PHONE_E164_PREFIX = "+2250709997"
 
 
 @pytest.fixture(scope="module")
@@ -85,6 +93,20 @@ def _wipe_test_data(pg_engine):
 
     def wipe() -> None:
         with pg_engine.connect() as conn:
+            # salon_members (FK RESTRICT) → salons **et** → users : à supprimer
+            # avant l'un ou l'autre.
+            conn.execute(
+                text(
+                    "DELETE FROM salon_members WHERE salon_id IN "
+                    "(SELECT id FROM salons WHERE name LIKE :prefix)"
+                ),
+                {"prefix": f"{_SALON_NAME_PREFIX}%"},
+            )
+            conn.execute(
+                text("DELETE FROM salon_members WHERE user_id IN "
+                     "(SELECT id FROM users WHERE phone LIKE :prefix)"),
+                {"prefix": f"{_HAIRDRESSER_PHONE_E164_PREFIX}%"},
+            )
             # services (FK RESTRICT) → salons ; salon_photos est en CASCADE.
             conn.execute(
                 text(
@@ -100,6 +122,10 @@ def _wipe_test_data(pg_engine):
             conn.execute(
                 text("DELETE FROM users WHERE phone LIKE :prefix"),
                 {"prefix": f"{_OWNER_PHONE_E164_PREFIX}%"},
+            )
+            conn.execute(
+                text("DELETE FROM users WHERE phone LIKE :prefix"),
+                {"prefix": f"{_HAIRDRESSER_PHONE_E164_PREFIX}%"},
             )
             conn.commit()
 
@@ -197,6 +223,53 @@ def _create_service(
     finally:
         session.close()
     return service.id
+
+
+_hairdresser_phone_counter = 0
+
+
+def _create_hairdresser(
+    pg_session_factory,
+    salon_id: uuid.UUID,
+    *,
+    full_name: str,
+    specialties: str | None = None,
+    status: str = UserStatus.ACTIVE.value,
+) -> uuid.UUID:
+    global _hairdresser_phone_counter
+    _hairdresser_phone_counter += 1
+    phone = f"{_HAIRDRESSER_PHONE_E164_PREFIX}{_hairdresser_phone_counter:03d}"
+
+    session = _new_session(pg_session_factory)
+    try:
+        user = SqlUserRepository(session).create(
+            UserToCreate(
+                full_name=full_name,
+                phone=phone,
+                password_hash="x",
+                role=Role.HAIRDRESSER.value,
+                status=UserStatus.ACTIVE.value,
+            )
+        )
+        members = SqlSalonMemberRepository(session)
+        members.add_member(
+            SalonMembershipToCreate(
+                salon_id=salon_id,
+                user_id=user.id,
+                role=Role.HAIRDRESSER.value,
+                status=UserStatus.ACTIVE.value,
+            )
+        )
+        if specialties is not None:
+            members.update_professional_fields(
+                salon_id, user.id, specialties=specialties, hired_at=None
+            )
+        if status != UserStatus.ACTIVE.value:
+            members.set_status(salon_id, user.id, status)
+        session.commit()
+    finally:
+        session.close()
+    return user.id
 
 
 def _add_photo(pg_session_factory, salon_id: uuid.UUID, *, object_key: str) -> uuid.UUID:
@@ -376,6 +449,108 @@ class TestListActiveServices:
             session.close()
 
         assert [s.name for s in services] == ["A Première", "Z Dernière"]
+
+
+class TestListActiveHairdressers:
+    """`list_active_hairdressers` : filtre `status = ACTIVE` appliqué en SQL (#150)."""
+
+    def test_excludes_inactive_hairdresser(self, pg_session_factory, owner_id) -> None:
+        salon_id = _create_salon(pg_session_factory, owner_id, name="Avec Coiffeuses")
+        active_id = _create_hairdresser(
+            pg_session_factory, salon_id, full_name="Awa Koné"
+        )
+        inactive_id = _create_hairdresser(
+            pg_session_factory,
+            salon_id,
+            full_name="Fatou Diarra",
+            status=UserStatus.INACTIVE.value,
+        )
+
+        session = _new_session(pg_session_factory)
+        try:
+            hairdressers = SqlSalonCatalogRepository(session).list_active_hairdressers(
+                salon_id
+            )
+        finally:
+            session.close()
+
+        ids = {h.id for h in hairdressers}
+        assert active_id in ids
+        assert inactive_id not in ids
+
+    def test_returns_empty_tuple_when_no_active_hairdresser(
+        self, pg_session_factory, owner_id
+    ) -> None:
+        salon_id = _create_salon(pg_session_factory, owner_id, name="Sans Coiffeuses")
+
+        session = _new_session(pg_session_factory)
+        try:
+            hairdressers = SqlSalonCatalogRepository(session).list_active_hairdressers(
+                salon_id
+            )
+        finally:
+            session.close()
+
+        assert hairdressers == ()
+
+    def test_ordered_by_name(self, pg_session_factory, owner_id) -> None:
+        salon_id = _create_salon(pg_session_factory, owner_id, name="Tri Coiffeuses")
+        _create_hairdresser(pg_session_factory, salon_id, full_name="Z Dernière")
+        _create_hairdresser(pg_session_factory, salon_id, full_name="A Première")
+
+        session = _new_session(pg_session_factory)
+        try:
+            hairdressers = SqlSalonCatalogRepository(session).list_active_hairdressers(
+                salon_id
+            )
+        finally:
+            session.close()
+
+        assert [h.full_name for h in hairdressers] == ["A Première", "Z Dernière"]
+
+    def test_carries_specialties_no_phone_or_email(
+        self, pg_session_factory, owner_id
+    ) -> None:
+        salon_id = _create_salon(pg_session_factory, owner_id, name="Coiffeuse Détail")
+        _create_hairdresser(
+            pg_session_factory,
+            salon_id,
+            full_name="Awa Koné",
+            specialties="Tresses, colorations",
+        )
+
+        session = _new_session(pg_session_factory)
+        try:
+            hairdressers = SqlSalonCatalogRepository(session).list_active_hairdressers(
+                salon_id
+            )
+        finally:
+            session.close()
+
+        assert len(hairdressers) == 1
+        hairdresser = hairdressers[0]
+        assert hairdresser.specialties == "Tresses, colorations"
+        # `Employee` porte phone/email/status/hired_at (usage gestion) : c'est le
+        # cas d'usage catalogue (`GetPublicSalon`) qui les retire côté public
+        # (§A.4) — vérifié séparément par `test_catalog_detail_api.py`. Ici, on
+        # vérifie seulement que le dépôt renvoie l'entité complète et cohérente.
+        assert hairdresser.role == Role.HAIRDRESSER.value
+        assert hairdresser.status == UserStatus.ACTIVE.value
+
+    def test_isolation_between_salons(self, pg_session_factory, owner_id) -> None:
+        salon_a = _create_salon(pg_session_factory, owner_id, name="Salon A Coiffeuses")
+        salon_b = _create_salon(pg_session_factory, owner_id, name="Salon B Coiffeuses")
+        _create_hairdresser(pg_session_factory, salon_a, full_name="Coiffeuse A")
+
+        session = _new_session(pg_session_factory)
+        try:
+            hairdressers_b = SqlSalonCatalogRepository(session).list_active_hairdressers(
+                salon_b
+            )
+        finally:
+            session.close()
+
+        assert hairdressers_b == ()
 
 
 class TestListPhotos:

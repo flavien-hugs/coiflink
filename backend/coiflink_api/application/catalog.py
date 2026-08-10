@@ -28,6 +28,7 @@ from coiflink_api.application.ports.salon_catalog_repository import (
     SalonCatalogRepository,
     SalonSearchQuery,
 )
+from coiflink_api.domain.employee import Employee
 from coiflink_api.domain.errors import SalonNotFound
 from coiflink_api.domain.salon import Salon
 from coiflink_api.domain.service import Service
@@ -135,6 +136,22 @@ class PublicServiceView:
 
 
 @dataclass(frozen=True)
+class PublicHairdresserView:
+    """Coiffeuse **de vitrine**, proposée au client à la réservation (#150).
+
+    Projection minimale de `domain.employee.Employee` : **jamais** `phone`,
+    `email`, `hired_at` ni `status` (donnée de gestion, §A.4) — seul un nom
+    d'affichage et les spécialités, utiles pour **choisir**, franchissent la
+    frontière publique. Seules les coiffeuses `ACTIVE` remontent (filtre au
+    dépôt, #150 « disponibilité aux affectations »).
+    """
+
+    id: object
+    full_name: str
+    specialties: str | None
+
+
+@dataclass(frozen=True)
 class PublicSalonPhotoView:
     """Photo résolue de la galerie : clé d'objet remplacée par une URL signée."""
 
@@ -148,9 +165,13 @@ class PublicSalonDetailView:
 
     Étend la vitrine (`PublicSalonView`) des champs de détail : `phone` (reporté de
     #18, donnée d'établissement), `photos` signées, `opening_hours` (JSONB
-    normalisé publié tel quel, `None` si non configuré) et `services` (prestations
-    `ACTIVE` avec prix et durée). N'expose **jamais** `owner_id`, `status`,
-    `is_active`/`salon_id` de prestation, ni timestamps, ni clé d'objet brute.
+    normalisé publié tel quel, `None` si non configuré), `services` (prestations
+    `ACTIVE` avec prix et durée) et `hairdressers` (coiffeuses `ACTIVE`, #150 — pour
+    que le client puisse **optionnellement** en choisir une à la réservation, #22 ;
+    la réservation au niveau salon sans coiffeuse reste possible, `hairdresser_id`
+    est facultatif). N'expose **jamais** `owner_id`, `status`, `is_active`/
+    `salon_id` de prestation, ni timestamps, ni clé d'objet brute, ni PII de
+    gestion des employés (`phone`/`email`/`hired_at`).
     """
 
     id: object
@@ -166,6 +187,7 @@ class PublicSalonDetailView:
     photos: tuple[PublicSalonPhotoView, ...]
     opening_hours: dict | None
     services: tuple[PublicServiceView, ...]
+    hairdressers: tuple[PublicHairdresserView, ...]
     is_bookable: bool
 
 
@@ -193,6 +215,7 @@ class GetPublicSalon:
             raise SalonNotFound("Salon introuvable.")
         services = self._repository.list_active_services(salon_id)
         photos = self._repository.list_photos(salon_id)
+        hairdressers = self._repository.list_active_hairdressers(salon_id)
         return PublicSalonDetailView(
             id=salon.id,
             name=salon.name,
@@ -210,6 +233,9 @@ class GetPublicSalon:
             ),
             opening_hours=salon.opening_hours,
             services=tuple(self._to_service_view(service) for service in services),
+            hairdressers=tuple(
+                self._to_hairdresser_view(hairdresser) for hairdresser in hairdressers
+            ),
             is_bookable=salon.is_bookable,
         )
 
@@ -222,6 +248,14 @@ class GetPublicSalon:
             price=service.price,
             duration_minutes=service.duration_minutes,
             category=service.category,
+        )
+
+    @staticmethod
+    def _to_hairdresser_view(employee: Employee) -> PublicHairdresserView:
+        return PublicHairdresserView(
+            id=employee.id,
+            full_name=employee.full_name,
+            specialties=employee.specialties,
         )
 
     def _sign(self, object_key: str | None) -> str | None:
@@ -237,6 +271,7 @@ __all__ = [
     "PublicSalonPage",
     "SearchSalons",
     "PublicServiceView",
+    "PublicHairdresserView",
     "PublicSalonPhotoView",
     "PublicSalonDetailView",
     "GetPublicSalon",

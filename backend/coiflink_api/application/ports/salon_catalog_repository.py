@@ -22,6 +22,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
+from coiflink_api.domain.employee import Employee
 from coiflink_api.domain.salon import Salon, SalonPhoto
 from coiflink_api.domain.service import Service
 
@@ -85,6 +86,20 @@ class SalonCatalogRepository(Protocol):
         post-filtrage applicatif : une prestation soft-deletée (#17) ne peut pas
         fuir côté client. Méthode de **lecture publique dédiée** — le catalogue
         n'hérite d'aucune capacité de gestion du `ServiceRepository` (ADR-0020 §2).
+        """
+        ...
+
+    def list_active_hairdressers(self, salon_id: uuid.UUID) -> tuple[Employee, ...]:
+        """Coiffeuses **`ACTIVE` seulement** d'un salon, triées par nom (fiche #19, #150).
+
+        Le filtre `salon_members.status = 'ACTIVE'` est appliqué **en SQL**, jamais
+        en post-filtrage applicatif : une coiffeuse désactivée (#150) ne peut pas
+        apparaître dans le choix proposé au client à la réservation. Méthode de
+        **lecture publique dédiée** — le catalogue n'hérite d'aucune capacité de
+        gestion de `SalonMemberRepository` (miroir `list_active_services`,
+        ADR-0020 §2). Renvoie l'entité `Employee` complète ; c'est le cas d'usage
+        (`application/catalog.py`) qui la projette en vue publique **sans**
+        `phone`/`email`/`hired_at` (spec §A.4, jamais de PII de gestion).
         """
         ...
 

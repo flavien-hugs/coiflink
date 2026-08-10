@@ -122,8 +122,9 @@ derrière un port `TokenStore` — implémentation **en mémoire** au MVP (sessi
 bascule vers un magasin sécurisé de plateforme = simple remplacement d'implémentation, ADR-0024).
 
 **Portée MVP** : **une seule** prestation par réservation (cohérent avec la disponibilité
-mono-`service_id`), réservation **au niveau salon** (pas de coiffeur), horizon de date de **30 jours**,
-repère **Africa/Abidjan (UTC+0)**. Statut initial **« En attente »** affiché depuis la réponse du `POST`.
+mono-`service_id`), choix **optionnel** d'une coiffeuse `ACTIVE` du salon (#150, étape dédiée du
+tunnel — « Peu importe » laisse le salon assigner), horizon de date de **30 jours**, repère
+**Africa/Abidjan (UTC+0)**. Statut initial **« En attente »** affiché depuis la réponse du `POST`.
 
 **Garde-fous (§11)** : le corps de réservation n'envoie **jamais** `client_id`/`salon_id`/`status`
 (imposés serveur) ; aucun jeton, URL, corps ni PII n'est **journalisé** ; les exceptions portent des

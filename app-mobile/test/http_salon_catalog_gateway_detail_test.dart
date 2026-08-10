@@ -1,9 +1,10 @@
 // Tests unitaires — HttpSalonCatalogGateway.getSalon : mapping JSON → détail (#19).
 //
-// Couverture : mapping complet (services, opening_hours, photos, phone),
-// logo_url null, 404 → SalonNotFoundException, autre non-200 → SalonCatalogException,
-// panne réseau → SalonCatalogException, corps illisible → SalonCatalogException,
-// URL de requête ciblant /catalog/salons/{id}.
+// Couverture : mapping complet (services, opening_hours, photos, phone,
+// hairdressers #150), logo_url null, 404 → SalonNotFoundException, autre
+// non-200 → SalonCatalogException, panne réseau → SalonCatalogException,
+// corps illisible → SalonCatalogException, URL de requête ciblant
+// /catalog/salons/{id}.
 // Aucun réseau réel : faux clients HTTP.
 
 import 'dart:convert';
@@ -82,6 +83,13 @@ Map<String, dynamic> _detailJson() => {
           'category': 'Coupe',
         },
       ],
+      'hairdressers': [
+        {
+          'id': 'hd-1',
+          'full_name': 'Awa Koné',
+          'specialties': 'Tresses, colorations',
+        },
+      ],
       'is_bookable': true,
     };
 
@@ -109,6 +117,11 @@ void main() {
         expect(salon.services.first.name, 'Coupe homme');
         expect(salon.services.first.price, '5000.00');
         expect(salon.services.first.durationMinutes, 30);
+
+        expect(salon.hairdressers, hasLength(1));
+        expect(salon.hairdressers.first.id, 'hd-1');
+        expect(salon.hairdressers.first.fullName, 'Awa Koné');
+        expect(salon.hairdressers.first.specialties, 'Tresses, colorations');
 
         final hours = salon.openingHours;
         expect(hours, isNotNull);
@@ -153,6 +166,32 @@ void main() {
 
         expect(salon.services, isEmpty);
         expect(salon.photos, isEmpty);
+        expect(salon.hairdressers, isEmpty);
+      });
+
+      test('hairdressers absent → liste vide', () async {
+        final json = {..._detailJson()}..remove('hairdressers');
+        final client = _FakeHttpClient(statusCode: 200, body: jsonEncode(json));
+
+        final salon = await _gateway(client).getSalon('uuid-abc');
+
+        expect(salon.hairdressers, isEmpty);
+      });
+
+      test('coiffeuse sans specialties → specialties null', () async {
+        final json = <String, dynamic>{
+          ..._detailJson(),
+          'hairdressers': <dynamic>[
+            <String, dynamic>{'id': 'hd-2', 'full_name': 'Fatou Diarra', 'specialties': null},
+          ],
+        };
+        final client = _FakeHttpClient(statusCode: 200, body: jsonEncode(json));
+
+        final salon = await _gateway(client).getSalon('uuid-abc');
+
+        expect(salon.hairdressers, hasLength(1));
+        expect(salon.hairdressers.first.fullName, 'Fatou Diarra');
+        expect(salon.hairdressers.first.specialties, isNull);
       });
 
       test('champ category d\'un service mappé', () async {

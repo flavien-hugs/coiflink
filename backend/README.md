@@ -555,7 +555,12 @@ fiche s'appuie **exclusivement** sur `SalonCatalogRepository.get_active` (filtre
 SQL) — un salon `INACTIVE`/`SUSPENDED` ou inexistant renvoie **404** (« absent du catalogue », pas
 d'oracle) ; un `salon_id` mal formé → **422**. Les prestations proviennent de `list_active_services`
 (**actives seulement**, filtre `is_active = true` en SQL) : une prestation désactivée (#17) n'apparaît
-jamais.
+jamais. Depuis #150, les **coiffeuses actives** du salon (`list_active_hairdressers`, filtre
+`salon_members.status = ACTIVE` en SQL) sont incluses dans `hairdressers` : le client mobile peut
+**optionnellement** en choisir une à la réservation (#22, `hairdresser_id` reste facultatif —
+réservation au niveau salon toujours possible). Projection **minimale** (`id`/`full_name`/
+`specialties`) : jamais `phone`/`email`/`hired_at`/`status` (PII de gestion, spec §A.4) ; une
+coiffeuse désactivée (#150) n'apparaît jamais.
 
 ```jsonc
 // Réponse 200 — GET /catalog/salons/{salon_id}
@@ -580,12 +585,17 @@ jamais.
     { "id": "…uuid…", "name": "Coupe homme", "description": "…",
       "price": "5000.00", "duration_minutes": 30, "category": "Coupe" }
   ],
+  "hairdressers": [                       // coiffeuses ACTIVE uniquement (#150) — choix optionnel
+    { "id": "…uuid…", "full_name": "Awa Koné", "specialties": "Tresses, colorations" }
+  ],
   "is_bookable": false                    // §8.3 : ACTIVE mais sans horaire ⇒ pas encore réservable
 }
 ```
 
 **Aucun** `owner_id`, `status` ni timestamp de salon ; **aucune** prestation `is_active`/`salon_id` ;
-jamais de clé d'objet brute. C'est le **point d'entrée** de la réservation (livrée par #21, ci-dessous).
+**aucune** coiffeuse `phone`/`email`/`hired_at`/`status` de gestion ; jamais de clé d'objet brute.
+C'est le **point d'entrée** de la réservation (livrée par #21/#22, ci-dessous), `hairdresser_id`
+restant facultatif à chaque étape (disponibilité et réservation).
 
 ## Rendez-vous : disponibilité & anti double-réservation (US-3.7, #21 — [ADR-0023](../docs/adr/0023-moteur-disponibilite-anti-double-reservation.md))
 
