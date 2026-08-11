@@ -30,6 +30,9 @@ from coiflink_api.adapters.inbound.kiosk_customers import (
 )
 from coiflink_api.adapters.inbound.kiosk_devices import router as kiosk_devices_router
 from coiflink_api.adapters.inbound.payments import router as payments_router
+from coiflink_api.adapters.inbound.queue_tickets import (
+    router as queue_tickets_router,
+)
 from coiflink_api.adapters.inbound.receipts import router as receipts_router
 from coiflink_api.adapters.inbound.salons import router as salons_router
 from coiflink_api.adapters.inbound.security import require_authenticated
@@ -183,6 +186,18 @@ app.include_router(customers_router)
 # CUSTOMER_CREATED (metadata vide) dans la même unité de travail. Rien n'est ajouté à
 # `security.PUBLIC_ROUTE_PATHS` : « réservé au rôle KIOSK » ≠ public.
 app.include_router(kiosk_customers_router)
+# File d'attente walk-in — tickets de passage (#157, US-8.3, ADR-0042) : trois
+# routes sous /salons/{id}/queue/tickets[...]. « Rejoindre la file » est réservée
+# au rôle KIOSK via la permission **dédiée** QUEUE_TICKET_CREATE (déjà livrée par
+# #155) ; start/complete réutilisent APPOINTMENT_UPDATE_STATUS (mêmes acteurs que
+# le démarrage d'un RDV : coiffeuse + gérant) — la matrice ROLE_PERMISSIONS n'est
+# PAS modifiée. Toutes salon-scopées (isolation §11.2). Le ticket est INDÉPENDANT
+# d'Appointment : numéro séquentiel par salon+jour (verrou consultatif, patron
+# ADR-0040), estimation d'attente V1 figée à l'émission, aucune ligne appointments
+# écrite. start/complete journalisent QUEUE_TICKET_STARTED/COMPLETED (metadata
+# vide) ; l'émission n'est pas auditée. Rien n'est ajouté à
+# `security.PUBLIC_ROUTE_PATHS` : « réservé au rôle KIOSK » ≠ public.
+app.include_router(queue_tickets_router)
 # Campagnes/messages aux clients (#49, US-7.5) : création + liste sous
 # /salons/{id}/campaigns. Réutilise la permission CUSTOMER_MANAGE (§4.1, MANAGER
 # seul) + portée salon (isolation §11.2). Le gérant compose un message (texte

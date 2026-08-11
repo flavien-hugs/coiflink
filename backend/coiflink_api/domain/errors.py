@@ -307,6 +307,48 @@ class AppointmentHairdresserRequired(DomainError):
     """
 
 
+class InvalidQueueTicketServices(DomainError):
+    """Un ticket de passage walk-in n'a aucune prestation valide (US-8.3, #157).
+
+    Levée quand `service_ids` est vide, ou contient une prestation **inactive**
+    ou **hors salon** (miroir `AppointmentServiceRequired`/`ServiceNotFound`
+    fusionnés en un seul refus côté ticket) : rien à réaliser sinon. Message
+    **neutre** — l'adapter entrant la traduit en `422`.
+    """
+
+
+class QueueTicketNotFound(DomainError):
+    """Le ticket de passage visé n'existe pas pour ce salon (US-8.3, #157).
+
+    N'est traduite en `404` **qu'après** validation de la portée : un ticket hors
+    périmètre a déjà reçu un `403` générique (aucun oracle d'existence, §11.2). Un
+    ticket d'un autre salon est **indiscernable** d'un ticket inexistant. Couvre
+    aussi un `customer_profile_id` d'un autre salon (fiche indiscernable, §11.2).
+    """
+
+
+class InvalidQueueTicketTransition(DomainError):
+    """La transition de statut d'un ticket de passage n'est pas autorisée (US-8.3, #157).
+
+    Levée quand la cible n'est pas atteignable depuis le statut courant selon la
+    machine à états `domain/queue_ticket.py::ALLOWED_QUEUE_TICKET_TRANSITIONS`
+    (statut terminal `done`/`expired`, réémission `X → X`, cible incohérente)
+    **ou** quand le statut a changé entre la lecture et l'écriture (garde TOCTOU :
+    l'`UPDATE` conditionnel n'affecte aucune ligne — double-clic concurrent sur la
+    prise en charge). Message **neutre** — l'adapter entrant la traduit en
+    `409 Conflict` (cohérent avec `InvalidAppointmentTransition`).
+    """
+
+
+class QueueTicketHairdresserRequired(DomainError):
+    """Un ticket ne peut passer `in_progress` sans coiffeuse assignée (US-8.3, #157).
+
+    Miroir exact d'`AppointmentHairdresserRequired` : une prestation walk-in « en
+    cours » sans coiffeuse n'a pas de sens métier. Message **neutre** — l'adapter
+    entrant la traduit en `409 Conflict`.
+    """
+
+
 class InvalidKioskDeviceLabel(DomainError):
     """Le libellé d'une borne kiosque est vide ou hors bornes (US-8.1, #155).
 
@@ -620,6 +662,10 @@ __all__ = [
     "InvalidCustomerNotes",
     "CustomerNotFound",
     "CustomerAlreadyExists",
+    "InvalidQueueTicketServices",
+    "QueueTicketNotFound",
+    "InvalidQueueTicketTransition",
+    "QueueTicketHairdresserRequired",
     "InvalidKioskDeviceLabel",
     "KioskDeviceNotFound",
     "KioskDeviceRevoked",

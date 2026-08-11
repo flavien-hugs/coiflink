@@ -4,14 +4,18 @@
 // `GET /salons/{id}/queue` (lecture) et `POST .../arrival|start` (pointage,
 // #150). Implémenté par un adapter dans `src/adapters/api/`.
 
-import type { QueueEntry } from "@/src/domain/queue/queue";
+import type { QueueEntry, WalkInTicket } from "@/src/domain/queue/queue";
 import type { Appointment } from "@/src/domain/appointment/appointment";
 
 // Motifs d'échec **génériques** (aucune divulgation) : `invalid` = `422` (jour
 // mal formé), `forbidden` = `403` (rôle ≠ gérant ou salon hors périmètre),
 // `unauthenticated` = `401`, `unavailable` = `503`/panne réseau.
+//
+// `GET /salons/{id}/queue` renvoie désormais **deux** listes (US-8.3, #157,
+// ADR-0042) : les RDV planifiés (`entries`) **et** les tickets de passage
+// walk-in (`walkInTickets`) — même réponse, même écran.
 export type ListQueueResult =
-  | { ok: true; entries: QueueEntry[] }
+  | { ok: true; entries: QueueEntry[]; walkInTickets: WalkInTicket[] }
   | { ok: false; reason: "forbidden" | "unauthenticated" | "invalid" | "unavailable" };
 
 // `conflict` traduit le `409` (RDV non `CONFIRMED`, arrivée/coiffeuse manquante

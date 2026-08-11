@@ -1,3 +1,5 @@
+"use client";
+
 // Historique des paiements d'un client — adapter UI (hexagonal, ADR-0008).
 // Rendu **pur** (pas d'état, pas de fetch) : reçoit un `PaymentHistory` déjà
 // chargé côté serveur (jeton du cookie httpOnly, invariant #14) et affiche le
@@ -16,6 +18,7 @@ import {
   type CustomerPayment,
   type PaymentHistory,
 } from "@/src/domain/customer/payment";
+import { TablePagination, useClientPagination } from "@/src/adapters/ui/table-pagination";
 
 export function CustomerPaymentHistory({ history }: { history: PaymentHistory }) {
   if (history.payments.length === 0) {
@@ -33,6 +36,11 @@ function EmptyState() {
 }
 
 function PaymentTable({ payments }: { payments: CustomerPayment[] }) {
+  const pagination = useClientPagination(
+    payments,
+    payments.map((payment) => payment.paymentId).join("|"),
+  );
+
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-soft">
       <div className="overflow-x-auto">
@@ -46,9 +54,11 @@ function PaymentTable({ payments }: { payments: CustomerPayment[] }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-border bg-surface">
-            {payments.map((payment, index) => (
+            {pagination.items.map((payment, index) => (
               <tr key={payment.paymentId}>
-                <td className="px-4 py-3 font-medium text-muted">{index + 1}</td>
+                <td className="px-4 py-3 font-medium text-muted">
+                  {pagination.offset + index + 1}
+                </td>
                 <td className="whitespace-nowrap px-4 py-3 font-medium">
                   {formatPaymentDateTime(payment.createdAt)}
                 </td>
@@ -63,6 +73,12 @@ function PaymentTable({ payments }: { payments: CustomerPayment[] }) {
           </tbody>
         </table>
       </div>
+      <TablePagination
+        label="l'historique des paiements"
+        page={pagination.page}
+        totalItems={payments.length}
+        onPageChange={pagination.setPage}
+      />
     </div>
   );
 }

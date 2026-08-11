@@ -29,16 +29,16 @@
 :root {
   --background: #f8efe1;
   --foreground: #1f1811;
-  --muted: #8d7b67;
+  --muted: #74604c;
   --border: #e5d8c4;
   --surface: #fffefd;
   --sidebar: #ffffff;
   --sidebar-foreground: #3a2717;
-  --sidebar-muted: #8d7b67;
-  --accent: #c86a4a;
+  --sidebar-muted: #74604c;
+  --accent: #a94c35;
   --accent-foreground: #ffffff;
   --terracotta: #c86a4a;
-  --gold: #e8a33d;
+  --gold: #8a5a13;
   --palm: #3f5e3c;
   --danger: #a1213e;
   --danger-foreground: #ffffff;

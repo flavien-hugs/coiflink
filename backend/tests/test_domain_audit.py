@@ -19,6 +19,7 @@ from coiflink_api.domain.audit import (
     ENTITY_TYPE_CUSTOMER,
     ENTITY_TYPE_KIOSK_DEVICE,
     ENTITY_TYPE_PAYMENT,
+    ENTITY_TYPE_QUEUE_TICKET,
     ENTITY_TYPE_SALON,
     ENTITY_TYPE_SERVICE,
     AuditAction,
@@ -86,8 +87,14 @@ class TestAuditAction:
     def test_kiosk_device_revoked_value(self) -> None:
         assert AuditAction.KIOSK_DEVICE_REVOKED == "KIOSK_DEVICE_REVOKED"
 
-    def test_exactly_twenty_three_actions_defined(self) -> None:
-        assert len(list(AuditAction)) == 23
+    def test_queue_ticket_started_value(self) -> None:
+        assert AuditAction.QUEUE_TICKET_STARTED == "QUEUE_TICKET_STARTED"
+
+    def test_queue_ticket_completed_value(self) -> None:
+        assert AuditAction.QUEUE_TICKET_COMPLETED == "QUEUE_TICKET_COMPLETED"
+
+    def test_exactly_twenty_five_actions_defined(self) -> None:
+        assert len(list(AuditAction)) == 25
 
     def test_values_are_strings(self) -> None:
         for action in AuditAction:
@@ -122,6 +129,8 @@ class TestAuditAction:
             "APPOINTMENT_STARTED",
             "KIOSK_DEVICE_PROVISIONED",
             "KIOSK_DEVICE_REVOKED",
+            "QUEUE_TICKET_STARTED",
+            "QUEUE_TICKET_COMPLETED",
         }
 
 
@@ -281,3 +290,16 @@ class TestEntityTypeKioskDevice:
 
     def test_value_is_kiosk_device(self) -> None:
         assert ENTITY_TYPE_KIOSK_DEVICE == "kiosk_device"
+
+
+# ---------------------------------------------------------------------------
+# ENTITY_TYPE_QUEUE_TICKET (US-8.3, #157)
+# ---------------------------------------------------------------------------
+
+
+class TestEntityTypeQueueTicket:
+    def test_value_is_string(self) -> None:
+        assert isinstance(ENTITY_TYPE_QUEUE_TICKET, str)
+
+    def test_value_is_queue_ticket(self) -> None:
+        assert ENTITY_TYPE_QUEUE_TICKET == "queue_ticket"

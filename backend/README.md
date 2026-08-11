@@ -502,6 +502,63 @@ avec `metadata` vide, lookups **non audités**). **Aucune migration** : la table
 unique partiel `uq_customer_profiles_salon_phone` (qui sert aussi la recherche par égalité) et la validation
 de #28 couvrent déjà le besoin.
 
+## File d'attente walk-in — tickets de passage (US-8.3, #157 — [ADR-0042](../docs/adr/0042-file-attente-walkin-queue-ticket.md))
+
+Une fois le client identifié (#156), la borne lui délivre un **ticket de passage** : un numéro
+séquentiel, une heure d'émission et une **estimation d'attente**. Le `QueueTicket` est un **domaine
+indépendant** d'`Appointment` (ADR-0042) — aucune ligne `appointments` n'est jamais créée pour un
+walk-in (`Appointment.client_id` est `NOT NULL` FK `users` ; un walk-in n'a en général pas de compte).
+Migration `0014` **additive** : deux tables (`queue_tickets`, `queue_ticket_services`), aucune colonne
+existante modifiée.
+
+| Méthode | Chemin | Garde | Réponses |
+| --- | --- | --- | --- |
+| `POST` | `/salons/{salon_id}/queue/tickets` | portée salon + `QUEUE_TICKET_CREATE` (rôle `KIOSK`, #155) | `201` ticket · `404` fiche hors salon · `422` prestation(s) invalide(s) · `401`/`403` |
+| `POST` | `/salons/{salon_id}/queue/tickets/{ticket_id}/start` | portée salon + `APPOINTMENT_UPDATE_STATUS` (coiffeuse/gérant) | `200` ticket · `404` ticket/coiffeuse hors salon · `409` transition invalide · `401`/`403` |
+| `POST` | `/salons/{salon_id}/queue/tickets/{ticket_id}/complete` | portée salon + `APPOINTMENT_UPDATE_STATUS` | `200` ticket · `404` · `409` · `401`/`403` |
+| `GET` | `/salons/{salon_id}/queue` | portée salon + `APPOINTMENT_READ_SALON` | `200` `{appointments, walk_in_tickets}` · `422` jour invalide · `401`/`403` |
+
+**Numérotation par salon et par jour civil, sûre en concurrence** (patron ADR-0040) :
+`SqlQueueTicketRepository.create` prend un **verrou consultatif transactionnel**
+(`pg_advisory_xact_lock(hashtext('<salon_id>:<jour>'))`) puis lit `MAX(ticket_number)+1` dans la **même**
+transaction. Le compteur reparte à **1 chaque jour civil** (`Africa/Abidjan`) sans job de purge ; la
+contrainte `UNIQUE (salon_id, issued_date, ticket_number)` est le filet ultime d'une course. `ticket_number`
+est un **entier brut** (le formatage « N° 014 » relève de l'impression thermique #160).
+
+**Estimation d'attente V1** (`estimate_wait_minutes`, heuristique **assumée perfectible**, **figée à
+l'émission**) : `position × durée moyenne des prestations des tickets actifs (waiting + in_progress) ÷
+coiffeuses ACTIVE`, arrondie. Filets pour les cas dégénérés : **aucune coiffeuse active** → constante
+documentée (`30 min`, jamais de division par zéro) ; **file vide** → repli sur la moyenne des prestations
+**de ce ticket** ; **aucune durée** → `0`.
+
+```bash
+# Rejoindre la file (borne KIOSK) — customer_profile_id optionnel (null = ticket anonyme).
+curl -sS -X POST "$API/salons/$SALON_ID/queue/tickets" \
+  -H "Authorization: Bearer $KIOSK_ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"customer_profile_id":"…","service_ids":["…"]}'
+# → 201 {"id":"…","ticket_number":7,"issued_date":"2026-08-11","status":"waiting",
+#        "estimated_wait_minutes":18,"created_at":"…","service_ids":["…"]}
+
+# Prise en charge par une coiffeuse ACTIVE du salon (gérant/coiffeuse), puis clôture.
+curl -sS -X POST "$API/salons/$SALON_ID/queue/tickets/<id>/start" \
+  -H "Authorization: Bearer $MANAGER_ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"hairdresser_id":"…"}'
+# → 200 {"id":"…","ticket_number":7,"status":"in_progress","hairdresser_id":"…","started_at":"…","completed_at":null}
+```
+
+**Visibilité gérant — fusion en lecture, jamais en écriture.** `GET /salons/{salon_id}/queue` renvoie
+désormais un **objet à deux clés** : `appointments` (RDV planifiés, contenu **inchangé** champ à champ,
+#150) et `walk_in_tickets` (tickets du jour `waiting`/`called`/`in_progress`/`done`, hors `expired`).
+Aucune ligne `appointments` fictive n'est jamais créée. PII minimisée à l'écran partagé : **prénom seul**
+(`customer_first_name`, aligné #156) — jamais le nom complet ni le téléphone. Le seul consommateur du
+contrat (`web-dashboard/.../queue-board.tsx`) est mis à jour dans la même PR.
+
+**Sécurité & journalisation.** Aucune route publique (rien dans `PUBLIC_ROUTE_PATHS`). Toutes les
+méthodes du dépôt filtrent `salon_id` en SQL (isolation §11.2) : un ticket ou un `customer_profile_id`
+d'un autre salon est **indiscernable** d'un inexistant (`404`/`QueueTicketNotFound`, aucun oracle). La
+prise en charge/clôture sont journalisées (`QUEUE_TICKET_STARTED`/`QUEUE_TICKET_COMPLETED`, `metadata`
+vide) ; l'**émission** d'un ticket n'est pas auditée (aucune action humaine de gestion, aucune PII propre).
+
 ## Salons — création & médias (US-2.1, #15 — [ADR-0017](../docs/adr/0017-creation-salon-medias-et-reservabilite.md))
 
 `POST /salons` permet à un **gérant** de créer un salon **rattaché à son compte** (nom, description,

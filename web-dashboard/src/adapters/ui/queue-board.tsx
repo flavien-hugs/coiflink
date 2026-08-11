@@ -15,15 +15,19 @@ import { useEffect, useState } from "react";
 import { CheckIcon, ClockIcon, CoinsIcon, PersonIcon, XIcon } from "@/src/adapters/ui/action-icons";
 import { EmptyState } from "@/src/adapters/ui/empty-state";
 import { RecordPaymentForm } from "@/src/adapters/ui/record-payment-form";
+import { TablePagination, useClientPagination } from "@/src/adapters/ui/table-pagination";
 import type { Employee } from "@/src/domain/employee/employee";
 import {
   QUEUE_STATUS_LABELS_FR,
   QUEUE_STATUS_STYLES,
+  WALK_IN_TICKET_STATUS_LABELS_FR,
+  WALK_IN_TICKET_STATUS_STYLES,
   canComplete,
   canMarkArrived,
   canMarkPaid,
   canStartService,
   type QueueEntry,
+  type WalkInTicket,
 } from "@/src/domain/queue/queue";
 
 function formatTime(value: string): string {
@@ -35,16 +39,28 @@ type ActionKey = "arrival" | "start" | "complete" | `assign:${string}`;
 export interface QueueBoardProps {
   salonId: string;
   entries: QueueEntry[];
+  // Tickets de passage walk-in du jour (US-8.3, #157) — indépendants des RDV,
+  // affichés dans une section dédiée (numéro, prénom, attente estimée, statut).
+  walkInTickets: WalkInTicket[];
   // Coiffeuses **disponibles** (déjà filtrées `ACTIVE`, #150) — options du
   // sélecteur d'assignation.
   availableHairdressers: Employee[];
 }
 
-export function QueueBoard({ salonId, entries, availableHairdressers }: QueueBoardProps) {
+export function QueueBoard({
+  salonId,
+  entries,
+  walkInTickets,
+  availableHairdressers,
+}: QueueBoardProps) {
   const router = useRouter();
   const [pending, setPending] = useState<{ id: string; action: ActionKey } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [paymentAppointmentId, setPaymentAppointmentId] = useState<string | null>(null);
+  const entryPagination = useClientPagination(
+    entries,
+    entries.map((entry) => entry.appointmentId).join("|"),
+  );
 
   async function runAction(
     appointmentId: string,
@@ -146,6 +162,7 @@ export function QueueBoard({ salonId, entries, availableHairdressers }: QueueBoa
           <table className="w-full min-w-260 text-left text-sm">
             <thead className="bg-background/70 text-xs font-semibold text-muted">
               <tr>
+                <th className="w-12 px-4 py-3">#</th>
                 <th className="px-4 py-3">Heure</th>
                 <th className="px-4 py-3">Cliente</th>
                 <th className="px-4 py-3">Prestation(s)</th>
@@ -155,11 +172,14 @@ export function QueueBoard({ salonId, entries, availableHairdressers }: QueueBoa
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-surface">
-              {entries.map((entry) => {
+              {entryPagination.items.map((entry, index) => {
                 const busy = isPending(entry.appointmentId);
                 const style = QUEUE_STATUS_STYLES[entry.queueStatus];
                 return (
                   <tr key={entry.appointmentId} className="align-top">
+                    <td className="px-4 py-3 font-medium text-muted">
+                      {entryPagination.offset + index + 1}
+                    </td>
                     <td className="px-4 py-3 font-medium">
                       {formatTime(entry.startTime)}–{formatTime(entry.endTime)}
                     </td>
@@ -249,7 +269,7 @@ export function QueueBoard({ salonId, entries, availableHairdressers }: QueueBoa
               })}
               {entries.length === 0 ? (
                 <tr>
-                  <td colSpan={6}>
+                  <td colSpan={7}>
                     <EmptyState
                       icon={<PersonIcon className="size-6" />}
                       title="Aucun rendez-vous en file pour ce jour."
@@ -261,13 +281,107 @@ export function QueueBoard({ salonId, entries, availableHairdressers }: QueueBoa
             </tbody>
           </table>
         </div>
+        <TablePagination
+          label="la file d'attente"
+          page={entryPagination.page}
+          totalItems={entries.length}
+          onPageChange={entryPagination.setPage}
+        />
       </div>
+
+      <WalkInTicketsSection tickets={walkInTickets} />
 
       <PaymentDrawer
         salonId={salonId}
         appointmentId={paymentAppointmentId}
         onClose={() => setPaymentAppointmentId(null)}
       />
+    </div>
+  );
+}
+
+// Section **tickets de passage walk-in** (US-8.3, #157). Lecture seule côté
+// gérant : le ticket est délivré et pris en charge côté borne (rôle KIOSK) /
+// coiffeuse ; le tableau gérant confirme qu'il « apparaît dans la file » avec
+// son numéro, l'attente estimée et son statut. PII minimisée : **prénom seul**
+// (aligné #156) — jamais nom complet ni téléphone.
+function WalkInTicketsSection({ tickets }: { tickets: WalkInTicket[] }) {
+  const pagination = useClientPagination(
+    tickets,
+    tickets.map((ticket) => ticket.ticketId).join("|"),
+  );
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h2 className="font-serif text-lg font-semibold text-ink">
+        Tickets de passage (walk-in)
+      </h2>
+      <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-soft">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-260 text-left text-sm">
+            <thead className="bg-background/70 text-xs font-semibold text-muted">
+              <tr>
+                <th className="w-12 px-4 py-3">#</th>
+                <th className="px-4 py-3">N°</th>
+                <th className="px-4 py-3">Cliente</th>
+                <th className="px-4 py-3">Prestation(s)</th>
+                <th className="px-4 py-3">Coiffeuse</th>
+                <th className="px-4 py-3">Attente estimée</th>
+                <th className="px-4 py-3">Statut</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border bg-surface">
+              {pagination.items.map((ticket, index) => {
+                const style = WALK_IN_TICKET_STATUS_STYLES[ticket.status];
+                return (
+                  <tr key={ticket.ticketId} className="align-top">
+                    <td className="px-4 py-3 font-medium text-muted">
+                      {pagination.offset + index + 1}
+                    </td>
+                    <td className="px-4 py-3 font-semibold tabular-nums">
+                      {ticket.ticketNumber}
+                    </td>
+                    <td className="px-4 py-3 font-semibold">
+                      {ticket.customerFirstName ?? "—"}
+                    </td>
+                    <td className="max-w-[220px] px-4 py-3 text-muted">
+                      {ticket.serviceNames.length > 0 ? ticket.serviceNames.join(", ") : "—"}
+                    </td>
+                    <td className="px-4 py-3 text-muted">{ticket.hairdresserName ?? "—"}</td>
+                    <td className="px-4 py-3 tabular-nums text-muted">
+                      ~{ticket.estimatedWaitMinutes} min
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-xs font-medium ${style.badge}`}
+                      >
+                        {WALK_IN_TICKET_STATUS_LABELS_FR[ticket.status]}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {tickets.length === 0 ? (
+                <tr>
+                  <td colSpan={7}>
+                    <EmptyState
+                      icon={<PersonIcon className="size-6" />}
+                      title="Aucun ticket de passage pour ce jour."
+                      description="Les clients sans rendez-vous accueillis à la borne apparaîtront ici."
+                    />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+        <TablePagination
+          label="les tickets de passage"
+          page={pagination.page}
+          totalItems={tickets.length}
+          onPageChange={pagination.setPage}
+        />
+      </div>
     </div>
   );
 }

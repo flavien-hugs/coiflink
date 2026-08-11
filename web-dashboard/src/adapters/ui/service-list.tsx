@@ -21,6 +21,7 @@ import { SalonToolIcon } from "@/src/adapters/ui/salon-tool-icons";
 import { SearchIcon } from "@/src/adapters/ui/searchable-select";
 import { ServiceForm } from "@/src/adapters/ui/service-form";
 import { SortDirectionToggle, type SortDirection } from "@/src/adapters/ui/sort-direction-toggle";
+import { TablePagination, useClientPagination } from "@/src/adapters/ui/table-pagination";
 import { hasInvalidServiceDateRange } from "@/src/domain/service/service-listing";
 import type { Service } from "@/src/domain/service/service";
 
@@ -104,6 +105,10 @@ export function ServiceList({
   const [values, setValues] = useState({ q, category, createdFrom, createdTo });
 
   const sorted = sortServicesByCreatedAt(services, sortDirection);
+  const pagination = useClientPagination(
+    sorted,
+    `${q}|${category}|${createdFrom}|${createdTo}|${sortDirection}`,
+  );
   const dateRangeInvalid = hasInvalidServiceDateRange(values.createdFrom, values.createdTo);
   const hasActiveFilters =
     q.trim().length > 0 || category.trim().length > 0 || createdFrom !== "" || createdTo !== "";
@@ -318,9 +323,11 @@ export function ServiceList({
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-surface">
-              {sorted.map((service, index) => (
+              {pagination.items.map((service, index) => (
                 <tr key={service.id} className="align-top">
-                  <td className="px-4 py-3 font-medium text-muted">{index + 1}</td>
+                  <td className="px-4 py-3 font-medium text-muted">
+                    {pagination.offset + index + 1}
+                  </td>
                   <td className="max-w-[320px] px-4 py-3">
                     <div className="flex items-start gap-3">
                       {service.imageUrl ? (
@@ -412,6 +419,12 @@ export function ServiceList({
             </tbody>
           </table>
         </div>
+        <TablePagination
+          label="la liste des prestations"
+          page={pagination.page}
+          totalItems={sorted.length}
+          onPageChange={pagination.setPage}
+        />
       </div>
 
       <ServiceDrawer

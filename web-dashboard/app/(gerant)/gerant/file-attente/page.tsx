@@ -68,6 +68,7 @@ export default async function FileAttentePage() {
       <QueueBoard
         salonId={salon.id}
         entries={queueResult.entries}
+        walkInTickets={queueResult.walkInTickets}
         availableHairdressers={availableHairdressers}
       />
     </section>

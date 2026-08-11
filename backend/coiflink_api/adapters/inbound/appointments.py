@@ -75,6 +75,9 @@ from coiflink_api.adapters.outbound.persistence.salon_catalog_repository import 
 from coiflink_api.adapters.outbound.persistence.payment_repository import (
     SqlPaymentRepository,
 )
+from coiflink_api.adapters.outbound.persistence.queue_ticket_repository import (
+    SqlQueueTicketRepository,
+)
 from coiflink_api.adapters.outbound.persistence.salon_repository import (
     SqlSalonRepository,
 )
@@ -99,6 +102,9 @@ from coiflink_api.application.ports.notification_repository import (
     NotificationRepository,
 )
 from coiflink_api.application.ports.payment_repository import PaymentRepository
+from coiflink_api.application.ports.queue_ticket_repository import (
+    QueueTicketRepository,
+)
 from coiflink_api.application.ports.salon_catalog_repository import (
     SalonCatalogRepository,
 )
@@ -109,6 +115,7 @@ from coiflink_api.application.queue import (
     MarkAppointmentArrived,
     StartAppointmentService,
 )
+from coiflink_api.application.queue_ticket import ListSalonQueueTickets
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.appointment import (
     Appointment,
@@ -136,6 +143,7 @@ from coiflink_api.domain.errors import (
 from coiflink_api.domain.permissions import Permission
 from coiflink_api.domain.principal import Principal
 from coiflink_api.domain.queue import QueueEntry
+from coiflink_api.domain.queue_ticket import QueueTicketEntry
 from coiflink_api.domain.time_window import SALON_TIMEZONE
 
 router = APIRouter(tags=["appointments"])
@@ -306,6 +314,44 @@ class QueueEntryResponse(BaseModel):
     started_at: datetime.datetime | None
 
 
+class WalkInTicketResponse(BaseModel):
+    """Une ligne **ticket walk-in** de la file gérant (US-8.3, #157) — sans PII au-delà du prénom.
+
+    Aligné sur la projection minimale de #156 : seul le **prénom**
+    (`customer_first_name`, dérivé de `customer_profiles.full_name`) est exposé —
+    jamais le nom complet, le téléphone ni le `customer_profile_id`. `ticket_id`/
+    `hairdresser_id` restent des UUID **opaques** (non-PII), utiles au gérant pour
+    agir. Indépendant d'`Appointment` : aucun `appointment_id`/créneau.
+    """
+
+    ticket_id: uuid.UUID
+    ticket_number: int
+    customer_first_name: str | None
+    service_names: list[str]
+    hairdresser_id: uuid.UUID | None
+    hairdresser_name: str | None
+    status: str
+    estimated_wait_minutes: int
+    created_at: datetime.datetime
+    started_at: datetime.datetime | None
+    completed_at: datetime.datetime | None
+
+
+class SalonQueueResponse(BaseModel):
+    """Réponse de `GET /salons/{salon_id}/queue` (US-8.3, #157) — objet à deux clés.
+
+    **Rupture de forme mineure et assumée** (ADR-0042) : l'ancienne `list[
+    QueueEntryResponse]` devient un objet englobant. `appointments` reprend
+    **champ à champ** l'ancien contenu (non-régression du contrat RDV) ;
+    `walk_in_tickets` porte les tickets de passage du jour (fusion **en lecture**,
+    jamais de ligne `appointments` fictive). Les deux tableaux restent **distincts**
+    (un walk-in n'a ni `appointment_id` ni créneau ; tri différent).
+    """
+
+    appointments: list[QueueEntryResponse]
+    walk_in_tickets: list[WalkInTicketResponse]
+
+
 class DailyAppointmentsSummaryResponse(BaseModel):
     """Décompte du jour par statut renvoyé par `GET .../appointments/daily-summary`.
 
@@ -404,6 +450,20 @@ def get_payment_repository(
     return SqlPaymentRepository(session)
 
 
+def get_queue_ticket_repository(
+    session: Annotated[Session, Depends(get_session)],
+) -> QueueTicketRepository:
+    """Dépôt de tickets walk-in adossé à la **même** session (fusion en lecture, #157).
+
+    Sert **uniquement** à composer les tickets de passage du jour dans la file
+    gérant (`list_active_for_salon`) — lecture pure, jamais d'écriture dans
+    `appointments`. Provider **local** (chaque module inbound déclare le sien,
+    patron `get_audit_log`), distinct de celui de `queue_tickets.py`.
+    """
+
+    return SqlQueueTicketRepository(session)
+
+
 def _now() -> datetime.datetime:
     """Instant courant **naïf** dans le repère Africa/Abidjan (UTC+0, cf. schéma)."""
 
@@ -456,6 +516,22 @@ def _queue_entry_response(entry: QueueEntry) -> QueueEntryResponse:
         queue_status=entry.queue_status,
         arrived_at=entry.arrived_at,
         started_at=entry.started_at,
+    )
+
+
+def _walk_in_ticket_response(entry: QueueTicketEntry) -> WalkInTicketResponse:
+    return WalkInTicketResponse(
+        ticket_id=entry.ticket_id,
+        ticket_number=entry.ticket_number,
+        customer_first_name=entry.customer_first_name,
+        service_names=list(entry.service_names),
+        hairdresser_id=entry.hairdresser_id,
+        hairdresser_name=entry.hairdresser_name,
+        status=entry.status,
+        estimated_wait_minutes=entry.estimated_wait_minutes,
+        created_at=entry.created_at,
+        started_at=entry.started_at,
+        completed_at=entry.completed_at,
     )
 
 
@@ -1233,10 +1309,15 @@ def start_appointment_service(
 
 @router.get(
     "/salons/{salon_id}/queue",
-    response_model=list[QueueEntryResponse],
-    summary="Lister la file d'attente du salon pour un jour donné (gérant, #150)",
+    response_model=SalonQueueResponse,
+    summary="Lister la file d'attente du salon pour un jour donné (gérant, #150/#157)",
     responses={
-        200: {"description": "File d'attente du jour, triée par heure de RDV"},
+        200: {
+            "description": (
+                "File du jour : RDV planifiés (`appointments`) + tickets walk-in "
+                "(`walk_in_tickets`)"
+            )
+        },
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
         422: {"description": "Paramètre de date invalide"},
@@ -1248,6 +1329,9 @@ def list_salon_queue(
         AppointmentRepository, Depends(get_appointment_repository)
     ],
     payments: Annotated[PaymentRepository, Depends(get_payment_repository)],
+    tickets: Annotated[
+        QueueTicketRepository, Depends(get_queue_ticket_repository)
+    ],
     _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
     _principal: Annotated[
         Principal, Depends(require_permission(Permission.APPOINTMENT_READ_SALON))
@@ -1256,20 +1340,25 @@ def list_salon_queue(
         datetime.date | None,
         Query(description="Jour ciblé (AAAA-MM-JJ) ; défaut aujourd'hui"),
     ] = None,
-) -> list[QueueEntryResponse]:
-    """Liste les RDV `CONFIRMED`/`COMPLETED` **du salon** pour `day` (défaut aujourd'hui).
+) -> SalonQueueResponse:
+    """File du salon pour `day` (défaut aujourd'hui) : RDV planifiés **et** tickets walk-in.
 
-    Portée « RDV existants uniquement » (§ décision produit) : ni `PENDING` non
-    confirmé, ni `CANCELLED`/`NO_SHOW`. `queue_status` est **dérivé**
-    (`waiting`/`in_progress`/`completed`/`paid`) — « payée » reflète un paiement
-    **réellement validé** (réutilise le flux d'encaissement #33/#34), jamais un
-    drapeau propre au RDV. Lecture pure, aucun audit (cohérent avec le
-    Dashboard #148).
+    `appointments` : RDV `CONFIRMED`/`COMPLETED` **du salon** (§ décision produit
+    « RDV existants uniquement ») — `queue_status` **dérivé**
+    (`waiting`/`in_progress`/`completed`/`paid`, « payée » = paiement réellement
+    validé #33/#34). `walk_in_tickets` : tickets de passage du jour
+    (`waiting`/`called`/`in_progress`/`done`, hors `expired`), **fusionnés en
+    lecture** (US-8.3, #157) — jamais de ligne `appointments` fictive (ADR-0042).
+    Lecture pure, aucun audit (cohérent avec le Dashboard #148).
     """
 
     target_day = day if day is not None else _today()
     entries = ListSalonQueue(appointments, payments).execute(salon_id, target_day)
-    return [_queue_entry_response(entry) for entry in entries]
+    walk_in = ListSalonQueueTickets(tickets).execute(salon_id, target_day)
+    return SalonQueueResponse(
+        appointments=[_queue_entry_response(entry) for entry in entries],
+        walk_in_tickets=[_walk_in_ticket_response(ticket) for ticket in walk_in],
+    )
 
 
 __all__ = ["router", "AVAILABILITY_PATH"]

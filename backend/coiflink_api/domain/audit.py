@@ -51,6 +51,9 @@ ENTITY_TYPE_SALON_MEMBER = "salon_member"
 # Type d'entité journalisée pour les bornes kiosque (provisioning §11.4) — #155.
 ENTITY_TYPE_KIOSK_DEVICE = "kiosk_device"
 
+# Type d'entité journalisée pour les tickets de passage walk-in (§11.4) — #157.
+ENTITY_TYPE_QUEUE_TICKET = "queue_ticket"
+
 
 @unique
 class AuditAction(_StrEnum):
@@ -148,6 +151,16 @@ class AuditAction(_StrEnum):
     KIOSK_DEVICE_PROVISIONED = "KIOSK_DEVICE_PROVISIONED"
     KIOSK_DEVICE_REVOKED = "KIOSK_DEVICE_REVOKED"
 
+    # File d'attente walk-in — prise en charge §11.4 — #157 (US-8.3). Démarrer /
+    # clôturer un ticket de passage sont des **actions manuelles** de la coiffeuse
+    # ou du gérant (`APPOINTMENT_UPDATE_STATUS`), miroir d'`APPOINTMENT_STARTED`.
+    # L'**émission** d'un ticket par la borne (`JoinQueue`) n'est **pas**
+    # journalisée (aucune action humaine de gestion, aucune PII propre au ticket).
+    # Les entrées restent **neutres** — `metadata` est vide : ni prénom, ni
+    # prestation, ni estimation d'attente n'entre au journal (§11.3/§11.4).
+    QUEUE_TICKET_STARTED = "QUEUE_TICKET_STARTED"
+    QUEUE_TICKET_COMPLETED = "QUEUE_TICKET_COMPLETED"
+
 
 @dataclass(frozen=True)
 class AuditEntry:
@@ -179,6 +192,7 @@ __all__ = [
     "ENTITY_TYPE_CAMPAIGN",
     "ENTITY_TYPE_SALON_MEMBER",
     "ENTITY_TYPE_KIOSK_DEVICE",
+    "ENTITY_TYPE_QUEUE_TICKET",
     "AuditAction",
     "AuditEntry",
 ]

@@ -14,6 +14,7 @@ import { CheckIcon, PencilIcon, PersonIcon, PlusIcon, TrashIcon, XIcon } from "@
 import { EmployeeForm } from "@/src/adapters/ui/employee-form";
 import { EmptyState } from "@/src/adapters/ui/empty-state";
 import { SearchIcon } from "@/src/adapters/ui/searchable-select";
+import { TablePagination, useClientPagination } from "@/src/adapters/ui/table-pagination";
 import { isEmployeeActive, type Employee } from "@/src/domain/employee/employee";
 
 const COMPACT_INPUT_CLASS =
@@ -52,6 +53,7 @@ export function EmployeeList({ salonId, employees }: EmployeeListProps) {
         : employee.fullName.toLowerCase().includes(query.trim().toLowerCase()),
     )
     .sort((a, b) => COLLATOR.compare(a.fullName, b.fullName));
+  const pagination = useClientPagination(filtered, query);
 
   async function onToggleActive(employee: Employee) {
     setError(null);
@@ -139,6 +141,7 @@ export function EmployeeList({ salonId, employees }: EmployeeListProps) {
           <table className="w-full min-w-190 text-left text-sm">
             <thead className="bg-background/70 text-xs font-semibold text-muted">
               <tr>
+                <th className="w-12 px-4 py-3">#</th>
                 <th className="px-4 py-3">Coiffeuse</th>
                 <th className="px-4 py-3">Téléphone</th>
                 <th className="px-4 py-3">Spécialités</th>
@@ -148,10 +151,13 @@ export function EmployeeList({ salonId, employees }: EmployeeListProps) {
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-surface">
-              {filtered.map((employee) => {
+              {pagination.items.map((employee, index) => {
                 const active = isEmployeeActive(employee);
                 return (
                   <tr key={employee.id} className="align-top">
+                    <td className="px-4 py-3 font-medium text-muted">
+                      {pagination.offset + index + 1}
+                    </td>
                     <td className="px-4 py-3">
                       <div className="font-semibold">{employee.fullName}</div>
                       {employee.email ? (
@@ -219,7 +225,7 @@ export function EmployeeList({ salonId, employees }: EmployeeListProps) {
               })}
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={6}>
+                  <td colSpan={7}>
                     <EmptyState
                       icon={<PersonIcon className="size-6" />}
                       title={
@@ -239,6 +245,12 @@ export function EmployeeList({ salonId, employees }: EmployeeListProps) {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          label="la liste des coiffeuses"
+          page={pagination.page}
+          totalItems={filtered.length}
+          onPageChange={pagination.setPage}
+        />
       </div>
 
       <EmployeeDrawer salonId={salonId} drawer={drawer} onClose={() => setDrawer(null)} />

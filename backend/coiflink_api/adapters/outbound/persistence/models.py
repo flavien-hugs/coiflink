@@ -51,6 +51,7 @@ from sqlalchemy.dialects.postgresql import ExcludeConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from coiflink_api.domain import enums
+from coiflink_api.domain.queue_ticket import QUEUE_TICKET_STATUSES
 from coiflink_api.adapters.outbound.persistence.base import Base
 
 
@@ -746,6 +747,123 @@ class AuditLog(Base):
     )
 
 
+# Valeurs SQL du `CHECK` `status` du ticket, **dérivées du domaine**
+# (`QUEUE_TICKET_STATUSES`) : les valeurs base ne divergent jamais du Python.
+_QUEUE_TICKET_STATUS_SQL = ", ".join(f"'{value}'" for value in QUEUE_TICKET_STATUSES)
+
+
+class QueueTicket(Base):
+    """Ticket de passage walk-in (US-8.3, #157, ADR-0042).
+
+    **Indépendant d'`Appointment`** : aucune ligne `appointments` n'est créée pour
+    un walk-in (`Appointment.client_id` est `NOT NULL` FK `users` — un walk-in n'a
+    en général pas de compte). Le ticket porte son propre numéro séquentiel par
+    salon **et** jour civil (`ticket_number`/`issued_date`), une estimation
+    d'attente **figée à l'émission**, et son propre cycle de vie
+    (`waiting`/`called`/`in_progress`/`done`/`expired`).
+
+    `hairdresser_id` référence **`users.id`** (identifiant de **compte**,
+    appartenance salon vérifiée **applicativement** — miroir exact
+    d'`Appointment.hairdresser_id`) ; `customer_profile_id` est **nullable**
+    (ticket anonyme possible).
+    """
+
+    __tablename__ = "queue_tickets"
+
+    id: Mapped[uuid.UUID] = _pk()
+    salon_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    ticket_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Jour civil du salon (Africa/Abidjan) : scope du compteur `ticket_number`.
+    issued_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    customer_profile_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
+    hairdresser_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'waiting'")
+    )
+    # Estimation d'attente (minutes) **figée à l'émission**, jamais recalculée.
+    estimated_wait_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime.datetime] = _created_at()
+    # Horodatages du cycle de vie, distincts du `status` (esprit
+    # `arrived_at`/`started_at` d'`Appointment`), posés à chaque transition.
+    called_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["salon_id"], ["salons.id"], name="fk_queue_tickets_salon_id", ondelete="RESTRICT"
+        ),
+        ForeignKeyConstraint(
+            ["customer_profile_id"],
+            ["customer_profiles.id"],
+            name="fk_queue_tickets_customer_profile_id",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["hairdresser_id"],
+            ["users.id"],
+            name="fk_queue_tickets_hairdresser_id",
+            ondelete="RESTRICT",
+        ),
+        # Cible des FK composites (salon_id, queue_ticket_id) de la jonction.
+        UniqueConstraint("salon_id", "id", name="uq_queue_tickets_salon_id"),
+        # Garantie **base** du compteur : un numéro par salon et par jour civil.
+        UniqueConstraint(
+            "salon_id",
+            "issued_date",
+            "ticket_number",
+            name="uq_queue_tickets_salon_day_number",
+        ),
+        CheckConstraint(f"status IN ({_QUEUE_TICKET_STATUS_SQL})", name="status"),
+        CheckConstraint("estimated_wait_minutes >= 0", name="estimated_wait_positive"),
+        # Lectures filtrées par statut (file gérant, compteur d'attente).
+        Index("ix_queue_tickets_salon_id", "salon_id", "issued_date"),
+        Index("ix_queue_tickets_salon_status", "salon_id", "status"),
+    )
+
+
+class QueueTicketService(Base):
+    """Jonction ticket ↔ prestation (US-8.3, #157) — miroir `appointment_services`.
+
+    Les deux FK composites partagent `salon_id`, ce qui force *au niveau base* le
+    ticket **et** la prestation à appartenir au même salon. `CASCADE` sur
+    `queue_ticket_id` (jonction pure-dépendante du ticket) ; `RESTRICT` sur la
+    prestation (une prestation référencée n'est jamais hard-deletée).
+    """
+
+    __tablename__ = "queue_ticket_services"
+
+    queue_ticket_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    service_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    salon_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
+    created_at: Mapped[datetime.datetime] = _created_at()
+
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "queue_ticket_id", "service_id", name="pk_queue_ticket_services"
+        ),
+        ForeignKeyConstraint(
+            ["salon_id", "queue_ticket_id"],
+            ["queue_tickets.salon_id", "queue_tickets.id"],
+            name="fk_queue_ticket_services_ticket",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["salon_id", "service_id"],
+            ["services.salon_id", "services.id"],
+            name="fk_queue_ticket_services_service",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_queue_ticket_services_service_id", "service_id"),
+    )
+
+
 __all__ = [
     "User",
     "Salon",
@@ -760,5 +878,7 @@ __all__ = [
     "Notification",
     "Campaign",
     "AuditLog",
+    "QueueTicket",
+    "QueueTicketService",
     "enum_check",
 ]

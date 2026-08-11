@@ -15,6 +15,7 @@ import { useState, useTransition, type FormEvent, type ReactNode } from "react";
 import { FilterIcon, PrinterIcon, RefreshIcon } from "@/src/adapters/ui/action-icons";
 import { ReceiptPrintModal } from "@/src/adapters/ui/receipt-print-modal";
 import { SearchableSelect, SearchIcon } from "@/src/adapters/ui/searchable-select";
+import { LIST_PAGE_SIZE, TablePagination } from "@/src/adapters/ui/table-pagination";
 import { formatXof, paymentMethodLabel, PAYMENT_METHOD_OPTIONS } from "@/src/domain/payments/payment";
 import {
   formatTransactionDateTime,
@@ -44,6 +45,7 @@ export interface TransactionHistoryProps {
   q: string;
   transactions: Transaction[];
   total: number;
+  page: number;
   // Action principale de la page (« Nouvel encaissement »), affichée à droite
   // du compteur — injectée par la page pour ne pas coupler cet historique au
   // panneau de paiement.
@@ -59,6 +61,7 @@ export function TransactionHistory({
   q,
   transactions,
   total,
+  page,
   actions,
 }: TransactionHistoryProps) {
   const router = useRouter();
@@ -90,6 +93,17 @@ export function TransactionHistory({
     startRefresh(() => {
       router.refresh();
     });
+  }
+
+  function onPageChange(nextPage: number) {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
+    if (paymentMethod) params.set("payment_method", paymentMethod);
+    if (q) params.set("q", q);
+    if (nextPage > 1) params.set("page", String(nextPage));
+    const query = params.toString();
+    router.push(query ? `${basePath}?${query}` : basePath);
   }
 
   return (
@@ -207,7 +221,9 @@ export function TransactionHistory({
                   key={transaction.id}
                   className="border-b border-border/60 last:border-b-0"
                 >
-                  <td className={`${CELL} font-medium text-muted`}>{index + 1}</td>
+                  <td className={`${CELL} font-medium text-muted`}>
+                    {(page - 1) * LIST_PAGE_SIZE + index + 1}
+                  </td>
                   <td className={`${CELL} whitespace-nowrap`}>
                     {formatTransactionDateTime(transaction.createdAt)}
                   </td>
@@ -242,6 +258,12 @@ export function TransactionHistory({
             </tbody>
           </table>
         </div>
+        <TablePagination
+          label="l'historique des transactions"
+          page={page}
+          totalItems={total}
+          onPageChange={onPageChange}
+        />
       </div>
 
       {printingPaymentId ? (

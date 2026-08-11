@@ -15,6 +15,7 @@ import Link from "next/link";
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
 import { createHttpCustomerGateway } from "@/src/adapters/api/http-customer-gateway";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
+import { LIST_PAGE_SIZE } from "@/src/adapters/ui/table-pagination.constants";
 import type { CustomerListOptions } from "@/src/application/ports/customer-gateway";
 import { CustomerList } from "@/src/adapters/ui/customer-list";
 
@@ -23,6 +24,11 @@ type SearchParams = Record<string, string | string[] | undefined>;
 function one(raw: string | string[] | undefined): string {
   const value = Array.isArray(raw) ? raw[0] : raw;
   return (value ?? "").trim();
+}
+
+function pageNumber(raw: string | string[] | undefined): number {
+  const parsed = Number.parseInt(one(raw), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1;
 }
 
 export default async function ClientsPage({
@@ -35,6 +41,7 @@ export default async function ClientsPage({
   const gender = one(params.gender);
   const createdFrom = one(params.created_from);
   const createdTo = one(params.created_to);
+  const page = pageNumber(params.page);
 
   const { accessToken } = await createCookieSessionStore().read();
   const salonsResult = await createHttpSalonGateway({ accessToken }).list();
@@ -59,6 +66,8 @@ export default async function ClientsPage({
   }
 
   const options: CustomerListOptions = {
+    limit: LIST_PAGE_SIZE,
+    offset: (page - 1) * LIST_PAGE_SIZE,
     q,
     gender,
     createdFrom,
@@ -92,6 +101,7 @@ export default async function ClientsPage({
         gender={gender}
         createdFrom={createdFrom}
         createdTo={createdTo}
+        page={page}
       />
     </section>
   );
