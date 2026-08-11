@@ -168,6 +168,23 @@ class SqlCustomerRepository:
         )
         return self._session.scalar(stmt) is not None
 
+    def find_by_phone(self, salon_id: uuid.UUID, phone: str) -> Customer | None:
+        """Charge la fiche `(salon_id, phone)` — filtre d'isolation §11.2 (US-8.2, #156).
+
+        Même `WHERE` que `phone_exists` mais retourne la **fiche complète** (jamais
+        la table `users` — anti-oracle ADR-0026). Lecture seule, aucun flush. L'index
+        unique partiel `uq_customer_profiles_salon_phone` sert la requête (au plus
+        une ligne, parcours d'index sur `(salon_id, phone)`). Une fiche d'un autre
+        salon est indiscernable d'une fiche inexistante (`None`).
+        """
+
+        stmt = select(models.CustomerProfile).where(
+            models.CustomerProfile.salon_id == salon_id,
+            models.CustomerProfile.phone == phone,
+        )
+        row = self._session.scalar(stmt)
+        return _to_domain(row) if row is not None else None
+
     def update_notes(
         self, salon_id: uuid.UUID, customer_id: uuid.UUID, notes: str | None
     ) -> Customer:

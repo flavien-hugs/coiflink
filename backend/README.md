@@ -450,6 +450,58 @@ curl -sS -X DELETE "$API/salons/$SALON_ID/kiosk-devices/<id>" -H "Authorization:
 Tout échec de `/auth/kiosk/login` (device inconnu, secret faux, device révoqué) renvoie le **même** `401`
 générique — aucun oracle sur l'existence ou l'état d'une borne.
 
+## Borne — identification téléphone & création walk-in (US-8.2, #156 — [ADR-0041](../docs/adr/0041-authentification-borne-kiosque.md), [ADR-0026](../docs/adr/0026-fiche-client-portee-salon.md))
+
+Le parcours « client sans rendez-vous » de la borne (PRD §17) répond d'abord à **qui se présente ?** Deux
+routes **réservées au rôle `KIOSK`** (compte de service d'un device, #155), montées sous
+`/salons/{salon_id}/kiosk/customers[...]` — imbriquées sous le salon pour hériter de `require_salon_scope`
+(isolation §11.2) — et **jamais publiques** (rien n'entre dans `PUBLIC_ROUTE_PATHS`) :
+
+| Méthode | Chemin | Garde | Réponses |
+| --- | --- | --- | --- |
+| `POST` | `/salons/{salon_id}/kiosk/customers/lookup` | portée salon + `CUSTOMER_LOOKUP_KIOSK` | `200` `{customer_id, first_name}` · `404` neutre · `422` téléphone invalide · `429` + `Retry-After` · `401`/`403` |
+| `POST` | `/salons/{salon_id}/kiosk/customers` | portée salon + `CUSTOMER_CREATE_WALKIN` | `201` `{customer_id, first_name}` · `409` doublon · `422` champ invalide · `401`/`403` |
+
+Les deux permissions sont **dédiées au rôle `KIOSK`** et déjà livrées par #155 : #156 **ne modifie pas**
+`ROLE_PERMISSIONS`. `CUSTOMER_MANAGE` reste **MANAGER-seul** ; un JWT `CLIENT`/`MANAGER`/`HAIRDRESSER`/
+`ADMIN` est refusé (`403` générique) sur ces routes, et un credential `KIOSK` reste incapable d'atteindre
+`CUSTOMER_MANAGE` ou `APPOINTMENT_BOOK` (moindre privilège, ADR-0041).
+
+```bash
+# Recherche par téléphone (le numéro voyage en CORPS, jamais en query string).
+curl -sS -X POST "$API/salons/$SALON_ID/kiosk/customers/lookup" \
+  -H "Authorization: Bearer $KIOSK_ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"phone":"07 00 00 00 00"}'
+# → 200 {"customer_id":"…","first_name":"Awa"}   (trouvée — prénom seul)
+# → 404 {"detail":"Aucune fiche pour ce numéro dans ce salon."}   (absente, sans écho du numéro)
+
+# Création walk-in (les 3 champs requis ; ni mot de passe, ni user_id, ni genre/notes).
+curl -sS -X POST "$API/salons/$SALON_ID/kiosk/customers" \
+  -H "Authorization: Bearer $KIOSK_ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"first_name":"Awa","last_name":"Koné","phone":"0700000000"}'
+# → 201 {"customer_id":"…","first_name":"Awa"}   (téléphone stocké +2250700000000, user_id = NULL)
+# → 409 {"detail":"Une fiche existe déjà pour ce numéro dans ce salon."}   (la borne relance le lookup)
+```
+
+**Normalisation téléphone unique côté serveur, idempotente** (`normalize_phone`, indicatif par défaut
+`+225`) : `07 00 00 00 00`, `0700000000`, `+225 07-00-00-00-00` et `00 225 07000000 00` produisent tous
+`+2250700000000` et retrouvent **la même fiche**, qu'elle ait été créée par le gérant au dashboard (#28)
+ou par la borne. Le prénom affiché est le **premier token** du `full_name` — exact pour les fiches créées
+par la borne (composition contrôlée « Prénom Nom »), heuristique pour les fiches historiques du gérant.
+
+**Sécurité & confidentialité (ADR-0026, anti-oracle).** La recherche porte **exclusivement** sur
+`customer_profiles` — **jamais** la table `users` par téléphone : un numéro titulaire d'un compte CoifLink
+mais sans fiche dans le salon répond `404`, indiscernable d'un numéro inconnu (préserve l'oracle
+d'existence de **compte** que l'ADR-0026 protège). Défenses : **prénom seul** à l'écran (ni nom complet, ni
+téléphone, ni genre, ni notes, ni compteurs) ; **isolation par salon** (`require_salon_scope` + refiltre
+SQL `salon_id`) — l'énumération cross-salons est structurellement impossible ; **limitation de débit** des
+échecs (`404`/`422`) par **device + IP** (réutilise `LoginRateLimiter`/`InMemoryLoginRateLimiter`, seuils
+`KIOSK_LOOKUP_*`, défaut 10 échecs / 5 min, verrou 10 min) → `429` + `Retry-After` ; **aucune PII** dans les
+logs, l'audit ou les erreurs (messages neutres, clé de débit opaque, création journalisée `CUSTOMER_CREATED`
+avec `metadata` vide, lookups **non audités**). **Aucune migration** : la table `customer_profiles`, l'index
+unique partiel `uq_customer_profiles_salon_phone` (qui sert aussi la recherche par égalité) et la validation
+de #28 couvrent déjà le besoin.
+
 ## Salons — création & médias (US-2.1, #15 — [ADR-0017](../docs/adr/0017-creation-salon-medias-et-reservabilite.md))
 
 `POST /salons` permet à un **gérant** de créer un salon **rattaché à son compte** (nom, description,
@@ -1882,6 +1934,9 @@ les **secrets réels** (DSN base/Redis, `JWT_SECRET`, etc.) sont injectés **hor
 | `PASSWORD_RESET_MAX_ATTEMPTS` | *(= `LOGIN_MAX_ATTEMPTS`)* | Réinitialisation (#11, optionnel) : demandes avant verrou anti-flood. |
 | `PASSWORD_RESET_WINDOW_SECONDS` | *(= `LOGIN_WINDOW_SECONDS`)* | Réinitialisation (#11, optionnel) : fenêtre glissante de l'anti-flood, en secondes. |
 | `PASSWORD_RESET_LOCKOUT_SECONDS` | *(= `LOGIN_LOCKOUT_SECONDS`)* | Réinitialisation (#11, optionnel) : durée du verrou anti-flood, en secondes. |
+| `KIOSK_LOOKUP_MAX_ATTEMPTS` | `10` | Borne — anti-énumération lookup (#156, optionnel) : échecs par device + IP avant verrou. Plus permissif que `LOGIN_*` (saisie tactile fréquente, terminal physiquement surveillable). |
+| `KIOSK_LOOKUP_WINDOW_SECONDS` | `300` | Borne — anti-énumération lookup (#156, optionnel) : fenêtre glissante des échecs, en secondes (5 min). |
+| `KIOSK_LOOKUP_LOCKOUT_SECONDS` | `600` | Borne — anti-énumération lookup (#156, optionnel) : durée du verrou après seuil, en secondes (10 min). Distinct de `LOGIN_LOCKOUT_SECONDS` (verrouiller les recherches ne verrouille ni le login ni la connexion humaine). |
 | `S3_ENDPOINT_URL` | *(vide)* | Stockage objet médias (#15, ADR-0005) : endpoint S3-compatible (MinIO en local, fournisseur en prod). Vide ⇒ AWS S3 « pur ». |
 | `S3_BUCKET` | *(vide)* | Bucket **privé** des médias. Absent ⇒ `media_storage=None` ⇒ routes médias en `503`. |
 | `S3_REGION` | `us-east-1` | Région du bucket. |

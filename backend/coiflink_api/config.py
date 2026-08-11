@@ -38,6 +38,14 @@ DEFAULT_LOGIN_MAX_ATTEMPTS = 5
 DEFAULT_LOGIN_WINDOW = datetime.timedelta(seconds=300)
 DEFAULT_LOGIN_LOCKOUT = datetime.timedelta(seconds=900)
 
+# Recherche par téléphone à la borne kiosque (US-8.2, #156). Plus **permissif** que
+# la connexion (l'erreur de saisie tactile est fréquente et la borne est
+# physiquement surveillable), assez strict pour freiner l'énumération d'un annuaire
+# au rythme d'un terminal. Seuils à ajuster en pilote (spec §D / Risks §4).
+DEFAULT_KIOSK_LOOKUP_MAX_ATTEMPTS = 10
+DEFAULT_KIOSK_LOOKUP_WINDOW = datetime.timedelta(seconds=300)
+DEFAULT_KIOSK_LOOKUP_LOCKOUT = datetime.timedelta(seconds=600)
+
 
 def _bool_env(value: str | None, default: bool) -> bool:
     if value is None or value.strip() == "":
@@ -82,6 +90,12 @@ class AuthConfig:
     password_reset_max_attempts: int = DEFAULT_LOGIN_MAX_ATTEMPTS
     password_reset_window: datetime.timedelta = DEFAULT_LOGIN_WINDOW
     password_reset_lockout: datetime.timedelta = DEFAULT_LOGIN_LOCKOUT
+    # Recherche téléphone à la borne kiosque (US-8.2, #156) : anti-énumération
+    # dédié (device + IP), distinct des seuils de connexion (#10) et du login
+    # kiosque (#155). Variables d'environnement dédiées, défaut = valeurs spec §D.
+    kiosk_lookup_max_attempts: int = DEFAULT_KIOSK_LOOKUP_MAX_ATTEMPTS
+    kiosk_lookup_window: datetime.timedelta = DEFAULT_KIOSK_LOOKUP_WINDOW
+    kiosk_lookup_lockout: datetime.timedelta = DEFAULT_KIOSK_LOOKUP_LOCKOUT
 
 
 def load_auth_config(env: Mapping[str, str] | None = None) -> AuthConfig:
@@ -148,6 +162,22 @@ def load_auth_config(env: Mapping[str, str] | None = None) -> AuthConfig:
         password_reset_lockout=datetime.timedelta(
             seconds=_int_env(
                 source.get("PASSWORD_RESET_LOCKOUT_SECONDS"), login_lockout_seconds
+            )
+        ),
+        # Recherche téléphone kiosque (#156) : variables dédiées, défaut = spec §D.
+        kiosk_lookup_max_attempts=_int_env(
+            source.get("KIOSK_LOOKUP_MAX_ATTEMPTS"), DEFAULT_KIOSK_LOOKUP_MAX_ATTEMPTS
+        ),
+        kiosk_lookup_window=datetime.timedelta(
+            seconds=_int_env(
+                source.get("KIOSK_LOOKUP_WINDOW_SECONDS"),
+                int(DEFAULT_KIOSK_LOOKUP_WINDOW.total_seconds()),
+            )
+        ),
+        kiosk_lookup_lockout=datetime.timedelta(
+            seconds=_int_env(
+                source.get("KIOSK_LOOKUP_LOCKOUT_SECONDS"),
+                int(DEFAULT_KIOSK_LOOKUP_LOCKOUT.total_seconds()),
             )
         ),
     )

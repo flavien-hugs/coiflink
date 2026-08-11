@@ -181,6 +181,78 @@ class Customer:
     updated_at: datetime.datetime
 
 
+# --------------------------------------------------------------------------- #
+# Borne kiosque — identité walk-in minimale (US-8.2, #156).
+# --------------------------------------------------------------------------- #
+def walk_in_first_name(full_name: str) -> str:
+    """Retourne le **prénom** (premier token) d'un `full_name` déjà validé.
+
+    Projection d'affichage **borne** exigée par le critère d'acceptation US-8.2
+    (« n'affiche que le prénom du client »). Le modèle ne stocke qu'un `full_name`
+    (`CustomerProfile.full_name`) : plutôt qu'une migration (colonne `first_name`),
+    le prénom est **dérivé**. Pour les fiches créées par la borne (composition
+    contrôlée « Prénom Nom », cf. `validate_walk_in_customer`) la dérivation est
+    exacte ; pour les fiches historiques du gérant elle est heuristique (premier
+    token). `full_name` est déjà **trim + non vide** (`validate_customer_name`),
+    donc `split()` renvoie au moins un token.
+    """
+
+    parts = full_name.split()
+    return parts[0] if parts else full_name
+
+
+@dataclass(frozen=True)
+class WalkInIdentity:
+    """Projection **minimale** d'une fiche franchissant la frontière HTTP kiosque.
+
+    La **seule** donnée exposée à la borne : `customer_id` + `first_name`. Ni
+    téléphone (même celui qui vient d'être saisi), ni nom complet, ni genre, ni
+    notes, ni compteurs de visites — l'entité `Customer` complète ne sort **jamais**
+    vers un terminal public (exposition minimale de PII, §11.3).
+    """
+
+    customer_id: uuid.UUID
+    first_name: str
+
+
+@dataclass(frozen=True)
+class WalkInCustomerCommand:
+    """Champs saisis à la borne pour créer une fiche walk-in (US-8.2, #156).
+
+    Les **trois** champs de l'acceptation, tous **requis** au kiosque (contrairement
+    au flux gérant #28 où le téléphone est optionnel : à la borne, le téléphone est
+    la **clé d'identification** — une fiche sans numéro serait introuvable à la
+    visite suivante). Aucun `gender`, `notes`, mot de passe ni `user_id` :
+    collecte minimale (§11.3), la fiche reste walk-in (`user_id = NULL`).
+    """
+
+    first_name: str
+    last_name: str
+    phone: str
+
+
+def validate_walk_in_customer(command: WalkInCustomerCommand) -> tuple[str, str]:
+    """Valide/compose la commande borne → `(full_name, phone canonique)` (US-8.2, #156).
+
+    Règles (toutes en amont de **tout** accès base) :
+
+    1. `first_name` / `last_name` : trim + non vides (mécanique
+       `validate_customer_name`, erreur `InvalidCustomerName`, message neutre) ;
+    2. composition **ordonnée** `full_name = "Prénom Nom"` puis
+       `validate_customer_name` sur le résultat (borne ≤ 255 sur le composé) —
+       l'ordre garantit `walk_in_first_name(full_name) == first_name` saisi ;
+    3. `phone` : **requis** — normalisé E.164 par `normalize_phone` **directement**
+       (sémantique « requis » : vide/malformé → `InvalidPhone`), jamais par le
+       wrapper optionnel `normalize_customer_phone`.
+    """
+
+    first_name = validate_customer_name(command.first_name)
+    last_name = validate_customer_name(command.last_name)
+    full_name = validate_customer_name(f"{first_name} {last_name}")
+    phone = normalize_phone(command.phone)
+    return full_name, phone
+
+
 @dataclass(frozen=True)
 class CustomerFilter:
     """Critères **validés** de filtrage de la liste des fiches clients.
@@ -299,6 +371,10 @@ __all__ = [
     "normalize_notes",
     "CustomerToCreate",
     "Customer",
+    "walk_in_first_name",
+    "WalkInIdentity",
+    "WalkInCustomerCommand",
+    "validate_walk_in_customer",
     "CustomerFilter",
     "validate_customer_filter",
 ]
