@@ -81,6 +81,25 @@ class CustomerRepository(Protocol):
         """
         ...
 
+    def find_by_phone(self, salon_id: uuid.UUID, phone: str) -> Customer | None:
+        """Retourne la fiche du salon portant ce téléphone (forme canonique E.164), sinon `None`.
+
+        Recherche par téléphone réservée à la **borne kiosque** (US-8.2, #156). Le
+        filtre porte sur `salon_id` **et** `phone` (isolation §11.2) : une fiche
+        d'un autre salon est indiscernable d'une fiche inexistante — jamais de
+        recherche cross-salon. `phone` est la forme **canonique** produite par
+        `domain/phone.py::normalize_phone` : l'appelant normalise **avant**
+        d'appeler (les fiches sont stockées canoniques depuis #28, l'égalité
+        stricte suffit). Au plus une fiche peut correspondre (index unique partiel
+        `uq_customer_profiles_salon_phone`).
+
+        La recherche porte **exclusivement** sur `customer_profiles` : elle
+        n'interroge **jamais** la table `users` par téléphone (anti-oracle
+        ADR-0026) — un numéro titulaire d'un compte CoifLink mais sans fiche dans
+        ce salon répond `None`, indiscernable d'un numéro inconnu.
+        """
+        ...
+
     def update_notes(
         self, salon_id: uuid.UUID, customer_id: uuid.UUID, notes: str | None
     ) -> Customer:

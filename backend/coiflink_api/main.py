@@ -25,6 +25,9 @@ from coiflink_api.adapters.inbound.catalog import router as catalog_router
 from coiflink_api.adapters.inbound.customers import router as customers_router
 from coiflink_api.adapters.inbound.employees import router as employees_router
 from coiflink_api.adapters.inbound.health import router as health_router
+from coiflink_api.adapters.inbound.kiosk_customers import (
+    router as kiosk_customers_router,
+)
 from coiflink_api.adapters.inbound.kiosk_devices import router as kiosk_devices_router
 from coiflink_api.adapters.inbound.payments import router as payments_router
 from coiflink_api.adapters.inbound.receipts import router as receipts_router
@@ -93,6 +96,17 @@ app.state.login_rate_limiter = InMemoryLoginRateLimiter(
     lockout=_auth_config.login_lockout,
 )
 app.state.login_dummy_hash = Argon2Hasher().hash(secrets.token_urlsafe(32))
+
+# Recherche téléphone à la borne kiosque (#156, US-8.2) : limiteur anti-énumération
+# **dédié** (singleton `app.state`), distinct des limiteurs de connexion (#10) et de
+# login kiosque (#155) — verrouiller les recherches d'une borne ne verrouille ni son
+# login ni les connexions humaines. Réutilise le même port/adaptateur (spec §D) avec
+# des seuils propres au lookup (plus permissifs : erreur de saisie tactile fréquente).
+app.state.kiosk_lookup_rate_limiter = InMemoryLoginRateLimiter(
+    max_attempts=_auth_config.kiosk_lookup_max_attempts,
+    window=_auth_config.kiosk_lookup_window,
+    lockout=_auth_config.kiosk_lookup_lockout,
+)
 if _auth_config.jwt_secret:
     app.state.token_service = JwtTokenService(
         _auth_config.jwt_secret,
@@ -158,6 +172,17 @@ app.include_router(appointments_router)
 # collecte de PII au sens §11.3, entrée d'audit **neutre**. Rien n'est ajouté à
 # `security.PUBLIC_ROUTE_PATHS` : une fiche client n'est jamais publique.
 app.include_router(customers_router)
+# Borne kiosque — identité walk-in (#156, US-8.2) : recherche par téléphone et
+# création de fiche walk-in sous /salons/{id}/kiosk/customers[...]. Réservées au
+# rôle KIOSK via les permissions **dédiées** déjà livrées par #155
+# (CUSTOMER_LOOKUP_KIOSK / CUSTOMER_CREATE_WALKIN) + portée salon (isolation §11.2) ;
+# la matrice ROLE_PERMISSIONS n'est PAS modifiée (CUSTOMER_MANAGE reste MANAGER-seul).
+# Recherche exclusivement sur customer_profiles (jamais la table users — anti-oracle
+# ADR-0026), réponse minimale (prénom seul), téléphone en corps (jamais en URL),
+# lookups rate-limités (device + IP) et non audités ; la création journalise
+# CUSTOMER_CREATED (metadata vide) dans la même unité de travail. Rien n'est ajouté à
+# `security.PUBLIC_ROUTE_PATHS` : « réservé au rôle KIOSK » ≠ public.
+app.include_router(kiosk_customers_router)
 # Campagnes/messages aux clients (#49, US-7.5) : création + liste sous
 # /salons/{id}/campaigns. Réutilise la permission CUSTOMER_MANAGE (§4.1, MANAGER
 # seul) + portée salon (isolation §11.2). Le gérant compose un message (texte

@@ -1507,6 +1507,14 @@ class FakeCustomerRepository:
     def phone_exists(self, salon_id: uuid.UUID, phone: str) -> bool:
         return any(c.phone == phone for c in self._for_salon(salon_id))  # type: ignore[union-attr]
 
+    def find_by_phone(self, salon_id: uuid.UUID, phone: str):  # type: ignore[no-untyped-def]
+        # Isolation §11.2 (US-8.2, #156) : filtre `(salon_id, phone)` — une fiche
+        # d'un autre salon est indiscernable d'une fiche inexistante (`None`).
+        for c in self._for_salon(salon_id):
+            if c.phone == phone:  # type: ignore[union-attr]
+                return c
+        return None
+
     def update_notes(self, salon_id, customer_id, notes):  # type: ignore[no-untyped-def]
         from dataclasses import replace
 
