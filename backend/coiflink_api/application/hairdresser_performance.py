@@ -7,7 +7,7 @@ FastAPI/SQLAlchemy. Il matérialise le critère d'acceptation #43 :
 > Indicateurs par coiffeur cohérents avec le planning et la caisse (§6 US-6.5).
 
 `SummarizeHairdresserPerformance` est une **lecture pure** (calquée sur
-`SummarizeServiceDemand` #41 et `SummarizeActiveClients` #42) : il délègue les
+`SummarizeServiceDemand` #41) : il délègue les
 **agrégats en base** (`GROUP BY hairdresser_id`) aux dépôts, **fusionne** les deux
 sources par `hairdresser_id`, puis applique la fonction de domaine pure
 `rank_hairdresser_performance` (calcul du taux + ordre déterministe). Comme les

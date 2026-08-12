@@ -11,7 +11,6 @@
 // corrections) : le front ne recalcule rien.
 
 import type {
-  ActiveClientsResult,
   ActivityResult,
   AlertsResult,
   AttendanceSeriesResult,
@@ -23,7 +22,6 @@ import type {
   ServiceDemandResult,
   StatsGateway,
 } from "@/src/application/ports/stats-gateway";
-import type { ClientSegments } from "@/src/domain/customer/segments";
 import {
   isActivityKind,
   type ActivityEvent,
@@ -145,29 +143,6 @@ function toServiceDemandRanking(payload: ServiceDemandPayload): ServiceDemandRan
     dateTo: payload.date_to ?? null,
     byVolume: toDemandItems(payload.by_volume),
     byRevenue: toDemandItems(payload.by_revenue),
-  };
-}
-
-// Forme du corps `ClientSegmentsResponse` renvoyé par le backend (#42).
-interface ClientSegmentsPayload {
-  date_from: string;
-  date_to: string;
-  new: number;
-  recurring: number;
-  inactive: number;
-  active: number;
-}
-
-// Projette la segmentation backend (snake_case) sur le type de domaine (camelCase).
-// Les compteurs restent des **entiers** (aucun montant, aucune PII).
-function toClientSegments(payload: ClientSegmentsPayload): ClientSegments {
-  return {
-    dateFrom: payload.date_from,
-    dateTo: payload.date_to,
-    new: Number(payload.new),
-    recurring: Number(payload.recurring),
-    inactive: Number(payload.inactive),
-    active: Number(payload.active),
   };
 }
 
@@ -514,20 +489,6 @@ export function createHttpStatsGateway(
     return query ? `${base}?${query}` : base;
   };
 
-  const activeClientsUrl = (
-    salonId: string,
-    dateFromIso?: string,
-    dateToIso?: string,
-  ): string => {
-    const base = `${resolveApiBaseUrl()}/salons/${encodeURIComponent(salonId)}/active-clients`;
-    // `date_from`/`date_to` optionnels : absents, le backend applique le mois courant.
-    const params = new URLSearchParams();
-    if (dateFromIso) params.set("date_from", dateFromIso);
-    if (dateToIso) params.set("date_to", dateToIso);
-    const query = params.toString();
-    return query ? `${base}?${query}` : base;
-  };
-
   const hairdresserPerformanceUrl = (
     salonId: string,
     dateFromIso?: string,
@@ -658,41 +619,6 @@ export function createHttpStatsGateway(
       if (response.status === 200) {
         const payload = (await response.json()) as ServiceDemandPayload;
         return { ok: true, ranking: toServiceDemandRanking(payload) };
-      }
-      if (response.status === 401) return { ok: false, reason: "unauthenticated" };
-      if (response.status === 403) return { ok: false, reason: "forbidden" };
-      if (response.status === 422) return { ok: false, reason: "invalid" };
-      return { ok: false, reason: "unavailable" };
-    },
-
-    async activeClients(
-      salonId: string,
-      dateFromIso?: string,
-      dateToIso?: string,
-    ): Promise<ActiveClientsResult> {
-      if (!deps.accessToken) {
-        return { ok: false, reason: "unauthenticated" };
-      }
-
-      // Lecture **côté serveur Next**, jeton du cookie httpOnly (jamais exposé au
-      // navigateur ni journalisé, invariant #14). La réponse ne porte que des
-      // compteurs (entiers) et des dates — aucune PII (pas de `client_id`, nom).
-      let response: Response;
-      try {
-        response = await fetch(
-          activeClientsUrl(salonId, dateFromIso, dateToIso),
-          {
-            headers: { ...authHeader() },
-            cache: "no-store",
-          },
-        );
-      } catch {
-        return { ok: false, reason: "unavailable" };
-      }
-
-      if (response.status === 200) {
-        const payload = (await response.json()) as ClientSegmentsPayload;
-        return { ok: true, segments: toClientSegments(payload) };
       }
       if (response.status === 401) return { ok: false, reason: "unauthenticated" };
       if (response.status === 403) return { ok: false, reason: "forbidden" };

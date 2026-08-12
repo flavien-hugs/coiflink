@@ -247,8 +247,6 @@ app.include_router(admin_router)
 #     somme signée PAYMENT/ADJUSTMENT), « annulés exclus » (§8.1) par construction ;
 #   - GET /salons/{id}/service-demand — prestations les plus demandées, classées par
 #     volume (RDV COMPLETED) et par revenu (somme des price_at_booking figés) ;
-#   - GET /salons/{id}/active-clients — segmentation des clients (nouveaux/récurrents/
-#     inactifs) sur une période, agrégée par client (GROUP BY client_id jamais émis) ;
 #   - GET /salons/{id}/hairdresser-performance — performance par coiffeur : prestations
 #     réalisées + taux d'annulation (planning), CA généré (caisse nette **attribuée**
 #     via payments → appointments.hairdresser_id). Seul endpoint stats **nominatif**

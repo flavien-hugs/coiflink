@@ -7,7 +7,7 @@
 //   - un salon    → écran d'activité en haut (4 KPI + évolution, graphiques CA &
 //                   fréquentation, prestations en cours, timeline, alertes), puis le
 //                   socle analytique détaillé (RDV du jour #39, CA #40, prestations #41,
-//                   clients actifs #42, performance coiffeurs #43).
+//                   performance coiffeurs #43).
 // Le décompte du jour (#39) et le CA (#40) restent des **socles requis** (un échec →
 // panneau d'erreur maîtrisé) ; le reste se charge **en parallèle** (`Promise.all`,
 // budget « dashboard < 3 s » §12.1) et **dégrade localement** panneau par panneau
@@ -23,7 +23,6 @@ import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-stor
 import { createHttpAppointmentGateway } from "@/src/adapters/api/http-appointment-gateway";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { createHttpStatsGateway } from "@/src/adapters/api/http-stats-gateway";
-import { ActiveClientsPanel } from "@/src/adapters/ui/active-clients-panel";
 import { ActivityTimeline } from "@/src/adapters/ui/activity-timeline";
 import { AlertsPanel } from "@/src/adapters/ui/alerts-panel";
 import { AttendanceChart } from "@/src/adapters/ui/attendance-chart";
@@ -106,13 +105,12 @@ export default async function GerantDashboardPage({
     );
   }
 
-  // Écran d'activité (#148) + analytique détaillé (#41/#42/#43), **en parallèle**. Le
+  // Écran d'activité (#148) + analytique détaillé (#41/#43), **en parallèle**. Le
   // filtre de période pilote les KPI et les deux séries ; chaque panneau dégrade
   // localement en cas de panne (patron #41).
   const query = periodQuery(selection);
   const [
     demand,
-    segments,
     performance,
     kpis,
     revenueSeries,
@@ -122,7 +120,6 @@ export default async function GerantDashboardPage({
     alerts,
   ] = await Promise.all([
     statsGateway.serviceDemand(salon.id),
-    statsGateway.activeClients(salon.id),
     statsGateway.hairdresserPerformance(salon.id),
     statsGateway.dashboardKpis(salon.id, query),
     statsGateway.revenueSeries(salon.id, query),
@@ -160,7 +157,6 @@ export default async function GerantDashboardPage({
       <DailySummaryTiles summary={daily.summary} />
       <RevenueTiles summary={revenue.summary} />
       <ServiceDemandPanel ranking={demand.ok ? demand.ranking : null} />
-      <ActiveClientsPanel segments={segments.ok ? segments.segments : null} />
       <HairdresserPerformancePanel
         report={performance.ok ? performance.report : null}
       />

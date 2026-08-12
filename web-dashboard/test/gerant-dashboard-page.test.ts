@@ -122,7 +122,7 @@ const FAKE_ALERTS = {
   items: [{ kind: "late", severity: "warning", count: 2 }],
 };
 
-// Socle analytique #41/#42/#43 : stubs minimaux (état vide légitime) pour que la page se
+// Socle analytique #41/#43 : stubs minimaux (état vide légitime) pour que la page se
 // charge entièrement sans URL non stubbée sur le chemin de succès de l'écran d'activité.
 const FAKE_SERVICE_DEMAND = {
   currency: "XOF",
@@ -130,15 +130,6 @@ const FAKE_SERVICE_DEMAND = {
   date_to: null,
   by_volume: [],
   by_revenue: [],
-};
-
-const FAKE_ACTIVE_CLIENTS = {
-  date_from: todayIso(),
-  date_to: todayIso(),
-  new: 0,
-  recurring: 0,
-  inactive: 0,
-  active: 0,
 };
 
 const FAKE_HAIRDRESSER_PERF = {
@@ -164,7 +155,6 @@ function fullActivityStubs() {
     },
     { match: "revenue/summary", status: 200, body: FAKE_REVENUE },
     { match: "service-demand", status: 200, body: FAKE_SERVICE_DEMAND },
-    { match: "active-clients", status: 200, body: FAKE_ACTIVE_CLIENTS },
     { match: "hairdresser-performance", status: 200, body: FAKE_HAIRDRESSER_PERF },
     { match: "dashboard/kpis", status: 200, body: FAKE_KPIS },
     { match: "dashboard/revenue-series", status: 200, body: FAKE_REVENUE_SERIES },

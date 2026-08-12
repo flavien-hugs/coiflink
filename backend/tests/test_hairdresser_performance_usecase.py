@@ -118,9 +118,6 @@ class FakeAppointmentRepository:
     def demand_by_service(self, *a, **kw):  # type: ignore[no-untyped-def]
         raise NotImplementedError
 
-    def segment_active_clients(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
 
 class FakeCashJournalRepository:
     """Fake du port `CashJournalRepository` pour `SummarizeHairdresserPerformance` (#43).

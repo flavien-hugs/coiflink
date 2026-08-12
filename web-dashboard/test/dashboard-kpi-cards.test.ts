@@ -1,6 +1,6 @@
 // Tests unitaires — composant `DashboardKpiCards` (#148). Rendu **pur** (pas d'état,
 // pas de fetch) : rendu direct via `react-dom/server` sans testing-library ni jsdom
-// (pattern établi par `active-clients-panel.test.ts`, `revenue-tiles.test.ts`).
+// (pattern établi par `revenue-tiles.test.ts`).
 //
 // Couvre : état d'erreur (`kpis = null`, dégradation locale), rendu des 4 cartes,
 // présentation de l'évolution (glyphe + delta + libellé a11y, calculée côté serveur),

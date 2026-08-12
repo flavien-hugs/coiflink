@@ -130,9 +130,6 @@ class FakeHairdresserPerformanceAppointmentRepo:
     def demand_by_service(self, *a, **kw):  # type: ignore[no-untyped-def]
         raise NotImplementedError
 
-    def segment_active_clients(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
     def count_by_status_for_day(self, *a, **kw):  # type: ignore[no-untyped-def]
         raise NotImplementedError
 

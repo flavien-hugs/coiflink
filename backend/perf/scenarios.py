@@ -15,7 +15,7 @@ Mesure :
 - `appointment_create` : **parcours** fiche → disponibilités → POST création ; la
   latence retenue est la **somme** (le budget §12.1 « création RDV » couvre le chemin
   de réservation, disponibilités comprises).
-- `dashboard` : les **cinq** lectures du tableau de bord en séquence ; la latence
+- `dashboard` : les **quatre** lectures du tableau de bord en séquence ; la latence
   retenue est l'**agrégat** (somme des temps serveur), confronté au budget « < 3 s ».
 """
 
@@ -204,12 +204,11 @@ def run_appointment_create(
 
 # ─── Scénario 3 — Dashboard gérant (agrégat < 3 s) ────────────────────────────
 
-#: Les cinq lectures qui composent le tableau de bord gérant (#39–#43).
+#: Les quatre lectures qui composent le tableau de bord gérant (#39–#41, #43).
 _DASHBOARD_READS: tuple[tuple[str, str], ...] = (
     ("/salons/{id}/appointments/daily-summary", "/salons/{sid}/appointments/daily-summary"),
     ("/salons/{id}/revenue/summary", "/salons/{sid}/revenue/summary"),
     ("/salons/{id}/service-demand", "/salons/{sid}/service-demand"),
-    ("/salons/{id}/active-clients", "/salons/{sid}/active-clients"),
     ("/salons/{id}/hairdresser-performance", "/salons/{sid}/hairdresser-performance"),
 )
 
@@ -217,7 +216,7 @@ _DASHBOARD_READS: tuple[tuple[str, str], ...] = (
 def run_manager_dashboard(
     http: TimedHttp, ctx: SeedContext, rng: random.Random
 ) -> ScenarioSample:
-    """Les 5 lectures du dashboard en séquence (portée salon, gérant) → agrégat < 3 s."""
+    """Les 4 lectures du dashboard en séquence (portée salon, gérant) → agrégat < 3 s."""
 
     salon = rng.choice(ctx.salons)
     total = 0.0
@@ -229,7 +228,7 @@ def run_manager_dashboard(
         total += resp.elapsed_ms
         requests += 1
         ok = ok and _ok(resp.status)
-    return ScenarioSample(config.BUDGET_DASHBOARD, "dashboard (5 lectures)", total, ok, requests)
+    return ScenarioSample(config.BUDGET_DASHBOARD, "dashboard (4 lectures)", total, ok, requests)
 
 
 # ─── Scénario 4 — API générale (échantillon de lectures protégées, < 3 s) ─────

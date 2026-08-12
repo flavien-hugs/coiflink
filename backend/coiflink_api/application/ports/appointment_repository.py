@@ -26,7 +26,6 @@ from coiflink_api.domain.appointment import (
     AppointmentUpdate,
 )
 from coiflink_api.domain.availability import SlotRange
-from coiflink_api.domain.client_segments import ClientVisitProfile
 from coiflink_api.domain.dashboard import InProgressService
 from coiflink_api.domain.hairdresser_performance import HairdresserActivityCounts
 from coiflink_api.domain.queue import QueueAppointmentRow
@@ -337,36 +336,6 @@ class AppointmentRepository(Protocol):
         en profondeur de la garde HTTP : jamais une prestation d'un autre salon. Les
         index `ix_appointments_salon_id (salon_id, appointment_date)` et
         `ix_appointment_services_service_id` couvrent la requête. Lecture pure.
-        """
-        ...
-
-    def segment_active_clients(
-        self,
-        salon_id: uuid.UUID,
-        *,
-        statuses: tuple[str, ...],
-        date_from: datetime.date,
-        date_to: datetime.date,
-    ) -> tuple[ClientVisitProfile, ...]:
-        """Agrège, **par client**, le profil de visite du salon (US-6.4 #42).
-
-        Renvoie un `ClientVisitProfile` par `client_id` ayant au moins une visite dont
-        `status ∈ statuses` (le cas d'usage impose `HISTORY_STATUSES` — « réalisées
-        uniquement », RDV `COMPLETED`) : `first_visit` = `MIN(appointment_date)` (date
-        de la première visite au salon), `visits_in_period` = nombre de visites dont
-        `appointment_date` est dans `[date_from, date_to]` **inclus**, `visits_before`
-        = nombre de visites dont `appointment_date < date_from` (strictement avant).
-
-        Le `client_id` est **groupé mais jamais sélectionné** (anti-oracle §11.1/§11.3,
-        ADR-0026) : ni l'identité, ni l'existence, ni le nombre de visites d'un compte
-        donné ne quittent la base — seulement des grandeurs agrégées **sans PII**. Un
-        client sans aucune visite `COMPLETED` au salon **n'apparaît pas** (il n'a jamais
-        réservé/été réalisé). L'isolation §11.2 est imposée **en SQL**
-        (`WHERE appointments.salon_id = :salon_id`), en défense en profondeur de la garde
-        HTTP `require_salon_scope` : jamais un client d'un autre salon. L'**ordre n'est
-        pas garanti** (le domaine `classify_client_segments` compte, il n'ordonne pas).
-        L'index `ix_appointments_salon_id (salon_id, appointment_date)` couvre la
-        requête. Lecture pure (aucun `flush`, aucun audit).
         """
         ...
 

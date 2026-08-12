@@ -12,7 +12,7 @@ Groupe `TestHairdresserPerformanceE2E` (PostgreSQL requis) :
     coiffeur cohérents avec le planning et la caisse »*.
 
 Scénarios (spec `specs/performance-des-coiffeurs.md`, miroir
-`test_service_demand_e2e.py` #41 / `test_active_clients_e2e.py` #42) :
+`test_service_demand_e2e.py` #41) :
     - deux coiffeurs, RDV variés (réalisés, annulés, en attente) → prestations
       réalisées et taux d'annulation reflètent exactement le `GROUP BY` réel
       (pas seulement un fake), classement trié par CA décroissant ;

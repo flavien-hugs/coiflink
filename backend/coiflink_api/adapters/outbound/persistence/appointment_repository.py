@@ -34,7 +34,6 @@ from coiflink_api.domain.appointment import (
     BookedService,
 )
 from coiflink_api.domain.availability import SlotRange
-from coiflink_api.domain.client_segments import ClientVisitProfile
 from coiflink_api.domain.dashboard import InProgressService
 from coiflink_api.domain.enums import AppointmentStatus
 from coiflink_api.domain.errors import (
@@ -827,72 +826,6 @@ class SqlAppointmentRepository:
                 name=row.name,
                 volume=int(row.volume),
                 revenue=decimal.Decimal(row.revenue or 0).quantize(_AMOUNT_QUANTUM),
-            )
-            for row in rows
-        )
-
-    def segment_active_clients(
-        self,
-        salon_id: uuid.UUID,
-        *,
-        statuses: tuple[str, ...],
-        date_from: datetime.date,
-        date_to: datetime.date,
-    ) -> tuple[ClientVisitProfile, ...]:
-        """Agrège le profil de visite **par client** du salon (US-6.4 #42).
-
-        `GROUP BY client_id` en base : `MIN(appointment_date)` = première visite au
-        salon ; deux `SUM(CASE …)` filtrés = nombre de visites **dans**
-        `[date_from, date_to]` et **strictement avant** `date_from`. Le `client_id` est
-        **groupé mais jamais sélectionné** (anti-oracle §11.1/§11.3) : ni l'identité, ni
-        le nombre exact de visites d'un compte ne quittent la base — seulement des
-        profils agrégés **sans PII**. Ne comptent que les RDV dont `status ∈ statuses`
-        (le cas d'usage impose `HISTORY_STATUSES` — RDV `COMPLETED`, « annulés exclus »
-        §8.1 par construction). L'isolation §11.2 est ré-affirmée **en SQL**
-        (`WHERE appointments.salon_id`), en défense en profondeur de la garde HTTP :
-        jamais un client d'un autre salon. La lecture ne rapatrie **aucune** ligne de
-        RDV ni PII — seulement `(first_visit, visits_in_period, visits_before)` par
-        client. Ordre **non garanti** (le domaine classe). L'index
-        `ix_appointments_salon_id (salon_id, appointment_date)` couvre la requête.
-        Lecture pure (aucun `flush`).
-        """
-
-        in_period = func.sum(
-            case(
-                (
-                    models.Appointment.appointment_date.between(date_from, date_to),
-                    1,
-                ),
-                else_=0,
-            )
-        )
-        before = func.sum(
-            case(
-                (models.Appointment.appointment_date < date_from, 1),
-                else_=0,
-            )
-        )
-        stmt = (
-            select(
-                func.min(models.Appointment.appointment_date).label("first_visit"),
-                func.coalesce(in_period, 0).label("visits_in_period"),
-                func.coalesce(before, 0).label("visits_before"),
-            )
-            .where(
-                models.Appointment.salon_id == salon_id,
-                models.Appointment.status.in_(statuses),
-            )
-            # `client_id` est groupé (agrégation par compte) mais **jamais** sélectionné
-            # (anti-oracle §11.3) : l'identité ne quitte pas la base.
-            .group_by(models.Appointment.client_id)
-        )
-
-        rows = self._session.execute(stmt).all()
-        return tuple(
-            ClientVisitProfile(
-                first_visit=row.first_visit,
-                visits_in_period=int(row.visits_in_period),
-                visits_before=int(row.visits_before),
             )
             for row in rows
         )

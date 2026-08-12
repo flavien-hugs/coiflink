@@ -15,14 +15,6 @@ isolation §11.2) :
   occurrences des RDV `COMPLETED` ; revenu = somme des `price_at_booking` (prix figés,
   XOF) — grandeur **distincte** du CA (#40), voir `application/service_demand.py`.
 
-- **`GET /salons/{salon_id}/active-clients`** — segmentation des clients du salon
-  (US-6.4, #42), garde `STATS_READ_SALON`. Renvoie, pour une **période** optionnelle
-  (`date_from`/`date_to`, absents = mois civil courant), la répartition des clients du
-  salon (comptes ayant des RDV `COMPLETED`) en **trois compteurs** : **nouveaux**
-  (première visite dans la période), **récurrents** (vus dans la période **et** avant)
-  et **inactifs** (vus avant, silencieux sur la période) — voir
-  `application/client_segments.py`.
-
 - **`GET /salons/{salon_id}/hairdresser-performance`** — performance des coiffeurs
   (US-6.5, #43), garde `STATS_READ_SALON`. Renvoie, pour une **période** optionnelle
   (`date_from`/`date_to`, absents = mois civil courant), **une ligne par coiffeur**
@@ -47,9 +39,9 @@ isolation §11.2) :
 **Router `stats` dédié (spec §Open Questions 6).** Cette surface porte la permission
 `STATS_READ_SALON` (statistiques du salon), distincte de la caisse
 (`PAYMENT_RECORD`/`CASH_JOURNAL_READ`, servie par `payments.py`). `STATS_READ_SALON` a
-désormais **six** consommateurs : RDV du jour (#39), CA (#40), prestations les plus
-demandées (#41), clients actifs (#42), performance des coiffeurs (#43) et le tableau de
-bord d'activité (#148, six routes `dashboard/*`).
+désormais **cinq** consommateurs : RDV du jour (#39), CA (#40), prestations les plus
+demandées (#41), performance des coiffeurs (#43) et le tableau de bord d'activité (#148,
+six routes `dashboard/*`).
 
 **Non-PII (§11.3), lecture pure.** Les réponses ne portent **que** des montants
 (`Decimal` en chaîne), des compteurs, des libellés de prestation, des dates et une
@@ -97,7 +89,6 @@ from coiflink_api.application.ports.notification_repository import (
     NotificationRepository,
 )
 from coiflink_api.application.ports.payment_repository import PaymentRepository
-from coiflink_api.application.client_segments import SummarizeActiveClients
 from coiflink_api.application.dashboard import (
     ACTIVITY_LIMIT_DEFAULT,
     ACTIVITY_LIMIT_MAX,
@@ -115,7 +106,6 @@ from coiflink_api.application.hairdresser_performance import (
 from coiflink_api.application.revenue import SummarizeRevenue
 from coiflink_api.application.service_demand import SummarizeServiceDemand
 from coiflink_api.domain.access import SalonScope
-from coiflink_api.domain.client_segments import ClientSegments
 from coiflink_api.domain.dashboard import (
     ActivityEvent,
     Alert,
@@ -212,27 +202,6 @@ class ServiceDemandResponse(BaseModel):
     date_to: datetime.date | None = Field(default=None, examples=[None])
     by_volume: list[ServiceDemandItemResponse]
     by_revenue: list[ServiceDemandItemResponse]
-
-
-class ClientSegmentsResponse(BaseModel):
-    """Segmentation des clients du salon sur une période (US-6.4, #42).
-
-    `new` / `recurring` / `inactive` = effectifs (entiers ≥ 0) des **trois segments
-    mutuellement exclusifs** relatifs à la période `[date_from, date_to]` : nouveaux
-    (première visite `COMPLETED` dans la période), récurrents (vus dans la période
-    **et** avant) et inactifs (vus avant, silencieux sur la période). `active = new +
-    recurring` est exposé pour éviter un recalcul côté front. Ne porte **que** des
-    compteurs et des dates (§11.3) : **jamais** de `client_id`, `appointment_id`, nom,
-    téléphone, ni ligne de RDV. Tous les compteurs à `0` (salon sans RDV `COMPLETED`
-    sur la période) est un état **vide légitime**, pas une erreur.
-    """
-
-    date_from: datetime.date = Field(examples=["2026-08-01"])
-    date_to: datetime.date = Field(examples=["2026-08-31"])
-    new: int = Field(examples=[12])
-    recurring: int = Field(examples=[27])
-    inactive: int = Field(examples=[8])
-    active: int = Field(examples=[39])
 
 
 class HairdresserPerformanceItemResponse(BaseModel):
@@ -628,25 +597,6 @@ def _service_demand_response(
     )
 
 
-def _active_clients_response(
-    segments: ClientSegments,
-    *,
-    date_from: datetime.date,
-    date_to: datetime.date,
-) -> ClientSegmentsResponse:
-    # Les bornes échoient la période **résolue** par la route (défaut mois courant) :
-    # `segments.date_from`/`date_to` les portent déjà, on les passe explicitement pour
-    # garantir une réponse non nulle même si le domaine évoluait.
-    return ClientSegmentsResponse(
-        date_from=date_from,
-        date_to=date_to,
-        new=segments.new,
-        recurring=segments.recurring,
-        inactive=segments.inactive,
-        active=segments.active,
-    )
-
-
 def _hairdresser_performance_item(
     entry: HairdresserPerformance,
 ) -> HairdresserPerformanceItemResponse:
@@ -667,8 +617,7 @@ def _hairdresser_performance_response(
     date_from: datetime.date,
     date_to: datetime.date,
 ) -> HairdresserPerformanceResponse:
-    # Les bornes échoient la période **résolue** par la route (défaut mois courant) —
-    # on les passe explicitement (symétrie `_active_clients_response`).
+    # Les bornes échoient la période **résolue** par la route (défaut mois courant).
     return HairdresserPerformanceResponse(
         currency=report.currency,
         date_from=date_from,
@@ -922,78 +871,6 @@ def get_service_demand(
 
 
 @router.get(
-    "/{salon_id}/active-clients",
-    response_model=ClientSegmentsResponse,
-    summary="Clients actifs du salon : nouveaux / récurrents / inactifs (US-6.4 §6)",
-    responses={
-        200: {"description": "Segmentation des clients du salon sur la période"},
-        401: {"description": "Jeton absent, invalide ou expiré"},
-        403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
-        422: {"description": "`date_from`/`date_to` mal formé ou incohérent"},
-    },
-)
-def get_active_clients(
-    salon_id: uuid.UUID,
-    appointment_repo: Annotated[
-        AppointmentRepository, Depends(get_appointment_repository)
-    ],
-    _salon_scope: Annotated[SalonScope, Depends(require_salon_scope)],
-    _principal: Annotated[
-        Principal, Depends(require_permission(Permission.STATS_READ_SALON))
-    ],
-    date_from: Annotated[
-        datetime.date | None,
-        Query(description="Premier jour inclus (AAAA-MM-JJ) ; absent = mois courant"),
-    ] = None,
-    date_to: Annotated[
-        datetime.date | None,
-        Query(description="Dernier jour inclus (AAAA-MM-JJ) ; absent = mois courant"),
-    ] = None,
-) -> ClientSegmentsResponse:
-    """Segmentation des clients du salon (nouveaux / récurrents / inactifs, #42).
-
-    Route **salon-scopée** (`require_salon_scope` + `STATS_READ_SALON`, **quatrième**
-    consommateur de cette permission `MANAGER` après #39/#40/#41) : le `salon_id` vient
-    du chemin, et le dépôt refiltre `salon_id` en SQL (défense en profondeur §11.2). Un
-    salon hors périmètre est un `403` **indiscernable** (aucun oracle). Le segment
-    `active-clients` est **distinct** de `/{salon_id}/customers/…` (`customers.py`,
-    permission `CUSTOMER_MANAGE`, fiche-scopé) : il reste sous `STATS_READ_SALON`.
-
-    Les bornes `date_from`/`date_to` (jour civil `Africa/Abidjan`, convention #21) sont
-    **optionnelles** : absentes (ou une seule fournie), la période est **résolue** au
-    **mois civil courant** (`month_bounds(_today())`, symétrie #40) — le dashboard
-    affiche une valeur immédiate sans saisie ; `date_to < date_from` → `422` (garde
-    explicite, patron `get_service_demand`) ; une date mal formée → `422` (FastAPI). La
-    segmentation ne compte que les RDV `COMPLETED` (imposé serveur, « réalisées
-    uniquement » §8.1) : un client est **nouveau** si sa première visite tombe dans la
-    période, **récurrent** s'il a été vu dans la période **et** avant, **inactif** s'il
-    a été vu avant mais pas dans la période. L'agrégat est calculé **en base**
-    (`GROUP BY client_id`, `client_id` jamais émis) : la réponse ne porte que des
-    compteurs et des dates (§11.3), aucune PII. Un salon **sans RDV réalisé** →
-    compteurs à `0` (état vide légitime, ≠ erreur). Lecture pure : aucune écriture,
-    aucun audit.
-    """
-
-    if date_from is not None and date_to is not None and date_to < date_from:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="La date de fin précède la date de début.",
-        )
-    if date_from is None or date_to is None:
-        # Défaut = mois civil courant (les deux bornes ensemble) : une seule borne
-        # fournie ne suffit pas à cadrer la segmentation, on retombe sur le mois.
-        date_from, date_to = month_bounds(_today())
-    segments = SummarizeActiveClients(appointment_repo).execute(
-        salon_id,
-        date_from=date_from,
-        date_to=date_to,
-    )
-    return _active_clients_response(
-        segments, date_from=date_from, date_to=date_to
-    )
-
-
-@router.get(
     "/{salon_id}/hairdresser-performance",
     response_model=HairdresserPerformanceResponse,
     summary="Performance des coiffeurs du salon : prestations, CA, taux d'annulation (US-6.5 §6)",
@@ -1027,19 +904,18 @@ def get_hairdresser_performance(
 ) -> HairdresserPerformanceResponse:
     """Performance des coiffeurs du salon : prestations, CA, taux d'annulation (#43).
 
-    Route **salon-scopée** (`require_salon_scope` + `STATS_READ_SALON`, **cinquième**
-    consommateur de cette permission `MANAGER` après #39/#40/#41/#42) : le `salon_id`
+    Route **salon-scopée** (`require_salon_scope` + `STATS_READ_SALON`, **quatrième**
+    consommateur de cette permission `MANAGER` après #39/#40/#41) : le `salon_id`
     vient du chemin, et les dépôts refiltrent `salon_id` en SQL (défense en profondeur
     §11.2). Un salon hors périmètre est un `403` **indiscernable** (aucun oracle). Le
     segment `hairdresser-performance` est **distinct** des autres routes
     `/{salon_id}/…` (`employees`, `customers`, `services/{service_id}`, `payments`,
-    `revenue/summary`, `service-demand`, `active-clients`) : aucun littéral n'est parsé
-    comme un UUID.
+    `revenue/summary`, `service-demand`) : aucun littéral n'est parsé comme un UUID.
 
     Les bornes `date_from`/`date_to` (jour civil `Africa/Abidjan`, convention #21) sont
     **optionnelles** : absentes (ou une seule fournie), la période est **résolue** au
-    **mois civil courant** (`month_bounds(_today())`, symétrie #42) ; `date_to <
-    date_from` → `422` (garde explicite, patron `get_active_clients`) ; une date mal
+    **mois civil courant** (`month_bounds(_today())`, symétrie #40) ; `date_to <
+    date_from` → `422` (garde explicite, patron `get_service_demand`) ; une date mal
     formée → `422` (FastAPI). Pour chaque coiffeur assigné à ≥ 1 RDV du salon sur la
     période, la réponse porte les **prestations réalisées** (occurrences des RDV
     `COMPLETED`, imposé serveur §8.1), le **CA généré** (net `cash_journal` **attribué**
@@ -1059,7 +935,7 @@ def get_hairdresser_performance(
             detail="La date de fin précède la date de début.",
         )
     if date_from is None or date_to is None:
-        # Défaut = mois civil courant (les deux bornes ensemble), symétrie #42.
+        # Défaut = mois civil courant (les deux bornes ensemble), symétrie #40.
         date_from, date_to = month_bounds(_today())
     report = SummarizeHairdresserPerformance(
         appointment_repo, cash_journal_repo

@@ -6,7 +6,7 @@ se connecter à un serveur :
 
 - `SeedContext.is_ready()` — pré-condition des scénarios.
 - `run_salon_search()` — route publique, variation de paramètres.
-- `run_manager_dashboard()` — 5 lectures agrégées, jeton gérant, agrégat de latence.
+- `run_manager_dashboard()` — 4 lectures agrégées, jeton gérant, agrégat de latence.
 - `run_api_general()` — lecture protégée, jeton requis.
 - `run_appointment_create()` — parcours 3 étapes, arrêt anticipé sur erreur/pas de créneau.
 - `weighted_groups()` — tous les groupes présents, poids relatifs cohérents.
@@ -224,27 +224,27 @@ class TestManagerDashboard:
         sample = run_manager_dashboard(http, _make_context(), random.Random(0))
         assert sample.group == config.BUDGET_DASHBOARD
 
-    def test_makes_exactly_five_requests(self) -> None:
-        """Le dashboard agrège les 5 lectures (#39 #40 #41 #42 #43)."""
+    def test_makes_exactly_four_requests(self) -> None:
+        """Le dashboard agrège les 4 lectures (#39 #40 #41 #43)."""
         http = MockTimedHttp()
         run_manager_dashboard(http, _make_context(), random.Random(0))
-        assert len(http.calls) == 5
+        assert len(http.calls) == 4
 
-    def test_requests_total_is_five(self) -> None:
+    def test_requests_total_is_four(self) -> None:
         http = MockTimedHttp()
         sample = run_manager_dashboard(http, _make_context(), random.Random(0))
-        assert sample.requests == 5
+        assert sample.requests == 4
 
     def test_all_requests_carry_manager_token(self) -> None:
-        """Les 5 endpoints du dashboard exigent le jeton gérant (portée salon §11.2)."""
+        """Les 4 endpoints du dashboard exigent le jeton gérant (portée salon §11.2)."""
         http = MockTimedHttp()
         run_manager_dashboard(http, _make_context(), random.Random(0))
         assert all(c.token is not None for c in http.calls)
 
-    def test_elapsed_is_sum_of_five_calls(self) -> None:
+    def test_elapsed_is_sum_of_four_calls(self) -> None:
         http = MockTimedHttp(elapsed_ms=100.0)
         sample = run_manager_dashboard(http, _make_context(), random.Random(0))
-        assert sample.elapsed_ms == pytest.approx(500.0)
+        assert sample.elapsed_ms == pytest.approx(400.0)
 
     def test_ok_when_all_200(self) -> None:
         http = MockTimedHttp(status=200)
@@ -266,8 +266,8 @@ class TestManagerDashboard:
         sample = run_manager_dashboard(PartialHttp(), _make_context(), random.Random(0))
         assert sample.ok is False
 
-    def test_dashboard_calls_cover_all_five_endpoints(self) -> None:
-        """Les 5 routes du dashboard (#39–#43) doivent toutes figurer dans les appels."""
+    def test_dashboard_calls_cover_all_four_endpoints(self) -> None:
+        """Les 4 routes du dashboard (#39–#41, #43) doivent toutes figurer dans les appels."""
         http = MockTimedHttp()
         run_manager_dashboard(http, _make_context(), random.Random(0))
         paths = {c.path for c in http.calls}
@@ -275,13 +275,12 @@ class TestManagerDashboard:
             "daily-summary",
             "revenue",
             "service-demand",
-            "active-clients",
             "hairdresser-performance",
         ]
         for fragment in expected_fragments:
             assert any(fragment in p for p in paths), (
                 f"L'endpoint '{fragment}' est absent du scénario dashboard — "
-                "il doit figurer parmi les 5 lectures du tableau de bord."
+                "il doit figurer parmi les 4 lectures du tableau de bord."
             )
 
 
