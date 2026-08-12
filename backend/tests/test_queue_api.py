@@ -31,6 +31,7 @@ from coiflink_api.adapters.inbound.appointments import (
     get_appointment_repository,
     get_audit_log,
     get_payment_repository,
+    get_queue_ticket_repository,
 )
 from coiflink_api.adapters.inbound.security import get_access_policy, get_user_repository
 from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenService
@@ -47,6 +48,7 @@ from .conftest import (
     FakeAuditLog,
     FakeAuthUserRepository,
     FakePaymentRepository,
+    FakeQueueTicketRepository,
     FakeSalonScopeRepository,
     make_access_token,
 )
@@ -87,6 +89,7 @@ def _clear_dependency_overrides() -> Generator[None, None, None]:
     for dep in (
         get_appointment_repository,
         get_payment_repository,
+        get_queue_ticket_repository,
         get_audit_log,
         get_user_repository,
         get_access_policy,
@@ -114,11 +117,13 @@ def _manager_client(
     appts: FakeAppointmentRepository | None = None,
     payments: FakePaymentRepository | None = None,
     scope: FakeSalonScopeRepository | None = None,
+    tickets: FakeQueueTicketRepository | None = None,
 ) -> TestClient:
-    """TestClient configuré pour MANAGER avec `_SALON_ID` dans sa portée (#150)."""
+    """TestClient configuré pour MANAGER avec `_SALON_ID` dans sa portée (#150/#157)."""
 
     ap = appts if appts is not None else FakeAppointmentRepository()
     pay = payments if payments is not None else FakePaymentRepository()
+    tix = tickets if tickets is not None else FakeQueueTicketRepository()
     manager_scope = (
         scope
         if scope is not None
@@ -126,6 +131,7 @@ def _manager_client(
     )
     app.dependency_overrides[get_appointment_repository] = lambda: ap
     app.dependency_overrides[get_payment_repository] = lambda: pay
+    app.dependency_overrides[get_queue_ticket_repository] = lambda: tix
     app.dependency_overrides[get_audit_log] = lambda: FakeAuditLog()
     app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(manager_scope)
@@ -307,12 +313,13 @@ class TestListSalonQueueAPI:
         )
         assert resp.status_code == 403
 
-    def test_empty_queue_returns_200_empty_list(self) -> None:
+    def test_empty_queue_returns_200_two_empty_arrays(self) -> None:
         resp = _manager_client().get(
             self._url(day="2026-08-09"), headers=_auth_header(role="MANAGER")
         )
         assert resp.status_code == 200
-        assert resp.json() == []
+        # Rupture de forme assumée (US-8.3, ADR-0042) : objet à deux clés.
+        assert resp.json() == {"appointments": [], "walk_in_tickets": []}
 
     def test_waiting_entry_returned(self) -> None:
         appts = FakeAppointmentRepository()
@@ -322,10 +329,52 @@ class TestListSalonQueueAPI:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        assert body[0]["queue_status"] == "waiting"
-        assert body[0]["client_name"] == "Awa Koné"
-        assert body[0]["service_names"] == ["Coupe"]
+        # Non-régression du contrat RDV : contenu **champ à champ** sous `appointments`.
+        assert body["walk_in_tickets"] == []
+        assert len(body["appointments"]) == 1
+        entry = body["appointments"][0]
+        assert entry["queue_status"] == "waiting"
+        assert entry["client_name"] == "Awa Koné"
+        assert entry["service_names"] == ["Coupe"]
+
+    def test_walk_in_ticket_appears_in_queue(self) -> None:
+        """Critère d'acceptation : un ticket walk-in pris en charge apparaît dans la file."""
+        from coiflink_api.domain.queue_ticket import QueueTicket
+
+        ticket = QueueTicket(
+            id=uuid.UUID("66666666-0000-0000-0000-000000000006"),
+            salon_id=_SALON_ID,
+            ticket_number=7,
+            issued_date=_DAY,
+            customer_profile_id=None,
+            service_ids=(),
+            status="in_progress",
+            hairdresser_id=_HAIRDRESSER_ID,
+            estimated_wait_minutes=18,
+            created_at=_CREATED_AT,
+            called_at=None,
+            started_at=_CREATED_AT,
+            completed_at=None,
+        )
+        tickets = FakeQueueTicketRepository()
+        tickets.seed(
+            ticket,
+            customer_first_name="Awa",
+            service_names=("Tresses",),
+            hairdresser_name="Fatou",
+        )
+        resp = _manager_client(tickets=tickets).get(
+            self._url(day=_DAY.isoformat()), headers=_auth_header(role="MANAGER")
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["appointments"] == []
+        assert len(body["walk_in_tickets"]) == 1
+        walk_in = body["walk_in_tickets"][0]
+        assert walk_in["ticket_number"] == 7
+        assert walk_in["customer_first_name"] == "Awa"
+        assert walk_in["service_names"] == ["Tresses"]
+        assert walk_in["status"] == "in_progress"
 
     def test_out_of_scope_salon_returns_403(self) -> None:
         scope = FakeSalonScopeRepository({_MANAGER_ID: frozenset({_OTHER_SALON_ID})})

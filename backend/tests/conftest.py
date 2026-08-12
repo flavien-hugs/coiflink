@@ -1979,3 +1979,164 @@ def fake_receipt_repository() -> "FakeReceiptRepository":
 @pytest.fixture()
 def fake_cash_journal_repository() -> "FakeCashJournalRepository":
     return FakeCashJournalRepository()
+
+
+class FakeQueueTicketRepository:
+    """Dépôt de tickets de passage walk-in en mémoire (US-8.3, #157).
+
+    Implémente le port `QueueTicketRepository` sans I/O réelle. **Isolation §11.2** :
+    `get`/`count_waiting`/`average_requested_duration_minutes`/`list_active_for_salon`
+    /`start`/`complete` filtrent sur `salon_id` — un ticket d'un autre salon est
+    indiscernable d'un ticket inexistant. `create` reproduit la **numérotation
+    séquentielle par salon et par jour** (`MAX+1` en mémoire, sans course : la
+    sérialisation par verrou est testée en e2e).
+
+    `average_duration` (défaut `None`) préconfigure le retour de
+    `average_requested_duration_minutes` (le cas d'usage bascule sur son repli si
+    `None`). `seed`/`set_display` permettent de placer des tickets déjà avancés et
+    leurs noms d'affichage (résolus en SQL côté dépôt réel, testés en e2e).
+    """
+
+    def __init__(self, *, average_duration: float | None = None) -> None:
+        self._tickets: dict[uuid.UUID, object] = {}
+        self._display: dict[uuid.UUID, dict] = {}
+        self.created: list = []
+        self.average_duration = average_duration
+
+    def _next_number(self, salon_id: uuid.UUID, issued_date) -> int:  # type: ignore[no-untyped-def]
+        existing = [
+            t.ticket_number  # type: ignore[union-attr]
+            for t in self._tickets.values()
+            if t.salon_id == salon_id and t.issued_date == issued_date  # type: ignore[union-attr]
+        ]
+        return (max(existing) + 1) if existing else 1
+
+    def seed(self, ticket, *, customer_first_name=None, service_names=(), hairdresser_name=None):  # type: ignore[no-untyped-def]
+        """Place un `QueueTicket` déjà construit + ses noms d'affichage (helper de test)."""
+
+        self._tickets[ticket.id] = ticket
+        self._display[ticket.id] = {
+            "customer_first_name": customer_first_name,
+            "service_names": tuple(service_names),
+            "hairdresser_name": hairdresser_name,
+        }
+        return ticket
+
+    def set_display(self, ticket_id, **display):  # type: ignore[no-untyped-def]
+        self._display.setdefault(ticket_id, {}).update(display)
+
+    def create(self, ticket, *, issued_date):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.queue_ticket import QueueTicket
+
+        entity = QueueTicket(
+            id=uuid.uuid4(),
+            salon_id=ticket.salon_id,
+            ticket_number=self._next_number(ticket.salon_id, issued_date),
+            issued_date=issued_date,
+            customer_profile_id=ticket.customer_profile_id,
+            service_ids=tuple(ticket.service_ids),
+            status="waiting",
+            hairdresser_id=None,
+            estimated_wait_minutes=ticket.estimated_wait_minutes,
+            created_at=_CREATED_AT,
+            called_at=None,
+            started_at=None,
+            completed_at=None,
+        )
+        self._tickets[entity.id] = entity
+        self.created.append(ticket)
+        return entity
+
+    def get(self, salon_id: uuid.UUID, ticket_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        ticket = self._tickets.get(ticket_id)
+        if ticket is None or ticket.salon_id != salon_id:  # type: ignore[union-attr]
+            return None
+        return ticket
+
+    def count_waiting(self, salon_id: uuid.UUID, *, issued_date):  # type: ignore[no-untyped-def]
+        return sum(
+            1
+            for t in self._tickets.values()
+            if t.salon_id == salon_id  # type: ignore[union-attr]
+            and t.issued_date == issued_date  # type: ignore[union-attr]
+            and t.status == "waiting"  # type: ignore[union-attr]
+        )
+
+    def average_requested_duration_minutes(self, salon_id: uuid.UUID, *, issued_date):  # type: ignore[no-untyped-def]
+        return self.average_duration
+
+    def list_active_for_salon(self, salon_id: uuid.UUID, *, issued_date):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.queue_ticket import (
+            QUEUE_TICKET_ACTIVE_STATUSES,
+            QueueTicketEntry,
+        )
+
+        active = sorted(
+            (
+                t
+                for t in self._tickets.values()
+                if t.salon_id == salon_id  # type: ignore[union-attr]
+                and t.issued_date == issued_date  # type: ignore[union-attr]
+                and t.status in QUEUE_TICKET_ACTIVE_STATUSES  # type: ignore[union-attr]
+            ),
+            key=lambda t: t.ticket_number,  # type: ignore[union-attr]
+        )
+        entries = []
+        for t in active:
+            display = self._display.get(t.id, {})  # type: ignore[union-attr]
+            entries.append(
+                QueueTicketEntry(
+                    ticket_id=t.id,  # type: ignore[union-attr]
+                    ticket_number=t.ticket_number,  # type: ignore[union-attr]
+                    customer_first_name=display.get("customer_first_name"),
+                    service_names=display.get("service_names", ()),
+                    hairdresser_id=t.hairdresser_id,  # type: ignore[union-attr]
+                    hairdresser_name=display.get("hairdresser_name"),
+                    status=t.status,  # type: ignore[union-attr]
+                    estimated_wait_minutes=t.estimated_wait_minutes,  # type: ignore[union-attr]
+                    created_at=t.created_at,  # type: ignore[union-attr]
+                    started_at=t.started_at,  # type: ignore[union-attr]
+                    completed_at=t.completed_at,  # type: ignore[union-attr]
+                )
+            )
+        return tuple(entries)
+
+    def start(self, salon_id, ticket_id, hairdresser_id, *, now):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.errors import InvalidQueueTicketTransition
+
+        ticket = self._tickets.get(ticket_id)
+        if ticket is None or ticket.salon_id != salon_id or ticket.status != "waiting":  # type: ignore[union-attr]
+            raise InvalidQueueTicketTransition(
+                "Ce ticket ne peut pas être pris en charge dans cet état."
+            )
+        updated = _dc.replace(
+            ticket,
+            status="in_progress",
+            hairdresser_id=hairdresser_id,
+            started_at=ticket.started_at or now,  # type: ignore[union-attr]
+        )
+        self._tickets[ticket_id] = updated
+        return updated
+
+    def complete(self, salon_id, ticket_id, *, now):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.errors import InvalidQueueTicketTransition
+
+        ticket = self._tickets.get(ticket_id)
+        if ticket is None or ticket.salon_id != salon_id or ticket.status != "in_progress":  # type: ignore[union-attr]
+            raise InvalidQueueTicketTransition(
+                "Ce ticket ne peut pas être clôturé dans cet état."
+            )
+        updated = _dc.replace(
+            ticket, status="done", completed_at=ticket.completed_at or now  # type: ignore[union-attr]
+        )
+        self._tickets[ticket_id] = updated
+        return updated
+
+
+@pytest.fixture()
+def fake_queue_ticket_repository() -> "FakeQueueTicketRepository":
+    return FakeQueueTicketRepository()

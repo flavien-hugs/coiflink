@@ -26,6 +26,26 @@ const FAKE_QUEUE_ENTRY_PAYLOAD = {
   started_at: null,
 };
 
+const FAKE_WALK_IN_TICKET_PAYLOAD = {
+  ticket_id: "ticket-uuid-7",
+  ticket_number: 7,
+  customer_first_name: "Awa",
+  service_names: ["Tresses"],
+  hairdresser_id: "hairdresser-1",
+  hairdresser_name: "Fatou Diarra",
+  status: "in_progress",
+  estimated_wait_minutes: 18,
+  created_at: "2026-08-09T09:12:00Z",
+  started_at: "2026-08-09T09:20:00Z",
+  completed_at: null,
+};
+
+// Corps `SalonQueueResponse` (US-8.3, #157) : objet à deux clés.
+const FAKE_SALON_QUEUE_BODY = {
+  appointments: [FAKE_QUEUE_ENTRY_PAYLOAD],
+  walk_in_tickets: [FAKE_WALK_IN_TICKET_PAYLOAD],
+};
+
 const FAKE_APPOINTMENT_PAYLOAD = {
   id: APPOINTMENT_ID,
   salon_id: SALON_ID,
@@ -67,8 +87,8 @@ describe("createHttpQueueGateway().listQueue()", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("200 → liste projetée camelCase", async () => {
-    stubFetch(200, [FAKE_QUEUE_ENTRY_PAYLOAD]);
+  it("200 → deux listes projetées camelCase (RDV + tickets walk-in)", async () => {
+    stubFetch(200, FAKE_SALON_QUEUE_BODY);
     const result = await createHttpQueueGateway({ accessToken: TOKEN }).listQueue(SALON_ID);
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -76,6 +96,22 @@ describe("createHttpQueueGateway().listQueue()", () => {
       expect(result.entries[0].appointmentId).toBe(APPOINTMENT_ID);
       expect(result.entries[0].queueStatus).toBe("waiting");
       expect(result.entries[0].hairdresserName).toBe("Fatou Diarra");
+      expect(result.walkInTickets).toHaveLength(1);
+      expect(result.walkInTickets[0].ticketNumber).toBe(7);
+      expect(result.walkInTickets[0].customerFirstName).toBe("Awa");
+      expect(result.walkInTickets[0].serviceNames).toEqual(["Tresses"]);
+      expect(result.walkInTickets[0].estimatedWaitMinutes).toBe(18);
+      expect(result.walkInTickets[0].status).toBe("in_progress");
+    }
+  });
+
+  it("200 sans tickets walk-in → walkInTickets vide", async () => {
+    stubFetch(200, { appointments: [FAKE_QUEUE_ENTRY_PAYLOAD], walk_in_tickets: [] });
+    const result = await createHttpQueueGateway({ accessToken: TOKEN }).listQueue(SALON_ID);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.entries).toHaveLength(1);
+      expect(result.walkInTickets).toEqual([]);
     }
   });
 

@@ -52,11 +52,76 @@ export const QUEUE_STATUS_STYLES: Record<QueueStatus, QueueStatusStyle> = {
   paid: { badge: "border-palm/30 bg-palm/10 text-palm" },
 };
 
+// --------------------------------------------------------------------------- //
+// Tickets de passage walk-in (US-8.3, #157) — **indépendants** du RDV. Statuts
+// et cycle de vie propres (`domain/queue_ticket.py`) : ni `appointmentId` ni
+// créneau. Le prénom seul (`customerFirstName`) est la PII autorisée à l'écran
+// partagé (aligné #156). `queueStatus`/statut restent dérivés côté serveur.
+// --------------------------------------------------------------------------- //
+export const WALK_IN_TICKET_STATUSES = [
+  "waiting",
+  "called",
+  "in_progress",
+  "done",
+  "expired",
+] as const;
+
+export type WalkInTicketStatus = (typeof WALK_IN_TICKET_STATUSES)[number];
+
+export function isWalkInTicketStatus(value: string): value is WalkInTicketStatus {
+  return (WALK_IN_TICKET_STATUSES as readonly string[]).includes(value);
+}
+
+export interface WalkInTicket {
+  ticketId: string;
+  // Numéro de passage **brut** séquentiel par salon+jour (le zéro-padding
+  // « N° 014 » relève de l'impression thermique #160).
+  ticketNumber: number;
+  customerFirstName: string | null;
+  serviceNames: string[];
+  hairdresserId: string | null;
+  hairdresserName: string | null;
+  status: WalkInTicketStatus;
+  // Estimation d'attente **figée à l'émission** (minutes).
+  estimatedWaitMinutes: number;
+  // Horodatages ISO ; `null` = étape non atteinte.
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+// Libellés **francisés** du ticket walk-in.
+export const WALK_IN_TICKET_STATUS_LABELS_FR: Record<WalkInTicketStatus, string> = {
+  waiting: "En attente",
+  called: "Appelé",
+  in_progress: "En cours",
+  done: "Terminé",
+  expired: "Expiré",
+};
+
+export const WALK_IN_TICKET_STATUS_STYLES: Record<WalkInTicketStatus, QueueStatusStyle> = {
+  waiting: { badge: "border-gold/30 bg-gold/10 text-gold" },
+  called: { badge: "border-accent/30 bg-accent/10 text-accent" },
+  in_progress: { badge: "border-accent/30 bg-accent/10 text-accent" },
+  done: { badge: "border-palm/30 bg-palm/10 text-palm" },
+  expired: { badge: "border-border bg-nude/50 text-muted" },
+};
+
 // Prédicats d'action — miroir des préconditions serveur (#150) : le backend
 // reste l'arbitre (une action hors précondition renvoie un `409`), ces
 // prédicats ne font que **cacher** les boutons non pertinents.
 export function canMarkArrived(entry: QueueEntry): boolean {
   return entry.status === "CONFIRMED";
+}
+
+// Prédicats d'action des tickets walk-in (#157) — miroir des préconditions
+// serveur : `start` exige `waiting` ; `complete` exige `in_progress`.
+export function canStartTicket(ticket: WalkInTicket): boolean {
+  return ticket.status === "waiting";
+}
+
+export function canCompleteTicket(ticket: WalkInTicket): boolean {
+  return ticket.status === "in_progress";
 }
 
 export function canStartService(entry: QueueEntry): boolean {

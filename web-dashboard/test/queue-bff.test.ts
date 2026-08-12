@@ -50,21 +50,39 @@ const FAKE_APPOINTMENT_BODY = {
   services: [],
 };
 
-const FAKE_QUEUE_BODY = [
-  {
-    appointment_id: APPOINTMENT_ID,
-    client_name: "Awa Koné",
-    service_names: ["Coupe"],
-    hairdresser_id: null,
-    hairdresser_name: null,
-    start_time: "09:00:00",
-    end_time: "09:30:00",
-    status: "CONFIRMED",
-    queue_status: "waiting",
-    arrived_at: null,
-    started_at: null,
-  },
-];
+// Corps `SalonQueueResponse` (US-8.3, #157) : objet à deux clés (RDV + walk-in).
+const FAKE_QUEUE_BODY = {
+  appointments: [
+    {
+      appointment_id: APPOINTMENT_ID,
+      client_name: "Awa Koné",
+      service_names: ["Coupe"],
+      hairdresser_id: null,
+      hairdresser_name: null,
+      start_time: "09:00:00",
+      end_time: "09:30:00",
+      status: "CONFIRMED",
+      queue_status: "waiting",
+      arrived_at: null,
+      started_at: null,
+    },
+  ],
+  walk_in_tickets: [
+    {
+      ticket_id: "ticket-uuid-bff-7",
+      ticket_number: 7,
+      customer_first_name: "Awa",
+      service_names: ["Tresses"],
+      hairdresser_id: null,
+      hairdresser_name: null,
+      status: "waiting",
+      estimated_wait_minutes: 12,
+      created_at: "2026-08-09T09:12:00Z",
+      started_at: null,
+      completed_at: null,
+    },
+  ],
+};
 
 type MockStore = {
   get: ReturnType<typeof vi.fn>;
@@ -302,13 +320,14 @@ describe("GET /api/salons/[id]/queue", () => {
     expect(res.status).toBe(401);
   });
 
-  it("200 — renvoie la file du jour", async () => {
+  it("200 — renvoie la file du jour (RDV + tickets walk-in)", async () => {
     withSession();
     stubFetch(200, FAKE_QUEUE_BODY);
     const res = await queueGet(new Request("http://localhost"), makeSalonContext(SALON_ID));
-    const body = (await res.json()) as { entries: unknown[] };
+    const body = (await res.json()) as { entries: unknown[]; walkInTickets: unknown[] };
     expect(res.status).toBe(200);
     expect(body.entries).toHaveLength(1);
+    expect(body.walkInTickets).toHaveLength(1);
   });
 
   it("passe le paramètre day au gateway", async () => {

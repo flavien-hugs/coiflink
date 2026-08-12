@@ -20,6 +20,7 @@ import { createHttpPaymentGateway } from "@/src/adapters/api/http-payment-gatewa
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { createHttpServiceGateway } from "@/src/adapters/api/http-service-gateway";
 import { PaymentPanel } from "@/src/adapters/ui/payment-panel";
+import { LIST_PAGE_SIZE } from "@/src/adapters/ui/table-pagination.constants";
 import { TransactionHistory } from "@/src/adapters/ui/transaction-history";
 import type { TransactionFilterInput } from "@/src/domain/payments/transaction";
 import type { Service } from "@/src/domain/service/service";
@@ -31,6 +32,11 @@ type SearchParams = Record<string, string | string[] | undefined>;
 function one(raw: string | string[] | undefined): string {
   const value = Array.isArray(raw) ? raw[0] : raw;
   return (value ?? "").trim();
+}
+
+function pageNumber(raw: string | string[] | undefined): number {
+  const parsed = Number.parseInt(one(raw), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1;
 }
 
 export default async function EncaissementsPage({
@@ -45,6 +51,7 @@ export default async function EncaissementsPage({
     paymentMethod: one(params.payment_method),
     q: one(params.q),
   };
+  const page = pageNumber(params.page);
 
   const { accessToken } = await createCookieSessionStore().read();
   const salonsResult = await createHttpSalonGateway({ accessToken }).list();
@@ -83,7 +90,10 @@ export default async function EncaissementsPage({
 
   const transactionsResult = await createHttpPaymentGateway({
     accessToken,
-  }).listTransactions(salon.id, filter);
+  }).listTransactions(salon.id, filter, {
+    limit: LIST_PAGE_SIZE,
+    offset: (page - 1) * LIST_PAGE_SIZE,
+  });
 
   return (
     <section className="flex flex-col gap-8">
@@ -92,6 +102,7 @@ export default async function EncaissementsPage({
         salonId={salon.id}
         services={activeServices}
         filter={filter}
+        page={page}
         result={transactionsResult}
       />
     </section>
@@ -144,11 +155,13 @@ function HistorySection({
   salonId,
   services,
   filter,
+  page,
   result,
 }: {
   salonId: string;
   services: Service[];
   filter: TransactionFilterInput;
+  page: number;
   result: Awaited<ReturnType<ReturnType<typeof createHttpPaymentGateway>["listTransactions"]>>;
 }) {
   if (!result.ok) {
@@ -174,6 +187,7 @@ function HistorySection({
       q={filter.q ?? ""}
       transactions={result.page.items}
       total={result.page.total}
+      page={page}
       actions={<PaymentPanel salonId={salonId} services={services} />}
     />
   );

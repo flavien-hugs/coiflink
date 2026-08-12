@@ -33,6 +33,7 @@ import { EmptyState } from "@/src/adapters/ui/empty-state";
 import { SalonToolIcon } from "@/src/adapters/ui/salon-tool-icons";
 import { SearchableSelect, SearchIcon } from "@/src/adapters/ui/searchable-select";
 import { SortDirectionToggle, type SortDirection } from "@/src/adapters/ui/sort-direction-toggle";
+import { LIST_PAGE_SIZE, TablePagination } from "@/src/adapters/ui/table-pagination";
 import { GENDER_OPTIONS, genderLabel, type Customer } from "@/src/domain/customer/customer";
 
 const COMPACT_INPUT_CLASS =
@@ -95,6 +96,7 @@ export interface CustomerListProps {
   gender: string;
   createdFrom: string;
   createdTo: string;
+  page: number;
 }
 
 export function CustomerList({
@@ -105,6 +107,7 @@ export function CustomerList({
   gender,
   createdFrom,
   createdTo,
+  page,
 }: CustomerListProps) {
   const router = useRouter();
   const [isRefreshing, startRefresh] = useTransition();
@@ -141,6 +144,17 @@ export function CustomerList({
     startRefresh(() => {
       router.refresh();
     });
+  }
+
+  function onPageChange(nextPage: number) {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (gender) params.set("gender", gender);
+    if (createdFrom) params.set("created_from", createdFrom);
+    if (createdTo) params.set("created_to", createdTo);
+    if (nextPage > 1) params.set("page", String(nextPage));
+    const query = params.toString();
+    router.push(query ? `${CLIENTS_BASE_PATH}?${query}` : CLIENTS_BASE_PATH);
   }
 
   return (
@@ -288,7 +302,9 @@ export function CustomerList({
             <tbody className="divide-y divide-border bg-surface">
               {sorted.map((customer, index) => (
                 <tr key={customer.id} className="align-top">
-                  <td className="px-4 py-3 font-medium text-muted">{index + 1}</td>
+                  <td className="px-4 py-3 font-medium text-muted">
+                    {(page - 1) * LIST_PAGE_SIZE + index + 1}
+                  </td>
                   <td className="max-w-[320px] px-4 py-3">
                     <div className="font-semibold">{customer.fullName}</div>
                     {customer.notes ? (
@@ -336,6 +352,12 @@ export function CustomerList({
             </tbody>
           </table>
         </div>
+        <TablePagination
+          label="la liste des clients"
+          page={page}
+          totalItems={total}
+          onPageChange={onPageChange}
+        />
       </div>
 
       <CustomerDrawer

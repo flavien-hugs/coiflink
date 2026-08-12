@@ -494,8 +494,18 @@ fois** un **secret de device** (256 bits, stocké **haché** argon2id, jamais re
 `(device_id, secret)` contre une paire **JWT courte** via `POST /auth/kiosk/login` (publique-listée,
 rate-limitée, `401` générique) qui lui renvoie son `salon_id`. Ce qui est **long** est le secret
 révocable ; les jetons restent **courts** — la **révocation** (suspension du compte de service) coupe
-l'accès **à la requête suivante** (relecture du statut en base). Le parcours walk-in (recherche
-téléphone/fiche #156, ticket de passage #157) et l'app borne (#159) poseront leurs gardes sur ce socle.
+l'accès **à la requête suivante** (relecture du statut en base). L'**identification téléphone & création
+walk-in** (#156, US-8.2) est livrée : deux routes `KIOSK`-scopées (`POST /salons/{id}/kiosk/customers/lookup`,
+`POST /salons/{id}/kiosk/customers`) permettent à la borne d'identifier un client par numéro ou de créer
+une fiche minimale — réponse `{customer_id, first_name}`, PII minimisée (§11.3). Le **ticket de passage
+walk-in & estimation d'attente** (#157, US-8.3, voir
+[ADR-0042](./docs/adr/0042-file-attente-walkin-queue-ticket.md)) est livré : un domaine `QueueTicket`
+**indépendant d'`Appointment`** (migration `0014` additive — tables `queue_tickets`/`queue_ticket_services`)
+délivre un **numéro séquentiel par salon et par jour** (verrou consultatif + contrainte `UNIQUE`,
+patron ADR-0040) et une **estimation d'attente V1** (`position × durée moyenne des prestations actives ÷
+coiffeuses ACTIVE`, figée à l'émission) ; la réponse de `GET /salons/{id}/queue` évolue en
+`{appointments, walk_in_tickets}` — les tickets walk-in apparaissent dans la file gérant sans jamais
+écrire dans `appointments`. L'écran borne (#159) et l'impression thermique (#160) consommeront ce socle.
 
 ---
 

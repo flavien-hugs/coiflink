@@ -74,7 +74,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `PUT /api/salons/[id]/appointments/[appointmentId]/hairdresser` | interne (BFF) | proxifie `PUT …/hairdresser` ((dés)assignation d'une coiffeuse, #25, câblée pour #150) |
 | `POST /api/salons/[id]/appointments/[appointmentId]/arrival` | interne (BFF) | proxifie `POST …/arrival` (pointage d'arrivée, idempotent, #150) |
 | `POST /api/salons/[id]/appointments/[appointmentId]/start` | interne (BFF) | proxifie `POST …/start` (démarrage de la prestation, idempotent, #150) |
-| `GET /api/salons/[id]/queue` | interne (BFF) | proxifie `GET /salons/{id}/queue` (file d'attente du jour, #150) |
+| `GET /api/salons/[id]/queue` | interne (BFF) | proxifie `GET /salons/{id}/queue` (file du jour `{appointments, walk_in_tickets}`, #150/#157) |
 
 `/api/auth/*` sont des **routes de l'application web** (Backend-For-Frontend), pas des endpoints
 publics de la plateforme : elles ne figurent donc pas dans l'OpenAPI backend.
@@ -385,7 +385,7 @@ Chaque ligne affiche le badge de **disponibilité** (`salon_members.status` — 
 l'éligibilité de la coiffeuse aux **nouvelles** affectations de ce salon (réutilisé par l'assignation
 de la file d'attente, ci-dessous), sans bloquer sa connexion ni ses RDV déjà assignés.
 
-### File d'attente & pointage réel (#150)
+### File d'attente & pointage réel (#150/#157)
 
 La section **File d'attente** (`/gerant/file-attente`, Server Component) est **disponible** depuis
 #150. Elle charge **côté serveur** (jeton du cookie httpOnly, invariant #14) le salon du gérant, la
@@ -410,6 +410,16 @@ montant total, le backend rejette tout écart).
 **Auto-refresh** (`<AutoRefresh />`, réutilisé du Dashboard Manager #148) : la file se rafraîchit
 seule (`router.refresh()`, visibility-aware) sans action manuelle. Messages d'erreur **neutres** ;
 aucune PII au-delà des noms d'affichage (`client_name`/`hairdresser_name`, jamais `client_id`).
+
+**Tickets de passage walk-in (US-8.3, #157).** Depuis #157, `GET /api/salons/[id]/queue` retourne un
+objet `{appointments, walk_in_tickets}` au lieu d'un tableau plat : la clé `appointments` reprend
+**champ à champ** le contenu antérieur (aucune régression) ; la clé `walk_in_tickets` liste les tickets
+du jour émis par la borne (#155/#156), aux statuts `waiting`/`called`/`in_progress`/`done` (hors
+`expired`), triés par numéro de passage. `QueueBoard` rend les deux tableaux sur le même écran — RDV
+planifiés et clients walk-in. Les prédicats d'action des tickets (`canStartTicket`/`canCompleteTicket`,
+`domain/queue/queue.ts`) gardent les boutons selon le statut du ticket, le backend restant l'arbitre
+(`409` sinon). Aucune PII au-delà du **prénom** du client walk-in (`customer_first_name`, aligné #156
+— jamais nom complet, téléphone ni `customer_profile_id`).
 
 ### Ajouter une section
 

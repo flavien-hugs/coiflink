@@ -1,3 +1,5 @@
+"use client";
+
 // Historique des visites d'un client — adapter UI (hexagonal, ADR-0008). Rendu
 // **pur** (pas d'état, pas de fetch) : reçoit un `VisitHistory` déjà chargé côté
 // serveur (jeton du cookie httpOnly, invariant #14) et affiche un résumé (nombre
@@ -15,6 +17,7 @@ import {
   type CustomerVisit,
   type VisitHistory,
 } from "@/src/domain/customer/visit";
+import { TablePagination, useClientPagination } from "@/src/adapters/ui/table-pagination";
 
 export function CustomerVisitHistory({ history }: { history: VisitHistory }) {
   return (
@@ -62,6 +65,11 @@ function EmptyState() {
 }
 
 function VisitTable({ visits }: { visits: CustomerVisit[] }) {
+  const pagination = useClientPagination(
+    visits,
+    visits.map((visit) => visit.appointmentId).join("|"),
+  );
+
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-soft">
       <div className="overflow-x-auto">
@@ -76,9 +84,11 @@ function VisitTable({ visits }: { visits: CustomerVisit[] }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-border bg-surface">
-            {visits.map((visit, index) => (
+            {pagination.items.map((visit, index) => (
               <tr key={visit.appointmentId} className="align-top">
-                <td className="px-4 py-3 font-medium text-muted">{index + 1}</td>
+                <td className="px-4 py-3 font-medium text-muted">
+                  {pagination.offset + index + 1}
+                </td>
                 <td className="whitespace-nowrap px-4 py-3 font-medium">
                   {formatVisitDate(visit.date)}
                 </td>
@@ -108,6 +118,12 @@ function VisitTable({ visits }: { visits: CustomerVisit[] }) {
           </tbody>
         </table>
       </div>
+      <TablePagination
+        label="l'historique des visites"
+        page={pagination.page}
+        totalItems={visits.length}
+        onPageChange={pagination.setPage}
+      />
     </div>
   );
 }

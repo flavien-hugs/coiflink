@@ -24,7 +24,11 @@ export async function GET(
 
   const result = await createHttpQueueGateway({ accessToken }).listQueue(id, day);
   if (result.ok) {
-    return NextResponse.json({ entries: result.entries }, { status: 200 });
+    // Objet à deux clés (US-8.3, #157) : RDV planifiés + tickets walk-in.
+    return NextResponse.json(
+      { entries: result.entries, walkInTickets: result.walkInTickets },
+      { status: 200 },
+    );
   }
   switch (result.reason) {
     case "invalid":
