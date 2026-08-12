@@ -295,7 +295,9 @@ def _queue(client: TestClient, token: str, salon_id: str, *, day: str) -> list[d
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200, f"Lecture file d'attente échouée : {resp.text}"
-    return resp.json()
+    # #157 restructure la réponse en {"appointments": [...], "walk_in_tickets": [...]} ;
+    # cette suite (#152) ne couvre que les RDV planifiés.
+    return resp.json()["appointments"]
 
 
 # ─── Groupe e2e : pile complète (PostgreSQL requis) ──────────────────────────
