@@ -225,6 +225,107 @@ que rien ne suggère que la clé brute transite.
    requis par l'acceptation de #158 (voir *Goals*) ; à trancher séparément si le porteur produit le
    souhaite (voir *Risks and Open Questions*).
 
+### (D-bis) Esquisses de code (patch de référence, vérifié contre le code actuel)
+
+> Ces extraits sont fournis pour que la phase d'implémentation applique le changement quasi
+> tel quel. Ils reflètent le code **effectivement présent** sur la branche (vérifié par lecture
+> directe : `application/catalog.py:122-136, 242-266`, `adapters/inbound/catalog.py:90-103,
+> 207-217`, `salon_service.dart`, `http_salon_catalog_gateway.dart`). Adapter au besoin si le
+> code a évolué entre-temps.
+
+**`application/catalog.py` — `PublicServiceView` (ajout du champ en fin de dataclass) :**
+
+```python
+@dataclass(frozen=True)
+class PublicServiceView:
+    id: object
+    name: str
+    description: str | None
+    price: decimal.Decimal
+    duration_minutes: int
+    category: str | None
+    image_url: str | None  # URL signée (miroir logo_url) ou None ; jamais la clé d'objet
+```
+
+**`application/catalog.py` — `_to_service_view` passe de `@staticmethod` à méthode d'instance :**
+
+```python
+    def _to_service_view(self, service: Service) -> PublicServiceView:
+        return PublicServiceView(
+            id=service.id,
+            name=service.name,
+            description=service.description,
+            price=service.price,
+            duration_minutes=service.duration_minutes,
+            category=service.category,
+            image_url=self._sign(service.image_object_key),
+        )
+```
+
+Le site d'appel (`execute`, ligne ~235) reste inchangé : il appelle déjà
+`self._to_service_view(service)`. `_sign` (ligne ~261) renvoie déjà `None` si la clé est `None`
+**ou** si `media_storage is None` — aucune garde supplémentaire à écrire.
+
+**`adapters/inbound/catalog.py` — `PublicServiceResponse` (ajout du champ) :**
+
+```python
+class PublicServiceResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str | None
+    price: decimal.Decimal
+    duration_minutes: int
+    category: str | None
+    image_url: str | None  # URL signée de lecture (ou null) ; jamais la clé d'objet brute
+```
+
+**`adapters/inbound/catalog.py` — mapping dans `_public_salon_detail_response` (compréhension `services`) :**
+
+```python
+        services=[
+            PublicServiceResponse(
+                id=service.id,
+                name=service.name,
+                description=service.description,
+                price=service.price,
+                duration_minutes=service.duration_minutes,
+                category=service.category,
+                image_url=service.image_url,
+            )
+            for service in view.services
+        ],
+```
+
+**`app-mobile/lib/domain/salon/salon_service.dart` — champ optionnel `imageUrl` :**
+
+```dart
+  const SalonService({
+    required this.id,
+    required this.name,
+    this.description,
+    this.price,
+    this.durationMinutes,
+    this.category,
+    this.imageUrl,
+  });
+
+  // ... champs existants ...
+
+  /// URL **signée** à durée limitée de l'illustration (ou null si aucune image /
+  /// stockage non configuré). Comme `SalonDetail.logoUrl` : ne pas mettre en cache
+  /// au-delà de sa validité.
+  final String? imageUrl;
+```
+
+**`app-mobile/lib/adapters/data/http_salon_catalog_gateway.dart` — `_serviceFromJson` :**
+
+```dart
+    return SalonService(
+      // ... champs existants (id, name, description, price, durationMinutes, category) ...
+      imageUrl: json['image_url'] as String?,
+    );
+```
+
 ### (E) Ce qui ne change pas
 
 - Aucune migration Alembic, aucune modification de `models.py`.
@@ -450,6 +551,9 @@ M7 qui concernent directement #158, à valider par le porteur produit avant l'im
    (widget `Image.network(imageUrl)` conditionnel), mais élargirait le périmètre `S` de l'issue.
 
 ## Implementation Checklist
+
+> Les patches concrets, prêts à appliquer, sont regroupés en *Proposed Implementation §(D-bis)
+> Esquisses de code* — s'y référer pour chaque étape de code ci-dessous.
 
 1. **Lire** `adapters/inbound/services.py:198-225`, `application/catalog.py:122-266`,
    `adapters/inbound/catalog.py:90-330`, `tests/conftest.py` (`FakeMediaStorage` ligne 640,

@@ -125,6 +125,8 @@ class PublicServiceView:
     Seules les prestations `ACTIVE` remontent (filtre au dépôt) ; `salon_id` est
     déjà celui de la fiche — les exposer serait redondant ou révélerait l'état de
     gestion (spec §A.4). `price` reste un `Decimal` (jamais un flottant).
+    `image_url` est une **URL signée** de lecture (miroir `logo_url`, ADR-0005) ou
+    `None` (aucune illustration / stockage non configuré), jamais une clé d'objet.
     """
 
     id: object
@@ -133,6 +135,7 @@ class PublicServiceView:
     price: decimal.Decimal
     duration_minutes: int
     category: str | None
+    image_url: str | None
 
 
 @dataclass(frozen=True)
@@ -166,7 +169,8 @@ class PublicSalonDetailView:
     Étend la vitrine (`PublicSalonView`) des champs de détail : `phone` (reporté de
     #18, donnée d'établissement), `photos` signées, `opening_hours` (JSONB
     normalisé publié tel quel, `None` si non configuré), `services` (prestations
-    `ACTIVE` avec prix et durée) et `hairdressers` (coiffeuses `ACTIVE`, #150 — pour
+    `ACTIVE` avec prix, durée et `image_url` signée) et `hairdressers`
+    (coiffeuses `ACTIVE`, #150 — pour
     que le client puisse **optionnellement** en choisir une à la réservation, #22 ;
     la réservation au niveau salon sans coiffeuse reste possible, `hairdresser_id`
     est facultatif). N'expose **jamais** `owner_id`, `status`, `is_active`/
@@ -198,7 +202,8 @@ class GetPublicSalon:
     un salon `INACTIVE`/`SUSPENDED` ou inexistant → `None` → `SalonNotFound`
     (→ `404` côté adapter, « absent du catalogue », pas d'oracle). Les prestations
     proviennent de `list_active_services` (actives seulement, filtre en base) ;
-    logo et photos sont résolus en URLs signées (jamais de clé brute).
+    logo, photos et l'illustration de chaque prestation (`image_url`) sont résolus
+    en URLs signées (jamais de clé brute).
     """
 
     def __init__(
@@ -239,8 +244,7 @@ class GetPublicSalon:
             is_bookable=salon.is_bookable,
         )
 
-    @staticmethod
-    def _to_service_view(service: Service) -> PublicServiceView:
+    def _to_service_view(self, service: Service) -> PublicServiceView:
         return PublicServiceView(
             id=service.id,
             name=service.name,
@@ -248,6 +252,7 @@ class GetPublicSalon:
             price=service.price,
             duration_minutes=service.duration_minutes,
             category=service.category,
+            image_url=self._sign(service.image_object_key),
         )
 
     @staticmethod

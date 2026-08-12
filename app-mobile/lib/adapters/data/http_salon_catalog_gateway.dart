@@ -173,6 +173,7 @@ class HttpSalonCatalogGateway implements SalonCatalogGateway {
       price: json['price']?.toString(),
       durationMinutes: (json['duration_minutes'] as num?)?.toInt(),
       category: json['category'] as String?,
+      imageUrl: json['image_url'] as String?,
     );
   }
 

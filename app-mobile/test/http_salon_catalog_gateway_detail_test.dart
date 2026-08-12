@@ -203,6 +203,70 @@ void main() {
         expect(salon.services.first.category, 'Coupe');
       });
 
+      // --- image_url (#158) ---------------------------------------------------
+
+      test('service sans clé image_url → imageUrl null sans exception', () async {
+        // Rétro-compatibilité : si le backend ne renvoie pas image_url (ancienne
+        // version ou champ absent), imageUrl doit valoir null — sans ParseException.
+        // Le fixture _detailJson() n'inclut pas image_url dans ses services.
+        final client =
+            _FakeHttpClient(statusCode: 200, body: jsonEncode(_detailJson()));
+
+        final salon = await _gateway(client).getSalon('uuid-abc');
+
+        expect(salon.services.first.imageUrl, isNull);
+      });
+
+      test('service avec image_url renseigné → imageUrl mappé', () async {
+        // image_url présent dans la réponse JSON → imageUrl porte la valeur telle quelle.
+        final signedUrl = 'https://cdn.example.com/svc.png?sig=x';
+        final json = <String, dynamic>{
+          ..._detailJson(),
+          'services': <dynamic>[
+            <String, dynamic>{
+              'id': 'svc-1',
+              'name': 'Coupe homme',
+              'description': 'Aux ciseaux.',
+              'price': '5000.00',
+              'duration_minutes': 30,
+              'category': 'Coupe',
+              'image_url': signedUrl,
+            },
+          ],
+        };
+        final client =
+            _FakeHttpClient(statusCode: 200, body: jsonEncode(json));
+
+        final salon = await _gateway(client).getSalon('uuid-abc');
+
+        expect(salon.services.first.imageUrl, signedUrl);
+      });
+
+      test('service avec image_url null explicite → imageUrl null', () async {
+        // image_url présent mais nul (stockage non configuré côté backend) →
+        // imageUrl vaut null, pas d'exception de cast.
+        final json = <String, dynamic>{
+          ..._detailJson(),
+          'services': <dynamic>[
+            <String, dynamic>{
+              'id': 'svc-1',
+              'name': 'Coupe homme',
+              'description': 'Aux ciseaux.',
+              'price': '5000.00',
+              'duration_minutes': 30,
+              'category': 'Coupe',
+              'image_url': null,
+            },
+          ],
+        };
+        final client =
+            _FakeHttpClient(statusCode: 200, body: jsonEncode(json));
+
+        final salon = await _gateway(client).getSalon('uuid-abc');
+
+        expect(salon.services.first.imageUrl, isNull);
+      });
+
       test('photo avec url null → url null', () async {
         final json = <String, dynamic>{
           ..._detailJson(),
