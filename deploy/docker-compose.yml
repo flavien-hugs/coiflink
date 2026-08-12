@@ -77,6 +77,21 @@ services:
       retries: 5
 
   # --------------------------------------------------------------------------- #
+  # minio-init — provisionne le bucket de médias (`S3_BUCKET`) au démarrage de la
+  # stack, idempotent (`--ignore-existing`). Sans lui, `minio` démarre vide et
+  # tout upload signé échoue en 404 (bucket inexistant) tant qu'on ne le crée pas
+  # manuellement — service one-shot, se termine dès le bucket garanti présent.
+  # --------------------------------------------------------------------------- #
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MC_HOST_local: http://${S3_ACCESS_KEY_ID:-coiflink-dev}:${S3_SECRET_ACCESS_KEY}@minio:9000
+    entrypoint: ["sh", "-c", "mc mb --ignore-existing local/${S3_BUCKET:-coiflink-media}"]
+
+  # --------------------------------------------------------------------------- #
   # backend — API FastAPI (ADR-0003). Image = `backend/Dockerfile` (#4).
   # Toute la config (DSN, secrets) est injectée par l'environnement.
   # --------------------------------------------------------------------------- #
@@ -108,6 +123,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     healthcheck:
