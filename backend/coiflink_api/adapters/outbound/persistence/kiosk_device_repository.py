@@ -155,6 +155,19 @@ class SqlKioskDeviceRepository:
             status=user.status,
         )
 
+    def set_password_hash(self, device_id: uuid.UUID, password_hash: str) -> None:
+        """Écrase le condensat de la borne (activation #155) — jamais le secret en clair.
+
+        Même patron d'écriture que `revoke()` : charge la ligne `users`, mute,
+        `flush()` sans commit (commit piloté par `get_session`).
+        """
+
+        user = self._session.get(models.User, device_id)
+        if user is None:  # pragma: no cover - device_id already resolved by caller
+            return
+        user.password_hash = password_hash
+        self._session.flush()
+
     def revoke(
         self, salon_id: uuid.UUID, device_id: uuid.UUID
     ) -> KioskDevice | None:

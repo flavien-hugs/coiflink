@@ -4,27 +4,35 @@ Cette suite couvre les comportements qui traversent les frontières de composant
 ne peuvent pas être vérifiés par les tests unitaires ou les tests de matrice DB-free :
 
 1. **Provisioning** : le gérant crée une borne via `POST /salons/{id}/kiosk-devices` ;
-   le secret apparaît **une seule fois** dans la réponse `201` (argon2id réel en
-   base, credential en clair non persisté).
+   le **code d'activation à 6 chiffres** apparaît une seule fois dans la réponse
+   `201` (argon2id réel en base sur un condensat *placeholder*, aucun secret utilisable
+   n'existe encore).
 
-2. **Authentification borne** : la borne échange `(device_id, secret)` contre une
-   paire JWT via `POST /auth/kiosk/login` (argon2id + JwtTokenService réels).
+2. **Activation** : la borne échange le code contre son secret longue durée via
+   `POST /auth/kiosk/activate` — secret **généré ici**, renvoyé une seule fois,
+   jamais persisté en clair. Un code déjà utilisé, inconnu ou mal saisi échoue.
+
+3. **Authentification borne** : une fois activée, la borne échange `(device_id,
+   secret)` contre une paire JWT via `POST /auth/kiosk/login` (argon2id +
+   JwtTokenService réels, mécanisme **inchangé** par l'activation).
    - La réponse porte le `salon_id` de la borne.
    - Le JWT émis porte le rôle `KIOSK`.
+   - Une borne **non activée** ne peut pas se connecter (son condensat placeholder ne
+     correspond à aucun secret connu).
 
-3. **Frontière de permission** (critère d'acceptation de l'issue) : le JWT `KIOSK` est
+4. **Frontière de permission** (critère d'acceptation de l'issue) : le JWT `KIOSK` est
    **refusé** sur `CUSTOMER_MANAGE` (`POST /salons/{id}/customers`) et
    `APPOINTMENT_BOOK` (`POST /salons/{id}/appointments`). C'est l'exercice **e2e**
    du test RBAC négatif — la matrice DB-free (`test_security_authz_matrix.py`) vérifie
    le décodage + la logique RBAC sans base ; ce test exerce la pile complète.
 
-4. **Secret non exposé** : `GET /salons/{id}/kiosk-devices` ne contient jamais de
-   champ `secret` ni `password_hash`.
+5. **Secret et code non exposés** : `GET /salons/{id}/kiosk-devices` ne contient
+   jamais de champ `secret`, `activation_code` ni `password_hash`.
 
-5. **Anti-oracle** : device inconnu, mauvais secret et device révoqué renvoient tous
+6. **Anti-oracle** : device inconnu, mauvais secret et device révoqué renvoient tous
    le **même** `401 Identifiants invalides.` — aucune information sur l'état interne.
 
-6. **Révocation** : `DELETE /salons/{id}/kiosk-devices/{device_id}` suspend le compte
+7. **Révocation** : `DELETE /salons/{id}/kiosk-devices/{device_id}` suspend le compte
    de service ; le `/auth/kiosk/login` suivant renvoie **immédiatement** `401` (la
    relecture du statut fait autorité, ADR-0041/ADR-0015).
 
@@ -242,7 +250,8 @@ def _provision_device(
     *,
     label: str = "Borne entrée E2E",
 ) -> dict:
-    """Provisionne une borne et retourne le corps `201` (inclut `secret`)."""
+    """Provisionne une borne et retourne le corps `201` (inclut `activation_code`,
+    jamais de secret utilisable directement — voir `_activate_device`)."""
     resp = client.post(
         f"/salons/{salon_id}/kiosk-devices",
         json={"label": label},
@@ -250,6 +259,33 @@ def _provision_device(
     )
     assert resp.status_code == 201, f"Provisioning échoué : {resp.text}"
     return resp.json()
+
+
+def _activate_device(client: TestClient, activation_code: str) -> dict:
+    """Active une borne via son code et retourne le corps `200` (`device_id`, `secret`)."""
+    resp = client.post("/auth/kiosk/activate", json={"code": activation_code})
+    assert resp.status_code == 200, f"Activation échouée : {resp.text}"
+    return resp.json()
+
+
+def _provision_and_activate(
+    client: TestClient,
+    manager_token: str,
+    salon_id: str,
+    *,
+    label: str = "Borne entrée E2E",
+) -> dict:
+    """Provisionne **et** active une borne ; retourne le corps du provisioning fusionné
+    avec le `secret` réel (issu de l'activation) — mêmes clés que l'ancien flux à secret
+    direct, pour que les appelants existants (`device["id"]`/`device["secret"]`) n'aient
+    rien à changer d'autre que ce helper.
+    """
+    provisioned = _provision_device(client, manager_token, salon_id, label=label)
+    activated = _activate_device(client, provisioned["activation_code"])
+    assert activated["device_id"] == provisioned["id"], (
+        "L'activation doit résoudre la même borne que celle provisionnée."
+    )
+    return {**provisioned, "secret": activated["secret"]}
 
 
 def _kiosk_login(client: TestClient, device_id: str, secret: str) -> dict:
@@ -279,14 +315,29 @@ class TestKioskProvisioningE2E:
         )
         assert resp.status_code == 201
 
-    def test_provision_response_contains_secret(self, _e2e_client: TestClient) -> None:
-        """La réponse `201` porte le `secret` en clair — une seule fois."""
+    def test_provision_response_contains_activation_code(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """La réponse `201` porte le code d'activation — une seule fois, jamais de secret."""
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
         body = _provision_device(_e2e_client, token, salon_id)
-        assert "secret" in body
-        assert body["secret"]
+        assert "activation_code" in body
+        assert body["activation_code"]
+        assert "secret" not in body, (
+            "Le secret réel n'existe qu'à l'activation, jamais au provisioning."
+        )
+
+    def test_provision_response_activation_code_is_six_digits(
+        self, _e2e_client: TestClient
+    ) -> None:
+        _register_manager(_e2e_client)
+        token = _login_manager(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        body = _provision_device(_e2e_client, token, salon_id)
+        assert len(body["activation_code"]) == 6
+        assert body["activation_code"].isdigit()
 
     def test_provision_response_contains_device_id(self, _e2e_client: TestClient) -> None:
         """La réponse `201` porte un `id` UUID (identifiant de la borne)."""
@@ -346,6 +397,9 @@ class TestKioskProvisioningE2E:
             assert "secret" not in device, (
                 "Le secret ne doit jamais apparaître dans GET /kiosk-devices (§11.3)."
             )
+            assert "activation_code" not in device, (
+                "Le code d'activation ne doit jamais apparaître dans GET /kiosk-devices (§11.3)."
+            )
             assert "password_hash" not in device
 
     def test_list_devices_does_not_expose_password_hash(
@@ -375,7 +429,7 @@ class TestKioskLoginE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         resp = _kiosk_login(_e2e_client, device["id"], device["secret"])
         assert resp.status_code == 200
@@ -387,7 +441,7 @@ class TestKioskLoginE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         resp = _kiosk_login(_e2e_client, device["id"], device["secret"])
         body = resp.json()
@@ -405,7 +459,7 @@ class TestKioskLoginE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         resp = _kiosk_login(_e2e_client, device["id"], device["secret"])
         assert resp.json().get("salon_id") == salon_id
@@ -422,7 +476,7 @@ class TestKioskLoginE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         kiosk_resp = _kiosk_login(_e2e_client, device["id"], device["secret"])
         kiosk_token = kiosk_resp.json()["access_token"]
@@ -440,7 +494,7 @@ class TestKioskLoginE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         kiosk_resp = _kiosk_login(_e2e_client, device["id"], device["secret"])
         kiosk_token = kiosk_resp.json()["access_token"]
@@ -464,7 +518,7 @@ class TestKioskPermissionBoundaryE2E:
     def _get_kiosk_token(
         self, client: TestClient, salon_id: str, manager_token: str
     ) -> str:
-        device = _provision_device(client, manager_token, salon_id)
+        device = _provision_and_activate(client, manager_token, salon_id)
         resp = _kiosk_login(client, device["id"], device["secret"])
         return resp.json()["access_token"]
 
@@ -546,7 +600,7 @@ class TestKioskRevocationE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         resp = _e2e_client.delete(
             f"/salons/{salon_id}/kiosk-devices/{device['id']}",
@@ -559,7 +613,7 @@ class TestKioskRevocationE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         resp = _e2e_client.delete(
             f"/salons/{salon_id}/kiosk-devices/{device['id']}",
@@ -577,7 +631,7 @@ class TestKioskRevocationE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         # Vérifie que la borne peut se connecter avant révocation.
         pre_revoke = _kiosk_login(_e2e_client, device["id"], device["secret"])
@@ -614,7 +668,7 @@ class TestKioskAntiOracleE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         resp = _kiosk_login(_e2e_client, device["id"], "wrong-secret-0000")
         assert resp.status_code == 401
@@ -631,7 +685,7 @@ class TestKioskAntiOracleE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         _e2e_client.delete(
             f"/salons/{salon_id}/kiosk-devices/{device['id']}",
@@ -655,7 +709,7 @@ class TestKioskAntiOracleE2E:
         _register_manager(_e2e_client)
         token = _login_manager(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)
-        device = _provision_device(_e2e_client, token, salon_id)
+        device = _provision_and_activate(_e2e_client, token, salon_id)
 
         wrong_secret_resp = _kiosk_login(_e2e_client, device["id"], "wrong-secret")
         unknown_resp = _kiosk_login(_e2e_client, str(uuid.uuid4()), "fake-secret")
@@ -673,3 +727,96 @@ class TestKioskAntiOracleE2E:
         # Le cas d'usage convertit en UUID ; en cas d'échec, 401 générique (pas 422).
         assert resp.status_code == 401
         assert resp.json().get("detail") == _INVALID_CREDENTIALS_DETAIL
+
+
+@pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
+class TestActivateKioskDeviceE2E:
+    """Activation d'une borne par code à 6 chiffres (US-8.1, #155 — provisioning silencieux).
+
+    Pile complète (HTTP + SQL + argon2 réels) : le provisioning ne pose qu'un
+    condensat placeholder, l'activation génère et écrit le secret réel.
+    """
+
+    def test_full_round_trip_provision_activate_login(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Provision → active → login réussit de bout en bout."""
+        _register_manager(_e2e_client)
+        token = _login_manager(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+
+        provisioned = _provision_device(_e2e_client, token, salon_id)
+        activated = _activate_device(_e2e_client, provisioned["activation_code"])
+        login_resp = _kiosk_login(_e2e_client, activated["device_id"], activated["secret"])
+
+        assert login_resp.status_code == 200
+        assert login_resp.json()["salon_id"] == salon_id
+
+    def test_activation_response_device_id_matches_provisioned_device(
+        self, _e2e_client: TestClient
+    ) -> None:
+        _register_manager(_e2e_client)
+        token = _login_manager(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        provisioned = _provision_device(_e2e_client, token, salon_id)
+
+        activated = _activate_device(_e2e_client, provisioned["activation_code"])
+        assert activated["device_id"] == provisioned["id"]
+
+    def test_unactivated_device_cannot_login(self, _e2e_client: TestClient) -> None:
+        """Une borne provisionnée mais **non activée** ne peut pas se connecter.
+
+        Le condensat posé au provisioning est un placeholder jetable : aucun secret
+        ne le vérifie, donc `/auth/kiosk/login` échoue déterministiquement — même
+        401 générique que tout autre échec (anti-oracle).
+        """
+        _register_manager(_e2e_client)
+        token = _login_manager(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        provisioned = _provision_device(_e2e_client, token, salon_id)
+
+        # Aucun secret connu à ce stade : tenter n'importe quelle valeur doit échouer.
+        resp = _kiosk_login(_e2e_client, provisioned["id"], "any-guessed-secret")
+        assert resp.status_code == 401
+        assert resp.json().get("detail") == _INVALID_CREDENTIALS_DETAIL
+
+    def test_reusing_activation_code_fails(self, _e2e_client: TestClient) -> None:
+        """Un code déjà consommé ne peut plus être échangé (usage unique, §11.3)."""
+        _register_manager(_e2e_client)
+        token = _login_manager(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        provisioned = _provision_device(_e2e_client, token, salon_id)
+
+        first = _e2e_client.post(
+            "/auth/kiosk/activate", json={"code": provisioned["activation_code"]}
+        )
+        assert first.status_code == 200
+
+        second = _e2e_client.post(
+            "/auth/kiosk/activate", json={"code": provisioned["activation_code"]}
+        )
+        assert second.status_code == 400
+
+    def test_unknown_activation_code_returns_400(self, _e2e_client: TestClient) -> None:
+        resp = _e2e_client.post("/auth/kiosk/activate", json={"code": "000000"})
+        assert resp.status_code == 400
+
+    def test_activating_with_previous_secret_after_reactivation_fails(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Le secret émis à l'activation n'est **jamais** relisible ni réémis :
+
+        un deuxième appel avec le même code (déjà consommé) ne renvoie jamais un
+        secret, quelle que soit la tentative — cohérent avec `test_reusing_activation_code_fails`,
+        vérifié ici via l'absence de `secret` dans une réponse `400`.
+        """
+        _register_manager(_e2e_client)
+        token = _login_manager(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        provisioned = _provision_device(_e2e_client, token, salon_id)
+        _activate_device(_e2e_client, provisioned["activation_code"])
+
+        second = _e2e_client.post(
+            "/auth/kiosk/activate", json={"code": provisioned["activation_code"]}
+        )
+        assert "secret" not in second.json()

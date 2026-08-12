@@ -378,6 +378,16 @@ class KioskDeviceRevoked(DomainError):
     """
 
 
+class InvalidActivationCode(DomainError):
+    """Le code d'activation de borne est invalide, expiré, déjà consommé ou inconnu (US-8.1, #155).
+
+    Levée par `ActivateKioskDevice` pour **tout** motif d'échec (code inconnu,
+    expiré, trop d'essais, déjà consommé) — message générique constant, aucun
+    oracle sur l'existence d'un code ou l'état d'une borne (même posture que
+    `InvalidOtp`/`InvalidCredentials`). L'adapter entrant la traduit en `400`.
+    """
+
+
 class InvalidPaymentAmount(DomainError):
     """Le montant du paiement est absent, non numérique ou hors bornes (US-5.1/5.3).
 
@@ -669,6 +679,7 @@ __all__ = [
     "InvalidKioskDeviceLabel",
     "KioskDeviceNotFound",
     "KioskDeviceRevoked",
+    "InvalidActivationCode",
     "InvalidPaymentAmount",
     "InvalidPaymentMethod",
     "InvalidPaymentCurrency",

@@ -41,6 +41,11 @@ _EXPECTED_PUBLIC_PATHS = frozenset(
         # rate-limité, `401` générique constant (ADR-0041). Le provisioning des
         # bornes (`/salons/{id}/kiosk-devices`) reste protégé, jamais public.
         "/auth/kiosk/login",
+        # Activation d'une borne (#155, US-8.1) — endpoint d'**échange** : une borne
+        # non activée n'a aucun credential à présenter. Code à usage unique, rate-limité
+        # par IP, `400` générique constant (ADR-0041). Le provisioning des bornes
+        # (`/salons/{id}/kiosk-devices`) reste protégé, jamais public.
+        "/auth/kiosk/activate",
         "/auth/password/reset/request",
         "/auth/password/reset/confirm",
         "/catalog/salons",
@@ -149,8 +154,9 @@ def test_kiosk_device_response_has_no_secret_field() -> None:
     """`KioskDeviceResponse` (GET/DELETE) ne déclare aucun champ secret (§11.3).
 
     La vue publique exposée sur les routes `GET`/`DELETE` ne porte **jamais** le
-    secret de device ni son condensat — seul le `ProvisionKioskDeviceResponse`
-    (`POST 201`) peut exposer `secret`, et uniquement lors de la création.
+    secret de device ni son condensat — seul le `KioskActivateResponse`
+    (`POST /auth/kiosk/activate`) peut exposer `secret`, et uniquement lors de
+    l'activation (usage unique).
     """
 
     from coiflink_api.adapters.inbound.kiosk_devices import KioskDeviceResponse
@@ -162,17 +168,39 @@ def test_kiosk_device_response_has_no_secret_field() -> None:
         )
 
 
-def test_provision_kiosk_response_has_secret_but_no_hash() -> None:
-    """`ProvisionKioskDeviceResponse` (`POST 201`) expose `secret` mais jamais le condensat.
+def test_provision_kiosk_response_has_activation_code_but_no_secret_or_hash() -> None:
+    """`ProvisionKioskDeviceResponse` (`POST 201`) expose `activation_code`, jamais le secret ni le condensat.
 
-    Le secret n'apparaît **qu'ici, une seule fois** (invariant de non-relecture) —
-    jamais dans `GET`/`DELETE` qui utilisent `KioskDeviceResponse` (sans `secret`).
+    Le secret réel n'existe qu'après activation (`POST /auth/kiosk/activate`,
+    `KioskActivateResponse`) — le provisioning ne révèle qu'un code d'activation
+    à usage unique, jamais un secret directement utilisable pour `/auth/kiosk/login`.
     """
 
     from coiflink_api.adapters.inbound.kiosk_devices import ProvisionKioskDeviceResponse
 
     fields = set(ProvisionKioskDeviceResponse.model_fields)
-    assert "secret" in fields, "Le secret doit figurer dans la réponse 201 (provisioning)."
+    assert "activation_code" in fields, (
+        "Le code d'activation doit figurer dans la réponse 201 (provisioning)."
+    )
+    assert "secret" not in fields, (
+        "Le secret ne doit jamais être révélé au provisioning — seulement après activation."
+    )
+    assert "password_hash" not in fields, (
+        "Le condensat argon2id ne doit jamais être exposé dans un schéma de réponse."
+    )
+
+
+def test_kiosk_activate_response_has_secret_but_no_hash() -> None:
+    """`KioskActivateResponse` (`POST /auth/kiosk/activate`) expose `secret` mais jamais le condensat.
+
+    Le secret réel n'apparaît **qu'ici, une seule fois** (invariant de non-relecture) —
+    généré à l'activation, jamais reconstruit ni relu ensuite.
+    """
+
+    from coiflink_api.adapters.inbound.auth import KioskActivateResponse
+
+    fields = set(KioskActivateResponse.model_fields)
+    assert "secret" in fields, "Le secret doit figurer dans la réponse d'activation."
     assert "password_hash" not in fields, (
         "Le condensat argon2id ne doit jamais être exposé dans un schéma de réponse."
     )

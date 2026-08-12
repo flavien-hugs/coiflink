@@ -45,6 +45,9 @@ from coiflink_api.adapters.outbound.security.argon2_hasher import Argon2Hasher
 from coiflink_api.adapters.outbound.security.login_rate_limiter_memory import (
     InMemoryLoginRateLimiter,
 )
+from coiflink_api.adapters.outbound.security.kiosk_activation_in_memory import (
+    InMemoryKioskActivationRepository,
+)
 from coiflink_api.adapters.outbound.security.otp_in_memory import InMemoryOtpRepository
 from coiflink_api.application.authentication import (
     AuthenticateUser,
@@ -55,11 +58,18 @@ from coiflink_api.application.kiosk_authentication import (
     AuthenticateKioskDevice,
     KioskLoginCommand,
 )
+from coiflink_api.application.kiosk_device_activation import (
+    ActivateKioskDevice,
+    ActivateKioskDeviceCommand,
+)
 from coiflink_api.application.password_reset import (
     ConfirmPasswordReset,
     PasswordResetConfirmCommand,
     PasswordResetRequestCommand,
     RequestPasswordReset,
+)
+from coiflink_api.application.ports.kiosk_activation_repository import (
+    KioskActivationRepository,
 )
 from coiflink_api.application.ports.login_rate_limiter import LoginRateLimiter
 from coiflink_api.application.ports.otp_repository import OtpRepository
@@ -73,6 +83,7 @@ from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
     EmailAlreadyInUse,
     ExpiredToken,
+    InvalidActivationCode,
     InvalidCredentials,
     InvalidEmail,
     InvalidName,
@@ -561,6 +572,142 @@ def kiosk_login(
 
 
 # --------------------------------------------------------------------------- #
+# Activation d'une borne kiosque (US-8.1, #155 — provisioning silencieux).
+# Le gérant lit un **code à 6 chiffres** sur la réponse du provisioning et le saisit
+# sur la borne ; celle-ci l'échange **une seule fois** contre son secret longue durée,
+# puis utilise `/auth/kiosk/login` inchangé pour toutes ses sessions.
+# Route **publique-listée** : une borne non encore activée n'a aucun credential, donc
+# aucun principal à présenter — c'est un endpoint d'**échange**, au même titre que
+# `/auth/kiosk/login` ou `/auth/password/reset/confirm`. Le provisioning
+# (`/salons/{id}/kiosk-devices`) reste, lui, protégé (`KIOSK_PROVISION` + portée salon).
+# Anti-abus rate-limité **par IP** (le `device_id` est inconnu tant que le code n'est
+# pas résolu) et code **à usage unique** ; tout échec (code inconnu, expiré, déjà
+# utilisé, trop d'essais) renvoie le **même** `400` générique — aucun oracle.
+# --------------------------------------------------------------------------- #
+class KioskActivateRequest(BaseModel):
+    """Corps de `POST /auth/kiosk/activate`. Le code n'est jamais renvoyé ni journalisé."""
+
+    # `min_length=1` (jamais la longueur exacte du code) pour ne pas divulguer la
+    # politique d'activation par une erreur de validation (anti-énumération).
+    code: str = Field(min_length=1, max_length=32, examples=["123456"])
+
+
+class KioskActivateResponse(BaseModel):
+    """Réponse `200` de l'activation — identité de la borne **+ secret (une fois)**.
+
+    Le `secret` n'est renvoyé qu'ici, une seule fois — jamais relisible ensuite. La
+    borne doit le stocker localement et l'utiliser via `POST /auth/kiosk/login` pour
+    toute session future.
+    """
+
+    device_id: uuid.UUID
+    secret: str
+
+
+def _get_kiosk_activation_repository(request: Request) -> KioskActivationRepository:
+    """Dépôt de défis d'activation (singleton `app.state`), partagé avec le provisioning.
+
+    **Même** attribut `app.state.kiosk_activation_repository` que le getter du router
+    `kiosk_devices.py` : `app.state` est porté par l'application, pas par le router,
+    donc le code émis au provisioning est retrouvé ici. Repli sûr si non câblé.
+    """
+
+    repo = getattr(request.app.state, "kiosk_activation_repository", None)
+    if repo is None:
+        repo = InMemoryKioskActivationRepository()
+        request.app.state.kiosk_activation_repository = repo
+    return repo
+
+
+def get_kiosk_activation_rate_limiter(request: Request) -> LoginRateLimiter:
+    """Limiteur anti-bruteforce **dédié à l'activation borne** (singleton `app.state`).
+
+    Distinct du limiteur de login kiosque : verrouiller les activations ne doit pas
+    verrouiller les bornes déjà en service (et inversement). Faute de seuils
+    d'activation dédiés dans `AuthConfig`, on réutilise ceux de connexion — même
+    ordre de grandeur pour une saisie manuelle à 6 chiffres.
+    """
+
+    limiter = getattr(request.app.state, "kiosk_activation_rate_limiter", None)
+    if limiter is None:
+        config: AuthConfig = (
+            getattr(request.app.state, "auth_config", None) or AuthConfig()
+        )
+        limiter = InMemoryLoginRateLimiter(
+            max_attempts=config.login_max_attempts,
+            window=config.login_window,
+            lockout=config.login_lockout,
+        )
+        request.app.state.kiosk_activation_rate_limiter = limiter
+    return limiter
+
+
+def get_activate_kiosk_device(
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+    hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
+    rate_limiter: Annotated[
+        LoginRateLimiter, Depends(get_kiosk_activation_rate_limiter)
+    ],
+) -> ActivateKioskDevice:
+    """Assemble le cas d'usage d'**activation borne** (aucune règle métier ici)."""
+
+    return ActivateKioskDevice(
+        _get_kiosk_activation_repository(request),
+        SqlKioskDeviceRepository(session),
+        hasher,
+        rate_limiter=rate_limiter,
+    )
+
+
+@router.post(
+    "/kiosk/activate",
+    response_model=KioskActivateResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Active une borne kiosque via son code à 6 chiffres — secret rendu une seule fois",
+    responses={
+        200: {"description": "Secret de borne émis — à utiliser ensuite via /auth/kiosk/login"},
+        400: {"description": "Code d'activation invalide, expiré ou déjà utilisé (message générique)"},
+        429: {"description": "Trop de tentatives (anti-bruteforce par IP)"},
+    },
+)
+def activate_kiosk_device(
+    payload: KioskActivateRequest,
+    request: Request,
+    usecase: Annotated[ActivateKioskDevice, Depends(get_activate_kiosk_device)],
+) -> KioskActivateResponse:
+    """Échange le code d'activation contre le secret longue durée de la borne.
+
+    Le secret est **généré ici**, à l'activation — jamais au provisioning — et
+    renvoyé **une seule fois** (seul son condensat argon2id est stocké). Le code est
+    à **usage unique** : une seconde tentative avec le même code échoue. Tout échec
+    (code inconnu, expiré, déjà consommé, trop d'essais) renvoie le **même** `400`
+    générique ; `429` + `Retry-After` si l'IP est verrouillée.
+    """
+
+    command = ActivateKioskDeviceCommand(
+        code=payload.code, client_ip=_client_ip(request)
+    )
+    try:
+        result = usecase.execute(command)
+    except TooManyLoginAttempts as exc:
+        headers = (
+            {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Trop de tentatives d'activation. Réessayez plus tard.",
+            headers=headers,
+        ) from exc
+    except InvalidActivationCode as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    return KioskActivateResponse(device_id=result.device_id, secret=result.secret)
+
+
+# --------------------------------------------------------------------------- #
 # Réinitialisation du mot de passe par OTP (US-1.3, issue #11).
 # Parcours en deux étapes : demande d'un code (SMS **ou** e-mail), puis
 # confirmation (code + nouveau mot de passe qui invalide l'ancien). Réponses
@@ -805,6 +952,8 @@ __all__ = [
     "TokenResponse",
     "KioskLoginRequest",
     "KioskTokenResponse",
+    "KioskActivateRequest",
+    "KioskActivateResponse",
     "PasswordResetRequestSchema",
     "PasswordResetConfirmSchema",
     "MessageResponse",

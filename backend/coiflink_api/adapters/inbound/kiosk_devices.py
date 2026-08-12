@@ -1,8 +1,8 @@
 """Adapter entrant (driving) : router HTTP de provisioning des bornes kiosque (US-8.1, #155).
 
 Expose la **gestion des bornes kiosque** par un gérant (patron `employees.py`) :
-- `POST /salons/{salon_id}/kiosk-devices` — provisionner une borne (secret rendu
-  **une seule fois**, jamais relisible) ;
+- `POST /salons/{salon_id}/kiosk-devices` — provisionner une borne (**code
+  d'activation à 6 chiffres** rendu **une seule fois**, jamais relisible) ;
 - `GET /salons/{salon_id}/kiosk-devices` — lister les bornes du salon (sans secret) ;
 - `DELETE /salons/{salon_id}/kiosk-devices/{device_id}` — révoquer une borne
   (suspension logique, jamais une suppression physique — traçabilité §11.4).
@@ -20,9 +20,11 @@ que sur **son** salon ; un accès hors périmètre renvoie le `403` générique 
 oracle d'existence). **Aucun** chemin n'est ajouté à `PUBLIC_ROUTE_PATHS` : une
 borne kiosque n'est jamais provisionnable/listable publiquement.
 
-Invariant de non-fuite (§11.3) : le **secret** n'apparaît que dans la réponse `201`
-(`ProvisionKioskDeviceResponse`) ; ni `GET` ni `DELETE` ne renvoient de secret ni de
-condensat (le champ n'existe pas dans `KioskDeviceResponse`).
+Invariant de non-fuite (§11.3) : le **code d'activation** n'apparaît que dans la
+réponse `201` (`ProvisionKioskDeviceResponse`) ; le **secret réel** n'existe qu'une
+fois, dans la réponse de `POST /auth/kiosk/activate` (généré à l'activation, jamais
+au provisioning). Ni `GET` ni `DELETE` ne renvoient de code, de secret ni de
+condensat (les champs n'existent pas dans `KioskDeviceResponse`).
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ import datetime
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -42,6 +44,9 @@ from coiflink_api.adapters.outbound.persistence.kiosk_device_repository import (
     SqlKioskDeviceRepository,
 )
 from coiflink_api.adapters.outbound.persistence.session import get_session
+from coiflink_api.adapters.outbound.security.kiosk_activation_in_memory import (
+    InMemoryKioskActivationRepository,
+)
 from coiflink_api.application.kiosk_devices import (
     ListKioskDevices,
     ProvisionKioskDevice,
@@ -49,6 +54,9 @@ from coiflink_api.application.kiosk_devices import (
     RevokeKioskDevice,
 )
 from coiflink_api.application.ports.audit_log import AuditLog
+from coiflink_api.application.ports.kiosk_activation_repository import (
+    KioskActivationRepository,
+)
 from coiflink_api.application.ports.password_hasher import PasswordHasher
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.errors import InvalidKioskDeviceLabel, KioskDeviceNotFound
@@ -84,14 +92,16 @@ class KioskDeviceResponse(BaseModel):
 
 
 class ProvisionKioskDeviceResponse(KioskDeviceResponse):
-    """Réponse `201` du provisioning — **le secret n'est renvoyé qu'ici, une fois**.
+    """Réponse `201` — **le code d'activation à 6 chiffres n'est renvoyé qu'ici, une fois**.
 
-    Le `secret` est le credential de device longue durée à saisir sur la borne : il
-    n'est **jamais** stocké en clair, **jamais** journalisé et **jamais** relisible
-    (aucune autre route ne le renvoie).
+    La borne l'échange contre son secret réel via `POST /auth/kiosk/activate` : le
+    gérant saisit 6 chiffres sur l'écran tactile au lieu de recopier un credential de
+    ~43 caractères. Le code n'est **jamais** relisible (aucune autre route ne le
+    renvoie) et n'est **jamais** journalisé ; le secret longue durée, lui, n'existe
+    qu'à l'activation — il n'apparaît **jamais** dans cette réponse.
     """
 
-    secret: str
+    activation_code: str
 
 
 def _device_response(device: KioskDevice) -> KioskDeviceResponse:
@@ -115,14 +125,38 @@ def get_kiosk_device_repository(
     return SqlKioskDeviceRepository(session)
 
 
+def _get_kiosk_activation_repository(request: Request) -> KioskActivationRepository:
+    """Dépôt de défis d'activation (singleton `app.state`), partagé avec `auth.py`.
+
+    Le provisioning (ce router) **écrit** le défi ; l'activation
+    (`POST /auth/kiosk/activate`, router `auth.py`) le **relit**. Les deux getters
+    portent volontairement le même attribut `app.state.kiosk_activation_repository` :
+    `app.state` est partagé par toute l'application, quel que soit le router qui
+    l'initialise — un code émis au provisioning est donc retrouvé à l'activation.
+    Repli sûr si l'état n'est pas câblé.
+    """
+
+    repo = getattr(request.app.state, "kiosk_activation_repository", None)
+    if repo is None:
+        repo = InMemoryKioskActivationRepository()
+        request.app.state.kiosk_activation_repository = repo
+    return repo
+
+
 def get_provision_kiosk_device(
+    request: Request,
     repository: Annotated[
         SqlKioskDeviceRepository, Depends(get_kiosk_device_repository)
     ],
     hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
     audit_log: Annotated[AuditLog, Depends(get_audit_log)],
 ) -> ProvisionKioskDevice:
-    return ProvisionKioskDevice(repository, hasher, audit_log)
+    return ProvisionKioskDevice(
+        repository,
+        hasher,
+        audit_log,
+        _get_kiosk_activation_repository(request),
+    )
 
 
 def get_list_kiosk_devices(
@@ -149,9 +183,13 @@ def get_revoke_kiosk_device(
     "/{salon_id}/kiosk-devices",
     response_model=ProvisionKioskDeviceResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Provisionner une borne kiosque (gérant) — secret rendu une seule fois",
+    summary="Provisionner une borne kiosque (gérant) — code d'activation rendu une seule fois",
     responses={
-        201: {"description": "Borne créée — le secret n'est présent que dans cette réponse"},
+        201: {
+            "description": (
+                "Borne créée — le code d'activation n'est présent que dans cette réponse"
+            )
+        },
         401: {"description": "Jeton absent, invalide, expiré, ou refresh présenté en accès"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (message générique)"},
         422: {"description": "Libellé de borne invalide"},
@@ -172,15 +210,18 @@ def provision_kiosk_device(
 ) -> ProvisionKioskDeviceResponse:
     """Crée une borne (`role=KIOSK`, `status=ACTIVE`) rattachée à `salon_id`.
 
-    Retourne l'entité **et** le secret de device en clair — **une seule fois**. La
-    borne échangera ensuite `(id, secret)` contre une paire JWT via
-    `POST /auth/kiosk/login`. Provisioning journalisé (`KIOSK_DEVICE_PROVISIONED`,
-    `metadata` vide) dans la même unité de travail que la création.
+    Retourne l'entité **et** le **code d'activation à 6 chiffres** — **une seule
+    fois**. Le gérant saisit ces 6 chiffres sur la borne, qui les échange contre son
+    secret longue durée via `POST /auth/kiosk/activate` ; elle utilise ensuite
+    `(id, secret)` sur `POST /auth/kiosk/login` pour toutes ses sessions. Tant qu'elle
+    n'est pas activée, la borne ne peut pas se connecter. Provisioning journalisé
+    (`KIOSK_DEVICE_PROVISIONED`, `metadata` vide) dans la même unité de travail que
+    la création.
     """
 
     command = ProvisionKioskDeviceCommand(label=payload.label)
     try:
-        device, secret = usecase.execute(
+        device, activation_code = usecase.execute(
             salon_id, command, actor_user_id=principal.id
         )
     except InvalidKioskDeviceLabel as exc:
@@ -194,7 +235,7 @@ def provision_kiosk_device(
         label=device.label,
         status=device.status,
         created_at=device.created_at,
-        secret=secret,
+        activation_code=activation_code,
     )
 
 

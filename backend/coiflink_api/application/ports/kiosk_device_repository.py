@@ -74,6 +74,17 @@ class KioskDeviceRepository(Protocol):
         """
         ...
 
+    def set_password_hash(self, device_id: uuid.UUID, password_hash: str) -> None:
+        """Remplace le condensat de la borne (activation, US-8.1, #155).
+
+        Écrase le condensat placeholder posé au provisioning par le condensat du
+        secret réel, généré au moment de l'activation. Idempotent au sens où un
+        `device_id` inconnu ne doit jamais lever (aucun oracle) — mais en pratique
+        `ActivateKioskDevice` n'appelle ceci qu'après avoir résolu un `device_id`
+        valide via `find_by_code`, donc ce cas ne devrait pas se produire.
+        """
+        ...
+
     def revoke(
         self, salon_id: uuid.UUID, device_id: uuid.UUID
     ) -> KioskDevice | None:

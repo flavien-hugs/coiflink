@@ -2,10 +2,14 @@
 
 Couvre `ProvisionKioskDevice`, `ListKioskDevices` et `RevokeKioskDevice` :
 
-**Provisioning** :
-- Retourne l'entité **et** le secret en clair (une seule fois).
-- Secret non-vide, distinct du condensat haché (argon2id simulé par `FakeHasher`).
-- Le condensat est vérifiable avec le secret via le hacheur.
+**Provisioning** (depuis #155 « provisioning silencieux ») :
+- Retourne l'entité **et** le **code d'activation à 6 chiffres** (une seule fois) —
+  plus jamais le secret : celui-ci est généré à l'activation (`ActivateKioskDevice`).
+- Code non-vide, exactement 6 chiffres, et **sauvegardé** dans le dépôt d'activation.
+- Défi d'activation paramétré pour une installation matérielle : TTL 24 h, 5 essais.
+- Le condensat stocké est un **placeholder** (secret jetable) : il ne correspond à
+  aucune valeur retournée à l'appelant — d'où l'absence de test de vérification
+  condensat/secret (invariant supprimé avec #155, il ne s'applique plus).
 - Le libellé est normalisé (strip) avant stockage.
 - Audit journalisé `KIOSK_DEVICE_PROVISIONED`, `entity_type = kiosk_device`,
   `metadata = {}` (invariant §11.3/§11.4 : ni secret, ni condensat, ni libellé).
@@ -27,6 +31,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import uuid
+from random import Random
 
 import pytest
 
@@ -46,6 +51,7 @@ from coiflink_api.domain.kiosk_device import (
     KioskDevice,
     KioskDeviceToCreate,
 )
+from coiflink_api.domain.otp import OtpChallenge
 
 from .conftest import FakeAuditLog, FakeHasher
 
@@ -55,6 +61,14 @@ _OTHER_SALON = uuid.UUID("c0000000-0000-0000-0000-000000000099")
 _DEVICE_ID = uuid.UUID("d0000000-0000-0000-0000-000000000001")
 _ACTOR_ID  = uuid.UUID("b0000000-0000-0000-0000-000000000001")
 _CREATED_AT = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+# Horloge figée injectée au cas d'usage : rend l'`expires_at` du défi d'activation
+# assertable exactement (aucune dépendance à l'heure système).
+_NOW = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc)
+
+# Paramètres attendus du défi d'activation (#155) — volontairement plus larges que
+# les défauts OTP : l'activation est une installation matérielle, pas un login.
+_EXPECTED_ACTIVATION_TTL = datetime.timedelta(hours=24)
+_EXPECTED_ACTIVATION_MAX_ATTEMPTS = 5
 
 _HASHER = FakeHasher()
 
@@ -96,19 +110,51 @@ class _FakeKioskDeviceRepo:
         return suspended
 
 
+class _FakeKioskActivationRepo:
+    """Dépôt de défis d'activation en mémoire — miroir du dépôt réel (par device_id)."""
+
+    def __init__(self) -> None:
+        self.saved: list[tuple[uuid.UUID, OtpChallenge]] = []
+        self._store: dict[uuid.UUID, OtpChallenge] = {}
+
+    def save(self, device_id: uuid.UUID, challenge: OtpChallenge) -> None:
+        self.saved.append((device_id, challenge))
+        self._store[device_id] = challenge
+
+    def find_by_code(self, code: str) -> tuple[uuid.UUID, OtpChallenge] | None:
+        for device_id, challenge in self._store.items():
+            if challenge.code == code:
+                return device_id, challenge
+        return None
+
+    def delete(self, device_id: uuid.UUID) -> None:
+        self._store.pop(device_id, None)
+
+
 # ---------------------------------------------------------------------------
 # ProvisionKioskDevice
 # ---------------------------------------------------------------------------
 
 
 class TestProvisionKioskDevice:
-    def _make(self, audit_log: FakeAuditLog | None = None) -> tuple[
-        ProvisionKioskDevice, _FakeKioskDeviceRepo, FakeAuditLog
-    ]:
+    def _make(
+        self,
+        audit_log: FakeAuditLog | None = None,
+        activation_repository: _FakeKioskActivationRepo | None = None,
+        rng: Random | None = None,
+    ) -> tuple[ProvisionKioskDevice, _FakeKioskDeviceRepo, FakeAuditLog, _FakeKioskActivationRepo]:
         repo = _FakeKioskDeviceRepo()
         log = audit_log or FakeAuditLog()
-        uc = ProvisionKioskDevice(repository=repo, hasher=_HASHER, audit_log=log)
-        return uc, repo, log
+        activation_repo = activation_repository or _FakeKioskActivationRepo()
+        uc = ProvisionKioskDevice(
+            repository=repo,
+            hasher=_HASHER,
+            audit_log=log,
+            activation_repository=activation_repo,
+            rng=rng or Random(1),
+            clock=lambda: _NOW,
+        )
+        return uc, repo, log, activation_repo
 
     def _execute(self, uc: ProvisionKioskDevice, label: str = "Borne entrée") -> tuple[KioskDevice, str]:
         return uc.execute(
@@ -117,46 +163,71 @@ class TestProvisionKioskDevice:
             actor_user_id=_ACTOR_ID,
         )
 
-    # --- Retour (device, secret) ---
+    # --- Retour (device, activation_code) ---
 
-    def test_returns_device_and_secret_tuple(self) -> None:
-        uc, _repo, _log = self._make()
-        device, secret = self._execute(uc)
+    def test_returns_device_and_activation_code_tuple(self) -> None:
+        uc, _repo, _log, _act = self._make()
+        device, code = self._execute(uc)
         assert device is not None
-        assert isinstance(secret, str)
+        assert isinstance(code, str)
 
-    def test_secret_is_non_empty(self) -> None:
-        uc, _repo, _log = self._make()
-        _device, secret = self._execute(uc)
-        assert secret.strip() != ""
+    def test_activation_code_is_six_digits(self) -> None:
+        uc, _repo, _log, _act = self._make()
+        _device, code = self._execute(uc)
+        assert len(code) == 6
+        assert code.isdigit()
 
-    def test_password_hash_differs_from_secret(self) -> None:
-        """Le condensat stocké ≠ le secret en clair (pas de stockage en clair, §11.3)."""
-        uc, repo, _log = self._make()
-        _device, secret = self._execute(uc)
+    def test_activation_code_saved_exactly_once(self) -> None:
+        uc, _repo, _log, act = self._make()
+        self._execute(uc)
+        assert len(act.saved) == 1
+
+    def test_activation_challenge_device_id_matches_created_device(self) -> None:
+        uc, _repo, _log, act = self._make()
+        device, _code = self._execute(uc)
+        saved_device_id, _challenge = act.saved[0]
+        assert saved_device_id == device.id
+
+    def test_activation_challenge_code_matches_returned_code(self) -> None:
+        uc, _repo, _log, act = self._make()
+        _device, code = self._execute(uc)
+        _saved_device_id, challenge = act.saved[0]
+        assert challenge.code == code
+
+    def test_activation_challenge_ttl_is_24_hours(self) -> None:
+        """Fenêtre volontairement large : geste d'installation matérielle, pas un login."""
+        uc, _repo, _log, act = self._make()
+        self._execute(uc)
+        _device_id, challenge = act.saved[0]
+        assert challenge.expires_at == _NOW + _EXPECTED_ACTIVATION_TTL
+
+    def test_activation_challenge_max_attempts_is_five(self) -> None:
+        uc, _repo, _log, act = self._make()
+        self._execute(uc)
+        _device_id, challenge = act.saved[0]
+        assert challenge.attempts_left == _EXPECTED_ACTIVATION_MAX_ATTEMPTS
+
+    def test_password_hash_is_not_derivable_from_activation_code(self) -> None:
+        """Le condensat placeholder ne correspond à aucune valeur retournée (§11.3) :
+        même le code d'activation, une fois consommé, ne vérifie jamais le login."""
+        uc, repo, _log, _act = self._make()
+        _device, code = self._execute(uc)
         stored_hash = repo.created[0].password_hash
-        assert stored_hash != secret
-
-    def test_password_hash_verifiable_with_secret(self) -> None:
-        """Le condensat stocké est cohérent avec le secret retourné (authenticité #auth)."""
-        uc, repo, _log = self._make()
-        _device, secret = self._execute(uc)
-        stored_hash = repo.created[0].password_hash
-        assert _HASHER.verify(secret, stored_hash)
+        assert not _HASHER.verify(code, stored_hash)
 
     def test_device_salon_id_matches(self) -> None:
-        uc, repo, _log = self._make()
+        uc, repo, _log, _act = self._make()
         _device, _secret = self._execute(uc)
         assert repo.created[0].salon_id == _SALON_ID
 
     def test_label_trimmed_before_storage(self) -> None:
         """Le libellé est normalisé (strip) avant stockage — identique à `validate_device_label`."""
-        uc, repo, _log = self._make()
+        uc, repo, _log, _act = self._make()
         self._execute(uc, label="  Borne entrée  ")
         assert repo.created[0].label == "Borne entrée"
 
     def test_returned_device_has_matching_salon_id(self) -> None:
-        uc, _repo, _log = self._make()
+        uc, _repo, _log, _act = self._make()
         device, _secret = self._execute(uc)
         assert device.salon_id == _SALON_ID
 
@@ -164,14 +235,14 @@ class TestProvisionKioskDevice:
 
     def test_returned_device_has_no_attribute_password_hash(self) -> None:
         """Invariant §11.3 : `KioskDevice` retourné ne porte jamais le condensat."""
-        uc, _repo, _log = self._make()
+        uc, _repo, _log, _act = self._make()
         device, _secret = self._execute(uc)
         assert not hasattr(device, "password_hash")
 
     # --- Label invalide ---
 
     def test_invalid_empty_label_raises_before_audit(self) -> None:
-        uc, _repo, log = self._make()
+        uc, _repo, log, _act = self._make()
         with pytest.raises(InvalidKioskDeviceLabel):
             uc.execute(
                 _SALON_ID, ProvisionKioskDeviceCommand(label=""),
@@ -180,7 +251,7 @@ class TestProvisionKioskDevice:
         assert log.recorded == [], "Aucun audit ne doit être émis si le label est invalide."
 
     def test_invalid_whitespace_label_raises(self) -> None:
-        uc, _repo, _log = self._make()
+        uc, _repo, _log, _act = self._make()
         with pytest.raises(InvalidKioskDeviceLabel):
             uc.execute(
                 _SALON_ID, ProvisionKioskDeviceCommand(label="   "),
@@ -190,33 +261,33 @@ class TestProvisionKioskDevice:
     # --- Audit ---
 
     def test_one_audit_entry_logged(self) -> None:
-        uc, _repo, log = self._make()
+        uc, _repo, log, _act = self._make()
         self._execute(uc)
         assert len(log.recorded) == 1
 
     def test_audit_action_is_kiosk_device_provisioned(self) -> None:
-        uc, _repo, log = self._make()
+        uc, _repo, log, _act = self._make()
         self._execute(uc)
         assert log.recorded[0].action == AuditAction.KIOSK_DEVICE_PROVISIONED.value
 
     def test_audit_entity_type_is_kiosk_device(self) -> None:
-        uc, _repo, log = self._make()
+        uc, _repo, log, _act = self._make()
         self._execute(uc)
         assert log.recorded[0].entity_type == ENTITY_TYPE_KIOSK_DEVICE
 
     def test_audit_metadata_is_empty(self) -> None:
         """Invariant §11.3/§11.4 : ni secret, ni condensat, ni libellé au journal."""
-        uc, _repo, log = self._make()
+        uc, _repo, log, _act = self._make()
         self._execute(uc, label="Borne super secrète")
         assert log.recorded[0].metadata == {}
 
     def test_audit_actor_user_id_matches(self) -> None:
-        uc, _repo, log = self._make()
+        uc, _repo, log, _act = self._make()
         self._execute(uc)
         assert log.recorded[0].actor_user_id == _ACTOR_ID
 
     def test_audit_salon_id_matches(self) -> None:
-        uc, _repo, log = self._make()
+        uc, _repo, log, _act = self._make()
         self._execute(uc)
         assert log.recorded[0].salon_id == _SALON_ID
 
