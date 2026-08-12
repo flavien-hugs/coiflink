@@ -92,6 +92,9 @@ class PublicServiceResponse(BaseModel):
 
     Projection minimale : **aucun** `is_active`, `salon_id` ni timestamp (spec
     §A.4). Seules les prestations `ACTIVE` remontent (filtre au dépôt).
+    `image_url` est une **URL signée** de lecture (ou `null` si aucune image ou
+    stockage non configuré) — **jamais** la clé d'objet brute (ADR-0005, miroir
+    `logo_url`).
     """
 
     id: uuid.UUID
@@ -100,6 +103,7 @@ class PublicServiceResponse(BaseModel):
     price: decimal.Decimal
     duration_minutes: int
     category: str | None
+    image_url: str | None
 
 
 class PublicHairdresserResponse(BaseModel):
@@ -132,7 +136,7 @@ class PublicSalonDetailResponse(BaseModel):
     Étend la vitrine (`PublicSalonResponse`) : `phone` (donnée d'établissement,
     reportée de #18), `photos` signées, `opening_hours` (JSONB normalisé publié tel
     quel, `null` si non configuré), `services` (prestations `ACTIVE` + prix +
-    durée) et `hairdressers` (coiffeuses `ACTIVE`, #150 — choix optionnel à la
+    durée + `image_url` signée) et `hairdressers` (coiffeuses `ACTIVE`, #150 — choix optionnel à la
     réservation, #22). **Jamais** `owner_id`, `status`, `is_active`/`salon_id` de
     prestation, timestamps, clé d'objet brute ni PII de gestion des employés
     (spec §A.4).
@@ -212,6 +216,7 @@ def _public_salon_detail_response(
                 price=service.price,
                 duration_minutes=service.duration_minutes,
                 category=service.category,
+                image_url=service.image_url,
             )
             for service in view.services
         ],

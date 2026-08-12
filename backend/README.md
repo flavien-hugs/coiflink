@@ -716,7 +716,9 @@ fiche s'appuie **exclusivement** sur `SalonCatalogRepository.get_active` (filtre
 SQL) — un salon `INACTIVE`/`SUSPENDED` ou inexistant renvoie **404** (« absent du catalogue », pas
 d'oracle) ; un `salon_id` mal formé → **422**. Les prestations proviennent de `list_active_services`
 (**actives seulement**, filtre `is_active = true` en SQL) : une prestation désactivée (#17) n'apparaît
-jamais. Depuis #150, les **coiffeuses actives** du salon (`list_active_hairdressers`, filtre
+jamais. Depuis #158, chaque prestation porte `image_url` — une **URL signée** de lecture (miroir
+`logo_url`/`photos`, ADR-0005) ou `null` si aucune illustration ou stockage non configuré, jamais la
+clé d'objet brute. Depuis #150, les **coiffeuses actives** du salon (`list_active_hairdressers`, filtre
 `salon_members.status = ACTIVE` en SQL) sont incluses dans `hairdressers` : le client mobile peut
 **optionnellement** en choisir une à la réservation (#22, `hairdresser_id` reste facultatif —
 réservation au niveau salon toujours possible). Projection **minimale** (`id`/`full_name`/
@@ -744,7 +746,8 @@ coiffeuse désactivée (#150) n'apparaît jamais.
   },
   "services": [                           // prestations ACTIVE uniquement
     { "id": "…uuid…", "name": "Coupe homme", "description": "…",
-      "price": "5000.00", "duration_minutes": 30, "category": "Coupe" }
+      "price": "5000.00", "duration_minutes": 30, "category": "Coupe",
+      "image_url": "https://…signée…" }   // ou null (aucune image / stockage non configuré) — #158
   ],
   "hairdressers": [                       // coiffeuses ACTIVE uniquement (#150) — choix optionnel
     { "id": "…uuid…", "full_name": "Awa Koné", "specialties": "Tresses, colorations" }

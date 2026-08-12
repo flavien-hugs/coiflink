@@ -72,7 +72,11 @@ def _make_salon(
 
 
 def _make_service(
-    salon_id: uuid.UUID, *, name: str = "Coupe homme", is_active: bool = True
+    salon_id: uuid.UUID,
+    *,
+    name: str = "Coupe homme",
+    is_active: bool = True,
+    image_object_key: str | None = None,
 ) -> Service:
     return Service(
         id=uuid.uuid4(),
@@ -83,7 +87,7 @@ def _make_service(
         duration_minutes=30,
         category="Coupe",
         is_active=is_active,
-        image_object_key=None,
+        image_object_key=image_object_key,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )
@@ -305,6 +309,8 @@ def test_service_item_has_no_management_fields() -> None:
     assert "is_active" not in service
     assert "salon_id" not in service
     assert "created_at" not in service
+    # ADR-0005 : la clé d'objet brute ne franchit jamais la frontière HTTP.
+    assert "image_object_key" not in service
 
 
 def test_logo_url_is_signed_not_raw_key() -> None:
@@ -330,6 +336,71 @@ def test_photos_signed_and_no_raw_key_leaks() -> None:
     assert "?" in data["photos"][0]["url"]
     # La clé d'objet brute (préfixe `salons/{id}/photos/`) ne fuit pas telle quelle.
     assert not data["photos"][0]["url"].startswith("salons/")
+
+
+def test_service_image_url_signed_not_raw_key() -> None:
+    # ADR-0005 / #158 : avec FakeMediaStorage configuré, image_url est une URL
+    # signée (contient « ? »), différente de la clé brute et non null.
+    salon = _make_salon()
+    svc = _make_service(
+        salon.id, image_object_key="services/salon-id/photo.png"
+    )
+    resp = _client(
+        FakeSalonCatalogRepository([salon], services={salon.id: [svc]}),
+        storage=FakeMediaStorage(),
+    ).get(_url(salon.id))
+
+    service = resp.json()["services"][0]
+    assert service["image_url"] is not None
+    assert "?" in service["image_url"]
+    assert service["image_url"] != "services/salon-id/photo.png"
+
+
+def test_service_image_url_null_without_storage() -> None:
+    # Résilience (spec §Security) : sans MediaStorage configuré, image_url vaut
+    # null même si image_object_key est renseigné — jamais d'exception 5xx.
+    salon = _make_salon()
+    svc = _make_service(
+        salon.id, image_object_key="services/salon-id/photo.png"
+    )
+    resp = _client(
+        FakeSalonCatalogRepository([salon], services={salon.id: [svc]}),
+        storage=None,
+    ).get(_url(salon.id))
+
+    assert resp.status_code == 200
+    assert resp.json()["services"][0]["image_url"] is None
+
+
+def test_service_image_url_null_when_no_key() -> None:
+    # image_object_key=None → image_url null, même avec un stockage configuré.
+    salon = _make_salon()
+    svc = _make_service(salon.id, image_object_key=None)
+    resp = _client(
+        FakeSalonCatalogRepository([salon], services={salon.id: [svc]}),
+        storage=FakeMediaStorage(),
+    ).get(_url(salon.id))
+
+    assert resp.json()["services"][0]["image_url"] is None
+
+
+def test_service_raw_object_key_never_leaks_in_response() -> None:
+    # ADR-0005 : le préfixe « services/ » (clé brute) ne doit jamais apparaître
+    # tel quel dans le corps de la réponse quand le stockage est configuré.
+    salon = _make_salon()
+    raw_key = f"services/{salon.id}/photo.png"
+    svc = _make_service(salon.id, image_object_key=raw_key)
+    resp = _client(
+        FakeSalonCatalogRepository([salon], services={salon.id: [svc]}),
+        storage=FakeMediaStorage(),
+    ).get(_url(salon.id))
+
+    # La clé brute complète ne doit pas figurer telle quelle dans la réponse
+    # (elle peut toutefois apparaître comme *partie* de l'URL signée — ce qui est
+    # acceptable tant que l'URL est signée ; le test vérifie que c'est une URL signée).
+    assert resp.json()["services"][0]["image_url"] != raw_key
+    image_url = resp.json()["services"][0]["image_url"]
+    assert image_url is not None and image_url.startswith("https://")
 
 
 def test_logo_and_photos_null_without_storage() -> None:

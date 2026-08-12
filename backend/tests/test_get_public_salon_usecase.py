@@ -72,6 +72,7 @@ def _service(
     *,
     name: str = "Coupe homme",
     is_active: bool = True,
+    image_object_key: str | None = None,
 ) -> Service:
     return Service(
         id=uuid.uuid4(),
@@ -82,7 +83,7 @@ def _service(
         duration_minutes=30,
         category="Coupe",
         is_active=is_active,
-        image_object_key=None,
+        image_object_key=image_object_key,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )
@@ -264,6 +265,64 @@ def test_logo_url_none_when_no_object_key_even_with_storage() -> None:
     view = GetPublicSalon(repo, FakeMediaStorage()).execute(salon.id)
 
     assert view.logo_url is None
+
+
+# ---------------------------------------------------------------------------
+# URL signée des prestations — ADR-0005 (#158)
+# ---------------------------------------------------------------------------
+
+
+def test_service_image_url_signed_when_key_set_and_storage_configured() -> None:
+    # image_object_key renseigné + FakeMediaStorage → image_url est l'URL signée.
+    salon = _salon()
+    svc = _service(salon.id, image_object_key="services/salon-id/photo.png")
+    repo = FakeSalonCatalogRepository([salon], services={salon.id: [svc]})
+
+    view = GetPublicSalon(repo, FakeMediaStorage()).execute(salon.id)
+    service = view.services[0]
+
+    expected_url = FakeMediaStorage().presign_download("services/salon-id/photo.png")
+    assert service.image_url == expected_url
+    assert "?" in service.image_url  # URL signée, pas clé brute
+    assert service.image_url != "services/salon-id/photo.png"
+
+
+def test_service_image_url_none_when_no_object_key() -> None:
+    # image_object_key=None → image_url is None, même avec un stockage configuré.
+    salon = _salon()
+    svc = _service(salon.id, image_object_key=None)
+    repo = FakeSalonCatalogRepository([salon], services={salon.id: [svc]})
+
+    view = GetPublicSalon(repo, FakeMediaStorage()).execute(salon.id)
+
+    assert view.services[0].image_url is None
+
+
+def test_service_image_url_none_without_storage_even_with_key() -> None:
+    # Stockage non configuré → image_url is None même si image_object_key renseigné.
+    # La règle de résilience (spec §Security) : jamais d'exception 5xx, image_url=null.
+    salon = _salon()
+    svc = _service(salon.id, image_object_key="services/salon-id/photo.png")
+    repo = FakeSalonCatalogRepository([salon], services={salon.id: [svc]})
+
+    view = GetPublicSalon(repo, media_storage=None).execute(salon.id)
+
+    assert view.services[0].image_url is None
+
+
+def test_service_view_image_object_key_not_in_fields() -> None:
+    # ADR-0005 / spec §A.4 : la clé d'objet brute ne doit jamais franchir la
+    # frontière publique — PublicServiceView ne porte pas image_object_key.
+    salon = _salon()
+    svc = _service(salon.id, image_object_key="services/salon-id/photo.png")
+    repo = FakeSalonCatalogRepository([salon], services={salon.id: [svc]})
+
+    view = GetPublicSalon(repo, FakeMediaStorage()).execute(salon.id)
+    field_names = {f.name for f in dataclasses.fields(view.services[0])}
+
+    assert "image_object_key" not in field_names
+    # Vérification complémentaire : le champ exposé est bien image_url (URL signée).
+    assert "image_url" in field_names
 
 
 # ---------------------------------------------------------------------------
