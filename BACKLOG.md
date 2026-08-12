@@ -461,13 +461,17 @@ public) et M4 (fiches clients), et réutilise la file d'attente livrée par la P
   aucune régression sur les consommateurs existants de l'endpoint.
   *Dépend de :* aucune.
 
-- **#159 — US-8.5 · Mode kiosque de l'app mobile** · `Must` · `L` · `feature` `ux`
-  Nouveau point d'entrée `main_kiosk.dart` (`--dart-define=APP_MODE=kiosk`), écrans
-  accueil/identification/création/choix-prestation/confirmation en gros boutons tactiles adaptés à un
-  usage à distance de bras, avec un timer d'inactivité global ramenant automatiquement à l'accueil.
-  *Acceptation :* US-001, US-002 (UI), US-003 (UI), US-004 (UI), US-005 et US-008 couvertes ; aucune
-  session personnelle active en fin de parcours ; retour automatique après 60 s d'inactivité, timer
-  suspendu pendant l'impression du ticket.
+- **#159 — US-8.5 · Mode kiosque de l'app mobile** · `Must` · `L` · `feature` `ux` — **livré**
+  `app-mobile/` est désormais un paquet **kiosque exclusif** (point d'entrée unique `main.dart`, plus
+  d'app cliente dans ce dépôt) : huit écrans accueil/identification/création/choix-prestation/
+  vérification/numéro/impression en gros boutons tactiles adaptés à un usage à distance de bras, avec
+  un timer d'inactivité global ramenant automatiquement à l'accueil. Activation **une seule fois** par
+  code à 6 chiffres remis au provisioning (`POST /auth/kiosk/activate`, code à usage unique lié au
+  device) puis authentification device **silencieuse** à chaque lancement (credential persisté chiffré
+  sur l'appareil, aucune session personnelle) — voir [`app-mobile/README.md`](./app-mobile/README.md).
+  *Acceptation :* US-001 à US-007 (UI) et US-008 couvertes ; aucune session personnelle active en fin
+  de parcours ; retour automatique après 60 s d'inactivité, timer suspendu pendant l'impression du
+  ticket.
   *Dépend de :* #155, #156, #157, #158.
 
 - **#160 — US-8.6 · Impression du ticket sur imprimante thermique** · `Must` · `M` · `feature`

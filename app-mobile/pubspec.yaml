@@ -1,5 +1,5 @@
 name: coiflink_mobile
-description: "Application mobile client CoifLink (Flutter) — squelette d'initialisation (#2)."
+description: "CoifLink Borne (Flutter) — application kiosque libre-service pour salon (US-8.5, #159)."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -35,10 +35,21 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
-  # Client HTTP de la couche data (#18) : appelle GET /catalog/salons.
-  # Première dépendance réseau du paquet ; aucune donnée sensible n'y transite.
+  # Client HTTP de la couche data (#18, #159) : catalogue salon + routes réservées au
+  # rôle KIOSK. Aucune donnée sensible n'y transite.
   http: ^1.2.0
-  share_plus: ^13.3.0
+
+  # Stockage sécurisé du credential device de la borne (US-8.5, #159) : adossé au
+  # Keystore Android (EncryptedSharedPreferences) / Keychain iOS. Le credential est
+  # obtenu une seule fois à l'activation (code à 6 chiffres, jamais saisi
+  # directement) puis persisté ici pour ne plus jamais être redemandé.
+  flutter_secure_storage: ^10.3.1
+
+  # Polices éditoriales de la borne (US-8.5, #159) : Fraunces (titres/wordmark/
+  # numéro de ticket) + Outfit (corps/formulaires/clavier/boutons), identité visuelle
+  # alignée sur le dashboard web (mêmes familles). Chargées une fois puis mises en
+  # cache par le paquet — aucun appel réseau au runtime après le premier lancement.
+  google_fonts: ^6.2.1
 
 dev_dependencies:
   flutter_test:
@@ -62,10 +73,11 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # To add assets to your application, add an assets section, like this:
-  # assets:
-  #   - images/a_dot_burr.jpeg
-  #   - images/a_dot_ham.jpeg
+  # Assets locaux du paquet. Premier ajout de ce type (US-8.5, #159) : logo générique
+  # de repli affiché par la borne quand le logo réseau du salon est indisponible
+  # (décision n°8) — jamais une URL signée, jamais de donnée sensible.
+  assets:
+    - assets/images/kiosk_logo_fallback.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

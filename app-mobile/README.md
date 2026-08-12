@@ -1,13 +1,14 @@
-# app-mobile/ — Application mobile CoifLink (Flutter)
+# app-mobile/ — CoifLink Borne (Flutter)
 
-Application mobile **client** de CoifLink, conformément à
-**[ADR-0001](../docs/adr/0001-app-mobile-flutter.md)** (Flutter · Dart · **Android prioritaire**,
-iOS conservé). Initialisé en squelette (#2), le paquet porte depuis #18 sa **première brique
-réseau** et l'écran de **recherche/liste des salons** (§7.1). Depuis #22, le paquet porte aussi le
-**tunnel de réservation client** (choix prestation → date → créneau → commentaire → confirmation) et
-une **connexion cliente minimale**. Depuis #23/#24, l'écran **« Mes rendez-vous »** liste les RDV
-actifs et permet leur **modification** et leur **annulation** (motif facultatif) ; les rappels restent
-à venir (issues M3→).
+Application **kiosque libre-service** de CoifLink : le parcours walk-in d'une borne tactile en salon
+(jalon **M7**, PRD §17, US-8.5 / #159). Conforme à
+**[ADR-0001](../docs/adr/0001-app-mobile-flutter.md)** (Flutter · Dart · **Android prioritaire**, iOS
+conservé). Un client se présente sans rendez-vous, s'identifie par téléphone, choisit une ou plusieurs
+prestations et repart avec un ticket de passage imprimé — sans jamais créer de session personnelle.
+
+Ce paquet n'a **qu'un seul mode** : il n'existe pas d'app cliente (recherche de salon, réservation, « Mes
+rendez-vous », reçus) dans ce dépôt — ces parcours vivent côté web ([`web-dashboard/`](../web-dashboard/))
+et, pour le client final, restent hors périmètre de ce paquet.
 
 ## Architecture (hexagonale — [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
 
@@ -16,13 +17,13 @@ lib/
   domain/         # entités & règles métier (Dart pur)
   application/    # cas d'usage + ports
   adapters/
-    ui/           # écrans Flutter (app.dart → CoifLinkApp)
-    data/         # API backend, stockage local (driven)
-  main.dart       # composition root (réexporte CoifLinkApp pour les tests/outils)
+    ui/kiosk/     # écrans Flutter du parcours borne (kiosk_app.dart → KioskApp)
+    data/         # API backend (driven)
+  main.dart       # composition root, point d'entrée unique
 ```
 
-La présentation vit dans `adapters/ui/` ; le domaine et les cas d'usage ne dépendent
-pas de Flutter.
+La présentation vit dans `adapters/ui/`, la couche réseau dans `adapters/data/` ; le domaine et les cas
+d'usage ne dépendent pas de Flutter.
 
 ## Prérequis
 
@@ -37,172 +38,120 @@ cd app-mobile
 flutter pub get
 ```
 
-## Lancement (dev)
+## Lancement (dev) & build
 
-L'URL de l'API backend est **injectée au build** via `--dart-define=API_BASE_URL` (jamais codée en
-dur, jamais un secret — #18, [ADR-0020](../docs/adr/0020-catalogue-salons-cote-client.md)). Défaut
-`http://10.0.2.2:8000` : l'hôte de la machine de dev **vu depuis l'émulateur Android** (jamais
-`localhost`, qui viserait l'émulateur lui-même).
+Un seul indicateur de compilation, injecté via `--dart-define` (jamais codé en dur —
+`adapters/data/api_config.dart`) : l'APK borne est **unique pour toutes les bornes**, il ne porte aucun
+secret ni identifiant de device — ceux-ci sont obtenus **à l'exécution**, une seule fois, par l'écran
+d'activation (voir section suivante).
+
+| Variable | Rôle | Défaut |
+| --- | --- | --- |
+| `API_BASE_URL` | URL de l'API backend | `http://10.0.2.2:8000` (hôte de dev vu depuis l'émulateur Android) |
 
 ```bash
-flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000   # émulateur Android
-```
+# Lancement dev (même APK pour toutes les bornes ; active-la au premier lancement, voir plus bas)
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 
-## Build & test
+# Build APK borne
+flutter build apk --dart-define=API_BASE_URL=https://api.coiflink.example
+
+# Override de dev local uniquement (prévisualiser l'écran d'accueil sans activation) :
+# salon figé en dur, aucune route réservée au rôle KIOSK ne fonctionne (identification/ticket échouent).
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000 --dart-define=KIOSK_SALON_ID=<uuid>
+```
 
 | Action | Commande |
 | --- | --- |
-| **Build** (Android, cible prioritaire) | `flutter build apk --dart-define=API_BASE_URL=https://api.coiflink.example` |
-| **Test** (test gate, cf. #6) | `flutter test` |
+| Test (test gate, cf. #6) | `flutter test` |
 | Analyse statique | `flutter analyze` |
 
-## Catalogue de salons (#18)
+## Activation (une seule fois) puis authentification silencieuse
 
-Premier flux data du paquet (hexagonal, [ADR-0008](../docs/adr/0008-architecture-hexagonale.md)) :
+L'APK borne est **unique pour toutes les bornes** : il ne contient aucun secret ni identifiant de device.
+Au tout premier lancement, `KioskBootstrap` constate l'absence de credential stocké
+(`KioskCredentialStore.read()` renvoie `null`) et affiche `KioskActivationScreen` — un pavé numérique
+interne (jamais le clavier natif) pour saisir le **code d'activation à 6 chiffres** remis par le gérant
+(lu sur la réponse de provisioning côté backend, `POST /salons/{id}/kiosk-devices`, hors périmètre de ce
+paquet). Ce code s'échange **une seule fois** contre le credential longue durée de la borne
+(`KioskActivationGateway.activate`, `POST /auth/kiosk/activate`, route publique comme `/auth/kiosk/login`)
+puis se persiste localement (`SecureKioskCredentialStore`, Android Keystore / iOS Keychain via
+`flutter_secure_storage`) — la borne ne redemandera plus jamais ce code, y compris après redémarrage.
 
-- `domain/salon/salon_summary.dart` — entité de vitrine (`SalonSummary`, `isBookable` §8.3) ;
-- `application/ports/salon_catalog_gateway.dart` — port `SalonCatalogGateway` (+ `SalonSearchQuery`,
-  `SalonPage`, `SalonCatalogException`, `SalonNotFoundException`) ;
-- `application/use_cases/search_salons.dart` — cas d'usage `SearchSalons` (normalisation, bornes) ;
-- `adapters/data/api_config.dart` — `API_BASE_URL` via `--dart-define` ;
-- `adapters/data/http_salon_catalog_gateway.dart` — `GET /catalog/salons` (`http`), mapping JSON →
-  domaine ; **ne journalise ni URL signée ni PII** ;
-- `adapters/ui/salon_search_screen.dart` + `widgets/salon_card.dart` — recherche (debounce), filtre
-  ville, pagination incrémentale, états **chargement / vide / erreur**, badge « Réservable » /
-  « Bientôt disponible » (§8.3).
+À chaque lancement suivant (credential déjà stocké), la borne s'authentifie **silencieusement**, sans
+interaction utilisateur : `KioskDeviceSession` échange le credential persisté contre un jeton via
+`POST /auth/kiosk/login`. Ce credential appartient au **terminal**, jamais à un client de passage ; il
+n'existe **aucune notion de session personnelle** dans ce binaire (garantie structurelle : aucun écran de
+connexion, aucun formulaire de mot de passe visible du client).
 
-Le domaine et les cas d'usage ne dépendent **pas** de Flutter ; seuls `adapters/ui` et `adapters/data`
-importent `flutter`/`http`.
+- Credential refusé (`401`, borne révoquée) → credential **effacé** localement, retour à
+  `KioskActivationScreen` (rien d'autre à réparer depuis l'écran : la borne doit être réactivée avec un
+  nouveau code).
+- Échec réseau/serveur → `KioskUnavailableScreen` (message neutre, bouton Réessayer) ; le credential
+  stocké est **conservé** (il est peut-être toujours valide, c'est le serveur qui est momentanément
+  indisponible).
+- Succès → le `salon_id` de la borne provient de la réponse du login (aucune valeur de salon compilée en
+  dur) → écran d'accueil.
 
-## Fiche salon — consultation (#19, [ADR-0021](../docs/adr/0021-consultation-salon-cote-client.md))
+Voir `adapters/ui/kiosk/kiosk_bootstrap.dart` (widget public, testable directement, machine à 4 états :
+chargement / activation / indisponible / prêt), `adapters/ui/kiosk/kiosk_activation_screen.dart` et
+`application/kiosk_device_session.dart`.
 
-Extension hexagonale de la couche #18 : taper une carte de la liste ouvre la **fiche de détail** d'un
-salon.
+## Parcours borne (`lib/adapters/ui/kiosk/`)
 
-- `domain/salon/salon_detail.dart`, `salon_service.dart`, `opening_hours.dart` — entités de détail
-  (identité + `phone` + localisation + horaires + prestations + photos + `isBookable`), pures ;
-- `application/ports/salon_catalog_gateway.dart` — méthode `getSalon(String id)` ; un `404` remonte en
-  `SalonNotFoundException` (état « introuvable » distinct d'une erreur réseau) ;
-- `application/use_cases/get_salon_detail.dart` — cas d'usage `GetSalonDetail` ;
-- `adapters/data/http_salon_catalog_gateway.dart` — `GET /catalog/salons/{id}`, mapping JSON →
-  `SalonDetail` (services, `opening_hours`, photos) ;
-- `adapters/ui/salon_detail_screen.dart` + `widgets/opening_hours_view.dart`,
-  `widgets/service_list_tile.dart` — en-tête (logo, nom, localisation, badge `isBookable`), horaires
-  par jour, prestations + **prix**, téléphone, et le **point d'entrée réservation** : un bouton
-  « Réserver » **dérivé de `isBookable`** (désactivé « Bientôt disponible » si `false`) qui ouvre le
-  **tunnel de réservation** (#22) quand un lanceur est câblé, ou reste inerte sinon (contextes/tests
-  sans réservation) ; états **chargement / introuvable / erreur** ;
-- **navigation** : `salon_card` devient cliquable → `Navigator.push` vers la fiche (l'app n'avait
-  jusqu'ici que l'écran de recherche).
+`kiosk_app.dart` (composition root) → `kiosk_bootstrap.dart` (activation puis amorçage, ci-dessus) puis,
+huit écrans :
 
-La « disponibilité » de la fiche se limite à `isBookable` (§8.3) + affichage des horaires ; le
-**calcul de créneaux libres** est consommé par le tunnel de réservation (#22, ci-dessous).
+1. **Accueil** (`kiosk_home_screen.dart`) — logo/nom du salon (repli sur
+   `assets/images/kiosk_logo_fallback.png`), CTA « Commencer ». Appui long caché sur le logo = geste de
+   sortie (`kiosk_exit_gate.dart`).
+2. **Identification par téléphone** (`kiosk_phone_identification_screen.dart` +
+   `kiosk_numeric_keypad.dart`, #156) — pavé numérique interne (jamais le clavier natif, §11.3).
+   Fiche trouvée → affiche **le prénom seul** puis enchaîne **automatiquement** (aucune confirmation
+   manuelle) ; fiche absente → création ; erreur réseau → réessai, **toujours en direct** (décision n°9).
+3. **Création de fiche** (`kiosk_create_customer_screen.dart`, #156) — prénom/nom/téléphone, **sans mot
+   de passe**.
+4. **Choix des prestations** (`kiosk_service_selection_screen.dart` + `kiosk_service_card.dart`, #158) —
+   grille **2 colonnes fixes**, photo, sélection **multiple** (`service_ids` au pluriel, #157).
+5. **Vérification** (`kiosk_confirm_screen.dart`) — récapitulatif client + prestations avant tout appel
+   réseau ; « Confirmer » crée le ticket (`POST /salons/{id}/queue/tickets`, #157), « Modifier mon choix »
+   revient au choix de prestations sans rien avoir créé.
+6. **Numéro de passage** (`kiosk_ticket_number_screen.dart`) — numéro géant, heure, attente estimée ;
+   écran de lecture pure, enchaîne seul vers l'impression après un court délai.
+7. **Impression** (`kiosk_print_screen.dart`, #160) — aperçu imprimable (`ticket_preview.dart`, bordure
+   pointillée), séquence d'impression encadrée par le minuteur d'inactivité, message neutre par type
+   d'échec (`PrinterNotConnected`/`OutOfPaper`/`WriteFailed`) — un échec d'impression **n'interrompt
+   jamais** le parcours, le numéro reste affiché. « Terminer » revient à l'accueil.
 
-## Réservation client (#22, [ADR-0024](../docs/adr/0024-reservation-cote-client.md))
+`kiosk_unavailable_screen.dart` couvre tout échec réseau bloquant (amorçage, catalogue) ;
+`kiosk_exit_gate.dart` pose le geste caché de sortie (PIN gérant, vérification non tranchée, §H — geste
+**inerte** tant que la vérification n'est pas prête).
 
-Tunnel de réservation guidé branché sur le bouton « Réserver » de la fiche, au-dessus des endpoints
-livrés par #21 (`GET /catalog/salons/{id}/availability` **public** et `POST /salons/{id}/appointments`
-client) — **backend inchangé**. Découpage hexagonal :
+## Minuteur d'inactivité (`kiosk_inactivity_guard.dart`, décision n°7)
 
-- `domain/appointment/appointment.dart`, `availability_slot.dart`, `appointment_status.dart` — value
-  objects purs + `enum AppointmentStatus` (mapping `PENDING → « En attente »`, valeur inconnue tolérée) ;
-- `application/ports/appointment_gateway.dart` — port `AppointmentGateway` (+ `BookingDraft` et
-  exceptions **neutres** `AppointmentGatewayException` / `SlotTakenException` / `NotBookableException`
-  / `UnauthorizedException`) ; `application/ports/auth_gateway.dart`, `token_store.dart`,
-  `application/auth_session.dart` — connexion cliente & session ;
-- `application/use_cases/check_availability.dart`, `book_appointment.dart`, `sign_in.dart` — cas
-  d'usage (validations amont : date non passée, ≥ 1 prestation) ;
-- `adapters/data/http_appointment_gateway.dart`, `http_auth_gateway.dart` — adapters HTTP (mapping
-  JSON → domaine, codes `201`/`401`/`409`/`404`/réseau, en-tête `Authorization: Bearer`) ;
-- `adapters/ui/booking/` (tunnel + confirmation) et `adapters/ui/auth/login_screen.dart` — écrans.
+Posé **une seule fois** via `MaterialApp.builder`, au-dessus du `Navigator` : 60 s sans interaction →
+retour à l'accueil (`popUntil(isFirst)`), remise à zéro sur **toute** interaction (`Listener` translucide,
+avant l'arène de gestes). **Suspendu** pendant l'impression du ticket, avec un **plafond de 15 s**
+indépendant du signal de reprise (retour garanti même si le plugin d'impression plante), et pendant la
+saisie du PIN gérant (`pauseForModal`).
 
-**Prérequis session** : le `POST` exige un JWT client (`APPOINTMENT_BOOK`). Le tunnel demande une
-connexion (`POST /auth/login`) au moment de confirmer si aucune session n'est active. Le jeton vit
-derrière un port `TokenStore` — implémentation **en mémoire** au MVP (session perdue au redémarrage ;
-bascule vers un magasin sécurisé de plateforme = simple remplacement d'implémentation, ADR-0024).
+## Ports & adaptateurs (hexagonal, [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
 
-**Portée MVP** : **une seule** prestation par réservation (cohérent avec la disponibilité
-mono-`service_id`), choix **optionnel** d'une coiffeuse `ACTIVE` du salon (#150, étape dédiée du
-tunnel — « Peu importe » laisse le salon assigner), horizon de date de **30 jours**, repère
-**Africa/Abidjan (UTC+0)**. Statut initial **« En attente »** affiché depuis la réponse du `POST`.
+`application/ports/{kiosk_activation,kiosk_auth,kiosk_identity,kiosk_queue,salon_catalog,ticket_printer}_gateway.dart`
++ `application/ports/kiosk_credential_store.dart`, implémentés respectivement par
+`adapters/data/http_{kiosk_activation,kiosk_auth,kiosk_identity,kiosk_queue,salon_catalog}_gateway.dart`,
+`adapters/data/noop_ticket_printer_gateway.dart` (place-tenant jusqu'à l'adaptateur ESC/POS de #160) et
+`adapters/data/secure_kiosk_credential_store.dart` (routes réservées au rôle **KIOSK**, en-tête
+`Authorization: Bearer` du device, jamais un jeton personnel — retry unique après ré-authentification sur
+`401`, `adapters/data/kiosk_http_retry.dart`). `application/kiosk_device_session.dart` échange le
+credential contre une session device et expose le `salon_id`.
 
-**Garde-fous (§11)** : le corps de réservation n'envoie **jamais** `client_id`/`salon_id`/`status`
-(imposés serveur) ; aucun jeton, URL, corps ni PII n'est **journalisé** ; les exceptions portent des
-messages **génériques**. Un `409` créneau pris → retour à l'étape créneaux rafraîchie ; un `401` →
-reconnexion.
+## Garde-fous (§11)
 
-## Mes rendez-vous — modification & annulation (#23/#24, [ADR-0025](../docs/adr/0025-annulation-rendez-vous-client.md))
-
-L'écran **« Mes rendez-vous »** (`adapters/ui/appointments/my_appointments_screen.dart`) liste les RDV
-**actifs** du client (`GET /appointments`) et porte deux actions par carte, **désactivées** pour un RDV
-terminé/terminal (miroir d'affichage — le serveur reste juge, §8.1) :
-
-- **Modifier** (#23) — rouvre le tunnel pré-rempli (`PATCH /appointments/{id}`) ;
-- **Annuler** (#24) — ouvre une **confirmation** avec un champ **motif facultatif** puis appelle
-  `POST /appointments/{id}/cancellation`.
-
-Découpage pour l'annulation :
-
-- `domain/appointment/appointment.dart` — `isClientCancellable` (états `pending`/`confirmed`) ;
-- `application/ports/appointment_gateway.dart` — `AppointmentGateway.cancel(...)` + exception **neutre**
-  `NotCancellableException` (`409`) ;
-- `application/use_cases/cancel_appointment.dart` — refus **en amont** d'un RDV non annulable, puis
-  délégation au port ;
-- `adapters/data/http_appointment_gateway.dart` — `POST .../cancellation` (mapping `200 → Appointment`
-  « Annulé », `401 → Unauthorized`, `409 → NotCancellable`, `404 → AppointmentNotFound`).
-
-**Garde-fous (§11)** : le corps d'annulation n'envoie **jamais** `client_id`/`salon_id`/`status` — seul
-un **motif facultatif** (`reason`), **omis s'il est vide** et **jamais journalisé** (donnée cliente).
-Au succès, la liste se rafraîchit (le RDV annulé la quitte). `409` → message + rafraîchissement ; `401`
-→ session invalidée → reconnexion. Le jeton n'apparaît dans **aucun** log.
-
-## Mon historique — RDV terminés (US-4.4, #30)
-
-L'écran **« Mon historique »** (`adapters/ui/appointments/appointment_history_screen.dart`) liste, **en
-lecture seule**, les RDV **terminés** (`COMPLETED`) du client via `GET /appointments/history` : date,
-horaires, statut « Terminé » et prestations avec leur **montant figé** (`priceAtBooking`, FCFA). Un RDV
-terminé est terminal (§8.1) : **aucun** bouton modifier/annuler. Le client ne voit que **ses propres**
-RDV réalisés — le statut est **forcé serveur** (« rien d'autre »). Un bouton **« Mon historique »** sur
-l'accueil ouvre l'écran (patron « Mes rendez-vous »).
-
-Découpage (extension **additive** du chemin rendez-vous) :
-
-- `application/ports/appointment_gateway.dart` — `AppointmentGateway.myHistory({accessToken})` ;
-- `application/use_cases/list_my_appointment_history.dart` — cas d'usage dédié (miroir de
-  `ListMyAppointments`) ;
-- `adapters/data/http_appointment_gateway.dart` — `myHistory` (`GET /appointments/history`,
-  `Authorization: Bearer` ; mapping `200 → List<Appointment>`, `401 → Unauthorized`, défaut →
-  `AppointmentGatewayException` neutre) ;
-- `adapters/ui/appointments/appointment_history_screen.dart` — écran lecture seule (chargement, liste,
-  **vide** « aucun rendez-vous terminé » ≠ erreur, non-authentifié → `onRequireLogin`, `401` → session
-  invalidée, erreur réseau → réessayer, pull-to-refresh).
-
-**Garde-fous (§11)** : l'adapter ne journalise **ni** URL, **ni** corps, **ni** jeton, **ni** PII ; les
-échecs deviennent des exceptions **neutres**. Aucune donnée de gestion ni RDV d'un tiers n'est exposée.
-
-## Mes reçus — reçus de paiement (US-5.5, #38 · [ADR-0040](../docs/adr/0040-impression-recu-encaissement-gerant.md))
-
-L'écran **« Mes reçus »** (`adapters/ui/receipts/receipts_screen.dart`) liste, **en lecture seule**, les
-reçus de paiement du client via `GET /me/receipts` (déjà livré par #38 — **aucun** changement backend
-pour cette tranche) : salon, numéro de reçu (`REC-000042`), date, montant. Tapoter un reçu ouvre son
-détail (`receipt_detail_screen.dart`, `GET /me/receipts/{payment_id}`) : prestations, mode de paiement,
-statut, référence, et un bouton **« Partager »** qui envoie un texte formaté au partage natif du
-téléphone (`share_plus`) — **aucune** impression thermique réelle depuis le mobile (réservée au gérant,
-ADR-0040). Un bouton **« Mes reçus »** sur l'accueil ouvre l'écran (patron « Mon historique »).
-
-Découpage :
-
-- `domain/receipt/receipt.dart` — `Receipt`/`ReceiptLine`, domaine pur ;
-- `application/ports/receipt_gateway.dart` — `ReceiptGateway` (`myReceipts`, `receiptDetail`) +
-  exceptions neutres (`UnauthorizedException`, `ReceiptNotFoundException`) ;
-- `application/use_cases/list_my_receipts.dart` / `get_receipt_detail.dart` — délégation pure ;
-- `adapters/data/http_receipt_gateway.dart` — mapping `200 → Receipt(s)`, `401 → Unauthorized`,
-  `404 → ReceiptNotFoundException` (détail), défaut → `ReceiptGatewayException` neutre ;
-- `adapters/ui/receipts/receipts_screen.dart` + `receipt_detail_screen.dart` — écrans lecture seule
-  (chargement, liste **vide** ≠ erreur, non-authentifié → `onRequireLogin`, `401` → session invalidée,
-  `404` → « Retour à la liste », erreur réseau → réessayer) ;
-- `adapters/ui/receipts/receipt_share_text.dart` — formatage pur du texte partagé, testable sans
-  harnais widget.
-
-**Garde-fous (§11)** : l'adapter ne journalise **ni** URL, **ni** corps, **ni** jeton, **ni** PII. Le
-texte partagé ne contient **aucun** jeton.
+Aucune PII à l'écran au-delà du **prénom** ; **aucun** nom/téléphone sur le ticket imprimé
+(`TicketPrintPayload` : salon, numéro, date, prestations) ; identification et création de ticket
+**toujours en direct** (jamais de mode dégradé, décision n°9) ; purge de fin de parcours par
+**disposition de widgets** (rien n'est écrit hors du `State` de l'écran courant) ; le credential device
+n'est **jamais** journalisé ni saisi directement à l'écran (seul le code d'activation à 6 chiffres, à usage
+unique, l'est) — il est stocké **chiffré** sur l'appareil (Android Keystore / iOS Keychain via
+`flutter_secure_storage`), jamais en clair, jamais compilé dans le binaire.

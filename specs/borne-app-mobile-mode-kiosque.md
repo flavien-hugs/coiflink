@@ -53,7 +53,7 @@ de #159 parmi les cinq écrans à livrer (voir plus bas) et que cette spec chois
 
 ### État actuel du dépôt — vérifié par lecture directe
 
-- **`app-mobile/lib/main.dart`** (17 lignes) est l'unique point d'entrée aujourd'hui : il délègue
+- **`app-mobile/lib/main.dart`** (18 lignes, dont un `export`) est l'unique point d'entrée aujourd'hui : il délègue
   tout à `CoifLinkApp` (`lib/adapters/ui/app.dart:40-193`), la composition root unique qui assemble
   `ApiConfig`, les gateways HTTP, `AuthSession`/`InMemoryTokenStore` et pousse `AccueilEcran`
   (`app.dart:195-276`) comme `home:` du `MaterialApp`. **Aucun second point d'entrée n'existe.**
@@ -79,9 +79,9 @@ de #159 parmi les cinq écrans à livrer (voir plus bas) et que cette spec chois
   celui-ci à zéro (voir *Proposed Implementation*).
 - **`_ServiceStep`** (`booking_flow_screen.dart:489-534`) et **`_HairdresserStep`**
   (`booking_flow_screen.dart:536-589`) sont les deux écrans de sélection du tunnel de réservation :
-  `ListView` de `ListTile` à sélection **unique** (icône radio manuelle), sans photo (`SalonService`,
-  `domain/salon/salon_service.dart:9-36`, ne porte pas de champ image à ce jour — #158 doit
-  l'ajouter). `_HairdresserStep` propose une option « Peu importe » — **non pertinente pour #159** :
+  `ListView` de `ListTile` à sélection **unique** (icône radio manuelle), sans photo — `SalonService`
+  porte désormais un champ `imageUrl` (`domain/salon/salon_service.dart:19,43`, livré par #158) que
+  ces `ListTile` n'affichent simplement pas. `_HairdresserStep` propose une option « Peu importe » — **non pertinente pour #159** :
   le PRD §17.3 lie le choix de coiffeuse à l'« affichage temps réel des coiffeurs disponibles »,
   explicitement **hors scope de M7** (voir *Non-Goals*) ; #159 n'adapte donc **que** `_ServiceStep`.
 - **`booking_confirmation_screen.dart`** (106 lignes) est un écran de confirmation *statique*
@@ -107,10 +107,14 @@ de #159 parmi les cinq écrans à livrer (voir plus bas) et que cette spec chois
   (lignes 30-41) ; la section `assets:` (lignes 65-74) est **entièrement commentée** — aucun asset
   local (image, police) n'existe dans ce paquet à ce jour. Le repli « logo générique bundlé si
   hors-ligne » (décision produit n°8) sera donc le **premier** asset embarqué du paquet mobile.
-- **Dépendances amont toutes spécifiées.** Les sept specs du jalon existent désormais sous
-  `specs/borne-*.md` — dont `borne-role-authentification-kiosque.md` (#155) et
-  `borne-identification-telephone-client-walkin.md` (#156), qui fixent les contrats attendus par
-  #159 (le code, lui, reste à livrer). Concrètement pour #159 :
+- **Dépendances amont désormais livrées.** Les sept specs du jalon existent sous `specs/borne-*.md`,
+  et les briques backend dont dépend #159 sont **livrées** : #155
+  (`borne-role-authentification-kiosque.md` → `POST /auth/kiosk/login`, `kiosk-devices`), #156
+  (`borne-identification-telephone-client-walkin.md` → `kiosk/customers/lookup`, `kiosk/customers`),
+  #157 (`POST /salons/{id}/queue/tickets`) et #158 (`image_url` catalogue) — vérifié par lecture
+  directe du backend (`adapters/inbound/{auth,kiosk_devices,kiosk_customers,queue_tickets}.py`) et du
+  modèle Flutter (`SalonService.imageUrl`). Il reste à **revalider** les noms de ports/méthodes côté
+  client contre le code livré (voir *Risks*). Concrètement pour #159 :
   - la **forme du credential device** est fixée par la spec de #155 : le device s'authentifie via
     `POST /auth/kiosk/login`, dont la réponse **inclut le `salon_id`** de la borne — c'est ainsi
     que le client Flutter connaît son salon (voir §C), un APK unique servant toutes les bornes ;
@@ -127,11 +131,11 @@ de #159 parmi les cinq écrans à livrer (voir plus bas) et que cette spec chois
     service_ids}` (`specs/borne-ticket-file-attente-walkin.md`, section *API / Interface Changes*) —
     `ticket_number` y est un **entier brut**, jamais pré-formaté côté client (le formatage
     « N° 014 » appartient au formateur ESC/POS de #160) ;
-  - le champ **`image_url`** de #158 est également déjà spécifié : ajouté à
-    `PublicServiceResponse`/`PublicServiceView` (`specs/borne-photo-prestation-catalogue-public.md`),
-    et au modèle Flutter `SalonService` + `_serviceFromJson`
-    (`http_salon_catalog_gateway.dart:167-177`) — #159 peut donc consommer `SalonService.imageUrl`
-    dès que #158 est livrée, sans supposition supplémentaire.
+  - le champ **`image_url`** de #158 est désormais **livré** (git `2dc5c10`, PR #165) : exposé par
+    `PublicServiceResponse`/`PublicServiceView` côté backend, et déjà présent sur le modèle Flutter
+    `SalonService.imageUrl` (`domain/salon/salon_service.dart:19,43`) et son parseur
+    (`http_salon_catalog_gateway.dart:176`, `imageUrl: json['image_url']`) — #159 peut donc
+    consommer `SalonService.imageUrl` **dès maintenant**, sans supposition supplémentaire.
   - la spec de #160 (impression) s'appuie sur un dossier `lib/adapters/ui/kiosk/` (patron
     `adapters/ui/{receipts,booking}/`) où déposer son widget `ticket_preview.dart` — cette spec
     **confirme** ce chemin et l'utilise comme structure de dossier de référence (voir *Proposed
@@ -214,7 +218,7 @@ paiement autonome sur la borne.
 - **Le domaine `QueueTicket`, la numérotation et la formule d'ETA.** #159 affiche le
   `estimated_wait_minutes` et le `ticket_number` **déjà calculés** par #157 ; aucun calcul n'est
   refait côté client.
-- **`image_url` côté catalogue public.** #159 **lit** `SalonService.imageUrl` une fois #158 livrée ;
+- **`image_url` côté catalogue public.** #159 **lit** `SalonService.imageUrl` (livré par #158) ;
   il ne touche ni au backend ni au mécanisme de résolution d'URL signée.
 - **L'adaptateur d'impression thermique concret.** #159 **appelle** le port `TicketPrinterGateway`
   et respecte le contrat UX défini par la spec de #160 (§F de cette dernière : trois messages
@@ -247,11 +251,11 @@ paiement autonome sur la borne.
 | Réservation client | `ApiConfig.fromEnvironment()`, DI manuelle dans `adapters/ui/app.dart` | [0024](../docs/adr/0024-reservation-cote-client.md) |
 | Reçu — impression/partage | `window.print()` (gérant) ; `share_plus` (client) ; aucune impression thermique mobile avant #160 | [0040](../docs/adr/0040-impression-recu-encaissement-gerant.md) |
 
-`docs/adr/` s'arrête aujourd'hui à **ADR-0040** (confirmé par `ls docs/adr | tail`) : le jalon M7
-produit **deux** ADR distinctes — **ADR-0041** (authentification borne kiosque, committée avec
-l'implémentation de #155) et **ADR-0042** (file d'attente walk-in `QueueTicket`, committée avec
-#157) ; #161 en vérifie la présence et met à jour l'index `docs/adr/README.md`. #159 ne crée
-**pas** sa propre ADR (voir *Documentation Updates*).
+`docs/adr/` va désormais jusqu'à **ADR-0042** : le jalon M7 a produit **deux** ADR distinctes —
+**ADR-0041** (authentification borne kiosque, committée avec #155) et **ADR-0042** (file d'attente
+walk-in `QueueTicket`, committée avec #157), toutes deux **présentes** ; #161 en vérifie la présence
+et met à jour l'index `docs/adr/README.md`. #159 ne crée **pas** sa propre ADR (voir *Documentation
+Updates*).
 
 ### Composition root actuelle — patron à décliner, pas à réutiliser tel quel
 
@@ -285,9 +289,10 @@ l'implémentation de #155) et **ADR-0042** (file d'attente walk-in `QueueTicket`
   de la fiche salon, sans photo — également non repris tel quel (grille avec photo attendue, voir
   §F.4), mais confirme que `SalonService.price`/`durationMinutes` sont déjà tolérants à l'absence
   (`String?`/`int?`).
-- `lib/domain/salon/salon_service.dart:9-36` : **pas encore** de champ `imageUrl` à ce jour (aucune
-  ligne `image` trouvée par lecture directe) — apparaîtra avec #158 ; #159 en dépend directement
-  pour la grille de prestations en photo (voir *Non-Goals*, #158 n'est pas réimplémentée ici).
+- `lib/domain/salon/salon_service.dart:11-44` : le champ `imageUrl` (URL signée à durée limitée) est
+  **désormais présent** (`:19,43`, livré par #158) et parsé par `http_salon_catalog_gateway.dart:176` ;
+  #159 en dépend directement pour la grille de prestations en photo (voir *Non-Goals*, #158 n'est
+  pas réimplémentée ici).
 
 ### Écran de confirmation existant — patron de mise en page, pas de comportement
 
@@ -1089,12 +1094,13 @@ ainsi que les questions ouvertes propres à cette spec.
 - **Ajout d'une étape de build kiosque à `ci.yml`.** Recommandé (*Testing Plan*) mais non requis
   par l'acceptation littérale de #159 — **à confirmer** avec le porteur produit/l'équipe CI, le
   coût étant marginal (un second `flutter build apk --debug -t ...`).
-- **Dérive éventuelle des contrats de #155/#156 à la livraison.** Les contrats sont désormais
-  fixés par les specs sœurs (`POST /auth/kiosk/login` et le credential device pour #155 ;
-  lookup/création `{customer_id, first_name}` pour #156) ; les noms de ports
-  (`HttpKioskIdentityGateway`, `HttpKioskQueueGateway`) et de méthodes (`findByPhone`,
-  `createCustomer`) restent des choix propres à #159. **À revalider en tout début
-  d'implémentation de #159** contre le code réellement livré, une fois ces deux issues closes.
+- **Dérive éventuelle des contrats de #155/#156/#157 à la livraison.** Ces briques backend sont
+  désormais **livrées** (`POST /auth/kiosk/login` + le credential device pour #155 ;
+  lookup/création `{customer_id, first_name}` pour #156 ; `POST /salons/{id}/queue/tickets` pour
+  #157) ; les noms de ports (`HttpKioskIdentityGateway`, `HttpKioskQueueGateway`) et de méthodes
+  (`findByPhone`, `createCustomer`, `joinQueue`) restent des choix propres à #159. **À revalider en
+  tout début d'implémentation de #159** contre le code réellement livré (formes JSON exactes,
+  en-têtes d'authentification device).
 
 ## Implementation Checklist
 
@@ -1104,9 +1110,9 @@ ainsi que les questions ouvertes propres à cette spec.
    `lib/application/ports/token_store.dart`, `lib/adapters/data/api_config.dart`,
    `lib/adapters/ui/salon_search_screen.dart` (debounce) — s'imprégner des patrons existants et de
    leurs limites documentées.
-2. **Vérifier l'état de #155/#156/#157/#158** au moment de démarrer l'implémentation (les specs
-   existent toutes ; vérifier le code réellement livré) — ajuster les noms de ports/méthodes de
-   cette spec au contrat réel.
+2. **Revalider les contrats livrés de #155/#156/#157/#158** au démarrage de l'implémentation (specs
+   **et** code backend désormais livrés) — ajuster les noms de ports/méthodes de cette spec aux
+   formes JSON et en-têtes réels.
 3. **Trancher les questions ouvertes** structurantes (US-003/branche RDV, bouton « sans
    identification », mécanisme de vérification du PIN de sortie, chronologie `connect()` imprimante
    proactif) avant d'écrire du code.
