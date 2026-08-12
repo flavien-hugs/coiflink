@@ -16,6 +16,7 @@ import { CheckIcon, ClockIcon, CoinsIcon, PersonIcon, XIcon } from "@/src/adapte
 import { EmptyState } from "@/src/adapters/ui/empty-state";
 import { RecordPaymentForm } from "@/src/adapters/ui/record-payment-form";
 import { TablePagination, useClientPagination } from "@/src/adapters/ui/table-pagination";
+import { Tabs } from "@/src/adapters/ui/tabs";
 import type { Employee } from "@/src/domain/employee/employee";
 import {
   QUEUE_STATUS_LABELS_FR,
@@ -146,6 +147,140 @@ export function QueueBoard({
 
   const isPending = (appointmentId: string) => pending?.id === appointmentId;
 
+  const appointmentsTab = (
+    <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-soft">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-260 text-left text-sm">
+          <thead className="bg-background/70 text-xs font-semibold text-muted">
+            <tr>
+              <th className="w-12 px-4 py-3">#</th>
+              <th className="px-4 py-3">Heure</th>
+              <th className="px-4 py-3">Cliente</th>
+              <th className="px-4 py-3">Prestation(s)</th>
+              <th className="px-4 py-3">Coiffeuse</th>
+              <th className="px-4 py-3">Statut</th>
+              <th className="px-4 py-3 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border bg-surface">
+            {entryPagination.items.map((entry, index) => {
+              const busy = isPending(entry.appointmentId);
+              const style = QUEUE_STATUS_STYLES[entry.queueStatus];
+              return (
+                <tr key={entry.appointmentId} className="align-top">
+                  <td className="px-4 py-3 font-medium text-muted">
+                    {entryPagination.offset + index + 1}
+                  </td>
+                  <td className="px-4 py-3 font-medium">
+                    {formatTime(entry.startTime)}–{formatTime(entry.endTime)}
+                  </td>
+                  <td className="px-4 py-3 font-semibold">{entry.clientName ?? "—"}</td>
+                  <td className="max-w-[220px] px-4 py-3 text-muted">
+                    {entry.serviceNames.length > 0 ? entry.serviceNames.join(", ") : "—"}
+                  </td>
+                  <td className="px-4 py-3">
+                    <select
+                      aria-label={`Assigner une coiffeuse — ${entry.clientName ?? "cliente"}`}
+                      className="h-9 rounded-lg border border-border bg-surface px-2 text-sm text-foreground outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/25 disabled:cursor-default disabled:opacity-60"
+                      value={entry.hairdresserId ?? ""}
+                      disabled={busy || entry.status !== "CONFIRMED"}
+                      onChange={(event) => onAssign(entry, event.target.value)}
+                    >
+                      <option value="">Non assignée</option>
+                      {availableHairdressers.map((hairdresser) => (
+                        <option key={hairdresser.id} value={hairdresser.id}>
+                          {hairdresser.fullName}
+                        </option>
+                      ))}
+                      {entry.hairdresserId &&
+                      !availableHairdressers.some((h) => h.id === entry.hairdresserId) ? (
+                        <option value={entry.hairdresserId}>
+                          {entry.hairdresserName ?? "Coiffeuse désactivée"}
+                        </option>
+                      ) : null}
+                    </select>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-xs font-medium ${style.badge}`}
+                    >
+                      {QUEUE_STATUS_LABELS_FR[entry.queueStatus]}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {canMarkArrived(entry) && entry.arrivedAt === null ? (
+                        <button
+                          type="button"
+                          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium transition hover:border-accent/40 disabled:cursor-default disabled:opacity-60"
+                          onClick={() => onMarkArrived(entry)}
+                          disabled={busy}
+                        >
+                          <ClockIcon className="shrink-0" />
+                          Marquer l&apos;arrivée
+                        </button>
+                      ) : null}
+                      {canStartService(entry) ? (
+                        <button
+                          type="button"
+                          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1.5 text-xs font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0"
+                          onClick={() => onStart(entry)}
+                          disabled={busy}
+                        >
+                          <CheckIcon className="shrink-0" />
+                          Démarrer
+                        </button>
+                      ) : null}
+                      {canComplete(entry) && entry.queueStatus === "in_progress" ? (
+                        <button
+                          type="button"
+                          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1.5 text-xs font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0"
+                          onClick={() => onComplete(entry)}
+                          disabled={busy}
+                        >
+                          <CheckIcon className="shrink-0" />
+                          Terminer
+                        </button>
+                      ) : null}
+                      {canMarkPaid(entry) ? (
+                        <button
+                          type="button"
+                          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-palm/30 bg-palm/10 px-2.5 py-1.5 text-xs font-medium text-palm transition hover:bg-palm/20 disabled:cursor-default disabled:opacity-60"
+                          onClick={() => setPaymentAppointmentId(entry.appointmentId)}
+                          disabled={busy}
+                        >
+                          <CoinsIcon className="shrink-0" />
+                          Marquer payée
+                        </button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {entries.length === 0 ? (
+              <tr>
+                <td colSpan={7}>
+                  <EmptyState
+                    icon={<PersonIcon className="size-6" />}
+                    title="Aucun rendez-vous en file pour ce jour."
+                    description="Les rendez-vous confirmés du jour apparaîtront ici."
+                  />
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+      <TablePagination
+        label="la file d'attente"
+        page={entryPagination.page}
+        totalItems={entries.length}
+        onPageChange={entryPagination.setPage}
+      />
+    </div>
+  );
+
   return (
     <div className="flex flex-col gap-4">
       {error ? (
@@ -157,139 +292,17 @@ export function QueueBoard({
         </p>
       ) : null}
 
-      <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-soft">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-260 text-left text-sm">
-            <thead className="bg-background/70 text-xs font-semibold text-muted">
-              <tr>
-                <th className="w-12 px-4 py-3">#</th>
-                <th className="px-4 py-3">Heure</th>
-                <th className="px-4 py-3">Cliente</th>
-                <th className="px-4 py-3">Prestation(s)</th>
-                <th className="px-4 py-3">Coiffeuse</th>
-                <th className="px-4 py-3">Statut</th>
-                <th className="px-4 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border bg-surface">
-              {entryPagination.items.map((entry, index) => {
-                const busy = isPending(entry.appointmentId);
-                const style = QUEUE_STATUS_STYLES[entry.queueStatus];
-                return (
-                  <tr key={entry.appointmentId} className="align-top">
-                    <td className="px-4 py-3 font-medium text-muted">
-                      {entryPagination.offset + index + 1}
-                    </td>
-                    <td className="px-4 py-3 font-medium">
-                      {formatTime(entry.startTime)}–{formatTime(entry.endTime)}
-                    </td>
-                    <td className="px-4 py-3 font-semibold">{entry.clientName ?? "—"}</td>
-                    <td className="max-w-[220px] px-4 py-3 text-muted">
-                      {entry.serviceNames.length > 0 ? entry.serviceNames.join(", ") : "—"}
-                    </td>
-                    <td className="px-4 py-3">
-                      <select
-                        aria-label={`Assigner une coiffeuse — ${entry.clientName ?? "cliente"}`}
-                        className="h-9 rounded-lg border border-border bg-surface px-2 text-sm text-foreground outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/25 disabled:cursor-default disabled:opacity-60"
-                        value={entry.hairdresserId ?? ""}
-                        disabled={busy || entry.status !== "CONFIRMED"}
-                        onChange={(event) => onAssign(entry, event.target.value)}
-                      >
-                        <option value="">Non assignée</option>
-                        {availableHairdressers.map((hairdresser) => (
-                          <option key={hairdresser.id} value={hairdresser.id}>
-                            {hairdresser.fullName}
-                          </option>
-                        ))}
-                        {entry.hairdresserId &&
-                        !availableHairdressers.some((h) => h.id === entry.hairdresserId) ? (
-                          <option value={entry.hairdresserId}>
-                            {entry.hairdresserName ?? "Coiffeuse désactivée"}
-                          </option>
-                        ) : null}
-                      </select>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`rounded-full border px-2 py-0.5 text-xs font-medium ${style.badge}`}
-                      >
-                        {QUEUE_STATUS_LABELS_FR[entry.queueStatus]}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap justify-end gap-2">
-                        {canMarkArrived(entry) && entry.arrivedAt === null ? (
-                          <button
-                            type="button"
-                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium transition hover:border-accent/40 disabled:cursor-default disabled:opacity-60"
-                            onClick={() => onMarkArrived(entry)}
-                            disabled={busy}
-                          >
-                            <ClockIcon className="shrink-0" />
-                            Marquer l&apos;arrivée
-                          </button>
-                        ) : null}
-                        {canStartService(entry) ? (
-                          <button
-                            type="button"
-                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1.5 text-xs font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0"
-                            onClick={() => onStart(entry)}
-                            disabled={busy}
-                          >
-                            <CheckIcon className="shrink-0" />
-                            Démarrer
-                          </button>
-                        ) : null}
-                        {canComplete(entry) && entry.queueStatus === "in_progress" ? (
-                          <button
-                            type="button"
-                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1.5 text-xs font-semibold text-accent-foreground shadow-soft transition hover:-translate-y-0.5 disabled:cursor-default disabled:opacity-60 disabled:hover:translate-y-0"
-                            onClick={() => onComplete(entry)}
-                            disabled={busy}
-                          >
-                            <CheckIcon className="shrink-0" />
-                            Terminer
-                          </button>
-                        ) : null}
-                        {canMarkPaid(entry) ? (
-                          <button
-                            type="button"
-                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-palm/30 bg-palm/10 px-2.5 py-1.5 text-xs font-medium text-palm transition hover:bg-palm/20 disabled:cursor-default disabled:opacity-60"
-                            onClick={() => setPaymentAppointmentId(entry.appointmentId)}
-                            disabled={busy}
-                          >
-                            <CoinsIcon className="shrink-0" />
-                            Marquer payée
-                          </button>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {entries.length === 0 ? (
-                <tr>
-                  <td colSpan={7}>
-                    <EmptyState
-                      icon={<PersonIcon className="size-6" />}
-                      title="Aucun rendez-vous en file pour ce jour."
-                      description="Les rendez-vous confirmés du jour apparaîtront ici."
-                    />
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-        <TablePagination
-          label="la file d'attente"
-          page={entryPagination.page}
-          totalItems={entries.length}
-          onPageChange={entryPagination.setPage}
-        />
-      </div>
-
-      <WalkInTicketsSection tickets={walkInTickets} />
+      <Tabs
+        ariaLabel="Sections de la file d'attente"
+        items={[
+          { key: "appointments", label: "Rendez-vous", content: appointmentsTab },
+          {
+            key: "walk-in",
+            label: "Tickets de passage",
+            content: <WalkInTicketsSection tickets={walkInTickets} />,
+          },
+        ]}
+      />
 
       <PaymentDrawer
         salonId={salonId}
@@ -313,9 +326,6 @@ function WalkInTicketsSection({ tickets }: { tickets: WalkInTicket[] }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <h2 className="font-serif text-lg font-semibold text-ink">
-        Tickets de passage (walk-in)
-      </h2>
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-soft">
         <div className="overflow-x-auto">
           <table className="w-full min-w-260 text-left text-sm">
