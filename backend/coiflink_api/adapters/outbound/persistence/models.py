@@ -19,7 +19,7 @@ Conventions (spec §3) :
   qui interdit *au niveau base* de rattacher une entité d'un autre salon.
 - **Suppression** : `ON DELETE RESTRICT` par défaut (pas de hard-delete des
   salons/paiements ; on utilise des statuts). `CASCADE` réservé aux lignes
-  purement dépendantes (jonction RDV↔prestation).
+  purement dépendantes (jonction ticket↔prestation).
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ import uuid
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
-    Computed,
     Date,
     DateTime,
     ForeignKeyConstraint,
@@ -41,13 +40,11 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
     Text,
-    Time,
     UniqueConstraint,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSRANGE, UUID
-from sqlalchemy.dialects.postgresql import ExcludeConstraint
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from coiflink_api.domain import enums
@@ -236,7 +233,7 @@ class SalonPhoto(Base):
     d'objet** S3-compatible (jamais une URL) : l'URL signée est calculée à la
     lecture (ADR-0005). Une photo est **purement dépendante** de son salon (elle
     n'a aucun sens seule) → `ON DELETE CASCADE`, par exception à la convention
-    `RESTRICT` du module (même logique que `appointment_services`).
+    `RESTRICT` du module (même logique que `queue_ticket_services`).
     """
 
     __tablename__ = "salon_photos"
@@ -274,10 +271,6 @@ class Service(Base):
     price: Mapped[decimal.Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     category: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # Stocke une **clé d'objet** S3-compatible (`services/{salon_id}/{uuid}.png`),
-    # jamais une URL : l'URL signée est calculée à la lecture (ADR-0005, miroir
-    # `Salon.logo_object_key`). Migration 0010.
-    image_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
     )
@@ -296,119 +289,44 @@ class Service(Base):
     )
 
 
-class Appointment(Base):
-    """Rendez-vous (PRD §9.4). Lié à un salon + ≥ 1 prestation (PRD §8.1)."""
+class ServicePhoto(Base):
+    """Photo d'une prestation (galerie multi-images, miroir `SalonPhoto`).
 
-    __tablename__ = "appointments"
+    Remplace l'ancien champ scalaire `Service.image_object_key` (migration
+    0010, retiré par la migration 0020) : une prestation peut désormais porter
+    **plusieurs** illustrations, la position 0 servant de couverture pour le
+    catalogue. FK **composite** `(salon_id, service_id)` (et non une simple FK
+    vers `services.id`) : convention d'isolation §11.2 des tables qui référencent
+    une entité déjà scopée-salon (miroir `Payment.service_id`), plutôt que la FK
+    simple de `salon_photos → salons.id` (le salon **est** la racine d'isolation,
+    une prestation ne l'est pas). `ON DELETE CASCADE` : une photo n'a aucun sens
+    sans sa prestation.
+    """
+
+    __tablename__ = "service_photos"
 
     id: Mapped[uuid.UUID] = _pk()
     salon_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
-    client_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
-    hairdresser_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
-    appointment_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
-    start_time: Mapped[datetime.time] = mapped_column(Time(timezone=False), nullable=False)
-    end_time: Mapped[datetime.time] = mapped_column(Time(timezone=False), nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(32),
-        nullable=False,
-        server_default=text(f"'{enums.AppointmentStatus.PENDING.value}'"),
-    )
-    cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    client_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Pointage réel de la file d'attente (gérant, Dashboard Manager) : distinct
-    # du `status` ci-dessus — « En attente »/« En cours » sont **dérivés** de la
-    # présence de ces horodatages côté domaine (`domain/queue.py`), sans étendre
-    # la machine à états `AppointmentStatus` d'une valeur `IN_PROGRESS`.
-    # Migration 0011.
-    arrived_at: Mapped[datetime.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    started_at: Mapped[datetime.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    # Créneau dérivé (fuseau d'Abidjan = UTC+0, d'où `tsrange` plutôt que `tstzrange`),
-    # support de la contrainte anti double-réservation.
-    slot: Mapped[object] = mapped_column(
-        TSRANGE,
-        Computed(
-            "tsrange((appointment_date + start_time), (appointment_date + end_time))",
-            persisted=True,
-        ),
-    )
-    created_at: Mapped[datetime.datetime] = _created_at()
-    updated_at: Mapped[datetime.datetime] = _updated_at()
-
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["salon_id"], ["salons.id"], name="fk_appointments_salon_id", ondelete="RESTRICT"
-        ),
-        ForeignKeyConstraint(
-            ["client_id"], ["users.id"], name="fk_appointments_client_id", ondelete="RESTRICT"
-        ),
-        ForeignKeyConstraint(
-            ["hairdresser_id"],
-            ["users.id"],
-            name="fk_appointments_hairdresser_id",
-            ondelete="RESTRICT",
-        ),
-        # Cible des FK composites (salon_id, appointment_id).
-        UniqueConstraint("salon_id", "id", name="uq_appointments_salon_id"),
-        enum_check("status", enums.AppointmentStatus, name="status"),
-        CheckConstraint("end_time > start_time", name="time_order"),
-        # Anti double-réservation d'un même coiffeur sur des créneaux qui se
-        # chevauchent (PRD §8.1) — uniquement pour les RDV actifs et assignés.
-        ExcludeConstraint(
-            ("hairdresser_id", "="),
-            ("slot", "&&"),
-            using="gist",
-            where=text(
-                "hairdresser_id IS NOT NULL AND status IN ('PENDING', 'CONFIRMED')"
-            ),
-            name="ex_appointments_hairdresser_slot",
-        ),
-        Index("ix_appointments_salon_id", "salon_id", "appointment_date"),
-        Index("ix_appointments_client_id", "client_id"),
-    )
-
-
-class AppointmentService(Base):
-    """Jonction RDV ↔ prestation : porte le « ≥ 1 prestation » du PRD §8.1.
-
-    La cardinalité « au moins une prestation » se garantit par insertion
-    transactionnelle (RDV + ≥ 1 ligne ici dans la même transaction) côté
-    applicatif (M3). Les deux FK composites partagent `salon_id`, ce qui force
-    *au niveau base* le RDV **et** la prestation à appartenir au même salon.
-    """
-
-    __tablename__ = "appointment_services"
-
-    appointment_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
     service_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
-    salon_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
-    # Prix figé au moment de la réservation (un changement de tarif ne réécrit
-    # pas l'historique).
-    price_at_booking: Mapped[decimal.Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # Clé d'objet du bucket (jamais une URL publique) ; bornée à 1024 caractères.
+    object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # Ordre d'affichage (0-indexé, croissant) ; position 0 = couverture.
+    position: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[datetime.datetime] = _created_at()
 
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "appointment_id", "service_id", name="pk_appointment_services"
-        ),
-        # Cohérence salon : RDV et prestation partagent forcément le même salon.
-        ForeignKeyConstraint(
-            ["salon_id", "appointment_id"],
-            ["appointments.salon_id", "appointments.id"],
-            name="fk_appointment_services_appointment",
-            ondelete="CASCADE",
-        ),
         ForeignKeyConstraint(
             ["salon_id", "service_id"],
             ["services.salon_id", "services.id"],
-            name="fk_appointment_services_service",
-            ondelete="RESTRICT",
+            name="fk_service_photos_service",
+            ondelete="CASCADE",
         ),
-        CheckConstraint("price_at_booking >= 0", name="price_positive"),
-        Index("ix_appointment_services_service_id", "service_id"),
+        # Cible de futures FK composites (salon_id, photo_id) — convention d'isolation.
+        UniqueConstraint("salon_id", "id", name="uq_service_photos_salon_id"),
+        # Pas de doublon de média au sein d'un salon.
+        UniqueConstraint("salon_id", "object_key", name="uq_service_photos_salon_object_key"),
+        CheckConstraint("position >= 0", name="position_positive"),
+        Index("ix_service_photos_salon_id_service_id", "salon_id", "service_id", "position"),
     )
 
 
@@ -469,15 +387,19 @@ class CustomerProfile(Base):
 
 
 class Payment(Base):
-    """Paiement / transaction (PRD §9.6). Lié à une prestation ou un RDV (PRD §8.2)."""
+    """Paiement / transaction (PRD §9.6). Lié à une prestation ou un ticket walk-in."""
 
     __tablename__ = "payments"
 
     id: Mapped[uuid.UUID] = _pk()
     salon_id: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
-    appointment_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
-    # Référence prestation directe (PRD §8.2 : « lié à une prestation OU un RDV »).
+    # Référence prestation directe (PRD §8.2 : « lié à une prestation OU un ticket »).
     service_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
+    # Référence ticket walk-in (migration 0016, jalon M7) — second rattachement
+    # possible (avec `service_id`). Le prix encaissé est résolu **en direct**
+    # depuis `Service.price` au moment du paiement (aucune colonne de gel de
+    # prix côté `queue_ticket_services`, décision produit).
+    queue_ticket_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
     client_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
     amount: Mapped[decimal.Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(
@@ -492,6 +414,17 @@ class Payment(Base):
     # Utilisateur responsable de l'encaissement (PRD §8.2) — obligatoire.
     recorded_by: Mapped[uuid.UUID] = _fk_uuid(nullable=False)
     reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Téléphone utilisé pour la transaction Mobile Money (migration 0019) — même
+    # borne que `users.phone`. Obligatoire uniquement pour `MOBILE_MONEY_MANUAL`,
+    # imposé **uniquement** côté application (`domain/payment.py`, appelé par
+    # `RecordPayment.execute` avant toute écriture) — délibérément **pas** de
+    # `CHECK` en base : celui-ci s'appliquerait à tout `UPDATE` de la ligne, y
+    # compris `mark_adjusted` (correction, US-5.3) qui ne touche pourtant que
+    # `status` — un paiement Mobile Money antérieur à cette colonne (donc
+    # `NULL` de façon permanente) deviendrait alors indéfiniment impossible à
+    # corriger (voir la migration 0019 pour le détail). Toujours `NULL` pour
+    # les autres modes (jamais une donnée orpheline sans rapport avec le paiement).
+    mobile_money_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Numéro de reçu séquentiel par salon (impression gérant, migration 0012) — alloué
     # atomiquement à la création (`SqlPaymentRepository.create`), jamais recalculé en lecture.
     receipt_number: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -502,15 +435,15 @@ class Payment(Base):
             ["salon_id"], ["salons.id"], name="fk_payments_salon_id", ondelete="RESTRICT"
         ),
         ForeignKeyConstraint(
-            ["salon_id", "appointment_id"],
-            ["appointments.salon_id", "appointments.id"],
-            name="fk_payments_appointment",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
             ["salon_id", "service_id"],
             ["services.salon_id", "services.id"],
             name="fk_payments_service",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["salon_id", "queue_ticket_id"],
+            ["queue_tickets.salon_id", "queue_tickets.id"],
+            name="fk_payments_queue_ticket",
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
@@ -527,12 +460,13 @@ class Payment(Base):
         enum_check("payment_method", enums.PaymentMethod, name="payment_method"),
         enum_check("status", enums.PaymentStatus, name="status"),
         CheckConstraint("amount >= 0", name="amount_positive"),
-        # PRD §8.2 : un paiement référence au moins un RDV ou une prestation.
+        # Un paiement référence au moins une prestation ou un ticket walk-in.
         CheckConstraint(
-            "appointment_id IS NOT NULL OR service_id IS NOT NULL", name="ref_present"
+            "service_id IS NOT NULL OR queue_ticket_id IS NOT NULL",
+            name="ref_present",
         ),
         Index("ix_payments_salon_id", "salon_id", "created_at"),
-        Index("ix_payments_appointment_id", "appointment_id"),
+        Index("ix_payments_queue_ticket_id", "queue_ticket_id"),
     )
 
 
@@ -573,71 +507,15 @@ class CashJournal(Base):
     )
 
 
-class Notification(Base):
-    """Notification émise vers un utilisateur / salon (PRD §9.8, §8.4)."""
-
-    __tablename__ = "notifications"
-
-    id: Mapped[uuid.UUID] = _pk()
-    user_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
-    salon_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
-    appointment_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
-    type: Mapped[str] = mapped_column(String(32), nullable=False)
-    channel: Mapped[str] = mapped_column(String(16), nullable=False)
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    message: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(32),
-        nullable=False,
-        server_default=text(f"'{enums.NotificationStatus.PENDING.value}'"),
-    )
-    sent_at: Mapped[datetime.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    # Échéance d'un **rappel** (US-7.2, #46, migration `0006`) : `NULL` = à remettre
-    # au plus tôt (confirmation #45, inchangée) ; non-`NULL` = à remettre à partir
-    # de cette date (rappel `24h`/`2h`/`30min` avant le RDV).
-    scheduled_for: Mapped[datetime.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    created_at: Mapped[datetime.datetime] = _created_at()
-
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["user_id"], ["users.id"], name="fk_notifications_user_id", ondelete="RESTRICT"
-        ),
-        ForeignKeyConstraint(
-            ["salon_id"], ["salons.id"], name="fk_notifications_salon_id", ondelete="RESTRICT"
-        ),
-        ForeignKeyConstraint(
-            ["appointment_id"],
-            ["appointments.id"],
-            name="fk_notifications_appointment_id",
-            ondelete="RESTRICT",
-        ),
-        enum_check("type", enums.NotificationType, name="type"),
-        enum_check("channel", enums.NotificationChannel, name="channel"),
-        enum_check("status", enums.NotificationStatus, name="status"),
-        Index("ix_notifications_user_id", "user_id"),
-        Index("ix_notifications_salon_id", "salon_id", "created_at"),
-        Index(
-            "ix_notifications_due",
-            "scheduled_for",
-            postgresql_where=text("status = 'PENDING'"),
-        ),
-    )
-
-
 class Campaign(Base):
     """Campagne/message aux clients d'un salon (PRD §8.4, US-7.5, #49).
 
     Une **action manuelle du gérant** : composer un message (`type` + `title` +
     `message` en **texte libre**) et le diffuser à un **segment** de son fichier
-    clients (#28). Contrairement aux notifications de RDV (`notifications`,
-    #45–#48), une campagne n'est **pas** rattachée à un RDV ni à un destinataire
-    précis : elle porte un **effectif** (`recipient_count`, entier non-PII) snapshot
-    du segment à la création, jamais la liste des téléphones (résolus **à l'envoi**
-    par le worker de remise M5+, ADR-0006).
+    clients (#28). N'est **pas** rattachée à un destinataire précis : elle porte
+    un **effectif** (`recipient_count`, entier non-PII) snapshot du segment à la
+    création, jamais la liste des téléphones (résolus **à l'envoi** par le worker
+    de remise M5+, ADR-0006).
 
     **Non-fuite de PII (§11.3)** : aucune colonne ne porte de téléphone, nom ni
     identité de destinataire. Le `message` est du **contenu métier** composé par le
@@ -755,17 +633,15 @@ _QUEUE_TICKET_STATUS_SQL = ", ".join(f"'{value}'" for value in QUEUE_TICKET_STAT
 class QueueTicket(Base):
     """Ticket de passage walk-in (US-8.3, #157, ADR-0042).
 
-    **Indépendant d'`Appointment`** : aucune ligne `appointments` n'est créée pour
-    un walk-in (`Appointment.client_id` est `NOT NULL` FK `users` — un walk-in n'a
-    en général pas de compte). Le ticket porte son propre numéro séquentiel par
-    salon **et** jour civil (`ticket_number`/`issued_date`), une estimation
-    d'attente **figée à l'émission**, et son propre cycle de vie
-    (`waiting`/`called`/`in_progress`/`done`/`expired`).
+    CoifLink fonctionne en **file d'attente exclusive** : aucune réservation à
+    l'avance, un client se présente et reçoit un ticket. Le ticket porte son
+    propre numéro séquentiel par salon **et** jour civil (`ticket_number`/
+    `issued_date`), une estimation d'attente **figée à l'émission**, et son
+    propre cycle de vie (`waiting`/`called`/`in_progress`/`done`/`expired`).
 
     `hairdresser_id` référence **`users.id`** (identifiant de **compte**,
-    appartenance salon vérifiée **applicativement** — miroir exact
-    d'`Appointment.hairdresser_id`) ; `customer_profile_id` est **nullable**
-    (ticket anonyme possible).
+    appartenance salon vérifiée **applicativement**) ; `customer_profile_id`
+    est **nullable** (ticket anonyme possible).
     """
 
     __tablename__ = "queue_tickets"
@@ -783,8 +659,8 @@ class QueueTicket(Base):
     # Estimation d'attente (minutes) **figée à l'émission**, jamais recalculée.
     estimated_wait_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime.datetime] = _created_at()
-    # Horodatages du cycle de vie, distincts du `status` (esprit
-    # `arrived_at`/`started_at` d'`Appointment`), posés à chaque transition.
+    # Horodatages du cycle de vie, distincts du `status`, posés à chaque
+    # transition.
     called_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -794,6 +670,10 @@ class QueueTicket(Base):
     completed_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Motif d'annulation manuelle (no-show), posé uniquement à l'annulation
+    # (`status = "expired"`, motif obligatoire côté domaine) — colonne `TEXT`
+    # non bornée en base, borne applicative `CANCELLATION_REASON_MAX_LENGTH`.
+    cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -829,7 +709,7 @@ class QueueTicket(Base):
 
 
 class QueueTicketService(Base):
-    """Jonction ticket ↔ prestation (US-8.3, #157) — miroir `appointment_services`.
+    """Jonction ticket ↔ prestation (US-8.3, #157).
 
     Les deux FK composites partagent `salon_id`, ce qui force *au niveau base* le
     ticket **et** la prestation à appartenir au même salon. `CASCADE` sur
@@ -870,12 +750,9 @@ __all__ = [
     "SalonMember",
     "SalonPhoto",
     "Service",
-    "Appointment",
-    "AppointmentService",
     "CustomerProfile",
     "Payment",
     "CashJournal",
-    "Notification",
     "Campaign",
     "AuditLog",
     "QueueTicket",

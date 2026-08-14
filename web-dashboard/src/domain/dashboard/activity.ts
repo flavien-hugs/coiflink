@@ -11,16 +11,16 @@
 
 import { formatXof } from "@/src/domain/payments/payment";
 
-// Une prestation **en cours maintenant** (miroir de `InProgressItemResponse`). `status`
-// vaut `CONFIRMED` au MVP (« en cours » est dérivé, pas stocké) ; les noms peuvent être
-// `null` si non résolus (aucune PII au-delà du nom d'affichage).
+// Une prestation **en cours maintenant** (miroir de `InProgressItemResponse`). `start`
+// assigne la coiffeuse ET démarre le ticket en une seule action (walk-in) : il n'y a
+// pas d'heure de fin prévue. Les noms peuvent être `null` si non résolus (aucune PII
+// au-delà du nom d'affichage).
 export interface InProgressItem {
-  appointmentId: string;
+  queueTicketId: string;
   clientName: string | null;
   serviceNames: string[];
   hairdresserName: string | null;
-  startTime: string;
-  endTime: string;
+  startedAt: string;
   status: string;
 }
 
@@ -29,13 +29,10 @@ export interface InProgressList {
   items: InProgressItem[];
 }
 
-// Genres d'évènement de la timeline (miroir de `ActivityKind` backend).
-export const ACTIVITY_KINDS = [
-  "payment",
-  "new_booking",
-  "cancellation",
-  "appointment_update",
-] as const;
+// Genres d'évènement de la timeline (miroir de `ActivityKind` backend). Le backend
+// walk-in n'émet plus que des paiements (plus de réservation/annulation/modification
+// de rendez-vous).
+export const ACTIVITY_KINDS = ["payment"] as const;
 
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
@@ -61,17 +58,11 @@ export interface ActivityFeed {
 // Libellés **francisés** par genre d'évènement (fallback au `label` neutre du backend).
 export const ACTIVITY_KIND_LABELS_FR: Record<ActivityKind, string> = {
   payment: "Paiement",
-  new_booking: "Nouvelle réservation",
-  cancellation: "Annulation",
-  appointment_update: "Modification",
 };
 
 // Glyphe compact par genre (pastille de la timeline). Présentation seule.
 export const ACTIVITY_KIND_SYMBOL: Record<ActivityKind, string> = {
   payment: "₣",
-  new_booking: "＋",
-  cancellation: "✕",
-  appointment_update: "↻",
 };
 
 // Résumé lisible d'une heure de créneau ("HH:MM:SS" → "HH:MM"). Chaîne mal formée

@@ -113,10 +113,10 @@ class CoifLinkLoadUser(HttpUser):
         if self._ready():
             scenarios.run_manager_dashboard(self._http, _CONTEXT, self._rng)
 
-    @task(scenarios.SCENARIO_WEIGHTS[config.BUDGET_APPOINTMENT_CREATE])
-    def appointment_create(self) -> None:
+    @task(scenarios.SCENARIO_WEIGHTS[config.BUDGET_TICKET_CREATE])
+    def ticket_create(self) -> None:
         if self._ready():
-            scenarios.run_appointment_create(self._http, _CONTEXT, self._rng)
+            scenarios.run_ticket_create(self._http, _CONTEXT, self._rng)
 
 
 __all__ = ["CoifLinkLoadUser", "LocustTimedHttp"]

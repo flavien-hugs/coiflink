@@ -40,6 +40,15 @@ function PlanningIcon({ className = "" }: IconProps) {
   );
 }
 
+function AuditIcon({ className = "" }: IconProps) {
+  return (
+    <svg {...ICON_PROPS} className={`size-4.5 ${className}`}>
+      <path d="M10 2.5 16.5 5v5c0 4-2.8 6.6-6.5 7.5C6.3 16.6 3.5 14 3.5 10V5Z" strokeLinejoin="round" />
+      <path d="M7.3 9.8 9.2 11.7 12.9 8" />
+    </svg>
+  );
+}
+
 function ClientsIcon({ className = "" }: IconProps) {
   return (
     <svg {...ICON_PROPS} className={`size-4.5 ${className}`}>
@@ -108,6 +117,7 @@ const SECTION_ICONS: Record<string, ComponentType<IconProps>> = {
   prestations: ServicesIcon,
   encaissements: PaymentsIcon,
   employes: EmployeesIcon,
+  audit: AuditIcon,
   parametres: SettingsIcon,
 };
 

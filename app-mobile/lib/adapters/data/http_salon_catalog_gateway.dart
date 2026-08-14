@@ -166,6 +166,7 @@ class HttpSalonCatalogGateway implements SalonCatalogGateway {
 
   static SalonService _serviceFromJson(Map<String, dynamic> json) {
     // `price` arrive en chaîne décimale (« 5000.00 ») ; on tolère aussi un nombre.
+    final rawPhotos = json['photos'] as List<dynamic>? ?? const [];
     return SalonService(
       id: json['id'] as String,
       name: json['name'] as String,
@@ -174,6 +175,9 @@ class HttpSalonCatalogGateway implements SalonCatalogGateway {
       durationMinutes: (json['duration_minutes'] as num?)?.toInt(),
       category: json['category'] as String?,
       imageUrl: json['image_url'] as String?,
+      photos: rawPhotos
+          .map((p) => _photoFromJson(p as Map<String, dynamic>))
+          .toList(growable: false),
     );
   }
 

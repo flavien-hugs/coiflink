@@ -1,7 +1,7 @@
-# Rôle et authentification de la borne kiosque (US-8.1)
+# Rôle et authentification de la borne terminal (US-8.1)
 
 > Spécification de planification pour l'issue GitHub **#155 — US-8.1 · Rôle & authentification
-> borne** (`feature`, `security` · Must · Effort M · jalon **M7 — Borne client (kiosque
+> borne** (`feature`, `security` · Must · Effort M · jalon **M7 — Borne client (terminal
 > libre-service), Épic 8**). **Dépend de : #12** (RBAC deny-by-default). #155 est l'issue
 > **fondatrice** du jalon : #156, #157, #159 et #161 en dépendent directement.
 > **Cette spec ne produit pas de code : elle décrit l'approche à implémenter dans une phase
@@ -52,7 +52,7 @@ Or **rien dans le dépôt ne permet d'authentifier un terminal** :
 
 Le gap que #155 comble : **une identité de terminal** — rôle dédié, credential de device longue
 durée provisionné par le gérant, portée figée sur **un** salon, permissions minimales — sur laquelle
-#156 (recherche téléphone + fiche walk-in), #157 (ticket de passage) et #159 (mode kiosque de l'app)
+#156 (recherche téléphone + fiche walk-in), #157 (ticket de passage) et #159 (mode terminal de l'app)
 pourront poser leurs gardes **sans jamais** accorder `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK`. Les
 specs sœurs du jalon comptent explicitement sur #155 pour ce socle :
 `specs/borne-ticket-file-attente-walkin.md` consomme une garde et une permission posées ici
@@ -61,27 +61,27 @@ de #155 « la forme du credential device » et son contrat HTTP.
 
 ## Goals
 
-- **Introduire une identité de terminal `KIOSK`** : cinquième membre de l'énumération fermée
+- **Introduire une identité de terminal `TERMINAL`** : cinquième membre de l'énumération fermée
   `Role`, avec une entrée dédiée dans `ROLE_PERMISSIONS` — jamais un JWT `CLIENT`/`MANAGER`
   personnel partagé sur la borne (décision d'architecture n°1 du jalon, à valider — voir *Risks*).
 - **Permissions minimales et dédiées**, définies par #155 et consommées par #156/#157 :
-  `CUSTOMER_LOOKUP_KIOSK` (recherche d'une fiche par téléphone, restreinte au salon de la borne),
+  `CUSTOMER_LOOKUP_TERMINAL` (recherche d'une fiche par téléphone, restreinte au salon de la borne),
   `CUSTOMER_CREATE_WALKIN` (création de fiche nom/prénom/téléphone sans mot de passe),
-  `QUEUE_TICKET_CREATE` (création d'un ticket de passage). Le rôle `KIOSK` détient **exactement**
+  `QUEUE_TICKET_CREATE` (création d'un ticket de passage). Le rôle `TERMINAL` détient **exactement**
   ces trois permissions — ni `CUSTOMER_MANAGE`, ni `APPOINTMENT_BOOK`, ni aucune autre.
 - **Lecture du catalogue sans droit supplémentaire.** Le critère « lecture catalogue » de l'issue
   est satisfait par les routes **publiques** existantes `/catalog/salons/{salon_id}`
   (`security.py:118-133`), que #158 enrichit d'une photo — accorder `SERVICE_READ` à la borne
   ouvrirait la vue **gérant** (prestations inactives incluses) : refusé au titre du moindre
   privilège.
-- **Provisioning par le gérant** : `POST /salons/{salon_id}/kiosk-devices` (nouvelle permission
-  `KIOSK_PROVISION`, `MANAGER` uniquement, gardée par `require_salon_scope`) crée un **compte de
-  service device** (ligne `users` au rôle `KIOSK` + rattachement `salon_members` au salon) et
+- **Provisioning par le gérant** : `POST /salons/{salon_id}/terminal-devices` (nouvelle permission
+  `TERMINAL_PROVISION`, `MANAGER` uniquement, gardée par `require_salon_scope`) crée un **compte de
+  service device** (ligne `users` au rôle `TERMINAL` + rattachement `salon_members` au salon) et
   retourne **une seule fois** un secret aléatoire ; le secret n'est stocké que **haché** (argon2id,
   port `PasswordHasher` existant). Lecture (`GET`) et révocation (`DELETE`) minimales incluses.
 - **Credential device longue durée, distinct des JWT personnels** : la borne détient le couple
   `(device_id, secret)` durablement, et l'échange contre une paire JWT **standard et courte** via
-  `POST /auth/kiosk/login` (rate-limité, message d'échec générique). Les JWT restent courts : c'est
+  `POST /auth/terminal/login` (rate-limité, message d'échec générique). Les JWT restent courts : c'est
   le **secret révocable** qui est long, jamais le jeton porteur.
 - **Portée mono-salon figée au provisioning** : la portée du device est lue en base depuis
   `salon_members` (extension de `SqlSalonScopeRepository.salon_ids_for`,
@@ -90,12 +90,12 @@ de #155 « la forme du credential device » et son contrat HTTP.
 - **Révocation à effet immédiat** : suspendre le compte device (`users.status`) coupe l'accès à la
   requête suivante, grâce à la relecture en base de `get_current_principal`
   (`security.py:381-412`) — aucun jeton à invalider.
-- **Test RBAC négatif ajouté à la matrice existante** (critère d'acceptation) : `Role.KIOSK` entre
+- **Test RBAC négatif ajouté à la matrice existante** (critère d'acceptation) : `Role.TERMINAL` entre
   dans `_ALL_ROLES` de `tests/test_security_authz_matrix.py:66`, ce qui l'exerce mécaniquement en
   `403` sur toutes les routes échantillonnées (dont `CUSTOMER_MANAGE` et `APPOINTMENT_BOOK`) ; la
-  matrice de domaine (`tests/test_domain_permissions.py`) gagne un jeu `_KIOSK_EXPECTED` exact.
-- **Journalisation §11.4** du provisioning et de la révocation (`KIOSK_DEVICE_PROVISIONED`,
-  `KIOSK_DEVICE_REVOKED`), sans secret ni PII dans `metadata`.
+  matrice de domaine (`tests/test_domain_permissions.py`) gagne un jeu `_TERMINAL_EXPECTED` exact.
+- **Journalisation §11.4** du provisioning et de la révocation (`TERMINAL_DEVICE_PROVISIONED`,
+  `TERMINAL_DEVICE_REVOKED`), sans secret ni PII dans `metadata`.
 - **Décision d'architecture tracée** : `docs/adr/0041-authentification-borne-kiosque.md`,
   committée avec l'implémentation de #155 (voir *Documentation Updates* et *Risks*).
 
@@ -104,13 +104,13 @@ de #155 « la forme du credential device » et son contrat HTTP.
 - **Les endpoints métier de la borne.** La recherche par téléphone et la création de fiche walk-in
   sont l'objet de **#156** ; le ticket de passage et l'ETA de **#157**. #155 pose le rôle, le
   credential, la portée et les permissions qu'ils consommeront — pas leurs routes.
-- **L'app mobile en mode kiosque (#159)** : le stockage sécurisé du credential sur le device et
+- **L'app mobile en mode terminal (#159)** : le stockage sécurisé du credential sur le device et
   l'écran de saisie du credential au premier lancement sont livrés par #159 (port de stockage
   dédié + écran, cf. `specs/borne-app-mobile-mode-kiosque.md`), de même que les autres écrans et
   le timer d'inactivité — hors périmètre ici ; #155 fournit le contrat HTTP et le format du
   credential.
 - **L'impression du ticket (#160)** et **la procédure opérationnelle de provisioning** (PIN gérant,
-  sortie du mode kiosque, mise à jour applicative — **#161**). #155 livre l'API de provisioning et
+  sortie du mode terminal, mise à jour applicative — **#161**). #155 livre l'API de provisioning et
   sa documentation technique, pas le mode opératoire terrain.
 - **Interface web gérant de gestion des bornes.** Le provisioning V1 est exploitable par API
   (documenté par un exemple `curl` dans `backend/README.md`) ; une page dédiée du dashboard est un
@@ -122,7 +122,7 @@ de #155 « la forme du credential device » et son contrat HTTP.
 - **Mécanismes matériels ou réseau avancés** : MDM, attestation de device, mTLS, rotation
   automatique de secret, allowlist d'IP — hors périmètre MVP (documentés comme suivis dans l'ADR).
 - **Aucune modification des droits des rôles existants.** `CLIENT`, `HAIRDRESSER` et `ADMIN` sont
-  inchangés ; `MANAGER` ne gagne **que** `KIOSK_PROVISION` (aucun retrait, aucun élargissement
+  inchangés ; `MANAGER` ne gagne **que** `TERMINAL_PROVISION` (aucun retrait, aucun élargissement
   d'un droit existant).
 
 ## Relevant Repository Context
@@ -161,23 +161,23 @@ de #155 « la forme du credential device » et son contrat HTTP.
 Un grep `Role`/`ROLE_PERMISSIONS` sur `backend/tests/` identifie **trois verrous** :
 
 1. **`tests/test_domain_permissions.py:203`** — `set(ROLE_PERMISSIONS.keys()) == set(Role)` : la
-   table doit couvrir **tous** les membres de `Role`. Ajouter `KIOSK` à l'enum **sans** entrée dans
+   table doit couvrir **tous** les membres de `Role`. Ajouter `TERMINAL` à l'enum **sans** entrée dans
    `ROLE_PERMISSIONS` fait échouer ce test (et `:35-37`, qui exige chaque rôle dans la table).
    Aucun test ne fige le **nombre** de rôles à quatre : il fige l'**alignement** enum ↔ matrice.
 2. **`tests/test_domain_permissions.py`** — jeux exacts par rôle : `_CLIENT_EXPECTED` (`:44-53`),
    `_HAIRDRESSER_EXPECTED` (`:111`), `_MANAGER_EXPECTED` (`:150`), `_ADMIN_EXPECTED` (`:173`).
-   `MANAGER` gagnant `KIOSK_PROVISION`, `_MANAGER_EXPECTED` **doit** être mis à jour ; un
-   `_KIOSK_EXPECTED` exact est à ajouter (avec les tests négatifs miroirs, patron `:77-89`).
+   `MANAGER` gagnant `TERMINAL_PROVISION`, `_MANAGER_EXPECTED` **doit** être mis à jour ; un
+   `_TERMINAL_EXPECTED` exact est à ajouter (avec les tests négatifs miroirs, patron `:77-89`).
 3. **`tests/test_security_authz_matrix.py:66`** — `_ALL_ROLES` est un tuple **écrit à la main** des
    quatre rôles ; les rôles refusés d'une route en sont dérivés (`:185-197`, `denied =
-   set(_ALL_ROLES) - route.allowed_roles`). Ajouter `Role.KIOSK` à ce tuple suffit pour que la
-   matrice négative **exerce automatiquement** `KIOSK` en `403` sur chaque route échantillonnée —
+   set(_ALL_ROLES) - route.allowed_roles`). Ajouter `Role.TERMINAL` à ce tuple suffit pour que la
+   matrice négative **exerce automatiquement** `TERMINAL` en `403` sur chaque route échantillonnée —
    c'est exactement le « test RBAC négatif ajouté à la matrice existante » du critère
    d'acceptation.
 
 Les autres suites (`test_domain_access.py:117-122`, `test_authorization_policy.py`) paramètrent des
 listes de rôles à la main mais ne cassent pas à l'ajout d'un membre : elles sont à **compléter**
-(couverture `KIOSK`), pas à réparer.
+(couverture `TERMINAL`), pas à réparer.
 
 ### Schéma et migrations (impact base)
 
@@ -202,7 +202,7 @@ de passe choisi.
 
 ### Coordination avec les specs sœurs du jalon
 
-- `specs/borne-ticket-file-attente-walkin.md` (#157) suppose le rôle `KIOSK`, sa garde de portée
+- `specs/borne-ticket-file-attente-walkin.md` (#157) suppose le rôle `TERMINAL`, sa garde de portée
   device→salon et propose le nom `Permission.QUEUE_TICKET_CREATE` en précisant que « sa définition
   formelle relève de #155 » — repris tel quel ici.
 - `specs/borne-app-mobile-mode-kiosque.md` (#159) attend de #155 la forme du credential ; la
@@ -220,24 +220,24 @@ de passe choisi.
 
 ### (A) Décision structurante : deux options évaluées, une retenue
 
-**Option 1 — étendre l'enum `Role` d'un cinquième membre `KIOSK`, le device étant un compte de
+**Option 1 — étendre l'enum `Role` d'un cinquième membre `TERMINAL`, le device étant un compte de
 service dans `users` (retenue).**
 
 - La borne devient un `Principal` ordinaire : **toute** la chaîne existante est réutilisée sans
   duplication — émission JWT (`JwtTokenService`), garde globale, relecture base
   (`get_current_principal`), matrice `ROLE_PERMISSIONS`, `require_permission`,
   `require_salon_scope`, invariant `unprotected_routes`, audit (`actor_user_id` FK `users`).
-- Coûts, tous bornés et mécaniquement vérifiés : entrée `ROLE_PERMISSIONS[Role.KIOSK]` (verrou
+- Coûts, tous bornés et mécaniquement vérifiés : entrée `ROLE_PERMISSIONS[Role.TERMINAL]` (verrou
   `test_domain_permissions.py:203`) ; migration régénérant `ck_users_role` et
-  `ck_salon_members_role` (patron `0007`) ; ajout explicite de `Role.KIOSK` dans
+  `ck_salon_members_role` (patron `0007`) ; ajout explicite de `Role.TERMINAL` dans
   `can_access_salon` (`access.py:95`) et `salon_ids_for` (`salon_scope_repository.py:43-47`) ;
-  `Role.KIOSK` dans `_ALL_ROLES` (`test_security_authz_matrix.py:66`).
+  `Role.TERMINAL` dans `_ALL_ROLES` (`test_security_authz_matrix.py:66`).
 - Verrue assumée : `users.phone` est `NOT NULL UNIQUE` — un device n'a pas de téléphone. Traitée
   en §D par une **valeur sentinelle inerte** (et une alternative documentée, *Risks* §4).
 
 **Option 2 — mécanisme d'authentification device entièrement parallèle au `Principal` JWT
-personnel (écartée).** Table `kiosk_devices` autonome, clé API ou type de jeton dédié, famille de
-gardes `require_kiosk_device` distincte. Écartée car chaque brique de sécurité existante devrait
+personnel (écartée).** Table `terminal_devices` autonome, clé API ou type de jeton dédié, famille de
+gardes `require_terminal_device` distincte. Écartée car chaque brique de sécurité existante devrait
 être **dupliquée puis re-prouvée** :
 
 - une seconde famille de gardes devrait être marquée `_PRINCIPAL_GUARD_ATTR`
@@ -254,7 +254,7 @@ gardes `require_kiosk_device` distincte. Écartée car chaque brique de sécurit
 Deux systèmes d'autorisation parallèles dans un backend dont la sécurité repose sur des invariants
 **centralisés et testés** : le risque de divergence dépasse largement le gain de pureté du modèle.
 **Recommandation : Option 1**, en notant que le compte de service `users` reste un détail
-d'implémentation encapsulé (un port `KioskDeviceRepository` dédié permettrait de migrer plus tard
+d'implémentation encapsulé (un port `TerminalDeviceRepository` dédié permettrait de migrer plus tard
 vers une table propre sans toucher les gardes).
 
 ### (B) Domaine — rôle, permissions, portée
@@ -269,55 +269,55 @@ vers une table propre sans toucher les gardes).
        HAIRDRESSER = "HAIRDRESSER"
        MANAGER = "MANAGER"
        ADMIN = "ADMIN"
-       # Compte de service d'une borne kiosque (jalon M7) : jamais un humain.
-       KIOSK = "KIOSK"
+       # Compte de service d'une borne terminal (jalon M7) : jamais un humain.
+       TERMINAL = "TERMINAL"
    ```
 
 2. **`domain/permissions.py`** — quatre nouvelles permissions dans `Permission` (docstrings
    référençant US-8.1/#155 et leurs consommateurs) :
-   - `CUSTOMER_LOOKUP_KIOSK` — recherche d'une fiche `CustomerProfile` par téléphone, restreinte
+   - `CUSTOMER_LOOKUP_TERMINAL` — recherche d'une fiche `CustomerProfile` par téléphone, restreinte
      au salon de la borne, réponse minimale (consommée par #156) ;
    - `CUSTOMER_CREATE_WALKIN` — création d'une fiche walk-in nom/prénom/téléphone **sans**
      compte ni mot de passe (consommée par #156) ;
    - `QUEUE_TICKET_CREATE` — création d'un ticket de passage walk-in (consommée par #157 ; nom
      déjà anticipé par sa spec) ;
-   - `KIOSK_PROVISION` — provisionner/lister/révoquer les bornes de **son** salon (consommée par
+   - `TERMINAL_PROVISION` — provisionner/lister/révoquer les bornes de **son** salon (consommée par
      #155 lui-même, `MANAGER` uniquement).
 
    Matrice :
 
    ```python
-   Role.KIOSK: frozenset(
+   Role.TERMINAL: frozenset(
        {
-           Permission.CUSTOMER_LOOKUP_KIOSK,
+           Permission.CUSTOMER_LOOKUP_TERMINAL,
            Permission.CUSTOMER_CREATE_WALKIN,
            Permission.QUEUE_TICKET_CREATE,
        }
    ),
    ```
 
-   et `Permission.KIOSK_PROVISION` ajoutée au bloc `Role.MANAGER` (`permissions.py:110-126`).
+   et `Permission.TERMINAL_PROVISION` ajoutée au bloc `Role.MANAGER` (`permissions.py:110-126`).
    Ni `CUSTOMER_MANAGE`, ni `APPOINTMENT_BOOK`, ni aucune permission de lecture gérant n'entrent
-   dans le jeu `KIOSK` — c'est le cœur du critère d'acceptation négatif.
+   dans le jeu `TERMINAL` — c'est le cœur du critère d'acceptation négatif.
 
-3. **`domain/access.py`** — `can_access_salon` (`access.py:81-97`) : ajouter `Role.KIOSK.value` au
+3. **`domain/access.py`** — `can_access_salon` (`access.py:81-97`) : ajouter `Role.TERMINAL.value` au
    tuple des rôles à portée explicite (ligne 95). `can_access_appointment` (`access.py:100-123`)
-   reste **inchangé** : `KIOSK` tombe dans le `return False` final (aucun accès aux rendez-vous) —
+   reste **inchangé** : `TERMINAL` tombe dans le `return False` final (aucun accès aux rendez-vous) —
    propriété à figer par un test.
 
 ### (C) Persistance — portée et migration `0013`
 
 1. **`adapters/outbound/persistence/salon_scope_repository.py`** — `salon_ids_for`
    (`:38-53`) : la branche `HAIRDRESSER` (lecture `salon_members` `ACTIVE`) devient
-   `role in (Role.HAIRDRESSER.value, Role.KIOSK.value)` — la portée d'une borne est son
+   `role in (Role.HAIRDRESSER.value, Role.TERMINAL.value)` — la portée d'une borne est son
    rattachement d'appartenance, exactement comme un employé (ADR-0016). Une borne révoquée
    (`salon_members.status = INACTIVE`) perd sa portée par le même filtre.
 2. **Migration `migrations/versions/0013_kiosk_role.py`** (`down_revision = "0012"`) — patron
    exact de `0007` (`0007_notification_new_booking_type.py:55-73`) :
    - `upgrade()` : drop + recreate de `ck_users_role` et `ck_salon_members_role` avec la liste
-     incluant `'KIOSK'` (valeurs dérivées de `enums.Role`) ;
-   - `downgrade()` : symétrique (listes sans `'KIOSK'`) — round-trip Alembic exigé par la CI.
-     Le `downgrade` échouerait si des lignes `KIOSK` existent : comportement acceptable et
+     incluant `'TERMINAL'` (valeurs dérivées de `enums.Role`) ;
+   - `downgrade()` : symétrique (listes sans `'TERMINAL'`) — round-trip Alembic exigé par la CI.
+     Le `downgrade` échouerait si des lignes `TERMINAL` existent : comportement acceptable et
      documenté (même sémantique que retirer une valeur d'enum utilisée).
    - **Aucune nouvelle table, aucune nouvelle colonne** : c'est l'argument de poids de l'Option 1.
    - Coordination : ordre acté avec #157 — #155 livre `0013_kiosk_role.py`
@@ -330,7 +330,7 @@ vers une table propre sans toucher les gardes).
 Un device provisionné = deux lignes, créées atomiquement (même `Session`, patron
 `CreateEmployee`) :
 
-- **`users`** : `id` (UUID = `device_id` public), `role = 'KIOSK'`, `status = 'ACTIVE'`,
+- **`users`** : `id` (UUID = `device_id` public), `role = 'TERMINAL'`, `status = 'ACTIVE'`,
   `full_name` = libellé donné par le gérant (ex. « Borne entrée »), `password_hash` =
   argon2id(secret généré), `email = NULL`.
   - **`phone`** (colonne `NOT NULL UNIQUE`, `models.py:121/:134`) : valeur **sentinelle**
@@ -341,7 +341,7 @@ Un device provisionné = deux lignes, créées atomiquement (même `Session`, pa
     est donc **inatteignable** depuis `/auth/login`, le reset de mot de passe et toute recherche
     par téléphone. Alternative (rendre `users.phone` nullable) écartée en V1 mais documentée
     (*Risks* §4).
-- **`salon_members`** : `(salon_id, user_id=device_id, role='KIOSK', status='ACTIVE')` — porte la
+- **`salon_members`** : `(salon_id, user_id=device_id, role='TERMINAL', status='ACTIVE')` — porte la
   portée mono-salon (décision n°8 du jalon : le `salon_id` est figé **une fois**, au
   provisioning ; aucune sélection de salon à l'écran de la borne).
 
@@ -352,53 +352,53 @@ la relecture en base par requête (ADR-0015).
 
 ### (E) Provisioning — port, cas d'usage, endpoints gérant
 
-1. **Port `application/ports/kiosk_device_repository.py`** (`Protocol`, salon-scopé) :
-   `create(device: KioskDeviceToCreate) -> KioskDevice`,
-   `list_for_salon(salon_id) -> tuple[KioskDevice, ...]`,
-   `find_by_id(salon_id, device_id) -> KioskDevice | None`,
-   `find_credentials(device_id) -> KioskDeviceCredentials | None` (pour le login),
-   `revoke(salon_id, device_id) -> KioskDevice`. L'implémentation SQL encapsule le fait que le
+1. **Port `application/ports/terminal_device_repository.py`** (`Protocol`, salon-scopé) :
+   `create(device: TerminalDeviceToCreate) -> TerminalDevice`,
+   `list_for_salon(salon_id) -> tuple[TerminalDevice, ...]`,
+   `find_by_id(salon_id, device_id) -> TerminalDevice | None`,
+   `find_credentials(device_id) -> TerminalDeviceCredentials | None` (pour le login),
+   `revoke(salon_id, device_id) -> TerminalDevice`. L'implémentation SQL encapsule le fait que le
    device vit dans `users` + `salon_members` — les cas d'usage n'en savent rien.
-2. **Domaine `domain/kiosk_device.py`** (pur) : `validate_device_label` (trim, non vide, ≤ 255,
-   erreur dédiée `InvalidKioskDeviceLabel`), dataclasses gelées `KioskDeviceToCreate`,
-   `KioskDevice` (`id`, `salon_id`, `label`, `status`, `created_at` — **jamais** le secret ni son
-   hash), `KioskDeviceCredentials` (`id`, `salon_id`, `password_hash`, `status` — usage interne
-   login). Erreurs `KioskDeviceNotFound`, `KioskDeviceRevoked`.
-3. **Cas d'usage `application/kiosk_devices.py`** :
-   - `ProvisionKioskDevice.execute(salon_id, command, *, actor_user_id) -> (KioskDevice, str)` :
+2. **Domaine `domain/terminal_device.py`** (pur) : `validate_device_label` (trim, non vide, ≤ 255,
+   erreur dédiée `InvalidTerminalDeviceLabel`), dataclasses gelées `TerminalDeviceToCreate`,
+   `TerminalDevice` (`id`, `salon_id`, `label`, `status`, `created_at` — **jamais** le secret ni son
+   hash), `TerminalDeviceCredentials` (`id`, `salon_id`, `password_hash`, `status` — usage interne
+   login). Erreurs `TerminalDeviceNotFound`, `TerminalDeviceRevoked`.
+3. **Cas d'usage `application/terminal_devices.py`** :
+   - `ProvisionTerminalDevice.execute(salon_id, command, *, actor_user_id) -> (TerminalDevice, str)` :
      valide le libellé ; génère le secret (`secrets.token_urlsafe(32)`, ~43 caractères, entropie
      256 bits) ; hache via le port `PasswordHasher` ; crée les deux lignes ; journalise
-     `KIOSK_DEVICE_PROVISIONED` (`metadata = {}` — ni secret, ni hash, ni libellé) ; retourne
+     `TERMINAL_DEVICE_PROVISIONED` (`metadata = {}` — ni secret, ni hash, ni libellé) ; retourne
      l'entité **et le secret en clair, une seule fois** — jamais persisté, jamais journalisé,
      jamais relisible.
-   - `ListKioskDevices.execute(salon_id)` (lecture, pas d'audit).
-   - `RevokeKioskDevice.execute(salon_id, device_id, *, actor_user_id)` → audit
-     `KIOSK_DEVICE_REVOKED`.
-4. **Router `adapters/inbound/kiosk_devices.py`** (`prefix="/salons"`, patron
+   - `ListTerminalDevices.execute(salon_id)` (lecture, pas d'audit).
+   - `RevokeTerminalDevice.execute(salon_id, device_id, *, actor_user_id)` → audit
+     `TERMINAL_DEVICE_REVOKED`.
+4. **Router `adapters/inbound/terminal_devices.py`** (`prefix="/salons"`, patron
    `employees.py:83/:238-260`) — trois routes, toutes `require_salon_scope` +
-   `require_permission(Permission.KIOSK_PROVISION)` : `POST /{salon_id}/kiosk-devices` (`201`),
-   `GET /{salon_id}/kiosk-devices` (`200`), `DELETE /{salon_id}/kiosk-devices/{device_id}`
+   `require_permission(Permission.TERMINAL_PROVISION)` : `POST /{salon_id}/terminal-devices` (`201`),
+   `GET /{salon_id}/terminal-devices` (`200`), `DELETE /{salon_id}/terminal-devices/{device_id}`
    (`200`, révocation logique — jamais de suppression physique, traçabilité §11.4). **Aucune** de
    ces routes n'entre dans `PUBLIC_ROUTE_PATHS`.
-5. **Audit** : `domain/audit.py` gagne `ENTITY_TYPE_KIOSK_DEVICE = "kiosk_device"` et les actions
-   `KIOSK_DEVICE_PROVISIONED` / `KIOSK_DEVICE_REVOKED` (patron `EMPLOYEE_CREATED`,
+5. **Audit** : `domain/audit.py` gagne `ENTITY_TYPE_TERMINAL_DEVICE = "terminal_device"` et les actions
+   `TERMINAL_DEVICE_PROVISIONED` / `TERMINAL_DEVICE_REVOKED` (patron `EMPLOYEE_CREATED`,
    `audit.py:128-131`).
 
-### (F) Authentification du device — `POST /auth/kiosk/login`
+### (F) Authentification du device — `POST /auth/terminal/login`
 
 Nouvel endpoint dans `adapters/inbound/auth.py` (ou module frère), **ajouté à
 `PUBLIC_ROUTE_PATHS`** avec le commentaire de revue de sécurité obligatoire (`security.py:102`)
 — c'est un endpoint d'authentification, au même titre que `/auth/login` :
 
 - corps `{ "device_id": "<uuid>", "secret": "<secret>" }` ;
-- cas d'usage `AuthenticateKioskDevice` : rate-limiting par le port `LoginRateLimiter` existant
+- cas d'usage `AuthenticateTerminalDevice` : rate-limiting par le port `LoginRateLimiter` existant
   (clé = `device_id`, patron `auth.py:306-318`, `429` + `Retry-After`) ; charge
   `find_credentials(device_id)` ; vérifie le hash (`PasswordHasher.verify`) **et**
   `status == ACTIVE` ; tout échec (device inconnu, secret faux, device révoqué) → **même `401`
   générique** (aucun oracle sur l'existence ou l'état d'un device) ;
-- succès → `token_service.issue_pair(device_id, Role.KIOSK.value)` : paire JWT **standard**
+- succès → `token_service.issue_pair(device_id, Role.TERMINAL.value)` : paire JWT **standard**
   (accès 15 min, refresh 30 j — TTL applicatifs inchangés, `main.py:96-103`). La réponse ajoute
-  `salon_id` au `TokenResponse` kiosque (voir *API / Interface Changes*) pour que l'app borne
+  `salon_id` au `TokenResponse` terminal (voir *API / Interface Changes*) pour que l'app borne
   apprenne son salon au provisioning sans configuration compilée — mécanisme retenu pour tout le
   jalon : un APK unique pour toutes les bornes, pas de `--dart-define` de salon par device en
   production (alignement inter-specs acté, la spec #159 s'y conforme).
@@ -411,7 +411,7 @@ donne une révocation immédiate. Le device ré-échange son secret quand son re
 
 ### (G) Câblage et tests d'invariants
 
-`main.py` : `app.include_router(kiosk_devices_router)` avec le commentaire de câblage standard
+`main.py` : `app.include_router(terminal_devices_router)` avec le commentaire de câblage standard
 (permission, portée, audit). L'invariant `unprotected_routes(app) == []`
 (`tests/test_security_guards.py`) couvre automatiquement les nouvelles routes ; la mise à jour des
 verrous de tests est détaillée dans *Testing Plan*.
@@ -422,34 +422,34 @@ verrous de tests est détaillée dans *Testing Plan*.
 
 | Fichier | Rôle |
 | --- | --- |
-| `coiflink_api/domain/kiosk_device.py` | entités + validation pures (libellé, erreurs dédiées) |
-| `coiflink_api/application/ports/kiosk_device_repository.py` | port `Protocol` (création, liste, credentials, révocation) |
-| `coiflink_api/application/kiosk_devices.py` | `ProvisionKioskDevice`, `ListKioskDevices`, `RevokeKioskDevice` |
-| `coiflink_api/application/kiosk_authentication.py` | `AuthenticateKioskDevice` (rate-limit, verify, issue_pair) |
-| `coiflink_api/adapters/outbound/persistence/kiosk_device_repository.py` | implémentation SQL (`users` + `salon_members`, encapsulé) |
-| `coiflink_api/adapters/inbound/kiosk_devices.py` | router `/salons/{salon_id}/kiosk-devices` (`KIOSK_PROVISION`) |
+| `coiflink_api/domain/terminal_device.py` | entités + validation pures (libellé, erreurs dédiées) |
+| `coiflink_api/application/ports/terminal_device_repository.py` | port `Protocol` (création, liste, credentials, révocation) |
+| `coiflink_api/application/terminal_devices.py` | `ProvisionTerminalDevice`, `ListTerminalDevices`, `RevokeTerminalDevice` |
+| `coiflink_api/application/terminal_authentication.py` | `AuthenticateTerminalDevice` (rate-limit, verify, issue_pair) |
+| `coiflink_api/adapters/outbound/persistence/terminal_device_repository.py` | implémentation SQL (`users` + `salon_members`, encapsulé) |
+| `coiflink_api/adapters/inbound/terminal_devices.py` | router `/salons/{salon_id}/terminal-devices` (`TERMINAL_PROVISION`) |
 | `migrations/versions/0013_kiosk_role.py` | régénération `ck_users_role` + `ck_salon_members_role` |
-| `tests/test_domain_kiosk_device.py`, `tests/test_kiosk_device_usecases.py`, `tests/test_kiosk_device_api.py`, `tests/test_kiosk_auth_api.py`, `tests/test_kiosk_e2e.py` | tests |
+| `tests/test_domain_terminal_device.py`, `tests/test_terminal_device_usecases.py`, `tests/test_terminal_device_api.py`, `tests/test_terminal_auth_api.py`, `tests/test_terminal_e2e.py` | tests |
 
 ### Backend — à modifier
 
 | Fichier | Modification |
 | --- | --- |
-| `coiflink_api/domain/enums.py` | `Role.KIOSK` (l'enum reste fermée : cinq membres) |
-| `coiflink_api/domain/permissions.py` | 4 permissions ; entrée `Role.KIOSK` ; `KIOSK_PROVISION` au `MANAGER` |
-| `coiflink_api/domain/access.py` | `can_access_salon` : `Role.KIOSK` parmi les rôles à portée explicite (`:95`) |
-| `coiflink_api/domain/audit.py` | `ENTITY_TYPE_KIOSK_DEVICE`, `KIOSK_DEVICE_PROVISIONED`, `KIOSK_DEVICE_REVOKED` |
-| `coiflink_api/domain/errors.py` | `InvalidKioskDeviceLabel`, `KioskDeviceNotFound`, `KioskDeviceRevoked` |
-| `coiflink_api/adapters/outbound/persistence/salon_scope_repository.py` | branche `KIOSK` (lecture `salon_members`, `:38-53`) |
-| `coiflink_api/adapters/inbound/auth.py` | `POST /auth/kiosk/login` (+ schémas Pydantic) |
-| `coiflink_api/adapters/inbound/security.py` | `"/auth/kiosk/login"` dans `PUBLIC_ROUTE_PATHS` + commentaire de revue |
-| `coiflink_api/main.py` | `include_router(kiosk_devices_router)` + commentaire de câblage |
-| `tests/test_domain_permissions.py` | `_KIOSK_EXPECTED` exact ; `_MANAGER_EXPECTED` + `KIOSK_PROVISION` ; négatifs `CUSTOMER_MANAGE`/`APPOINTMENT_BOOK` refusés à `KIOSK` |
-| `tests/test_security_authz_matrix.py` | `Role.KIOSK` dans `_ALL_ROLES` (`:66`) |
-| `tests/test_domain_access.py` | portée `KIOSK` (couvert/non couvert), `can_access_appointment` → `False` |
-| `tests/test_authorization_policy.py` | `scope_of` d'un principal `KIOSK` |
-| `tests/conftest.py` | `FakeKioskDeviceRepository` + fixtures |
-| `backend/README.md` | section « Borne kiosque — rôle, provisioning & authentification (US-8.1, #155) » |
+| `coiflink_api/domain/enums.py` | `Role.TERMINAL` (l'enum reste fermée : cinq membres) |
+| `coiflink_api/domain/permissions.py` | 4 permissions ; entrée `Role.TERMINAL` ; `TERMINAL_PROVISION` au `MANAGER` |
+| `coiflink_api/domain/access.py` | `can_access_salon` : `Role.TERMINAL` parmi les rôles à portée explicite (`:95`) |
+| `coiflink_api/domain/audit.py` | `ENTITY_TYPE_TERMINAL_DEVICE`, `TERMINAL_DEVICE_PROVISIONED`, `TERMINAL_DEVICE_REVOKED` |
+| `coiflink_api/domain/errors.py` | `InvalidTerminalDeviceLabel`, `TerminalDeviceNotFound`, `TerminalDeviceRevoked` |
+| `coiflink_api/adapters/outbound/persistence/salon_scope_repository.py` | branche `TERMINAL` (lecture `salon_members`, `:38-53`) |
+| `coiflink_api/adapters/inbound/auth.py` | `POST /auth/terminal/login` (+ schémas Pydantic) |
+| `coiflink_api/adapters/inbound/security.py` | `"/auth/terminal/login"` dans `PUBLIC_ROUTE_PATHS` + commentaire de revue |
+| `coiflink_api/main.py` | `include_router(terminal_devices_router)` + commentaire de câblage |
+| `tests/test_domain_permissions.py` | `_TERMINAL_EXPECTED` exact ; `_MANAGER_EXPECTED` + `TERMINAL_PROVISION` ; négatifs `CUSTOMER_MANAGE`/`APPOINTMENT_BOOK` refusés à `TERMINAL` |
+| `tests/test_security_authz_matrix.py` | `Role.TERMINAL` dans `_ALL_ROLES` (`:66`) |
+| `tests/test_domain_access.py` | portée `TERMINAL` (couvert/non couvert), `can_access_appointment` → `False` |
+| `tests/test_authorization_policy.py` | `scope_of` d'un principal `TERMINAL` |
+| `tests/conftest.py` | `FakeTerminalDeviceRepository` + fixtures |
+| `backend/README.md` | section « Borne terminal — rôle, provisioning & authentification (US-8.1, #155) » |
 
 Aucun fichier de `web-dashboard/` ni d'`app-mobile/` n'est modifié par #155 (le provisioning V1
 est API-first ; l'app borne est #159).
@@ -464,18 +464,18 @@ est API-first ; l'app borne est #159).
 
 ## API / Interface Changes
 
-Quatre **nouveaux** endpoints ; aucune route existante modifiée ; seule `/auth/kiosk/login` entre
+Quatre **nouveaux** endpoints ; aucune route existante modifiée ; seule `/auth/terminal/login` entre
 dans `PUBLIC_ROUTE_PATHS` (revue de sécurité tracée en commentaire).
 
 | Méthode | Chemin | Garde | Réponses |
 | --- | --- | --- | --- |
-| `POST` | `/salons/{salon_id}/kiosk-devices` | `KIOSK_PROVISION` + portée salon | `201` device + secret (une fois) · `401` · `403` · `422` |
-| `GET` | `/salons/{salon_id}/kiosk-devices` | `KIOSK_PROVISION` + portée salon | `200` liste (sans secret) · `401` · `403` |
-| `DELETE` | `/salons/{salon_id}/kiosk-devices/{device_id}` | `KIOSK_PROVISION` + portée salon | `200` device révoqué · `401` · `403` · `404` |
-| `POST` | `/auth/kiosk/login` | publique-listée, rate-limitée | `200` paire JWT + `salon_id` · `401` générique · `429` |
+| `POST` | `/salons/{salon_id}/terminal-devices` | `TERMINAL_PROVISION` + portée salon | `201` device + secret (une fois) · `401` · `403` · `422` |
+| `GET` | `/salons/{salon_id}/terminal-devices` | `TERMINAL_PROVISION` + portée salon | `200` liste (sans secret) · `401` · `403` |
+| `DELETE` | `/salons/{salon_id}/terminal-devices/{device_id}` | `TERMINAL_PROVISION` + portée salon | `200` device révoqué · `401` · `403` · `404` |
+| `POST` | `/auth/terminal/login` | publique-listée, rate-limitée | `200` paire JWT + `salon_id` · `401` générique · `429` |
 
 ```jsonc
-// POST /salons/{salon_id}/kiosk-devices — corps
+// POST /salons/{salon_id}/terminal-devices — corps
 { "label": "Borne entrée" }
 
 // 201 — LE SECRET N'EST RENVOYÉ QU'ICI, UNE SEULE FOIS
@@ -488,12 +488,12 @@ dans `PUBLIC_ROUTE_PATHS` (revue de sécurité tracée en commentaire).
   "secret": "k7Yw…43-caractères…Qc"   // jamais stocké en clair, jamais relisible
 }
 
-// POST /auth/kiosk/login — corps
+// POST /auth/terminal/login — corps
 { "device_id": "…uuid…", "secret": "k7Yw…Qc" }
 
-// 200 — TokenResponse kiosque
+// 200 — TokenResponse terminal
 {
-  "access_token": "…jwt…",           // claims: sub=device_id, role="KIOSK", type="access"
+  "access_token": "…jwt…",           // claims: sub=device_id, role="TERMINAL", type="access"
   "refresh_token": "…jwt…",
   "token_type": "bearer",
   "expires_in": 900,
@@ -502,11 +502,11 @@ dans `PUBLIC_ROUTE_PATHS` (revue de sécurité tracée en commentaire).
 ```
 
 - `GET`/`DELETE` ne renvoient **jamais** ni secret ni hash (le champ n'existe pas dans
-  `KioskDevice`).
-- Échec de `/auth/kiosk/login` (device inconnu, secret faux, device révoqué) : `401` **générique
+  `TerminalDevice`).
+- Échec de `/auth/terminal/login` (device inconnu, secret faux, device révoqué) : `401` **générique
   constant**, patron `auth.py:389-394` — aucun oracle d'existence de device.
 - Contrat consommé en aval : #156/#157 poseront leurs gardes
-  `require_permission(CUSTOMER_LOOKUP_KIOSK | CUSTOMER_CREATE_WALKIN | QUEUE_TICKET_CREATE)` +
+  `require_permission(CUSTOMER_LOOKUP_TERMINAL | CUSTOMER_CREATE_WALKIN | QUEUE_TICKET_CREATE)` +
   `require_salon_scope` sur leurs routes — **aucune** interface supplémentaire n'est requise de
   #155. Aucune modification de CLI ni de variable d'environnement.
 
@@ -515,12 +515,12 @@ dans `PUBLIC_ROUTE_PATHS` (revue de sécurité tracée en commentaire).
 **Oui — une migration Alembic (`0013`, `down_revision = "0012"`), sans nouvelle table ni
 colonne :**
 
-1. Régénération de `ck_users_role` (drop + recreate incluant `'KIOSK'`), patron exact de
+1. Régénération de `ck_users_role` (drop + recreate incluant `'TERMINAL'`), patron exact de
    `0007_notification_new_booking_type.py:55-63`.
 2. Régénération de `ck_salon_members_role` (idem — la table d'appartenance porte le rattachement
    device→salon, `models.py:223`).
-3. `downgrade()` symétrique (listes sans `'KIOSK'`) pour le round-trip CI ; il suppose qu'aucune
-   ligne `KIOSK` n'existe (sémantique standard du retrait d'une valeur d'enum).
+3. `downgrade()` symétrique (listes sans `'TERMINAL'`) pour le round-trip CI ; il suppose qu'aucune
+   ligne `TERMINAL` n'existe (sémantique standard du retrait d'une valeur d'enum).
 4. Aucun backfill : les lignes existantes portent des valeurs déjà autorisées.
 
 **Conventions de données du device** (aucun changement de schéma, mais des invariants à
@@ -530,7 +530,7 @@ inatteignable par les flux téléphone — `normalize_phone` produit toujours `+
 de borne (pas une PII).
 
 **Protocole JWT inchangé** : mêmes claims (`sub`/`role`/`type`/`iat`/`exp`/`jti`,
-`domain/tokens.py:30-44`), mêmes TTL, même algorithme. Le claim `role` vaut `"KIOSK"` et reste
+`domain/tokens.py:30-44`), mêmes TTL, même algorithme. Le claim `role` vaut `"TERMINAL"` et reste
 purement informatif (le rôle qui fait foi est relu en base, ADR-0015).
 
 ## Security & Privacy Considerations
@@ -539,7 +539,7 @@ purement informatif (le rôle qui fait foi est relu en base, ADR-0015).
 menace inclut le vol du device, l'extraction de son credential et l'abus de ses endpoints.** Tout
 le dessin découle de là.
 
-- **Moindre privilège strict.** `KIOSK` détient exactement trois permissions dédiées ; il ne peut
+- **Moindre privilège strict.** `TERMINAL` détient exactement trois permissions dédiées ; il ne peut
   **ni** obtenir `CUSTOMER_MANAGE` (pas de lecture des fiches complètes, des notes privées ni de
   l'historique), **ni** `APPOINTMENT_BOOK` (pas de réservation au nom d'un compte), ni aucun droit
   caisse/stats/employés. Le refus est garanti par la matrice fermée (`permissions.py:84-139`) et
@@ -555,7 +555,7 @@ le dessin découle de là.
   relisible. Les JWT émis gardent leurs TTL courts : un jeton exfiltré expire en 15 min, et la
   suspension du compte device (`users.status`) coupe l'accès **à la requête suivante** grâce à la
   relecture de `get_current_principal` (`security.py:409-410`) — pas de fenêtre de 30 jours.
-- **Aucun oracle.** `/auth/kiosk/login` répond un `401` constant pour device inconnu, secret faux
+- **Aucun oracle.** `/auth/terminal/login` répond un `401` constant pour device inconnu, secret faux
   et device révoqué, et est rate-limité par `device_id` (port `LoginRateLimiter`, `429` +
   `Retry-After`, patron `auth.py:306-318/:383-388`). La sentinelle `users.phone = id.hex` est
   inatteignable depuis `/auth/login` et le reset OTP (`classify_identifier` ne produit que des
@@ -563,21 +563,21 @@ le dessin découle de là.
   crée **aucun** nouveau vecteur d'énumération.
 - **Anti-oracle ADR-0026 préservé par construction.** La règle « ne jamais interroger `users` par
   téléphone » (`application/customers.py:21-24`) protège les **comptes** à mot de passe. #155 n'y
-  touche pas : `CUSTOMER_LOOKUP_KIOSK` est définie pour ne viser que `CustomerProfile` (fiches
+  touche pas : `CUSTOMER_LOOKUP_TERMINAL` est définie pour ne viser que `CustomerProfile` (fiches
   sans compte), périmètre que #156 devra expliciter dans sa propre spec (risque différent :
   exposition de PII sur écran public, mitigée par l'affichage du prénom seul et le débit limité —
   propriété de #156, rendue **possible et bornée** par la permission dédiée posée ici).
-- **Provisioning = acte sensible du gérant.** `KIOSK_PROVISION` est détenue par le seul `MANAGER`,
+- **Provisioning = acte sensible du gérant.** `TERMINAL_PROVISION` est détenue par le seul `MANAGER`,
   gardée par `require_salon_scope` (un gérant ne provisionne que **son** salon, §11.2), et
-  journalisée (`KIOSK_DEVICE_PROVISIONED`/`KIOSK_DEVICE_REVOKED`, `metadata = {}` — ni secret, ni
+  journalisée (`TERMINAL_DEVICE_PROVISIONED`/`TERMINAL_DEVICE_REVOKED`, `metadata = {}` — ni secret, ni
   hash ; §11.4, décision n°11 du jalon pour le volet journalisation). La révocation est logique,
   jamais une suppression (traçabilité).
 - **Deny-by-default intact.** Une seule route entre dans `PUBLIC_ROUTE_PATHS`
-  (`/auth/kiosk/login`, endpoint d'authentification par nature), avec le commentaire de revue
+  (`/auth/terminal/login`, endpoint d'authentification par nature), avec le commentaire de revue
   obligatoire (`security.py:102`) ; l'invariant `unprotected_routes(app) == []` couvre tout le
   reste. Les routes de provisioning ne sont **jamais** publiques.
 - **Aucune PII nouvelle.** Un device n'a ni nom de personne, ni téléphone réel, ni e-mail ; le
-  `Principal` kiosque reste sans PII (`domain/principal.py:9-12`) ; les réponses de provisioning
+  `Principal` terminal reste sans PII (`domain/principal.py:9-12`) ; les réponses de provisioning
   ne portent que des identifiants opaques et un libellé de machine.
 - **Ce que #155 ne mitige pas (assumé, documenté dans l'ADR)** : compromission physique du
   terminal (verrouillage Android et PIN gérant — #159/#161), rotation périodique du secret
@@ -588,59 +588,59 @@ le dessin découle de là.
 ### Domaine (`pytest`, sans I/O)
 
 - **`tests/test_domain_permissions.py`** (mise à jour des verrous identifiés) :
-  `_KIOSK_EXPECTED == {CUSTOMER_LOOKUP_KIOSK, CUSTOMER_CREATE_WALKIN, QUEUE_TICKET_CREATE}`
+  `_TERMINAL_EXPECTED == {CUSTOMER_LOOKUP_TERMINAL, CUSTOMER_CREATE_WALKIN, QUEUE_TICKET_CREATE}`
   (égalité **exacte**) ; négatifs explicites `CUSTOMER_MANAGE not in` / `APPOINTMENT_BOOK not in`
-  `ROLE_PERMISSIONS[Role.KIOSK]` ; `_MANAGER_EXPECTED` + `KIOSK_PROVISION` ; aucun autre rôle ne
+  `ROLE_PERMISSIONS[Role.TERMINAL]` ; `_MANAGER_EXPECTED` + `TERMINAL_PROVISION` ; aucun autre rôle ne
   détient les quatre nouvelles permissions ; `:35-37` et `:203` passent (alignement enum ↔
-  matrice) ; `permissions_for("KIOSK")` cohérent, `permissions_for("kiosk")` → vide.
-- **`tests/test_domain_access.py`** : `can_access_salon` pour un principal `KIOSK` — vrai si le
+  matrice) ; `permissions_for("TERMINAL")` cohérent, `permissions_for("terminal")` → vide.
+- **`tests/test_domain_access.py`** : `can_access_salon` pour un principal `TERMINAL` — vrai si le
   salon est dans la portée, faux sinon, faux si `status != ACTIVE` ; `can_access_appointment`
-  → **toujours `False`** pour `KIOSK` (une borne ne lit jamais un rendez-vous).
-- **`tests/test_domain_kiosk_device.py`** : validation du libellé (vide/blanc/> 255/trim) ;
-  les dataclasses `KioskDevice` n'exposent ni secret ni hash.
+  → **toujours `False`** pour `TERMINAL` (une borne ne lit jamais un rendez-vous).
+- **`tests/test_domain_terminal_device.py`** : validation du libellé (vide/blanc/> 255/trim) ;
+  les dataclasses `TerminalDevice` n'exposent ni secret ni hash.
 
 ### Cas d'usage (fakes de `conftest.py`)
 
-- **`tests/test_kiosk_device_usecases.py`** : provisioning — le secret retourné vérifie
+- **`tests/test_terminal_device_usecases.py`** : provisioning — le secret retourné vérifie
   `hasher.verify(secret, hash_stocké)` ; le secret n'apparaît **ni** dans l'entité, **ni** dans
   l'entrée d'audit (`metadata == {}`) ; le `salon_id` persisté vient de l'argument de portée,
-  jamais de la commande ; audit `KIOSK_DEVICE_PROVISIONED` une fois ; révocation → statut modifié
-  + `KIOSK_DEVICE_REVOKED` ; libellé invalide → aucune écriture, aucun audit.
-- **`tests/test_authorization_policy.py`** : `scope_of` d'un `KIOSK` délègue au port (pas de
+  jamais de la commande ; audit `TERMINAL_DEVICE_PROVISIONED` une fois ; révocation → statut modifié
+  + `TERMINAL_DEVICE_REVOKED` ; libellé invalide → aucune écriture, aucun audit.
+- **`tests/test_authorization_policy.py`** : `scope_of` d'un `TERMINAL` délègue au port (pas de
   court-circuit plateforme) ; portée vide → `require_salon` refuse.
-- **`AuthenticateKioskDevice`** : succès → paire émise avec `sub = device_id`, `role = "KIOSK"` ;
+- **`AuthenticateTerminalDevice`** : succès → paire émise avec `sub = device_id`, `role = "TERMINAL"` ;
   device inconnu / secret faux / device révoqué → **même** erreur générique ; dépassement du
   rate-limit → `TooManyLoginAttempts`.
 
 ### API (`TestClient` + `app.dependency_overrides`)
 
-- **`tests/test_kiosk_device_api.py`** : `201` avec `secret` présent une fois ; `GET` liste sans
+- **`tests/test_terminal_device_api.py`** : `201` avec `secret` présent une fois ; `GET` liste sans
   aucun champ secret ; `DELETE` → `200` + statut révoqué, `404` device d'un autre salon (après
-  portée) ; `403` générique pour `CLIENT`/`HAIRDRESSER`/`ADMIN`/`KIOSK` (une borne ne provisionne
+  portée) ; `403` générique pour `CLIENT`/`HAIRDRESSER`/`ADMIN`/`TERMINAL` (une borne ne provisionne
   pas de borne) ; `401` sans jeton ; `422` libellé invalide.
-- **`tests/test_kiosk_auth_api.py`** : `200` + `salon_id` dans la réponse ; `401` générique
+- **`tests/test_terminal_auth_api.py`** : `200` + `salon_id` dans la réponse ; `401` générique
   (device inconnu = secret faux = révoqué, corps de réponse **identique**) ; `429` + `Retry-After`
   après N échecs ; le refresh émis fonctionne sur `/auth/refresh`.
-- **`tests/test_security_authz_matrix.py`** : `Role.KIOSK` ajouté à `_ALL_ROLES` (`:66`) — la
-  dérivation `denied = _ALL_ROLES - allowed` (`:185-197`) exerce alors `KIOSK` en `403` sur
+- **`tests/test_security_authz_matrix.py`** : `Role.TERMINAL` ajouté à `_ALL_ROLES` (`:66`) — la
+  dérivation `denied = _ALL_ROLES - allowed` (`:185-197`) exerce alors `TERMINAL` en `403` sur
   toutes les routes échantillonnées (création de fiche `CUSTOMER_MANAGE`, réservation
   `APPOINTMENT_BOOK`, caisse, stats…) : **c'est le test RBAC négatif du critère d'acceptation.**
 - **`tests/test_security_guards.py`** : `unprotected_routes(app) == []` couvre les nouvelles
-  routes ; vérifier explicitement que seule `/auth/kiosk/login` a été ajoutée à
+  routes ; vérifier explicitement que seule `/auth/terminal/login` a été ajoutée à
   `PUBLIC_ROUTE_PATHS`.
 
 ### e2e (PostgreSQL réel, sauté si `DATABASE_URL` absent — patron des suites existantes)
 
-- **`tests/test_kiosk_e2e.py`** : parcours complet — inscription gérant → création salon →
+- **`tests/test_terminal_e2e.py`** : parcours complet — inscription gérant → création salon →
   provisioning d'une borne (le secret n'est présent que dans la réponse `201`) →
-  `/auth/kiosk/login` → avec le jeton kiosque : `403` sur `POST /salons/{id}/customers`, `403`
+  `/auth/terminal/login` → avec le jeton terminal : `403` sur `POST /salons/{id}/customers`, `403`
   sur `POST /salons/{id}/appointments`, `403` sur un salon **tiers** ; catalogue public lisible
   sans jeton ; révocation par le gérant → la requête suivante du device est refusée (`403`
-  « Compte désactivé. ») et `/auth/kiosk/login` répond `401` ; lignes `audit_logs`
+  « Compte désactivé. ») et `/auth/terminal/login` répond `401` ; lignes `audit_logs`
   provisioning/révocation présentes, sans secret dans `metadata` ; la sentinelle `phone` du device
   ne permet **pas** de se connecter via `/auth/login`.
 - **Migration** : round-trip Alembic CI (`upgrade head` → `downgrade` → `upgrade`) sur `0013` ;
-  vérifier localement l'insertion d'un `users.role = 'KIOSK'` après upgrade et son rejet avant.
+  vérifier localement l'insertion d'un `users.role = 'TERMINAL'` après upgrade et son rejet avant.
 
 ### Non-régression
 
@@ -662,14 +662,14 @@ touchés mais le gate est global) ; `ruff check` propre.
   stade), met à jour l'index pour les deux et porte le runbook de provisioning.
 - **`docs/adr/README.md`** : entrée d'index pour l'ADR-0041, ajoutée par #155 au moment du
   commit (#161 revérifie l'index pour les deux ADR du jalon en fin de jalon).
-- **`backend/README.md`** : section « Borne kiosque — rôle, provisioning & authentification
+- **`backend/README.md`** : section « Borne terminal — rôle, provisioning & authentification
   (US-8.1, #155) » — tableau routes/permission/réponses/audit, exemple `curl` de provisioning
   (avec l'avertissement « le secret n'est affiché qu'une fois »), cycle de vie d'un device
-  (provisionné → actif → révoqué), rappel du jeu de permissions `KIOSK`.
+  (provisionné → actif → révoqué), rappel du jeu de permissions `TERMINAL`.
 - **`README.md`** (racine) : phrase de statut « M7 amorcé : rôle et authentification borne
   (#155) » dans le style des paragraphes de jalon existants.
 - **OpenAPI** : `summary`/`responses`/docstrings des quatre routes (visibles sur `/docs`), y
-  compris le `429` du login kiosque et la remise unique du secret.
+  compris le `429` du login terminal et la remise unique du secret.
 - **BACKLOG.md** : aucun changement par #155 (la mise à jour de fin de jalon est portée par #161).
 
 ## Risks and Open Questions
@@ -677,25 +677,25 @@ touchés mais le gate est global) ; `ruff check` propre.
 Les décisions d'architecture du jalon reprises ci-dessous sont des **choix proposés, à valider par
 le porteur produit avant l'implémentation** — avec la justification technique de cette spec.
 
-1. **Décision n°1 du jalon — identité borne : rôle `KIOSK` + credential de device par salon,
+1. **Décision n°1 du jalon — identité borne : rôle `TERMINAL` + credential de device par salon,
    jamais un JWT personnel partagé.** Justification technique : un credential `MANAGER` sur un
    terminal public exposerait caisse et PII (`CUSTOMER_MANAGE`, `permissions.py:121`) ; une
    session `CLIENT` partagée fusionnerait les parcours des passants sur un compte
    (`client_id = principal.id`, `appointments.py:538-551`) ; et l'analyse §A montre que l'option
    « mécanisme parallèle » duplique chaque invariant de sécurité testé du dépôt. **À valider** —
    c'est la décision structurante de l'issue, à figer dans l'ADR-0041.
-2. **Périmètre exact des permissions `KIOSK` (point de coordination #156/#157).** Les noms
-   `CUSTOMER_LOOKUP_KIOSK`, `CUSTOMER_CREATE_WALKIN`, `QUEUE_TICKET_CREATE` sont posés ici
+2. **Périmètre exact des permissions `TERMINAL` (point de coordination #156/#157).** Les noms
+   `CUSTOMER_LOOKUP_TERMINAL`, `CUSTOMER_CREATE_WALKIN`, `QUEUE_TICKET_CREATE` sont posés ici
    (`QUEUE_TICKET_CREATE` déjà anticipé par la spec de #157) mais leurs routes n'existeront
    qu'avec #156/#157 : à l'issue de #155, deux de ces permissions ne sont câblées sur **aucune**
    route (comme `CUSTOMER_MANAGE` l'était avant #28). Risque faible (permission sans route =
    droit inerte) ; les specs de #156/#157 reprennent désormais ces noms **à l'identique**
-   (`CUSTOMER_LOOKUP_KIOSK` / `CUSTOMER_CREATE_WALKIN` / `QUEUE_TICKET_CREATE`) — point de
+   (`CUSTOMER_LOOKUP_TERMINAL` / `CUSTOMER_CREATE_WALKIN` / `QUEUE_TICKET_CREATE`) — point de
    coordination réglé.
 3. **La lecture catalogue sans permission dédiée.** Recommandation : la borne consomme les routes
    publiques `/catalog/...` (`security.py:118-133`), pas la vue gérant `SERVICE_READ`. Si le
    produit exige plus tard une vue catalogue enrichie réservée aux bornes, une permission
-   `CATALOG_READ_KIOSK` s'ajoutera sans casse. **À valider.**
+   `CATALOG_READ_TERMINAL` s'ajoutera sans casse. **À valider.**
 4. **Sentinelle `users.phone = id.hex` vs migration `phone` nullable.** La sentinelle évite une
    migration à risque sur une colonne centrale (`uq_users_phone`, login, reset OTP) et son
    innocuité est démontrable (`normalize_phone` → `+…`, `phone.py:69`) — mais c'est une valeur
@@ -729,7 +729,7 @@ le porteur produit avant l'implémentation** — avec la justification technique
    (`down_revision = "0012"`), #157 enchaîne avec `0014_queue_tickets.py`
    (`down_revision = "0013"`). Numéros à revalider au moment du merge réel selon l'ordre effectif
    des PR (réserve portée par les deux specs).
-10. **`ADMIN` et les bornes.** `KIOSK_PROVISION` n'est pas accordée à l'`ADMIN` (supervision ≠
+10. **`ADMIN` et les bornes.** `TERMINAL_PROVISION` n'est pas accordée à l'`ADMIN` (supervision ≠
     exploitation, ADR-0015, même logique que `CUSTOMER_MANAGE`). Un besoin de supervision
     plateforme des bornes (parc, dernier contact) serait une évolution distincte. **À valider.**
 
@@ -744,36 +744,36 @@ le porteur produit avant l'implémentation** — avec la justification technique
    les questions 2 et 6 sont réglées : les specs de #156/#157 reprennent les noms de permissions
    à l'identique, et #155 committe l'ADR-0041 avec son implémentation (le volet `QueueTicket`
    relève de l'ADR-0042 de #157).
-3. **Domaine** : `Role.KIOSK` (`domain/enums.py`) ; quatre permissions + entrée
-   `ROLE_PERMISSIONS[Role.KIOSK]` + `KIOSK_PROVISION` au `MANAGER` (`domain/permissions.py`) ;
-   `Role.KIOSK` dans `can_access_salon` (`domain/access.py:95`) ; erreurs dédiées
-   (`domain/errors.py`) ; `domain/kiosk_device.py` (libellé, dataclasses sans secret).
+3. **Domaine** : `Role.TERMINAL` (`domain/enums.py`) ; quatre permissions + entrée
+   `ROLE_PERMISSIONS[Role.TERMINAL]` + `TERMINAL_PROVISION` au `MANAGER` (`domain/permissions.py`) ;
+   `Role.TERMINAL` dans `can_access_salon` (`domain/access.py:95`) ; erreurs dédiées
+   (`domain/errors.py`) ; `domain/terminal_device.py` (libellé, dataclasses sans secret).
 4. **Verrous de tests domaine** : mettre à jour `tests/test_domain_permissions.py`
-   (`_KIOSK_EXPECTED`, `_MANAGER_EXPECTED`, négatifs `CUSTOMER_MANAGE`/`APPOINTMENT_BOOK`) et
+   (`_TERMINAL_EXPECTED`, `_MANAGER_EXPECTED`, négatifs `CUSTOMER_MANAGE`/`APPOINTMENT_BOOK`) et
    `tests/test_domain_access.py` — **avant** la persistance.
-5. **Audit** : `ENTITY_TYPE_KIOSK_DEVICE`, `KIOSK_DEVICE_PROVISIONED`, `KIOSK_DEVICE_REVOKED`
+5. **Audit** : `ENTITY_TYPE_TERMINAL_DEVICE`, `TERMINAL_DEVICE_PROVISIONED`, `TERMINAL_DEVICE_REVOKED`
    (`domain/audit.py`) + couverture `tests/test_domain_audit.py`.
 6. **Migration `0013`** : régénérer `ck_users_role` et `ck_salon_members_role` (patron `0007`,
    downgrade symétrique) ; vérifier `alembic upgrade head && alembic downgrade -1 &&
    alembic upgrade head` sur PostgreSQL 16.
-7. **Portée** : branche `KIOSK` dans `SqlSalonScopeRepository.salon_ids_for`
+7. **Portée** : branche `TERMINAL` dans `SqlSalonScopeRepository.salon_ids_for`
    (`salon_scope_repository.py:38-53`) + tests `test_authorization_policy.py`.
-8. **Port & adapter device** : `application/ports/kiosk_device_repository.py` ;
-   `adapters/outbound/persistence/kiosk_device_repository.py` (compte `users` + `salon_members`
+8. **Port & adapter device** : `application/ports/terminal_device_repository.py` ;
+   `adapters/outbound/persistence/terminal_device_repository.py` (compte `users` + `salon_members`
    atomiques, sentinelle `phone = id.hex` commentée, `flush()` sans `commit()`).
-9. **Cas d'usage** : `application/kiosk_devices.py` (provisioning avec
+9. **Cas d'usage** : `application/terminal_devices.py` (provisioning avec
    `secrets.token_urlsafe(32)` + hachage argon2id, liste, révocation, audit `metadata={}`) ;
-   `application/kiosk_authentication.py` (rate-limit, verify, `issue_pair`, erreur générique
-   unique) ; fakes + `tests/test_kiosk_device_usecases.py`.
-10. **Adapters entrants** : `adapters/inbound/kiosk_devices.py` (trois routes
-    `KIOSK_PROVISION` + `require_salon_scope`, secret présent uniquement dans le `201`) ;
-    `POST /auth/kiosk/login` dans `adapters/inbound/auth.py` ; `"/auth/kiosk/login"` dans
+   `application/terminal_authentication.py` (rate-limit, verify, `issue_pair`, erreur générique
+   unique) ; fakes + `tests/test_terminal_device_usecases.py`.
+10. **Adapters entrants** : `adapters/inbound/terminal_devices.py` (trois routes
+    `TERMINAL_PROVISION` + `require_salon_scope`, secret présent uniquement dans le `201`) ;
+    `POST /auth/terminal/login` dans `adapters/inbound/auth.py` ; `"/auth/terminal/login"` dans
     `PUBLIC_ROUTE_PATHS` avec commentaire de revue de sécurité (`security.py:102`).
-11. **Câblage** : `app.include_router(kiosk_devices_router)` dans `main.py` + commentaire.
-12. **Tests API & matrice** : `tests/test_kiosk_device_api.py`, `tests/test_kiosk_auth_api.py` ;
-    `Role.KIOSK` dans `_ALL_ROLES` (`tests/test_security_authz_matrix.py:66`) ; vérifier
+11. **Câblage** : `app.include_router(terminal_devices_router)` dans `main.py` + commentaire.
+12. **Tests API & matrice** : `tests/test_terminal_device_api.py`, `tests/test_terminal_auth_api.py` ;
+    `Role.TERMINAL` dans `_ALL_ROLES` (`tests/test_security_authz_matrix.py:66`) ; vérifier
     `unprotected_routes(app) == []` (`tests/test_security_guards.py`).
-13. **e2e** : `tests/test_kiosk_e2e.py` (provisioning → login → refus `CUSTOMER_MANAGE`/
+13. **e2e** : `tests/test_terminal_e2e.py` (provisioning → login → refus `CUSTOMER_MANAGE`/
     `APPOINTMENT_BOOK`/salon tiers → révocation immédiate → audit sans secret → sentinelle
     inerte sur `/auth/login`), avec `DATABASE_URL`.
 14. **Documentation** : `docs/adr/0041-authentification-borne-kiosque.md` (committée avec cette

@@ -2,7 +2,7 @@
 
 > Spécification de planification pour l'issue GitHub **#161 — US-8.7 : ADR, documentation &
 > procédure de provisioning borne** (`docs` `infra` · Should · Effort S · PRD §17 « Borne
-> Intelligente d'Accueil »), dernière issue du jalon **M7 — Borne client (kiosque libre-service)**,
+> Intelligente d'Accueil »), dernière issue du jalon **M7 — Borne client (terminal libre-service)**,
 > Épic 8. **Dépend de : #155, #156, #157, #158, #159, #160.** **Cette spec ne produit pas de
 > code** : elle décrit l'approche à implémenter dans une phase ultérieure.
 >
@@ -15,7 +15,7 @@
 
 Le jalon M7 introduit deux décisions d'architecture structurantes — un nouveau modèle
 d'authentification par device (#155) et un nouveau domaine `QueueTicket` indépendant
-d'`Appointment` (#157) — ainsi qu'un objet physique (une tablette en boîtier kiosque) qui doit être
+d'`Appointment` (#157) — ainsi qu'un objet physique (une tablette en boîtier terminal) qui doit être
 associé à un salon, sorti de son mode verrouillé pour maintenance, puis révoqué si perdu ou volé.
 Aucun de ces trois besoins n'est aujourd'hui couvert par la documentation du dépôt :
 
@@ -50,7 +50,7 @@ Aucun de ces trois besoins n'est aujourd'hui couvert par la documentation du dé
   des runbooks opérationnels autonomes — `docs/environnements-et-secrets.md` (gestion des secrets
   par environnement) et `docs/mise-en-production.md` (mise en service `production`, monitoring,
   sauvegardes, rollback, issue #54) — mais aucun des deux, ni aucun autre fichier de `docs/`, ne
-  couvre l'association d'un device physique à un salon, la sortie d'un mode kiosque verrouillé, ou
+  couvre l'association d'un device physique à un salon, la sortie d'un mode terminal verrouillé, ou
   la révocation d'un terminal perdu. Le seul flux d'émission de credential à un tiers du dépôt est
   l'onboarding employé (#13, `specs/creation-invitation-comptes-employes.md:405-408` — création
   directe avec mot de passe temporaire, un **vrai** flux d'invitation par jeton étant documenté comme
@@ -71,7 +71,7 @@ Le gap que #161 comble : **(1)** la **vérification de présence et de complétu
 jalon** — **ADR-0041** (authentification borne, committée avec la PR de #155) et **ADR-0042**
 (architecture `QueueTicket`, committée avec la PR de #157) —, en les écrivant à ce stade si elles
 manquent encore, et la mise à jour de l'index `docs/adr/README.md` pour les deux ; **(2)** un
-**document opérationnel autonome** de provisioning/sortie de mode kiosque/révocation, dans le style
+**document opérationnel autonome** de provisioning/sortie de mode terminal/révocation, dans le style
 des runbooks déjà présents ; **(3)** la **mise à jour de `BACKLOG.md` et `prd-coiflink.md`** une
 fois le jalon effectivement livré (PR mergées de #155 à #160).
 
@@ -79,7 +79,7 @@ fois le jalon effectivement livré (PR mergées de #155 à #160).
 
 - **Garantir deux ADR distinctes actant les deux décisions structurantes de M7** :
   `docs/adr/0041-authentification-borne-kiosque.md` pour le modèle d'authentification borne (rôle
-  `KIOSK`, credential device longue durée, permissions minimales — décisions de #155) et
+  `TERMINAL`, credential device longue durée, permissions minimales — décisions de #155) et
   `docs/adr/0042-file-attente-walkin-queue-ticket.md` pour l'architecture `QueueTicket` (entité
   indépendante d'`Appointment`, formule d'ETA V1, fusion en lecture dans la file gérant —
   décisions de #157). Une décision = une ADR, chacune committée avec la PR de la fonctionnalité
@@ -87,7 +87,7 @@ fois le jalon effectivement livré (PR mergées de #155 à #160).
   #154) ; #161 vérifie leur présence et leur complétude, et les écrit à ce stade si elles manquent
   encore.
 - **Documenter une procédure de provisioning vérifiable**, couvrant l'association d'un device neuf
-  à un salon, le stockage du credential côté terminal, la sortie du mode kiosque par PIN gérant pour
+  à un salon, le stockage du credential côté terminal, la sortie du mode terminal par PIN gérant pour
   maintenance/mise à jour, et la révocation d'un device perdu ou volé — chaque étape référençant les
   mécanismes concrets livrés par #155/#159 (pas des mécanismes inventés par #161).
 - **Ne pas rejouer les décisions déjà actées par #155-#160.** #161 **consolide et documente** ; il
@@ -181,7 +181,7 @@ fois le jalon effectivement livré (PR mergées de #155 à #160).
   `:325-` (`require_authenticated`) portent l'invariant deny-by-default vérifié mécaniquement par
   `unprotected_routes(app)` (mentionné dans le docstring de `security.py:20-24`).
 - Ces éléments ne sont **pas modifiés par #161** ; ils forment le **contexte** que l'ADR-0041 doit
-  citer pour justifier pourquoi un rôle `KIOSK` et un credential device sont une extension nécessaire
+  citer pour justifier pourquoi un rôle `TERMINAL` et un credential device sont une extension nécessaire
   plutôt qu'une réutilisation détournée d'un rôle existant.
 
 ### File d'attente existante (contexte pour l'ADR-0042, #157)
@@ -290,7 +290,7 @@ porte ni numéro de passage ni ETA.
 3-5 pour l'ADR-0042), chacun **résumant** (pas réinventant) les choix effectivement retenus et
 implémentés par #155 et #157 :
 
-1. **Authentification borne (#155).** Nouveau rôle `KIOSK` scopé à un salon, distinct des 4 rôles
+1. **Authentification borne (#155).** Nouveau rôle `TERMINAL` scopé à un salon, distinct des 4 rôles
    personnels existants ; nouveau credential device longue durée (mécanisme exact — jeton signé
    dédié, clé API opaque, ou autre — **à confirmer au moment de la rédaction, une fois #155
    implémentée**, voir *Risks and Open Questions* §1) ; permissions minimales et dédiées
@@ -328,7 +328,7 @@ implémentés par #155 et #157 :
 ticket walk-in ne pollue pas le modèle `Appointment` ; la file gérant existante reste la source
 unique de vérité pour l'affichage, #152 n'est pas dupliqué) ; Négatives/suivis (la formule d'ETA V1
 est une heuristique perfectible, sans données historiques — à réévaluer après un pilote 2-3 salons,
-en écho direct au Risque 5 du PRD ; le rôle `KIOSK` ajoute un 5ᵉ élément à une énumération `Role`
+en écho direct au Risque 5 du PRD ; le rôle `TERMINAL` ajoute un 5ᵉ élément à une énumération `Role`
 jusqu'ici fermée à 4 valeurs — vérifier explicitement qu'aucun test d'invariant de #12/#15 ne fige
 « exactement 4 rôles » d'une manière qui casserait silencieusement ailleurs).
 
@@ -338,7 +338,7 @@ Ajouter deux lignes à la table (`docs/adr/README.md:11-55`), immédiatement apr
 au même format que les 41 lignes existantes :
 
 ```markdown
-| [0041](./0041-authentification-borne-kiosque.md) | Authentification borne kiosque (rôle KIOSK, credential device) | Accepté | #155 |
+| [0041](./0041-authentification-borne-kiosque.md) | Authentification borne terminal (rôle TERMINAL, credential device) | Accepté | #155 |
 | [0042](./0042-file-attente-walkin-queue-ticket.md) | File d'attente walk-in (QueueTicket, ETA, fusion en lecture) | Accepté | #157 |
 ```
 
@@ -348,36 +348,36 @@ denses déjà utilisés pour ADR-0039/ADR-0040.
 
 ### (C) Nouveau document opérationnel — procédure de provisioning
 
-Nouveau fichier `docs/provisioning-borne-kiosque.md`, gabarit `docs/mise-en-production.md` (en-tête
+Nouveau fichier `docs/provisioning-borne-terminal.md`, gabarit `docs/mise-en-production.md` (en-tête
 citant l'ADR-0041 et les issues #155/#159/#160, avertissement PII/secrets, sommaire numéroté,
 étapes idempotentes, section finale de vérification des critères d'acceptation de #161). Plan :
 
-1. **Portée et prérequis** — rappel : un device = une tablette Android en boîtier kiosque, liée à
+1. **Portée et prérequis** — rappel : un device = une tablette Android en boîtier terminal, liée à
    **un seul salon** de façon durable (décision « borne mono-salon », `salon_id` figé à
    l'installation, pas de sélection de salon à l'écran). Prérequis : compte `MANAGER` actif du
    salon concerné, accès physique au device.
 2. **Association d'un device neuf à un salon (« provisioning initial »)** — étapes côté gérant
    (dashboard web ou écran dédié — surface exacte à confirmer une fois #155/#159 implémentées, voir
    *Risks and Open Questions* §2) pour générer un credential device scopé au salon, et étapes côté
-   terminal (saisie du credential sur l'écran de premier lancement de `main_kiosk.dart`,
-   `--dart-define=APP_MODE=kiosk` — écran livré par #159, `specs/borne-app-mobile-mode-kiosque.md`)
+   terminal (saisie du credential sur l'écran de premier lancement de `main_terminal.dart`,
+   `--dart-define=APP_MODE=terminal` — écran livré par #159, `specs/borne-app-mobile-mode-kiosque.md`)
    pour l'enregistrer localement. Préciser explicitement **où** le credential est conservé sur le
    device (stockage sécurisé de la plateforme — Android Keystore/`flutter_secure_storage` derrière
-   le port dédié type `KioskCredentialStore` livré par #159, #155 ne fournissant que le contrat
+   le port dédié type `TerminalCredentialStore` livré par #159, #155 ne fournissant que le contrat
    HTTP et le format du credential — jamais un fichier en clair ni les préférences partagées non
    chiffrées) et confirmer qu'il **survit** au redémarrage de l'app (contrairement à
    `InMemoryTokenStore` utilisé pour les sessions personnelles, qui ne doit **jamais** être réutilisé
    pour ce credential).
-3. **Verrouillage kiosque (Android Lock Task Mode)** — activation du mode kiosque natif au
+3. **Verrouillage terminal (Android Lock Task Mode)** — activation du mode terminal natif au
    provisioning (empêche la sortie vers l'launcher/les réglages Android), sans dépendance à un MDM
    tiers payant pour cette V1 (décision assumée, à documenter comme telle avec ses limites : pas de
    déploiement de flotte centralisé, pas de géolocalisation, gestion device par device).
-4. **Sortie du mode kiosque par PIN gérant (maintenance, mise à jour applicative)** — décrire le
+4. **Sortie du mode terminal par PIN gérant (maintenance, mise à jour applicative)** — décrire le
    geste opérateur (combinaison d'actions déclenchant une invite PIN, saisie du PIN gérant du
    salon propriétaire du device) et l'action côté application une fois sorti (accès aux réglages
    Android/mise à jour du build, jamais un accès aux données d'un autre salon). Toute sortie de
-   mode kiosque est **journalisée** (décision 11 : « sécurité opérationnelle » — sortie du mode
-   kiosque et actions de maintenance protégées par PIN gérant, journalisées) — préciser le mécanisme
+   mode terminal est **journalisée** (décision 11 : « sécurité opérationnelle » — sortie du mode
+   terminal et actions de maintenance protégées par PIN gérant, journalisées) — préciser le mécanisme
    de journalisation exact une fois #155/#159 implémentées (audit `AuditLog` existant réutilisé, ou
    journal local device — à confirmer, voir *Risks and Open Questions* §3).
 5. **Révocation d'un device perdu ou volé** — procédure d'urgence côté gérant pour invalider
@@ -387,9 +387,9 @@ citant l'ADR-0041 et les issues #155/#159/#160, avertissement PII/secrets, somma
    le terminal après révocation (le device ne stocke pas de session personnelle cliente, seulement
    son propre credential — cohérent avec la décision « aucune session personnelle active en fin de
    parcours » de #159).
-6. **Mise à jour applicative** — procédure de mise à jour du build kiosque (nouvel APK/AAB signé,
+6. **Mise à jour applicative** — procédure de mise à jour du build terminal (nouvel APK/AAB signé,
    installation manuelle ou via un canal de distribution à définir — hors périmètre d'un vrai MDM
-   pour cette V1), à exécuter après sortie du mode kiosque (étape 4).
+   pour cette V1), à exécuter après sortie du mode terminal (étape 4).
 7. **Vérifications finales (critères d'acceptation #161)** — check-list reprenant explicitement le
    critère d'acceptation de l'issue : ADR committée dans `docs/adr/` ; procédure **vérifiée sur au
    moins un device physique** (case à cocher documentant la date, le salon pilote et l'opérateur
@@ -437,7 +437,7 @@ affichage temps réel des coiffeurs disponibles, paiement autonome).
 | --- | --- |
 | `docs/adr/0041-authentification-borne-kiosque.md` | ADR actant l'authentification borne de #155 — committée avec la PR de #155 ; #161 la vérifie et l'écrit si elle manque encore |
 | `docs/adr/0042-file-attente-walkin-queue-ticket.md` | ADR actant l'architecture `QueueTicket` de #157 — committée avec la PR de #157 ; #161 la vérifie et l'écrit si elle manque encore |
-| `docs/provisioning-borne-kiosque.md` | Runbook opérationnel : association device↔salon, sortie mode kiosque par PIN, révocation, mise à jour applicative |
+| `docs/provisioning-borne-terminal.md` | Runbook opérationnel : association device↔salon, sortie mode terminal par PIN, révocation, mise à jour applicative |
 
 ### Documentation — à modifier
 
@@ -457,9 +457,9 @@ prises, sans les rouvrir.
 
 **Aucun changement direct.** #161 ne modifie ni n'ajoute aucune route, aucun schéma de requête/
 réponse, aucune permission. Elle **consolide dans les ADR-0041/0042** des décisions d'interface déjà actées
-par les specs et implémentations de #155 (rôle `KIOSK`, endpoints scopés device — provisionnement
+par les specs et implémentations de #155 (rôle `TERMINAL`, endpoints scopés device — provisionnement
 lecture catalogue, recherche téléphone restreinte, création de ticket walk-in) et #157 (endpoint
-kiosque « rejoindre la file » — réservé au rôle `KIOSK`, jamais dans `PUBLIC_ROUTE_PATHS` ; le
+terminal « rejoindre la file » — réservé au rôle `TERMINAL`, jamais dans `PUBLIC_ROUTE_PATHS` ; le
 « public » du texte de `BACKLOG.md` qualifie l'usage en libre-service, pas le régime
 d'authentification —, formule d'ETA) : le contenu exact de ces interfaces (méthodes
 HTTP, chemins, codes de statut) est décrit par les specs respectives de #155/#157, pas réinventé
@@ -506,7 +506,7 @@ de vérité du schéma, convention déjà établie par les ADR précédentes).
 - **Aucune PII n'entre dans l'ADR ni dans le runbook eux-mêmes.** Ni l'un ni l'autre ne doit citer de
   nom, téléphone ou identifiant réel de client ou de salon pilote — seuls des identifiants
   techniques génériques ou des espaces réservés.
-- **Journalisation des actions de maintenance (décision 11).** La sortie du mode kiosque par PIN
+- **Journalisation des actions de maintenance (décision 11).** La sortie du mode terminal par PIN
   gérant doit être journalisée — l'ADR-0041 doit préciser si cette journalisation réutilise le port
   `AuditLog`/`audit_logs` existant (§11.4, patron déjà établi par #17/#28) ou un mécanisme dédié côté
   device, et le document de provisioning doit refléter le choix retenu une fois connu.
@@ -525,12 +525,12 @@ n'est modifié). La vérification porte sur le contenu et sur une validation op�
 - **Revue de la mise à jour de `docs/adr/README.md`** : les nouvelles lignes respectent le format
   exact des 41 lignes existantes (colonnes ADR/Titre/Statut/Issue).
 - **Vérification opérationnelle de la procédure de provisioning — critère d'acceptation explicite
-  de #161** : exécuter la procédure complète (association, sortie de mode kiosque par PIN,
+  de #161** : exécuter la procédure complète (association, sortie de mode terminal par PIN,
   révocation) sur **au moins un device physique réel**, et consigner la date, le salon pilote et
   l'opérateur dans la check-list finale du document (§« Vérifications finales »). Sans cette
   vérification physique, l'issue n'est **pas** considérée close, quel que soit l'état du texte.
 - **Non-régression documentaire** : vérifier qu'aucun lien relatif cassé n'est introduit
-  (`docs/adr/0041-*.md`, `docs/adr/0042-*.md`, `docs/provisioning-borne-kiosque.md`, entrées `BACKLOG.md`/`prd-coiflink.md`
+  (`docs/adr/0041-*.md`, `docs/adr/0042-*.md`, `docs/provisioning-borne-terminal.md`, entrées `BACKLOG.md`/`prd-coiflink.md`
   référencées correctement les unes envers les autres).
 - **Vérification différée (bloquée jusqu'à la fusion de #155-#160)** : la mise à jour de
   `BACKLOG.md`/`prd-coiflink.md` (partie D/E de *Proposed Implementation*) ne peut être vérifiée
@@ -546,14 +546,14 @@ n'est modifié). La vérification porte sur le contenu et sur une validation op�
   respectivement ; #161 vérifie leur présence et leur complétude (et les écrit si elles manquent
   encore) — voir plan détaillé en *Proposed Implementation* §A.
 - **`docs/adr/README.md`** — nouvelles lignes d'index pour ADR-0041 et ADR-0042 (§B).
-- **`docs/provisioning-borne-kiosque.md`** (nouveau) — runbook de provisioning (§C).
+- **`docs/provisioning-borne-terminal.md`** (nouveau) — runbook de provisioning (§C).
 - **`BACKLOG.md`** — suffixes « Livré » + liens de PR sur #155-#161, appliqués une fois le jalon
   effectivement livré (§D) ; cette mise à jour est elle-même un **livrable documenté** de #161, à
   exécuter en toute fin de jalon.
 - **`prd-coiflink.md` §17** — note d'annotation renvoyant au sous-ensemble livré par M7 (§E), sans
   réécrire le corps existant du PRD.
 - **`README.md`** (racine) — si le tableau des jalons ou la roadmap y mentionne M7, une phrase de
-  statut « M7 livré : borne client kiosque libre-service » peut être ajoutée par cohérence avec le
+  statut « M7 livré : borne client terminal libre-service » peut être ajoutée par cohérence avec le
   style déjà utilisé pour M4 (`specs/creation-fiche-client-gerant.md:399`) ; laissé à l'appréciation
   du porteur produit au moment de la clôture réelle du jalon, pas un livrable strict de #161.
 
@@ -563,7 +563,7 @@ Cette section reprend uniquement les décisions de la liste des choix d'architec
 qui concernent directement #161, à valider par le porteur produit avant l'implémentation réelle.
 
 1. **Décision 1 (identité borne) — mécanisme exact du credential device.** La liste des décisions
-   retenues pour M7 fixe le principe (« nouveau rôle KIOSK + credential de device par salon, jamais
+   retenues pour M7 fixe le principe (« nouveau rôle TERMINAL + credential de device par salon, jamais
    un JWT CLIENT/MANAGER personnel partagé »), mais ne fixe pas le mécanisme cryptographique exact
    (JWT signé à très longue durée, clé API opaque en base, certificat client, etc.). *Recommandation
    technique* : l'ADR-0041 étant committée **avec** la PR d'implémentation de #155 (plan ADR acté,
@@ -575,7 +575,7 @@ qui concernent directement #161, à valider par le porteur produit avant l'impl�
    reste la **dernière** issue du jalon.
 2. **Décision 8 (borne mono-salon) et décision 11 (sécurité opérationnelle) — surface exacte du
    provisioning côté dashboard gérant.** Les décisions retenues fixent le principe (`salon_id` figé
-   à l'installation, sortie de mode kiosque protégée par PIN gérant, actions journalisées) mais ne
+   à l'installation, sortie de mode terminal protégée par PIN gérant, actions journalisées) mais ne
    fixent pas **où**, dans le dashboard web existant, un gérant génère un credential device
    (nouvel écran dédié sous `web-dashboard/app/(gerant)/gerant/...`, ou action rattachée à la
    section « Paramètres » existante). *Recommandation technique* : cette décision d'écran relève de
@@ -584,13 +584,13 @@ qui concernent directement #161, à valider par le porteur produit avant l'impl�
    chemin de navigation exact), et être complété avec le chemin précis une fois connu. **À
    confirmer** par le porteur produit avant la rédaction finale du runbook.
 3. **Décision 11 (sécurité opérationnelle) — mécanisme de journalisation de la sortie de mode
-   kiosque.** La journalisation des actions de maintenance/sortie de mode kiosque peut réutiliser le
+   terminal.** La journalisation des actions de maintenance/sortie de mode terminal peut réutiliser le
    port `AuditLog`/table `audit_logs` déjà existant (§11.4, patron #17/#28) si le device dispose
    d'une connectivité au moment de l'action, ou nécessiter un journal local synchronisé plus tard si
    l'action doit rester possible hors ligne. *Recommandation technique* : documenter dans l'ADR-0041
    le choix réellement fait par #155/#159, avec une préférence de principe pour la réutilisation
    d'`AuditLog` (cohérence avec le reste du dépôt, pas de nouvelle table dédiée sans nécessité
-   démontrée) si la connectivité de la borne au moment de la sortie de mode kiosque le permet. **À
+   démontrée) si la connectivité de la borne au moment de la sortie de mode terminal le permet. **À
    confirmer** une fois #155/#159 implémentées.
 4. **Une seule ADR pour #155 et #157, ou deux ADR séparées ? — Résolu : deux ADR séparées.** Le
    choix est tranché pour le jalon : une décision = une ADR —
@@ -619,11 +619,11 @@ qui concernent directement #161, à valider par le porteur produit avant l'impl�
    hypothèses de cette spec, qui datent d'avant leur implémentation).
 5. **Ajouter les deux lignes d'index (0041, 0042) à `docs/adr/README.md`** dans le format exact des
    41 lignes existantes.
-6. **Rédiger `docs/provisioning-borne-kiosque.md`** selon le plan détaillé en *Proposed
+6. **Rédiger `docs/provisioning-borne-terminal.md`** selon le plan détaillé en *Proposed
    Implementation* §C, en confirmant au préalable les questions ouvertes §2/§3 avec le porteur
    produit et avec l'implémentation réelle de #155/#159/#160.
 7. **Exécuter et consigner la vérification physique** de la procédure de provisioning sur au moins
-   un device réel (association, sortie de mode kiosque par PIN, révocation) — critère d'acceptation
+   un device réel (association, sortie de mode terminal par PIN, révocation) — critère d'acceptation
    non négociable de #161.
 8. **Une fois toutes les PR de #155 à #160 mergées sur `main`** : appliquer la mise à jour de
    `BACKLOG.md` (suffixes « Livré » + liens de PR, gabarit #148) et l'annotation de `prd-coiflink.md`

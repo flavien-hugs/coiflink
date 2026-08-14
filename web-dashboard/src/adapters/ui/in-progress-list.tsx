@@ -49,7 +49,7 @@ export function InProgressListPanel({
           </thead>
           <tbody className="divide-y divide-border">
             {inProgress.items.map((item) => (
-              <tr key={item.appointmentId}>
+              <tr key={item.queueTicketId}>
                 <td className="px-4 py-3 font-medium text-ink">
                   {item.clientName ?? "—"}
                 </td>
@@ -62,7 +62,7 @@ export function InProgressListPanel({
                   {item.hairdresserName ?? "Non assignée"}
                 </td>
                 <td className="px-4 py-3 tabular-nums text-muted">
-                  {shortTime(item.startTime)}
+                  {shortTime(item.startedAt)}
                 </td>
                 <td className="px-4 py-3">
                   <span className="inline-flex items-center gap-1.5 rounded-full border border-palm/30 bg-palm/10 px-2.5 py-0.5 text-xs font-semibold text-palm">

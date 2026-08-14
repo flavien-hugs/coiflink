@@ -282,6 +282,77 @@ void main() {
         expect(salon.photos, hasLength(1));
         expect(salon.photos.first.url, isNull);
       });
+
+      // --- photos de prestation (#160) ---------------------------------------
+
+      test('service sans clé photos → photos vide sans exception', () async {
+        // Rétro-compatibilité : le fixture _detailJson() n'inclut pas `photos`
+        // dans ses services (champ absent, pas [] explicite).
+        final client =
+            _FakeHttpClient(statusCode: 200, body: jsonEncode(_detailJson()));
+
+        final salon = await _gateway(client).getSalon('uuid-abc');
+
+        expect(salon.services.first.photos, isEmpty);
+      });
+
+      test('service avec plusieurs photos → galerie mappée dans l\'ordre', () async {
+        final json = <String, dynamic>{
+          ..._detailJson(),
+          'services': <dynamic>[
+            <String, dynamic>{
+              'id': 'svc-1',
+              'name': 'Tresses africaines',
+              'description': null,
+              'price': '15000.00',
+              'duration_minutes': 180,
+              'category': null,
+              'image_url': 'https://cdn.example.com/cover.png?sig=x',
+              'photos': <dynamic>[
+                <String, dynamic>{'id': 'p1', 'url': 'https://cdn.example.com/1.png?sig=x'},
+                <String, dynamic>{'id': 'p2', 'url': 'https://cdn.example.com/2.png?sig=x'},
+              ],
+            },
+          ],
+        };
+        final client =
+            _FakeHttpClient(statusCode: 200, body: jsonEncode(json));
+
+        final salon = await _gateway(client).getSalon('uuid-abc');
+
+        final photos = salon.services.first.photos;
+        expect(photos, hasLength(2));
+        expect(photos[0].id, 'p1');
+        expect(photos[0].url, 'https://cdn.example.com/1.png?sig=x');
+        expect(photos[1].id, 'p2');
+      });
+
+      test('photo de prestation avec url null → url null sans exception', () async {
+        final json = <String, dynamic>{
+          ..._detailJson(),
+          'services': <dynamic>[
+            <String, dynamic>{
+              'id': 'svc-1',
+              'name': 'Coloration',
+              'description': null,
+              'price': '12000.00',
+              'duration_minutes': 90,
+              'category': null,
+              'image_url': null,
+              'photos': <dynamic>[
+                <String, dynamic>{'id': 'p1', 'url': null},
+              ],
+            },
+          ],
+        };
+        final client =
+            _FakeHttpClient(statusCode: 200, body: jsonEncode(json));
+
+        final salon = await _gateway(client).getSalon('uuid-abc');
+
+        expect(salon.services.first.photos, hasLength(1));
+        expect(salon.services.first.photos.first.url, isNull);
+      });
     });
 
     group('gestion des erreurs', () {

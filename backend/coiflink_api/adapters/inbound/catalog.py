@@ -87,14 +87,24 @@ class PublicSalonPageResponse(BaseModel):
     offset: int
 
 
+class PublicServicePhotoResponse(BaseModel):
+    """Photo de la galerie d'une prestation : `url` **signée** (durée limitée)
+    ou `null` (miroir `PublicSalonPhotoResponse`)."""
+
+    id: uuid.UUID
+    url: str | None
+
+
 class PublicServiceResponse(BaseModel):
     """Prestation **de vitrine** exposée dans la fiche (§#19).
 
     Projection minimale : **aucun** `is_active`, `salon_id` ni timestamp (spec
     §A.4). Seules les prestations `ACTIVE` remontent (filtre au dépôt).
-    `image_url` est une **URL signée** de lecture (ou `null` si aucune image ou
-    stockage non configuré) — **jamais** la clé d'objet brute (ADR-0005, miroir
-    `logo_url`).
+    `photos` est la galerie complète, ordonnée (index 0 = couverture) — un
+    client (borne kiosque) peut parcourir toutes les photos, pas seulement la
+    couverture. `image_url` reste un champ de commodité dérivé de `photos[0]`
+    (ou `null` si aucune photo / stockage non configuré) — **jamais** la clé
+    d'objet brute (ADR-0005, miroir `logo_url`).
     """
 
     id: uuid.UUID
@@ -104,6 +114,7 @@ class PublicServiceResponse(BaseModel):
     duration_minutes: int
     category: str | None
     image_url: str | None
+    photos: list[PublicServicePhotoResponse]
 
 
 class PublicHairdresserResponse(BaseModel):
@@ -217,6 +228,10 @@ def _public_salon_detail_response(
                 duration_minutes=service.duration_minutes,
                 category=service.category,
                 image_url=service.image_url,
+                photos=[
+                    PublicServicePhotoResponse(id=photo.id, url=photo.url)
+                    for photo in service.photos
+                ],
             )
             for service in view.services
         ],

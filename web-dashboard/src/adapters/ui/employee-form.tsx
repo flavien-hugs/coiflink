@@ -15,6 +15,9 @@ import { useState, type FormEvent } from "react";
 import {
   CalendarIcon,
   CheckIcon,
+  EyeIcon,
+  EyeOffIcon,
+  LockIcon,
   MailIcon,
   PersonIcon,
   PhoneIcon,
@@ -28,10 +31,23 @@ import {
   type Employee,
 } from "@/src/domain/employee/employee";
 
+// `w-full` est **nécessaire** (pas seulement stylistique) : le `<input>` est
+// imbriqué dans un `<div className="relative">`, lui-même l'enfant flex
+// étiré (le `<label>` parent est `flex flex-col` — `align-items: stretch`
+// s'applique au `<div>`, pas à l'`<input>` qu'il contient). Sans `w-full`,
+// l'`<input>` garde sa largeur intrinsèque (`size=20` du navigateur) tandis
+// que l'icône/bouton **positionnés en absolu** restent calés sur les bords du
+// `<div>`, désormais plus large que le champ visible — l'icône/bouton
+// semblent alors « hors du champ » plutôt qu'à l'intérieur.
 const INPUT_WITH_ICON_CLASS =
-  "rounded-lg border border-border bg-surface py-2.5 pl-9 pr-3 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
-const INPUT_CLASS =
-  "rounded-lg border border-border bg-surface px-3 py-2.5 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
+  "w-full rounded-lg border border-border bg-surface py-2.5 pl-9 pr-3 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
+// Icône descriptive à gauche **et** bouton afficher/masquer à droite — seul
+// champ de ce formulaire à combiner les deux, d'où une variante dédiée de
+// `INPUT_WITH_ICON_CLASS` (pr-10 au lieu de pr-3, pour laisser la place au
+// bouton plutôt qu'à une icône purement décorative). Même nécessité de
+// `w-full` que ci-dessus.
+const PASSWORD_INPUT_CLASS =
+  "w-full rounded-lg border border-border bg-surface py-2.5 pl-9 pr-10 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
 
 export interface EmployeeFormProps {
   salonId: string;
@@ -47,6 +63,7 @@ export function EmployeeForm({ salonId, employee, onCancel, onSaved }: EmployeeF
   const [fullName, setFullName] = useState(employee?.fullName ?? "");
   const [phone, setPhone] = useState(employee?.phone ?? "");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState(employee?.email ?? "");
   const [specialties, setSpecialties] = useState(employee?.specialties ?? "");
   const [hiredAt, setHiredAt] = useState(employee?.hiredAt ?? "");
@@ -173,17 +190,28 @@ export function EmployeeForm({ salonId, employee, onCancel, onSaved }: EmployeeF
       {!editing ? (
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           <FieldLabel required>Mot de passe initial</FieldLabel>
-          <input
-            type="password"
-            name="password"
-            className={INPUT_CLASS}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            minLength={8}
-            maxLength={128}
-            autoComplete="new-password"
-            required
-          />
+          <div className="relative">
+            <LockIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type={showPassword ? "text" : "password"}
+              name="password"
+              className={PASSWORD_INPUT_CLASS}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              minLength={8}
+              maxLength={128}
+              autoComplete="new-password"
+              required
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((prev) => !prev)}
+              aria-label={showPassword ? "Masquer le mot de passe" : "Afficher le mot de passe"}
+              className="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer text-muted transition hover:text-foreground"
+            >
+              {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+            </button>
+          </div>
           <p className="text-xs font-normal text-muted">
             8 caractères minimum. La coiffeuse pourra le changer à sa connexion.
           </p>

@@ -7,7 +7,7 @@
   client, Épic 8)
 - **Référence PRD** : §4.1 (permissions par rôle), §8.1 (rendez-vous ≥ 1 prestation), §11.2 (isolation
   par salon), §11.3 (non-fuite PII), §11.4 (journalisation), §17 (Borne Intelligente d'Accueil)
-- **S'appuie sur** : [ADR-0041](./0041-authentification-borne-kiosque.md) (#155, rôle `KIOSK` +
+- **S'appuie sur** : [ADR-0041](./0041-authentification-borne-kiosque.md) (#155, rôle `TERMINAL` +
   `QUEUE_TICKET_CREATE`), [ADR-0040](./0040-impression-recu-encaissement-gerant.md) (#154, numérotation
   séquentielle par salon — verrou consultatif transactionnel + `MAX+1`),
   [ADR-0008](./0008-architecture-hexagonale.md) (hexagonal),
@@ -18,7 +18,7 @@
 ## Contexte et problème
 
 Le jalon M7 (PRD §17) livre le parcours « client sans rendez-vous » : #155 dote la borne d'une identité
-(`KIOSK`), #156 lui donne de quoi identifier un client (recherche téléphone / création walk-in). Il
+(`TERMINAL`), #156 lui donne de quoi identifier un client (recherche téléphone / création walk-in). Il
 manque la **pièce centrale** : délivrer au client identifié un **numéro de passage**, une **estimation
 d'attente**, et le faire apparaître dans la file du personnel pour qu'il soit pris en charge.
 
@@ -85,13 +85,13 @@ dans la même PR.
 ### 5. Gardes RBAC — **réutilisation**, aucune nouvelle permission
 
 - « Rejoindre la file » (`POST /salons/{id}/queue/tickets`) : `require_salon_scope` +
-  `require_permission(QUEUE_TICKET_CREATE)` — permission **déjà** détenue par le seul `KIOSK` (#155).
+  `require_permission(QUEUE_TICKET_CREATE)` — permission **déjà** détenue par le seul `TERMINAL` (#155).
 - Prise en charge / clôture (`.../start`, `.../complete`) : `require_salon_scope` +
   `require_permission(APPOINTMENT_UPDATE_STATUS)` — **mêmes acteurs** (coiffeuse + gérant) que le
   démarrage d'un RDV. Aucune permission dédiée `QUEUE_TICKET_MANAGE` créée : la matrice
   `ROLE_PERMISSIONS` n'est pas modifiée.
 
-Aucune route n'entre dans `PUBLIC_ROUTE_PATHS` : « public/kiosk » qualifie l'usage (un terminal en
+Aucune route n'entre dans `PUBLIC_ROUTE_PATHS` : « public/terminal » qualifie l'usage (un terminal en
 salle d'accueil), pas le régime d'authentification (deny-by-default inchangé).
 
 ### 6. Journalisation ciblée
@@ -111,7 +111,7 @@ gestion, aucune PII propre au ticket).
   un travail de schéma dédié serait nécessaire s'il le fallait, hors #157 ; l'**expiration** d'un ticket
   oublié (`waiting → expired`) est un statut **atteignable** mais non déclenché automatiquement (aucun
   ordonnanceur dans le dépôt) ; le **rate-limiting** de la création de tickets relève de la garde
-  `KIOSK` (#155) ou d'un middleware transverse, à vérifier avant généralisation.
+  `TERMINAL` (#155) ou d'un middleware transverse, à vérifier avant généralisation.
 - **Suivis** : facturation liée au ticket (aucun `ticket_id` sur `Payment` — l'encaissement walk-in
   reste un encaissement `service_id`-only classique, déjà possible) ; notifications au client walk-in
   (M7 assume un ticket **papier** #160) ; affinage de l'ETA (données historiques).

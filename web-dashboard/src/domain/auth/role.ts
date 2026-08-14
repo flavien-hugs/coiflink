@@ -36,6 +36,6 @@ export function displayRoleLabel(role: Role): string {
 // **côté serveur** après connexion (`app/page.tsx`), sans divulguer de contenu privé.
 export function landingPathForRole(role: Role): string | null {
   if (role === MANAGER_ROLE) return "/gerant";
-  if (role === HAIRDRESSER_ROLE) return "/coiffeur/planning";
+  if (role === HAIRDRESSER_ROLE) return "/coiffeur/tickets";
   return null;
 }

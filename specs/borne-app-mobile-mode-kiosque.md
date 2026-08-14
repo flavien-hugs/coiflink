@@ -1,7 +1,7 @@
-# Mode kiosque de l'app mobile (US-8.5)
+# Mode terminal de l'app mobile (US-8.5)
 
-> Spécification de planification pour l'issue GitHub **#159 — US-8.5 : Mode kiosque de l'app
-> mobile** (`feature`, `ux` · Must · Effort L · jalon **M7 — Borne client (kiosque
+> Spécification de planification pour l'issue GitHub **#159 — US-8.5 : Mode terminal de l'app
+> mobile** (`feature`, `ux` · Must · Effort L · jalon **M7 — Borne client (terminal
 > libre-service)**, Épic 8). **Dépend de : #155, #156, #157, #158.** **Cette spec ne produit pas
 > de code** : elle décrit l'approche à implémenter dans une phase ultérieure.
 >
@@ -53,7 +53,7 @@ de #159 parmi les cinq écrans à livrer (voir plus bas) et que cette spec chois
 
 ### État actuel du dépôt — vérifié par lecture directe
 
-- **`app-mobile/lib/main.dart`** (17 lignes) est l'unique point d'entrée aujourd'hui : il délègue
+- **`app-mobile/lib/main.dart`** (18 lignes, dont un `export`) est l'unique point d'entrée aujourd'hui : il délègue
   tout à `CoifLinkApp` (`lib/adapters/ui/app.dart:40-193`), la composition root unique qui assemble
   `ApiConfig`, les gateways HTTP, `AuthSession`/`InMemoryTokenStore` et pousse `AccueilEcran`
   (`app.dart:195-276`) comme `home:` du `MaterialApp`. **Aucun second point d'entrée n'existe.**
@@ -62,10 +62,10 @@ de #159 parmi les cinq écrans à livrer (voir plus bas) et que cette spec chois
   `android/app/src/main/AndroidManifest.xml` ne déclare qu'une seule `<activity>` avec
   `android:name=".MainActivity"` et une unique `<category android:name="android.intent.category.
   LAUNCHER"/>` ; `ios/Runner.xcodeproj/xcshareddata/xcschemes/` ne contient qu'un seul schéma
-  (`Runner.xcscheme`). Un second entry point Dart (`-t lib/main_kiosk.dart`) compilé avec ce même
+  (`Runner.xcscheme`). Un second entry point Dart (`-t lib/main_terminal.dart`) compilé avec ce même
   `applicationId`/bundle id produirait donc, en l'état, un APK/IPA qui **remplacerait** l'app
   cliente s'il était installé sur le même device — sans conséquence pratique pour M7 puisque la
-  tablette kiosque est un **device dédié** (décision produit n°3), jamais partagé avec l'app
+  tablette terminal est un **device dédié** (décision produit n°3), jamais partagé avec l'app
   cliente personnelle.
 - **`AccueilEcran` (`app.dart:195-276`)** est un `StatelessWidget` : `Scaffold` + `AppBar` + colonne
   centrée de boutons (`FilledButton.icon` « Rechercher un salon », puis `OutlinedButton.icon`
@@ -79,9 +79,9 @@ de #159 parmi les cinq écrans à livrer (voir plus bas) et que cette spec chois
   celui-ci à zéro (voir *Proposed Implementation*).
 - **`_ServiceStep`** (`booking_flow_screen.dart:489-534`) et **`_HairdresserStep`**
   (`booking_flow_screen.dart:536-589`) sont les deux écrans de sélection du tunnel de réservation :
-  `ListView` de `ListTile` à sélection **unique** (icône radio manuelle), sans photo (`SalonService`,
-  `domain/salon/salon_service.dart:9-36`, ne porte pas de champ image à ce jour — #158 doit
-  l'ajouter). `_HairdresserStep` propose une option « Peu importe » — **non pertinente pour #159** :
+  `ListView` de `ListTile` à sélection **unique** (icône radio manuelle), sans photo — `SalonService`
+  porte désormais un champ `imageUrl` (`domain/salon/salon_service.dart:19,43`, livré par #158) que
+  ces `ListTile` n'affichent simplement pas. `_HairdresserStep` propose une option « Peu importe » — **non pertinente pour #159** :
   le PRD §17.3 lie le choix de coiffeuse à l'« affichage temps réel des coiffeurs disponibles »,
   explicitement **hors scope de M7** (voir *Non-Goals*) ; #159 n'adapte donc **que** `_ServiceStep`.
 - **`booking_confirmation_screen.dart`** (106 lignes) est un écran de confirmation *statique*
@@ -107,18 +107,22 @@ de #159 parmi les cinq écrans à livrer (voir plus bas) et que cette spec chois
   (lignes 30-41) ; la section `assets:` (lignes 65-74) est **entièrement commentée** — aucun asset
   local (image, police) n'existe dans ce paquet à ce jour. Le repli « logo générique bundlé si
   hors-ligne » (décision produit n°8) sera donc le **premier** asset embarqué du paquet mobile.
-- **Dépendances amont toutes spécifiées.** Les sept specs du jalon existent désormais sous
-  `specs/borne-*.md` — dont `borne-role-authentification-kiosque.md` (#155) et
-  `borne-identification-telephone-client-walkin.md` (#156), qui fixent les contrats attendus par
-  #159 (le code, lui, reste à livrer). Concrètement pour #159 :
+- **Dépendances amont désormais livrées.** Les sept specs du jalon existent sous `specs/borne-*.md`,
+  et les briques backend dont dépend #159 sont **livrées** : #155
+  (`borne-role-authentification-kiosque.md` → `POST /auth/terminal/login`, `terminal-devices`), #156
+  (`borne-identification-telephone-client-walkin.md` → `terminal/customers/lookup`, `terminal/customers`),
+  #157 (`POST /salons/{id}/queue/tickets`) et #158 (`image_url` catalogue) — vérifié par lecture
+  directe du backend (`adapters/inbound/{auth,terminal_devices,terminal_customers,queue_tickets}.py`) et du
+  modèle Flutter (`SalonService.imageUrl`). Il reste à **revalider** les noms de ports/méthodes côté
+  client contre le code livré (voir *Risks*). Concrètement pour #159 :
   - la **forme du credential device** est fixée par la spec de #155 : le device s'authentifie via
-    `POST /auth/kiosk/login`, dont la réponse **inclut le `salon_id`** de la borne — c'est ainsi
+    `POST /auth/terminal/login`, dont la réponse **inclut le `salon_id`** de la borne — c'est ainsi
     que le client Flutter connaît son salon (voir §C), un APK unique servant toutes les bornes ;
     la saisie du credential au premier lancement et son stockage sécurisé côté device sont livrés
     par #159 (voir §C et *Non-Goals*) ;
   - l'**endpoint et le contrat de recherche/création client walk-in** (#156) sont fixés :
-    `POST /salons/{salon_id}/kiosk/customers/lookup` → `{customer_id, first_name}` (`404` neutre
-    sinon) et `POST /salons/{salon_id}/kiosk/customers`, corps `{first_name, last_name, phone}`
+    `POST /salons/{salon_id}/terminal/customers/lookup` → `{customer_id, first_name}` (`404` neutre
+    sinon) et `POST /salons/{salon_id}/terminal/customers`, corps `{first_name, last_name, phone}`
     (trois champs requis, composition serveur « Prénom Nom ») → `{customer_id, first_name}`
     (`specs/borne-identification-telephone-client-walkin.md`, *API / Interface Changes*) ;
   - le contrat de **« rejoindre la file »** (#157) est documenté par sa spec :
@@ -127,19 +131,19 @@ de #159 parmi les cinq écrans à livrer (voir plus bas) et que cette spec chois
     service_ids}` (`specs/borne-ticket-file-attente-walkin.md`, section *API / Interface Changes*) —
     `ticket_number` y est un **entier brut**, jamais pré-formaté côté client (le formatage
     « N° 014 » appartient au formateur ESC/POS de #160) ;
-  - le champ **`image_url`** de #158 est également déjà spécifié : ajouté à
-    `PublicServiceResponse`/`PublicServiceView` (`specs/borne-photo-prestation-catalogue-public.md`),
-    et au modèle Flutter `SalonService` + `_serviceFromJson`
-    (`http_salon_catalog_gateway.dart:167-177`) — #159 peut donc consommer `SalonService.imageUrl`
-    dès que #158 est livrée, sans supposition supplémentaire.
-  - la spec de #160 (impression) s'appuie sur un dossier `lib/adapters/ui/kiosk/` (patron
+  - le champ **`image_url`** de #158 est désormais **livré** (git `2dc5c10`, PR #165) : exposé par
+    `PublicServiceResponse`/`PublicServiceView` côté backend, et déjà présent sur le modèle Flutter
+    `SalonService.imageUrl` (`domain/salon/salon_service.dart:19,43`) et son parseur
+    (`http_salon_catalog_gateway.dart:176`, `imageUrl: json['image_url']`) — #159 peut donc
+    consommer `SalonService.imageUrl` **dès maintenant**, sans supposition supplémentaire.
+  - la spec de #160 (impression) s'appuie sur un dossier `lib/adapters/ui/terminal/` (patron
     `adapters/ui/{receipts,booking}/`) où déposer son widget `ticket_preview.dart` — cette spec
     **confirme** ce chemin et l'utilise comme structure de dossier de référence (voir *Proposed
     Implementation*).
 
 ### Ce que #159 assemble
 
-#159 est le **point de convergence UI** du jalon : un point d'entrée `main_kiosk.dart` distinct,
+#159 est le **point de convergence UI** du jalon : un point d'entrée `main_terminal.dart` distinct,
 cinq écrans tactiles en gros boutons (accueil, identification téléphone, création client,
 choix de prestation, confirmation), un minuteur d'inactivité global qui ramène systématiquement à
 l'accueil, et l'absence **délibérée** de tout point d'entrée nécessitant une session personnelle.
@@ -147,12 +151,12 @@ Rien de ce périmètre ne touche `backend/` ni `web-dashboard/`.
 
 ## Goals
 
-- **Nouveau point d'entrée `app-mobile/lib/main_kiosk.dart`**, compilé séparément
-  (`flutter run/build … -t lib/main_kiosk.dart`), lisant un indicateur de compilation
-  `--dart-define=APP_MODE=kiosk` — **sans** introduire de flavor Android/iOS pour ce MVP (justifié
+- **Nouveau point d'entrée `app-mobile/lib/main_terminal.dart`**, compilé séparément
+  (`flutter run/build … -t lib/main_terminal.dart`), lisant un indicateur de compilation
+  `--dart-define=APP_MODE=terminal` — **sans** introduire de flavor Android/iOS pour ce MVP (justifié
   en détail en *Proposed Implementation* §A, avec les conditions qui justifieraient d'en introduire
   plus tard).
-- **Cinq écrans neufs sous `lib/adapters/ui/kiosk/`** (accueil, identification téléphone, création
+- **Cinq écrans neufs sous `lib/adapters/ui/terminal/`** (accueil, identification téléphone, création
   client, choix de prestation, confirmation), chacun adaptant un écran existant **dans son idée**
   (mise en page, découpage d'état) mais réécrit à neuf pour le contexte tactile/borne — jamais une
   simple extension paramétrée d'un écran personnel.
@@ -160,19 +164,19 @@ Rien de ce périmètre ne touche `backend/` ni `web-dashboard/`.
   espacement et contrastes chiffrés (voir §D), **aucune dépendance à un clavier physique**
   (clavier numérique tactile dédié pour le téléphone ; clavier logiciel standard, déjà tactile par
   nature, toléré pour la saisie de nom).
-- **Minuteur d'inactivité global (`KioskInactivityGuard`)** : 60 s sans interaction ramènent à
+- **Minuteur d'inactivité global (`TerminalInactivityGuard`)** : 60 s sans interaction ramènent à
   l'accueil et purgent tout état en mémoire du parcours en cours ; remise à zéro sur **toute**
   interaction tactile, où qu'elle ait lieu dans l'arbre de widgets ; **suspendu** pendant l'appel
   d'impression du ticket (dépendance #160), avec un plafond de 15 s indépendant du signal de
   reprise (décision produit n°7).
-- **Aucune session personnelle en fin de parcours (critère d'acceptation).** `main_kiosk.dart`
+- **Aucune session personnelle en fin de parcours (critère d'acceptation).** `main_terminal.dart`
   n'instancie **jamais** `AuthSession`, `SignIn`, `HttpAuthGateway`, ni les écrans « Mes
   rendez-vous »/« Mon historique »/« Mes reçus » — voir *Proposed Implementation* §I et *Security &
   Privacy Considerations*.
 - **Saisie et stockage sécurisé du credential device (#155).** Un écran de saisie du credential au
-  premier lancement et un port de stockage dédié (`KioskCredentialStore`, adossé à
+  premier lancement et un port de stockage dédié (`TerminalCredentialStore`, adossé à
   `flutter_secure_storage`/Android Keystore — nouvelle dépendance, choix à valider) : #155 fournit
-  le contrat HTTP (`POST /auth/kiosk/login`) et le format du credential, #159 livre la saisie et la
+  le contrat HTTP (`POST /auth/terminal/login`) et le format du credential, #159 livre la saisie et la
   persistance côté device (voir §C). Ce credential appartient au terminal, pas au client de
   passage : ni le minuteur d'inactivité ni la purge de fin de parcours ne le touchent.
 - **Branding salon figé, avec repli hors-ligne.** Le salon de la borne est fixé au provisioning
@@ -182,7 +186,7 @@ Rien de ce périmètre ne touche `backend/` ni `web-dashboard/`.
 - **Résilience réseau (décision n°9).** Un état « borne indisponible » cohérent sur les écrans qui
   dépendent d'un appel réseau bloquant (catalogue, identification, création de ticket) ; ces trois
   actions restent **toujours en direct**, jamais dégradées.
-- **Amorce de sortie du mode kiosque (décision n°11).** Un point d'entrée caché + une porte PIN
+- **Amorce de sortie du mode terminal (décision n°11).** Un point d'entrée caché + une porte PIN
   gérant, dont le **mécanisme de vérification exact reste une question ouverte** pour cette spec
   (voir *Risks and Open Questions*) — #159 pose le geste (comment déclencher la sortie), pas
   nécessairement la vérification finale.
@@ -202,11 +206,11 @@ paiement autonome sur la borne.
 
 **Hors scope spécifique de #159 :**
 
-- **Le rôle `KIOSK`, le format du credential device et son provisioning.** #155 fournit le contrat
-  HTTP (`POST /auth/kiosk/login`) et le format du credential ; #161 documente la procédure de
+- **Le rôle `TERMINAL`, le format du credential device et son provisioning.** #155 fournit le contrat
+  HTTP (`POST /auth/terminal/login`) et le format du credential ; #161 documente la procédure de
   provisioning. #159 ne redéfinit ni l'un ni l'autre — il livre en revanche la **saisie** du
   credential au premier lancement et sa **persistance sécurisée côté device**
-  (`KioskCredentialStore`, voir §C), et découvre le `salon_id` de la borne dans la réponse du
+  (`TerminalCredentialStore`, voir §C), et découvre le `salon_id` de la borne dans la réponse du
   login device.
 - **La recherche/création de fiche client walk-in.** #159 appelle le contrat de #156 (voir
   §F.2/§F.3) ; il ne normalise pas de téléphone, ne valide pas de nom, et n'écrit **aucune** ligne
@@ -214,19 +218,19 @@ paiement autonome sur la borne.
 - **Le domaine `QueueTicket`, la numérotation et la formule d'ETA.** #159 affiche le
   `estimated_wait_minutes` et le `ticket_number` **déjà calculés** par #157 ; aucun calcul n'est
   refait côté client.
-- **`image_url` côté catalogue public.** #159 **lit** `SalonService.imageUrl` une fois #158 livrée ;
+- **`image_url` côté catalogue public.** #159 **lit** `SalonService.imageUrl` (livré par #158) ;
   il ne touche ni au backend ni au mécanisme de résolution d'URL signée.
 - **L'adaptateur d'impression thermique concret.** #159 **appelle** le port `TicketPrinterGateway`
   et respecte le contrat UX défini par la spec de #160 (§F de cette dernière : trois messages
   d'erreur neutres, retour jamais bloqué) ; il ne construit ni le formateur ESC/POS, ni l'adaptateur
   Bluetooth/USB, ni le choix du paquet Flutter concerné.
-- **L'activation native du mode kiosque Android (Lock Task Mode / device owner).** La décision
+- **L'activation native du mode terminal Android (Lock Task Mode / device owner).** La décision
   produit n°3 retient ce mécanisme, mais son **enrôlement** (profil device owner, politique de
   verrouillage au niveau OS) est un geste de provisioning porté par #161, pas une fonctionnalité
   Dart. #159 peut, en complément optionnel, demander par canal de plateforme le verrouillage de la
   tâche courante (`FlutterActivity`/API Android `startLockTask()`) — signalé comme amélioration
   possible, non comme un livrable de cette spec (voir *Risks*).
-- **Le mécanisme de vérification du PIN gérant à la sortie du kiosque.** #159 pose le geste
+- **Le mécanisme de vérification du PIN gérant à la sortie du terminal.** #159 pose le geste
   d'entrée dans l'écran de sortie (voir §H) ; la façon dont le PIN est validé (localement ? contre
   le backend ?) et journalisé (décision n°11) reste une question ouverte, potentiellement partagée
   avec #161 (procédure de provisioning).
@@ -247,11 +251,11 @@ paiement autonome sur la borne.
 | Réservation client | `ApiConfig.fromEnvironment()`, DI manuelle dans `adapters/ui/app.dart` | [0024](../docs/adr/0024-reservation-cote-client.md) |
 | Reçu — impression/partage | `window.print()` (gérant) ; `share_plus` (client) ; aucune impression thermique mobile avant #160 | [0040](../docs/adr/0040-impression-recu-encaissement-gerant.md) |
 
-`docs/adr/` s'arrête aujourd'hui à **ADR-0040** (confirmé par `ls docs/adr | tail`) : le jalon M7
-produit **deux** ADR distinctes — **ADR-0041** (authentification borne kiosque, committée avec
-l'implémentation de #155) et **ADR-0042** (file d'attente walk-in `QueueTicket`, committée avec
-#157) ; #161 en vérifie la présence et met à jour l'index `docs/adr/README.md`. #159 ne crée
-**pas** sa propre ADR (voir *Documentation Updates*).
+`docs/adr/` va désormais jusqu'à **ADR-0042** : le jalon M7 a produit **deux** ADR distinctes —
+**ADR-0041** (authentification borne terminal, committée avec #155) et **ADR-0042** (file d'attente
+walk-in `QueueTicket`, committée avec #157), toutes deux **présentes** ; #161 en vérifie la présence
+et met à jour l'index `docs/adr/README.md`. #159 ne crée **pas** sa propre ADR (voir *Documentation
+Updates*).
 
 ### Composition root actuelle — patron à décliner, pas à réutiliser tel quel
 
@@ -259,15 +263,15 @@ l'implémentation de #155) et **ADR-0042** (file d'attente walk-in `QueueTicket`
 - `lib/adapters/ui/app.dart:40-193` (`CoifLinkApp`) : instancie `ApiConfig.fromEnvironment()`
   (`:47`), les gateways HTTP (`:48-51`), `AuthSession(InMemoryTokenStore())` (`:56`), tous les cas
   d'usage (`:58-69`), puis pousse `AccueilEcran` avec cinq callbacks (réservation, modification,
-  « Mes rendez-vous », « Mon historique », « Mes reçus », `:167-181`). **`main_kiosk.dart` suit la
-  même forme** (fichier `main` minimal → composition root dédiée), mais la composition root kiosque
+  « Mes rendez-vous », « Mon historique », « Mes reçus », `:167-181`). **`main_terminal.dart` suit la
+  même forme** (fichier `main` minimal → composition root dédiée), mais la composition root terminal
   **n'instancie aucun** de `AuthSession`/`SignIn`/`HttpAuthGateway`/`HttpReceiptGateway` ni les
   écrans `LoginScreen`/`MyAppointmentsScreen`/`AppointmentHistoryScreen`/`ReceiptsScreen` — leur
-  absence du graphe d'imports de `main_kiosk.dart` est la garantie qu'**aucun chemin de navigation**
-  du parcours kiosque ne peut les atteindre (voir §I).
+  absence du graphe d'imports de `main_terminal.dart` est la garantie qu'**aucun chemin de navigation**
+  du parcours terminal ne peut les atteindre (voir §I).
 - `lib/adapters/ui/app.dart:195-276` (`AccueilEcran`) : `Scaffold`/`AppBar`/colonne de boutons
   conditionnels. Le patron de mise en page (bouton principal + boutons secondaires optionnels) est
-  repris pour `KioskHomeScreen`, mais réécrit (voir §F.1) plutôt que paramétré, car `AccueilEcran`
+  repris pour `TerminalHomeScreen`, mais réécrit (voir §F.1) plutôt que paramétré, car `AccueilEcran`
   reste couplé à `SearchSalons`/`GetSalonDetail`/aux callbacks personnels.
 
 ### Écrans de sélection existants — patron pour le choix de prestation
@@ -277,7 +281,7 @@ l'implémentation de #155) et **ADR-0042** (file d'attente walk-in `QueueTicket`
   selected` + `ValueChanged<SalonService> onSelected`. #159 en reprend l'**entrée** (même modèle de
   données) mais pas la sortie : le contrat « rejoindre la file » de #157 accepte `service_ids:
   list[uuid]` (**pluriel**, voir §*API / Interface Changes* de `specs/borne-ticket-file-attente-
-  walkin.md`) — `KioskServiceSelectionScreen` doit donc permettre une **sélection multiple**, à la
+  walkin.md`) — `TerminalServiceSelectionScreen` doit donc permettre une **sélection multiple**, à la
   différence de `_ServiceStep` (voir §F.4).
 - `lib/adapters/ui/booking/booking_flow_screen.dart:536-589` (`_HairdresserStep`) : **non adapté**
   par #159 (choix de coiffeuse hors scope M7, voir *Non-Goals*).
@@ -285,16 +289,17 @@ l'implémentation de #155) et **ADR-0042** (file d'attente walk-in `QueueTicket`
   de la fiche salon, sans photo — également non repris tel quel (grille avec photo attendue, voir
   §F.4), mais confirme que `SalonService.price`/`durationMinutes` sont déjà tolérants à l'absence
   (`String?`/`int?`).
-- `lib/domain/salon/salon_service.dart:9-36` : **pas encore** de champ `imageUrl` à ce jour (aucune
-  ligne `image` trouvée par lecture directe) — apparaîtra avec #158 ; #159 en dépend directement
-  pour la grille de prestations en photo (voir *Non-Goals*, #158 n'est pas réimplémentée ici).
+- `lib/domain/salon/salon_service.dart:11-44` : le champ `imageUrl` (URL signée à durée limitée) est
+  **désormais présent** (`:19,43`, livré par #158) et parsé par `http_salon_catalog_gateway.dart:176` ;
+  #159 en dépend directement pour la grille de prestations en photo (voir *Non-Goals*, #158 n'est
+  pas réimplémentée ici).
 
 ### Écran de confirmation existant — patron de mise en page, pas de comportement
 
 - `lib/adapters/ui/booking/booking_confirmation_screen.dart:1-106` : icône de succès (`:36-40`),
   `Chip` de statut (`:48-54`), série de `_RecapTile` (`:56-68`, `:83-106`), bouton unique
   « Terminer » (`:70-76`) qui fait `Navigator.pop()`. **Aucune minuterie, aucun appel d'impression,
-  aucun état d'erreur réseau** — `KioskConfirmationScreen` en reprend la structure visuelle
+  aucun état d'erreur réseau** — `TerminalConfirmationScreen` en reprend la structure visuelle
   (icône + tuiles de récapitulatif) mais ajoute : un numéro de ticket en très grande taille, le
   temps d'attente estimé, l'aperçu du ticket imprimable (`TicketPreview`, dépendance #160), et le
   branchement au minuteur d'inactivité (retour automatique, pas seulement sur pression d'un bouton).
@@ -306,13 +311,13 @@ l'implémentation de #155) et **ADR-0042** (file d'attente walk-in `QueueTicket`
   automatique à l'accueil. Aucun `Listener`, `RawGestureDetector`, ni observateur de cycle de vie
   applicatif (`WidgetsBindingObserver`) n'existe ailleurs dans `app-mobile/lib`.
 
-### Session & jeton — précédent qui *justifie* la simplicité de la purge kiosque
+### Session & jeton — précédent qui *justifie* la simplicité de la purge terminal
 
 - `lib/application/ports/token_store.dart:13-40` : `TokenStore` abstrait + `InMemoryTokenStore`,
   dont le commentaire d'en-tête (`:5-7`, `:26-28`) documente déjà que le jeton **« ne survit pas au
   redémarrage »** — un choix de conception déjà pris dans ce paquet en faveur d'un état de session
   **volatile**, jamais persisté sur disque. C'est précisément ce qui permet à #159 de traiter la
-  purge d'un parcours kiosque comme un problème de **disposition de widgets**, pas de nettoyage de
+  purge d'un parcours terminal comme un problème de **disposition de widgets**, pas de nettoyage de
   stockage : rien de ce que #159 manipule (téléphone tapé, fiche trouvée/créée, prestations
   sélectionnées) n'est jamais écrit sur `SharedPreferences`/disque — tout vit dans le `State` des
   écrans de la pile de navigation courante, détruit par Flutter dès qu'on revient à la racine (voir
@@ -330,11 +335,11 @@ l'implémentation de #155) et **ADR-0042** (file d'attente walk-in `QueueTicket`
 
 - **PRD §17.4** (parcours borne) et **§17 Risque 5** (« lancer d'abord sans borne », piloter sur
   2-3 salons) — contexte déjà repris dans l'en-tête du jalon M7 de `BACKLOG.md`.
-- **PRD §12.1** : réponse API < 3 s — les écrans kiosque doivent afficher un état de chargement pour
+- **PRD §12.1** : réponse API < 3 s — les écrans terminal doivent afficher un état de chargement pour
   tout appel réseau (identification, création de ticket) et ne jamais bloquer indéfiniment
   (cohérent avec la résilience réseau, décision n°9).
 - **Décisions d'architecture M7** (fournies au porteur de cette spec) : n°3 (terminal & mode
-  kiosque), n°7 (inactivité & retour auto), n°8 (borne mono-salon), n°9 (résilience réseau), n°11
+  terminal), n°7 (inactivité & retour auto), n°8 (borne mono-salon), n°9 (résilience réseau), n°11
   (sécurité opérationnelle) concernent **directement** #159 et sont reprises en *Risks and Open
   Questions* ; n°1, n°2, n°4, n°5, n°6, n°10 sont des propriétés d'autres issues (#155/#156/#157/
   #160), simplement **consommées** ici sans être décidées par #159.
@@ -345,25 +350,25 @@ Le périmètre de #159 est **exclusivement mobile** (`app-mobile/`) : un point d
 composition root dédiée, un minuteur d'inactivité, cinq écrans, et les petits composants tactiles
 qui les outillent. **Aucun** fichier `backend/` ni `web-dashboard/` n'est modifié.
 
-### (A) Point d'entrée `lib/main_kiosk.dart` + `--dart-define=APP_MODE=kiosk`
+### (A) Point d'entrée `lib/main_terminal.dart` + `--dart-define=APP_MODE=terminal`
 
 ```dart
-// Point d'entrée dédié à la borne kiosque (US-8.5, #159). Compilé séparément de
-// `main.dart` (flutter run/build … -t lib/main_kiosk.dart) : aucun écran nécessitant
+// Point d'entrée dédié à la borne terminal (US-8.5, #159). Compilé séparément de
+// `main.dart` (flutter run/build … -t lib/main_terminal.dart) : aucun écran nécessitant
 // une session personnelle n'est importé depuis ce fichier ni depuis son graphe.
 import 'package:flutter/material.dart';
-import 'adapters/ui/kiosk/kiosk_app.dart';
+import 'adapters/ui/terminal/terminal_app.dart';
 
 void main() {
-  runApp(const KioskApp());
+  runApp(const TerminalApp());
 }
 ```
 
 **Pourquoi un second point d'entrée `-t` plutôt que de brancher un mode dans `main.dart`
 existant ?** Parce que c'est la **seule** garantie *à la compilation* que le graphe d'imports du
-binaire kiosque ne contient physiquement aucun chemin de navigation vers un écran personnel — un
-simple `if (kioskMode) ... else ...` dans un fichier unique laisserait les deux arbres de widgets
-(personnel et kiosque) importés côte à côte dans le même binaire, ce qui affaiblirait la garantie
+binaire terminal ne contient physiquement aucun chemin de navigation vers un écran personnel — un
+simple `if (terminalMode) ... else ...` dans un fichier unique laisserait les deux arbres de widgets
+(personnel et terminal) importés côte à côte dans le même binaire, ce qui affaiblirait la garantie
 « aucune session personnelle en fin de parcours » à une garantie *comportementale* (le code existe
 mais n'est jamais atteint) plutôt que *structurelle* (le code n'est atteignable par **aucun**
 chemin depuis ce point d'entrée). C'est le même raisonnement qui explique pourquoi `main.dart`
@@ -371,21 +376,21 @@ existant délègue déjà tout à `app.dart` (`main.dart:9,13`) : la convention 
 « point d'entrée exécutable » de « composition root », #159 se contente d'ajouter un second couple
 des deux, pas une branche dans le premier.
 
-**Pourquoi `--dart-define=APP_MODE=kiosk` en plus, alors que le choix du fichier `-t` suffit déjà à
+**Pourquoi `--dart-define=APP_MODE=terminal` en plus, alors que le choix du fichier `-t` suffit déjà à
 distinguer les deux binaires ?** Les deux mécanismes ne jouent pas le même rôle :
 
-- Le **fichier d'entrée** (`-t lib/main_kiosk.dart`) est ce qui détermine, à la compilation, *quel*
+- Le **fichier d'entrée** (`-t lib/main_terminal.dart`) est ce qui détermine, à la compilation, *quel*
   arbre de widgets existe dans le binaire — c'est le mécanisme structurel décrit ci-dessus.
 - Le **`--dart-define`** est un indicateur *lu au runtime*, dans la même veine que
   `API_BASE_URL` (`api_config.dart:18-28`, déjà le seul mécanisme de configuration
   d'environnement du paquet) — il sert à :
   1. rendre les invocations de build/CI **auto-documentées et grep-ables** (`grep
-     APP_MODE=kiosk` dans un script de provisioning ou un pipeline retrouve immédiatement la bonne
+     APP_MODE=terminal` dans un script de provisioning ou un pipeline retrouve immédiatement la bonne
      commande), cohérent avec la convention déjà établie de piloter tout comportement
      dépendant de l'environnement via `--dart-define` plutôt que par un fichier de config ou une
      branche de code ;
-  2. permettre une **assertion de démarrage défensive** dans `KioskApp` (`assert(kAppMode ==
-     'kiosk')`) qui échoue bruyamment si `main_kiosk.dart` était un jour construit sans le
+  2. permettre une **assertion de démarrage défensive** dans `TerminalApp` (`assert(kAppMode ==
+     'terminal')`) qui échoue bruyamment si `main_terminal.dart` était un jour construit sans le
      `--dart-define` attendu (erreur de script de build), plutôt que de démarrer silencieusement
      avec une configuration incomplète ;
   3. laisser la porte ouverte à du code **partagé** entre les deux points d'entrée (par exemple un
@@ -400,12 +405,12 @@ distinguer les deux binaires ?** Les deux mécanismes ne jouent pas le même rô
 le périmètre de #159, à consigner comme suivi) :
 
 1. **Coexistence sur le même device.** Si un jour un même device doit héberger **à la fois** l'app
-   cliente et l'app kiosque (aujourd'hui exclu : device dédié, décision n°3), il faudra un
+   cliente et l'app terminal (aujourd'hui exclu : device dédié, décision n°3), il faudra un
    `applicationId`/bundle id **distinct** par variante — ce que seuls de vrais flavors/schémas
    permettent (deux apps installables côte à côte).
 2. **Gestion de parc via MDM.** La décision n°3 écarte explicitement un MDM tiers payant « pour la
    V1 » — un futur passage à un MDM d'entreprise pour gérer un parc de bornes nécessiterait
-   généralement un identifiant d'application distinct pour cibler/déployer la variante kiosque
+   généralement un identifiant d'application distinct pour cibler/déployer la variante terminal
    indépendamment de l'app cliente dans le store interne de flotte.
 3. **Icône/nom d'application distincts sur l'écran de lancement.** `AndroidManifest.xml` ne déclare
    qu'un seul `android:label`/`@mipmap/ic_launcher` ; si le provisioning exige de reconnaître
@@ -413,46 +418,46 @@ le périmètre de #159, à consigner comme suivi) :
    ressources de manifeste distinctes — un flavor les fournit nativement.
 4. **Divergence de permissions native significative.** #160 ajoutera des permissions Bluetooth/USB
    (`BLUETOOTH_CONNECT`/`BLUETOOTH_SCAN`/`android.hardware.usb.host`) au manifeste **partagé** — sans
-   conséquence pour l'app cliente tant que ces permissions restent inertes hors du parcours kiosque,
+   conséquence pour l'app cliente tant que ces permissions restent inertes hors du parcours terminal,
    mais si la liste de permissions natives divergentes continue de croître, un flavor isolerait ce
    risque de surface (l'app cliente n'embarquerait alors plus ces permissions du tout).
-5. **Cadence de publication indépendante.** Si l'app kiosque doit un jour être mise à jour
+5. **Cadence de publication indépendante.** Si l'app terminal doit un jour être mise à jour
    séparément de l'app cliente (versions différentes en production), des artefacts de build
    distincts par flavor deviennent nécessaires pour un déploiement indépendant.
 
-### (B) Composition root dédiée — `lib/adapters/ui/kiosk/kiosk_app.dart` (nouveau)
+### (B) Composition root dédiée — `lib/adapters/ui/terminal/terminal_app.dart` (nouveau)
 
 Décline le patron de `CoifLinkApp` (`app.dart:40-193`) en le réduisant strictement à ce dont le
 parcours walk-in a besoin :
 
 ```dart
-class KioskApp extends StatelessWidget {
-  const KioskApp({super.key});
+class TerminalApp extends StatelessWidget {
+  const TerminalApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     final apiConfig = ApiConfig.fromEnvironment();      // réutilisé tel quel
-    final credentialStore = SecureKioskCredentialStore();     // nouveau, voir (C)
-    final kioskSession = KioskDeviceSession(credentialStore); // salon_id issu de la réponse
-                                                              // de POST /auth/kiosk/login (#155)
+    final credentialStore = SecureTerminalCredentialStore();     // nouveau, voir (C)
+    final terminalSession = TerminalDeviceSession(credentialStore); // salon_id issu de la réponse
+                                                              // de POST /auth/terminal/login (#155)
     final catalogGateway = HttpSalonCatalogGateway(config: apiConfig); // réutilisé tel quel
     final getSalonDetail = GetSalonDetail(catalogGateway);             // réutilisé tel quel
 
     // Nouveaux ports consommés (contrats fixés par les specs de #155/#156/#157) :
-    final identityGateway = HttpKioskIdentityGateway(config: apiConfig, session: kioskSession);
-    final queueGateway = HttpKioskQueueGateway(config: apiConfig, session: kioskSession);
+    final identityGateway = HttpTerminalIdentityGateway(config: apiConfig, session: terminalSession);
+    final queueGateway = HttpTerminalQueueGateway(config: apiConfig, session: terminalSession);
 
     return MaterialApp(
       title: 'CoifLink — Borne',
-      theme: kioskTheme,       // voir (D), distinct du ThemeData personnel (app.dart:169-172)
-      navigatorKey: kioskNavigatorKey,
-      builder: (context, child) => KioskInactivityGuard(   // voir (E)
-        navigatorKey: kioskNavigatorKey,
+      theme: terminalTheme,       // voir (D), distinct du ThemeData personnel (app.dart:169-172)
+      navigatorKey: terminalNavigatorKey,
+      builder: (context, child) => TerminalInactivityGuard(   // voir (E)
+        navigatorKey: terminalNavigatorKey,
         child: child!,
       ),
-      home: KioskHomeScreen(
+      home: TerminalHomeScreen(
         getSalonDetail: getSalonDetail,
-        salonId: kioskSession.salonId,
+        salonId: terminalSession.salonId,
         identityGateway: identityGateway,
         queueGateway: queueGateway,
       ),
@@ -467,45 +472,45 @@ Points notables :
   route qu'ils consomment (`GET /catalog/salons/{id}`) est déjà **publique**, donc utilisable sans
   aucun credential device pour la partie « lecture de catalogue » (nom du salon, logo, prestations
   + photos une fois #158 livrée).
-- `HttpKioskIdentityGateway`/`HttpKioskQueueGateway` sont des noms propres à #159 : leur forme
+- `HttpTerminalIdentityGateway`/`HttpTerminalQueueGateway` sont des noms propres à #159 : leur forme
   (en-têtes d'authentification, chemins) suit les contrats fixés par les specs de #155/#156/#157 —
   à revalider contre le code réellement livré par ces issues, sans changer la structure de la
   composition root.
 - **`AuthSession`, `SignIn`, `HttpAuthGateway`, `HttpReceiptGateway`, `HttpAppointmentGateway` ne
   sont jamais instanciés ici** — voir §I.
 - `builder:` (plutôt qu'un widget englobant chaque écran individuellement) place
-  `KioskInactivityGuard` **une seule fois**, au-dessus du `Navigator` interne du `MaterialApp` :
+  `TerminalInactivityGuard` **une seule fois**, au-dessus du `Navigator` interne du `MaterialApp` :
   tout écran poussé plus tard (`Navigator.of(context).push(...)`) hérite automatiquement de la
   détection d'inactivité sans avoir à l'envelopper lui-même — un écran oublié ne peut pas
   accidentellement échapper au minuteur.
 
-### (C) Session device & `KioskCredentialStore` — salon figé au provisioning, porté par le credential (#155)
+### (C) Session device & `TerminalCredentialStore` — salon figé au provisioning, porté par le credential (#155)
 
 Le `salon_id` de la borne est **porté par le credential device** : la réponse de
-`POST /auth/kiosk/login` (#155) l'inclut — mécanisme retenu pour tout le jalon, avec un **APK
+`POST /auth/terminal/login` (#155) l'inclut — mécanisme retenu pour tout le jalon, avec un **APK
 unique** pour toutes les bornes (aucune valeur propre au device à compiler). Concrètement :
 
-- **Au premier lancement**, `KioskCredentialEntryScreen` (nouveau) fait saisir le credential
+- **Au premier lancement**, `TerminalCredentialEntryScreen` (nouveau) fait saisir le credential
   device (format défini par #155, remis au gérant lors du provisioning — procédure documentée par
-  #161) et le persiste via **`KioskCredentialStore`** (nouveau port), dont l'adaptateur s'adosse à
+  #161) et le persiste via **`TerminalCredentialStore`** (nouveau port), dont l'adaptateur s'adosse à
   `flutter_secure_storage`/Android Keystore — **nouvelle dépendance du paquet, à valider** comme
   choix d'implémentation. Ce credential appartient au **terminal** : ni le minuteur d'inactivité
   (§E) ni la fin d'un parcours client ne le purgent.
-- **Aux lancements suivants**, l'app lit le credential stocké, appelle `POST /auth/kiosk/login` et
+- **Aux lancements suivants**, l'app lit le credential stocké, appelle `POST /auth/terminal/login` et
   conserve en mémoire la session device retournée — dont le `salon_id`, exposé aux écrans par la
   composition root (§B). La décision produit n°8 (« `salon_id` figé une fois à
   l'installation/provisioning, pas de sélection de salon à l'écran ») est ainsi satisfaite côté
   serveur (credential ↔ salon), pas dans le binaire.
 
-**Alternative non retenue en production** : `--dart-define=KIOSK_SALON_ID` par device (patron
+**Alternative non retenue en production** : `--dart-define=TERMINAL_SALON_ID` par device (patron
 `ApiConfig.fromEnvironment()`, `api_config.dart:22-28`). Elle imposerait une recompilation ou un
 `--dart-define` distinct par borne physique lors du provisioning — incompatible avec l'APK unique
 retenu par #155 pour le jalon. Elle est tolérée **uniquement comme override de développement
-local** (lancer l'app kiosque sans device provisionné), portée par `kiosk_config.dart` et
+local** (lancer l'app terminal sans device provisionné), portée par `terminal_config.dart` et
 clairement marquée comme telle dans le code. `API_BASE_URL` et `APP_MODE` restent, eux, des
 `--dart-define`.
 
-### (D) Thème kiosque — `lib/adapters/ui/kiosk/kiosk_theme.dart` (nouveau)
+### (D) Thème terminal — `lib/adapters/ui/terminal/terminal_theme.dart` (nouveau)
 
 Un `ThemeData` **distinct** de celui de l'app personnelle (`app.dart:169-172`,
 `ColorScheme.fromSeed(seedColor: Colors.indigo)`) — mêmes teintes de marque, mais recalibré pour un
@@ -519,17 +524,17 @@ second regard (contrairement à un mobile personnel tenu en main) :
 | Espacement minimal entre deux cibles tactiles adjacentes | **24 dp** | Marge de sécurité contre le clic accidentel sur la cible voisine (borne partagée, gestes moins précis qu'un usage assis). |
 | Taille de police — corps de texte / libellés de bouton | **≥ 20 sp** | Lisible à distance de bras (le thème personnel utilise les tailles Material3 par défaut, ~14-16 sp, insuffisantes ici). |
 | Taille de police — numéro de ticket (écran de confirmation) | **72-96 sp** | Doit être identifiable **d'un coup d'œil**, y compris par un client qui ne s'attarde pas à l'écran une fois le ticket imprimé. |
-| Contraste texte/fond | **≥ 4,5:1** (texte courant), **≥ 3:1** (texte large) | Seuils WCAG AA — les surfaces tonales Material3 par défaut (utilisées par le thème personnel) peuvent descendre sous ces seuils sur certaines combinaisons ; le thème kiosque fixe des couples couleur/fond explicites plutôt que de s'appuyer sur les tons dérivés automatiquement. |
+| Contraste texte/fond | **≥ 4,5:1** (texte courant), **≥ 3:1** (texte large) | Seuils WCAG AA — les surfaces tonales Material3 par défaut (utilisées par le thème personnel) peuvent descendre sous ces seuils sur certaines combinaisons ; le thème terminal fixe des couples couleur/fond explicites plutôt que de s'appuyer sur les tons dérivés automatiquement. |
 | Clavier | **aucune dépendance à un clavier physique** | Clavier numérique tactile dédié pour le téléphone (§F.2) ; clavier logiciel standard (déclenché par le focus d'un `TextField`, comme `login_screen.dart` le fait déjà) pour la saisie de nom — un écran tactile fournit nativement ce clavier, aucun appairage externe n'est requis. |
 
 Ces chiffres sont des **cibles de conception à valider par une revue UX/accessibilité** avant
 implémentation réelle (voir *Risks*), pas des contraintes techniques absolues.
 
-### (E) `KioskInactivityGuard` — `lib/adapters/ui/kiosk/kiosk_inactivity_guard.dart` (nouveau)
+### (E) `TerminalInactivityGuard` — `lib/adapters/ui/terminal/terminal_inactivity_guard.dart` (nouveau)
 
 ```dart
-class KioskInactivityGuard extends StatefulWidget {
-  const KioskInactivityGuard({
+class TerminalInactivityGuard extends StatefulWidget {
+  const TerminalInactivityGuard({
     super.key,
     required this.navigatorKey,
     required this.child,
@@ -543,10 +548,10 @@ class KioskInactivityGuard extends StatefulWidget {
   final Duration printSuspensionCap;
 
   @override
-  State<KioskInactivityGuard> createState() => KioskInactivityGuardState();
+  State<TerminalInactivityGuard> createState() => TerminalInactivityGuardState();
 }
 
-class KioskInactivityGuardState extends State<KioskInactivityGuard> {
+class TerminalInactivityGuardState extends State<TerminalInactivityGuard> {
   Timer? _timer;
   Timer? _suspensionCapTimer;
   bool _suspended = false;
@@ -610,7 +615,7 @@ Points de conception à justifier explicitement :
   bloque **aucun** geste destiné à un enfant (il observe, il ne consomme pas).
 - **`GlobalKey<NavigatorState>` dédié**, pas `Navigator.of(context)` local à un écran : le retour à
   l'accueil doit fonctionner **depuis n'importe quelle profondeur** de la pile de navigation
-  kiosque (identification → création → choix de prestation → confirmation), avec un seul appel
+  terminal (identification → création → choix de prestation → confirmation), avec un seul appel
   `popUntil((route) => route.isFirst)` — plus robuste qu'un compte de `pop()` répétés.
 - **La purge d'état n'est pas un mécanisme actif séparé.** Comme documenté dans *Relevant
   Repository Context* (« Session & jeton »), rien de ce que le parcours walk-in manipule n'est
@@ -618,7 +623,7 @@ Points de conception à justifier explicitement :
   au même titre que la fermeture de l'app efface déjà `InMemoryTokenStore` (`token_store.dart:26-
   28`). #159 applique le même principe à un cycle beaucoup plus court (60 s ou fin de parcours) que
   le redémarrage de l'app. Le **credential device** (§C) n'est pas concerné : identité du terminal
-  et non état de parcours, il est persisté via `KioskCredentialStore` et survit délibérément au
+  et non état de parcours, il est persisté via `TerminalCredentialStore` et survit délibérément au
   retour à l'accueil comme au redémarrage — ni le minuteur d'inactivité ni la purge de fin de
   parcours ne le touchent.
 - **Plafond de 15 s indépendant du signal de reprise** (décision n°7) : si l'écran de confirmation
@@ -630,39 +635,39 @@ Points de conception à justifier explicitement :
   à partir de l'appel à `print()`, pas d'une éventuelle reconnexion Bluetooth préalable — #160
   recommande d'appeler `connect()` de façon proactive dès l'écran d'accueil plutôt qu'au moment de
   l'impression, pour que les 15 s ne soient pas déjà partiellement consommés par une reconnexion.
-  `KioskConfirmationScreen` (§F.5) doit donc supposer que la connexion imprimante est **déjà**
+  `TerminalConfirmationScreen` (§F.5) doit donc supposer que la connexion imprimante est **déjà**
   établie quand il appelle `pauseForPrinting()` puis `print()`.
 
 ### (F) Les cinq écrans
 
-#### F.1 — `KioskHomeScreen` (`lib/adapters/ui/kiosk/kiosk_home_screen.dart`, nouveau)
+#### F.1 — `TerminalHomeScreen` (`lib/adapters/ui/terminal/terminal_home_screen.dart`, nouveau)
 
 Adapte la **mise en page** d'`AccueilEcran` (`Scaffold` + colonne centrée + gros bouton
 `FilledButton`), réécrite à neuf : pas de barre de recherche, pas de callbacks personnels
 optionnels. Contenu :
 
-- Logo/nom du salon (via `GetSalonDetail(kioskSession.salonId)`), avec repli sur l'asset local
+- Logo/nom du salon (via `GetSalonDetail(terminalSession.salonId)`), avec repli sur l'asset local
   générique (§D/décision n°8) si l'appel échoue ou si `logoUrl` est absent.
-- Un unique CTA « Commencer » (88 dp de haut, §D) menant à `KioskPhoneIdentificationScreen`.
+- Un unique CTA « Commencer » (88 dp de haut, §D) menant à `TerminalPhoneIdentificationScreen`.
 - **Aucun bouton « J'ai un rendez-vous » fonctionnel** (voir *Non-Goals* et la discussion de
   US-003 en *Problem Statement*) — à confirmer avec le porteur produit si un affichage *inerte* de
   ce choix est malgré tout attendu pour la cohérence perçue du parcours PRD §17.4 (voir *Risks*).
 - État réseau : si `GetSalonDetail` échoue (backend injoignable), l'écran d'accueil doit **basculer
-  vers `KioskUnavailableScreen`** (§G) plutôt que d'afficher un salon vide — c'est le point d'entrée
+  vers `TerminalUnavailableScreen`** (§G) plutôt que d'afficher un salon vide — c'est le point d'entrée
   naturel pour détecter une panne réseau avant que le client n'engage un parcours.
 - Cible de retour du minuteur d'inactivité (§E) — c'est la **seule** route de première position de
   la pile (`home:` du `MaterialApp`, §B).
-- Point d'ancrage discret de la sortie du mode kiosque (§H) — un geste caché (par ex. appui long
+- Point d'ancrage discret de la sortie du mode terminal (§H) — un geste caché (par ex. appui long
   sur le logo), pas un bouton visible.
 
-#### F.2 — `KioskPhoneIdentificationScreen` + `KioskNumericKeypad` (nouveaux)
+#### F.2 — `TerminalPhoneIdentificationScreen` + `TerminalNumericKeypad` (nouveaux)
 
 `login_screen.dart` n'est réutilisé que comme **idée de structure** (champ de saisie + bouton
 d'action conditionné par un booléen `_canSubmit`, `login_screen.dart:38-39`) — pas comme
 composant : c'est un formulaire identifiant + mot de passe, un paradigme explicitement écarté par
 la mission de #159 pour l'identification borne.
 
-- **`KioskNumericKeypad`** (`lib/adapters/ui/kiosk/kiosk_numeric_keypad.dart`, nouveau, réutilisable
+- **`TerminalNumericKeypad`** (`lib/adapters/ui/terminal/terminal_numeric_keypad.dart`, nouveau, réutilisable
   par F.5 si un futur écran en a besoin) : grille de boutons 0-9 + correction + validation, chaque
   bouton respectant les cibles tactiles de §D. Recommandé **spécifiquement pour le téléphone**
   (l'action la plus fréquente et la plus sensible aux erreurs de frappe — une faute de frappe sur
@@ -671,12 +676,12 @@ la mission de #159 pour l'identification borne.
   petite que 88 dp, pensée pour une saisie tenue en main, pas à bout de bras).
 - Affiche le numéro tapé en gros caractères au fur et à mesure, appelle
   `identityGateway.findByPhone(salonId, phone)` (contrat de #156 :
-  `POST /salons/{salon_id}/kiosk/customers/lookup` → `{customerId, firstName}`) à la validation.
+  `POST /salons/{salon_id}/terminal/customers/lookup` → `{customerId, firstName}`) à la validation.
   - **Trouvé** → affiche **uniquement le prénom** (jamais le nom complet ni le téléphone à
     l'écran, miroir direct de la décision de #156 rappelée par `BACKLOG.md:441-443`) avec un bouton
-    de confirmation → `KioskServiceSelectionScreen` ; le `customerId` retourné est conservé pour
+    de confirmation → `TerminalServiceSelectionScreen` ; le `customerId` retourné est conservé pour
     la création du ticket (`customer_profile_id` de #157).
-  - **Absent** → `KioskCreateCustomerScreen`.
+  - **Absent** → `TerminalCreateCustomerScreen`.
   - **Erreur réseau** → message neutre, bouton « Réessayer », **sans** naviguer automatiquement
     (l'identification est une des actions « toujours en direct » de la décision n°9 — pas de mode
     dégradé).
@@ -685,7 +690,7 @@ la mission de #159 pour l'identification borne.
   contrat « rejoindre la file ») sans se prononcer sur l'UX ; #159 doit décider si ce chemin existe
   (voir *Risks*, repris de `specs/borne-ticket-file-attente-walkin.md`).
 
-#### F.3 — `KioskCreateCustomerScreen` (nouveau)
+#### F.3 — `TerminalCreateCustomerScreen` (nouveau)
 
 Formulaire minimal, écrit à neuf : nom, prénom, téléphone (pré-rempli et non modifiable depuis
 l'écran précédent), gros champs de saisie, clavier logiciel standard (pas de clavier tactile
@@ -695,29 +700,29 @@ walk-in via `identityGateway.createCustomer(salonId, {firstName, lastName, phone
 #156 : trois champs requis, composition « Prénom Nom » côté serveur, réponse
 `{customerId, firstName}` — le `customerId` est conservé pour la création du ticket, #157) —
 **sans mot de passe**, cohérent avec `BACKLOG.md:442` (« crée une fiche nom/prénom/téléphone sans
-mot de passe ») — puis enchaîne directement vers `KioskServiceSelectionScreen`.
+mot de passe ») — puis enchaîne directement vers `TerminalServiceSelectionScreen`.
 
-#### F.4 — `KioskServiceSelectionScreen` + `KioskServiceCard` (nouveaux)
+#### F.4 — `TerminalServiceSelectionScreen` + `TerminalServiceCard` (nouveaux)
 
 Adapte `_ServiceStep` (`booking_flow_screen.dart:489-534`) dans son **entrée** (liste de
 `SalonService`) mais pas dans sa **sortie** ni sa présentation :
 
-- **Présentation** : `GridView` de `KioskServiceCard` (≥ 160×160 dp, §D) au lieu d'une `ListView`
+- **Présentation** : `GridView` de `TerminalServiceCard` (≥ 160×160 dp, §D) au lieu d'une `ListView`
   de `ListTile` — chaque carte affiche `service.imageUrl` (#158, `Image.network` avec un
   espace réservé/icône générique si `null`), le nom, le prix, la durée.
 - **Cardinalité — déviation assumée par rapport à `_ServiceStep`.** `_ServiceStep` est à sélection
   **unique** (un radio par ligne, `booking_flow_screen.dart:509-521`). Le contrat « rejoindre la
   file » de #157 accepte `service_ids: list[uuid]` (voir *Problem Statement*) : `
-  KioskServiceSelectionScreen` doit donc permettre une sélection **multiple** (bascule on/off par
+  TerminalServiceSelectionScreen` doit donc permettre une sélection **multiple** (bascule on/off par
   carte, pas de radio), avec un CTA « Continuer » désactivé tant qu'aucune prestation n'est
   sélectionnée — un changement de comportement délibéré par rapport à l'écran dont il s'inspire,
   pas un oubli.
 - **Aucune coiffeuse affichée** (voir *Non-Goals* — `_HairdresserStep` n'est pas adapté).
 - À la validation, appelle `queueGateway.joinQueue(salonId, customerProfileId?, serviceIds)`
-  (contrat de #157) → `KioskConfirmationScreen`. Erreur réseau → message neutre + réessai, sans
+  (contrat de #157) → `TerminalConfirmationScreen`. Erreur réseau → message neutre + réessai, sans
   perdre la sélection déjà faite (l'action reste « toujours en direct », décision n°9).
 
-#### F.5 — `KioskConfirmationScreen` (nouveau)
+#### F.5 — `TerminalConfirmationScreen` (nouveau)
 
 Reprend la structure visuelle de `booking_confirmation_screen.dart` (icône de succès, tuiles de
 récapitulatif) en l'étendant :
@@ -727,11 +732,11 @@ récapitulatif) en l'étendant :
   aussitôt.
 - Temps d'attente estimé (`estimated_wait_minutes`, #157), salon, prestation(s) choisies.
 - **`TicketPreview`** (widget porté par la spec de #160,
-  `lib/adapters/ui/kiosk/ticket_preview.dart` — cette spec **confirme** le chemin `kiosk/` retenu
+  `lib/adapters/ui/terminal/ticket_preview.dart` — cette spec **confirme** le chemin `terminal/` retenu
   par #160) : rend à l'écran le contenu du ticket, **indépendamment** du résultat de l'impression.
 - **Séquence d'impression, encadrée par le minuteur (§E)** :
-  1. `KioskInactivityGuardState.of(context).pauseForPrinting()` (via un `InheritedWidget` exposant
-     l'état du guard, ou un `GlobalKey<KioskInactivityGuardState>` partagé par `KioskApp`) ;
+  1. `TerminalInactivityGuardState.of(context).pauseForPrinting()` (via un `InheritedWidget` exposant
+     l'état du guard, ou un `GlobalKey<TerminalInactivityGuardState>` partagé par `TerminalApp`) ;
   2. `await ticketPrinterGateway.print(payload)` dans un `try/catch` sur les trois exceptions
      typées définies par #160 (`PrinterNotConnectedException`, `PrinterOutOfPaperException`,
      `PrinterWriteFailedException`), chacune affichant le message correspondant **exactement** tel
@@ -744,7 +749,7 @@ récapitulatif) en l'étendant :
   complément raisonnable pour un client qui a fini avant l'expiration du minuteur, sans remplacer
   le retour automatique (filet de sécurité pour un client qui s'éloigne sans y penser).
 
-### (G) `KioskUnavailableScreen` (nouveau) — résilience réseau (décision n°9)
+### (G) `TerminalUnavailableScreen` (nouveau) — résilience réseau (décision n°9)
 
 Écran de repli affiché quand un appel réseau **bloquant** échoue de façon non récupérable par un
 simple réessai local (ex. `GetSalonDetail` au démarrage) : message neutre (« La borne est
@@ -756,12 +761,12 @@ et devrait rester **hors invalidation des URLs signées** de #158 (une `image_ur
 au-delà de sa durée de validité échouerait silencieusement) — point à trancher à l'implémentation,
 signalé ici comme repris de la spec de #158 (*Risks* n°1).
 
-### (H) Sortie du mode kiosque — `KioskExitGate` (nouveau, périmètre volontairement limité)
+### (H) Sortie du mode terminal — `TerminalExitGate` (nouveau, périmètre volontairement limité)
 
-La décision produit n°11 exige que la sortie du mode kiosque et les actions de maintenance soient
+La décision produit n°11 exige que la sortie du mode terminal et les actions de maintenance soient
 « protégées par PIN gérant, journalisées ». #159 pose le **geste d'entrée** dans cet écran (un
 appui long caché sur l'écran d'accueil, §F.1, ouvrant un dialogue de saisie de code réutilisant
-`KioskNumericKeypad`, §F.2) sans trancher la **vérification** elle-même :
+`TerminalNumericKeypad`, §F.2) sans trancher la **vérification** elle-même :
 
 - **Option A — réutiliser la connexion personnelle existante.** Vérifier le code contre
   `POST /auth/login` (déjà existant, `SignIn`/`HttpAuthGateway` déjà écrits dans le paquet) avec les
@@ -778,17 +783,17 @@ appui long caché sur l'écran d'accueil, §F.1, ouvrant un dialogue de saisie d
 Cette spec **ne tranche pas** entre A et B (voir *Risks*) : #159 se limite à prévoir le point
 d'entrée UI (le geste caché + le dialogue de saisie), la logique de vérification réelle étant
 soit consommée depuis l'infrastructure existante (Option A) soit coordonnée avec #161
-(Option B). Dans les deux cas, la sortie du mode kiosque doit `pauseForPrinting()`-style suspendre
+(Option B). Dans les deux cas, la sortie du mode terminal doit `pauseForPrinting()`-style suspendre
 également le minuteur d'inactivité pendant la saisie du code (un gérant qui tape un PIN ne doit pas
 être interrompu par un retour à l'accueil).
 
 ### (I) Ce qui garantit l'absence de session personnelle (critère d'acceptation)
 
-- `main_kiosk.dart` n'importe **jamais**, directement ou transitivement,
+- `main_terminal.dart` n'importe **jamais**, directement ou transitivement,
   `lib/adapters/ui/auth/login_screen.dart`, `lib/adapters/ui/appointments/{my_appointments_screen,
   appointment_history_screen}.dart`, ni `lib/adapters/ui/receipts/receipts_screen.dart` — aucun
-  fichier du dossier `lib/adapters/ui/kiosk/` ne les référence.
-- `KioskApp` (§B) n'instancie **jamais** `AuthSession`, `SignIn`, `HttpAuthGateway`,
+  fichier du dossier `lib/adapters/ui/terminal/` ne les référence.
+- `TerminalApp` (§B) n'instancie **jamais** `AuthSession`, `SignIn`, `HttpAuthGateway`,
   `HttpReceiptGateway`, ni les cas d'usage `ListMyAppointments`/`ListMyAppointmentHistory`/
   `ModifyAppointment`/`CancelAppointment`/`ListMyReceipts`/`GetReceiptDetail`.
 - **Il n'existe, à proprement parler, aucune notion de « session personnelle » à purger dans le
@@ -799,7 +804,7 @@ soit consommée depuis l'infrastructure existante (Option A) soit coordonnée av
   construction, jamais « une session personnelle active en fin de parcours » au sens du critère
   d'acceptation.
 - Conséquence directe : la garantie « aucune session personnelle en fin de parcours » est vraie dès
-  la conception de `main_kiosk.dart`, pas seulement grâce au minuteur d'inactivité — le minuteur
+  la conception de `main_terminal.dart`, pas seulement grâce au minuteur d'inactivité — le minuteur
   (§E) garantit en plus qu'un client n'abandonne pas la borne au **milieu** d'un parcours (téléphone
   tapé, fiche affichée) en la laissant visible à l'écran pour le client suivant.
 
@@ -809,34 +814,34 @@ soit consommée depuis l'infrastructure existante (Option A) soit coordonnée av
 
 | Fichier | Rôle |
 | --- | --- |
-| `lib/main_kiosk.dart` | point d'entrée dédié, `runApp(const KioskApp())` |
-| `lib/adapters/data/kiosk_config.dart` | override optionnel de développement local (`KIOSK_SALON_ID`, §C) — jamais utilisé en production |
-| `lib/application/ports/kiosk_credential_store.dart` | port `KioskCredentialStore` — persistance sécurisée du credential device (§C) |
-| `lib/adapters/data/secure_kiosk_credential_store.dart` | adaptateur `flutter_secure_storage`/Android Keystore (nouvelle dépendance, à valider) |
-| `lib/adapters/ui/kiosk/kiosk_app.dart` | composition root kiosque (`KioskApp`) |
-| `lib/adapters/ui/kiosk/kiosk_theme.dart` | `ThemeData` dédié (gros boutons, contraste) |
-| `lib/adapters/ui/kiosk/kiosk_inactivity_guard.dart` | `KioskInactivityGuard`/`KioskInactivityGuardState` |
-| `lib/adapters/ui/kiosk/kiosk_credential_entry_screen.dart` | saisie du credential device au premier lancement (§C) |
-| `lib/adapters/ui/kiosk/kiosk_home_screen.dart` | écran d'accueil borne |
-| `lib/adapters/ui/kiosk/kiosk_numeric_keypad.dart` | pavé numérique tactile réutilisable |
-| `lib/adapters/ui/kiosk/kiosk_phone_identification_screen.dart` | identification par téléphone |
-| `lib/adapters/ui/kiosk/kiosk_create_customer_screen.dart` | création de fiche walk-in |
-| `lib/adapters/ui/kiosk/kiosk_service_selection_screen.dart` | choix de prestation(s), grille photo, sélection multiple |
-| `lib/adapters/ui/kiosk/kiosk_service_card.dart` | carte tactile d'une prestation |
-| `lib/adapters/ui/kiosk/kiosk_confirmation_screen.dart` | confirmation, numéro, ETA, impression |
-| `lib/adapters/ui/kiosk/kiosk_unavailable_screen.dart` | état « borne indisponible » |
-| `lib/adapters/ui/kiosk/kiosk_exit_gate.dart` | geste caché + dialogue PIN (vérification non tranchée, §H) |
-| `assets/images/kiosk_logo_fallback.png` *(ou `.svg`)* | logo générique de repli hors-ligne (décision n°8) |
-| `test/kiosk_inactivity_guard_test.dart` | minuterie déterministe (`tester.pump`) |
-| `test/kiosk_home_screen_test.dart`, `test/kiosk_phone_identification_screen_test.dart`, `test/kiosk_create_customer_screen_test.dart`, `test/kiosk_service_selection_screen_test.dart`, `test/kiosk_confirmation_screen_test.dart` | tests par écran, faux ports locaux au fichier |
+| `lib/main_terminal.dart` | point d'entrée dédié, `runApp(const TerminalApp())` |
+| `lib/adapters/data/terminal_config.dart` | override optionnel de développement local (`TERMINAL_SALON_ID`, §C) — jamais utilisé en production |
+| `lib/application/ports/terminal_credential_store.dart` | port `TerminalCredentialStore` — persistance sécurisée du credential device (§C) |
+| `lib/adapters/data/secure_terminal_credential_store.dart` | adaptateur `flutter_secure_storage`/Android Keystore (nouvelle dépendance, à valider) |
+| `lib/adapters/ui/terminal/terminal_app.dart` | composition root terminal (`TerminalApp`) |
+| `lib/adapters/ui/terminal/terminal_theme.dart` | `ThemeData` dédié (gros boutons, contraste) |
+| `lib/adapters/ui/terminal/terminal_inactivity_guard.dart` | `TerminalInactivityGuard`/`TerminalInactivityGuardState` |
+| `lib/adapters/ui/terminal/terminal_credential_entry_screen.dart` | saisie du credential device au premier lancement (§C) |
+| `lib/adapters/ui/terminal/terminal_home_screen.dart` | écran d'accueil borne |
+| `lib/adapters/ui/terminal/terminal_numeric_keypad.dart` | pavé numérique tactile réutilisable |
+| `lib/adapters/ui/terminal/terminal_phone_identification_screen.dart` | identification par téléphone |
+| `lib/adapters/ui/terminal/terminal_create_customer_screen.dart` | création de fiche walk-in |
+| `lib/adapters/ui/terminal/terminal_service_selection_screen.dart` | choix de prestation(s), grille photo, sélection multiple |
+| `lib/adapters/ui/terminal/terminal_service_card.dart` | carte tactile d'une prestation |
+| `lib/adapters/ui/terminal/terminal_confirmation_screen.dart` | confirmation, numéro, ETA, impression |
+| `lib/adapters/ui/terminal/terminal_unavailable_screen.dart` | état « borne indisponible » |
+| `lib/adapters/ui/terminal/terminal_exit_gate.dart` | geste caché + dialogue PIN (vérification non tranchée, §H) |
+| `assets/images/terminal_logo_fallback.png` *(ou `.svg`)* | logo générique de repli hors-ligne (décision n°8) |
+| `test/terminal_inactivity_guard_test.dart` | minuterie déterministe (`tester.pump`) |
+| `test/terminal_home_screen_test.dart`, `test/terminal_phone_identification_screen_test.dart`, `test/terminal_create_customer_screen_test.dart`, `test/terminal_service_selection_screen_test.dart`, `test/terminal_confirmation_screen_test.dart` | tests par écran, faux ports locaux au fichier |
 
 ### `app-mobile/` — à modifier
 
 | Fichier | Modification |
 | --- | --- |
-| `pubspec.yaml` | déclaration de la section `assets:` (actuellement commentée, `:65-74`) pour `assets/images/kiosk_logo_fallback.png` ; ajout de la dépendance `flutter_secure_storage` (credential device, §C — choix à valider) |
-| `app-mobile/README.md` | nouvelle section « Mode kiosque (US-8.5, #159) » |
-| `.github/workflows/ci.yml` | ajout recommandé d'une étape `flutter build apk --debug -t lib/main_kiosk.dart` (voir *Testing Plan*) — **à confirmer**, non strictement requis par l'acceptation de #159 |
+| `pubspec.yaml` | déclaration de la section `assets:` (actuellement commentée, `:65-74`) pour `assets/images/terminal_logo_fallback.png` ; ajout de la dépendance `flutter_secure_storage` (credential device, §C — choix à valider) |
+| `app-mobile/README.md` | nouvelle section « Mode terminal (US-8.5, #159) » |
+| `.github/workflows/ci.yml` | ajout recommandé d'une étape `flutter build apk --debug -t lib/main_terminal.dart` (voir *Testing Plan*) — **à confirmer**, non strictement requis par l'acceptation de #159 |
 
 ### Fichiers consommés **sans modification** (dépendances directes)
 
@@ -863,20 +868,20 @@ jalon — voir *Problem Statement*) :
 
 | Écran | Appel (nom côté #159) | Backend consommé | Contrat |
 | --- | --- | --- | --- |
-| `KioskHomeScreen` | `GetSalonDetail.call(salonId)` | `GET /catalog/salons/{salon_id}` (**déjà public**) | inchangé, réutilisé tel quel |
-| `KioskPhoneIdentificationScreen` | `identityGateway.findByPhone(salonId, phone)` | `POST /salons/{salon_id}/kiosk/customers/lookup` (#156, **déjà spécifiée**) | `{customer_id, first_name}` si trouvé, `404` neutre sinon |
-| `KioskCreateCustomerScreen` | `identityGateway.createCustomer(salonId, {firstName, lastName, phone})` | `POST /salons/{salon_id}/kiosk/customers` (#156, **déjà spécifiée**) | `{first_name, last_name, phone}` (3 champs requis, composition serveur « Prénom Nom ») → `{customer_id, first_name}`, sans mot de passe (`BACKLOG.md:442`) |
-| `KioskServiceSelectionScreen` | `queueGateway.joinQueue(salonId, customerProfileId?, serviceIds)` | `POST /salons/{salon_id}/queue/tickets` (#157, **déjà spécifiée**) | `{customer_profile_id?, service_ids}` → `201 {id, ticket_number, issued_date, status, estimated_wait_minutes, created_at, service_ids}` |
-| `KioskConfirmationScreen` | `ticketPrinterGateway.print(payload)` | aucun réseau (matériel local, #160) | `TicketPrintPayload{salonName, ticketNumber (int brut), issuedAt, serviceNames: List<String>}` — formatage « N° 014 » et une ligne imprimée par prestation côté formateur #160 |
+| `TerminalHomeScreen` | `GetSalonDetail.call(salonId)` | `GET /catalog/salons/{salon_id}` (**déjà public**) | inchangé, réutilisé tel quel |
+| `TerminalPhoneIdentificationScreen` | `identityGateway.findByPhone(salonId, phone)` | `POST /salons/{salon_id}/terminal/customers/lookup` (#156, **déjà spécifiée**) | `{customer_id, first_name}` si trouvé, `404` neutre sinon |
+| `TerminalCreateCustomerScreen` | `identityGateway.createCustomer(salonId, {firstName, lastName, phone})` | `POST /salons/{salon_id}/terminal/customers` (#156, **déjà spécifiée**) | `{first_name, last_name, phone}` (3 champs requis, composition serveur « Prénom Nom ») → `{customer_id, first_name}`, sans mot de passe (`BACKLOG.md:442`) |
+| `TerminalServiceSelectionScreen` | `queueGateway.joinQueue(salonId, customerProfileId?, serviceIds)` | `POST /salons/{salon_id}/queue/tickets` (#157, **déjà spécifiée**) | `{customer_profile_id?, service_ids}` → `201 {id, ticket_number, issued_date, status, estimated_wait_minutes, created_at, service_ids}` |
+| `TerminalConfirmationScreen` | `ticketPrinterGateway.print(payload)` | aucun réseau (matériel local, #160) | `TicketPrintPayload{salonName, ticketNumber (int brut), issuedAt, serviceNames: List<String>}` — formatage « N° 014 » et une ligne imprimée par prestation côté formateur #160 |
 
 **Toutes les routes consommées au-delà du catalogue public exigent un credential device (#155)** —
 #159 ne les appelle jamais avec un jeton personnel ni sans authentification. La forme de cette
 authentification est fixée par la spec de #155 : session device obtenue via
-`POST /auth/kiosk/login`, dont la réponse inclut le `salon_id` de la borne (voir §C).
+`POST /auth/terminal/login`, dont la réponse inclut le `salon_id` de la borne (voir §C).
 
 **Aucun changement de CLI, de variable d'environnement backend, ni de contrat inter-paquet
 existant.** Une nouvelle variable de compilation Flutter est introduite (`APP_MODE`), au même titre
-que `API_BASE_URL` déjà existante — aucune n'est un secret ; `KIOSK_SALON_ID` ne subsiste que comme
+que `API_BASE_URL` déjà existante — aucune n'est un secret ; `TERMINAL_SALON_ID` ne subsiste que comme
 override de développement local (§C), jamais en production.
 
 ## Data Model / Protocol Changes
@@ -885,14 +890,14 @@ override de développement local (§C), jamais en production.
 « protocole » interne au paquet mobile, par cohérence avec la façon dont la spec de #160 traite son
 propre protocole ESC/POS :
 
-1. **Le contrat de compilation kiosque** : `--dart-define=APP_MODE=kiosk` (indicateur runtime) —
+1. **Le contrat de compilation terminal** : `--dart-define=APP_MODE=terminal` (indicateur runtime) —
    fourni au moment du build, jamais lu depuis le code métier autrement que via l'assertion de
    démarrage. L'identité du salon n'est **pas** une valeur de compilation : elle provient de la
-   session device (`POST /auth/kiosk/login`, §C) ; `--dart-define=KIOSK_SALON_ID` ne subsiste que
+   session device (`POST /auth/terminal/login`, §C) ; `--dart-define=TERMINAL_SALON_ID` ne subsiste que
    comme override de développement local, clairement marqué comme tel.
 2. **Le contrat du minuteur d'inactivité** : 60 s de délai par défaut, 15 s de plafond de
    suspension pendant l'impression — des constantes de configuration du widget
-   `KioskInactivityGuard`, pas des valeurs codées en dur ailleurs, pour rester ajustables sans
+   `TerminalInactivityGuard`, pas des valeurs codées en dur ailleurs, pour rester ajustables sans
    toucher aux écrans qui les consomment.
 
 Ces deux éléments sont des choix de configuration/comportement, pas un schéma de données — ils
@@ -903,7 +908,7 @@ n'engagent aucune compatibilité de sérialisation avec le backend.
 - **Aucune session personnelle, par construction.** Voir *Proposed Implementation* §I. Le parcours
   walk-in de #159 ne produit ni ne lit jamais de jeton `AuthSession` — la seule identité en jeu est
   celle du **device** (#155), jamais celle d'un client individuel.
-- **Exposition minimale du client à l'écran, cohérente avec #156.** `KioskPhoneIdentificationScreen`
+- **Exposition minimale du client à l'écran, cohérente avec #156.** `TerminalPhoneIdentificationScreen`
   n'affiche **jamais** autre chose que le prénom d'un client retrouvé — jamais le nom complet, le
   téléphone normalisé, ni aucune autre fiche que celle en cours d'interaction (une borne est un
   terminal **partagé**, contrairement à un mobile personnel).
@@ -929,20 +934,20 @@ n'engagent aucune compatibilité de sérialisation avec le backend.
   file d'attente locale, aucune écriture optimiste non confirmée par le serveur — un échec réseau
   sur ces deux actions se traduit par un message d'erreur et un réessai, jamais par une action
   silencieusement retardée qui pourrait produire un doublon ou un ticket fantôme.
-- **Sortie du mode kiosque non résolue = surface à traiter avec rigueur avant livraison.** Tant que
+- **Sortie du mode terminal non résolue = surface à traiter avec rigueur avant livraison.** Tant que
   §H n'est pas tranché (Option A/B), #159 ne doit **pas** exposer de geste de sortie qui contourne
   la vérification prévue par la décision n°11 — le geste caché doit rester inerte (afficher un
-  message « fonctionnalité de maintenance à venir ») plutôt que de sortir du mode kiosque sans
+  message « fonctionnalité de maintenance à venir ») plutôt que de sortir du mode terminal sans
   aucune vérification, si l'implémentation de la vérification choisie n'est pas encore prête.
 - **Pas d'implication pour l'anti-oracle ADR-0026 au niveau de #159.** La règle anti-oracle
   (ne jamais interroger `users` par téléphone) est une propriété du **backend** de #156 ; #159 ne
   fait qu'afficher le résultat qu'on lui retourne — il n'introduit aucune requête supplémentaire ni
   aucun canal qui pourrait révéler l'existence d'un compte personnel.
 - **Aucun secret dans `--dart-define`.** `APP_MODE` (et l'override de développement
-  `KIOSK_SALON_ID`, §C) ne sont pas des secrets (un `salon_id` est déjà une donnée publique du
+  `TERMINAL_SALON_ID`, §C) ne sont pas des secrets (un `salon_id` est déjà une donnée publique du
   catalogue) — cohérent avec la règle déjà appliquée à `API_BASE_URL` (`api_config.dart:3-5`). Le
   **credential device** (#155), lui, est un secret : il ne transite jamais par `--dart-define` —
-  saisi à l'écran au premier lancement et persisté via `KioskCredentialStore` (stockage sécurisé,
+  saisi à l'écran au premier lancement et persisté via `TerminalCredentialStore` (stockage sécurisé,
   §C), il n'apparaît ni dans une commande de build ni dans le binaire.
 
 ## Testing Plan
@@ -950,7 +955,7 @@ n'engagent aucune compatibilité de sérialisation avec le backend.
 Test gate mobile uniquement : `flutter test`. **Aucun** impact sur `pytest` backend ni `npm test`
 web (aucun fichier de ces paquets n'est touché).
 
-### Minuteur d'inactivité (`test/kiosk_inactivity_guard_test.dart`, nouveau)
+### Minuteur d'inactivité (`test/terminal_inactivity_guard_test.dart`, nouveau)
 
 - Utiliser `WidgetTester.pump(Duration)` (déterministe, sans horloge réelle) pour vérifier :
   - aucune navigation vers l'accueil avant `timeout` (59 s) sans interaction ;
@@ -965,19 +970,19 @@ web (aucun fichier de ces paquets n'est touché).
 
 ### Écrans (patron `_StubGateway`, `salon_search_screen_test.dart:20-30`)
 
-- **`kiosk_home_screen_test.dart`** : rendu du nom de salon (faux `GetSalonDetail` réussi) ; repli
+- **`terminal_home_screen_test.dart`** : rendu du nom de salon (faux `GetSalonDetail` réussi) ; repli
   sur le logo générique bundlé si `GetSalonDetail` échoue ou `logoUrl` est `null` ; le CTA
   « Commencer » navigue vers l'identification.
-- **`kiosk_phone_identification_screen_test.dart`** : un faux gateway d'identité couvrant trois cas
+- **`terminal_phone_identification_screen_test.dart`** : un faux gateway d'identité couvrant trois cas
   — trouvé (affiche **uniquement** le prénom, jamais le nom complet ni le téléphone dans l'arbre de
   widgets, assertion `find.text` négative sur ces valeurs) ; absent (navigue vers la création) ;
   erreur réseau (message neutre + bouton réessayer, aucune navigation automatique).
-- **`kiosk_create_customer_screen_test.dart`** : validation minimale du formulaire, appel de
+- **`terminal_create_customer_screen_test.dart`** : validation minimale du formulaire, appel de
   création avec les bons champs, absence de champ mot de passe dans l'arbre de widgets.
-- **`kiosk_service_selection_screen_test.dart`** : sélection **multiple** (activer deux cartes,
+- **`terminal_service_selection_screen_test.dart`** : sélection **multiple** (activer deux cartes,
   vérifier que `service_ids` transmis contient les deux identifiants) — non-régression explicite du
   choix de cardinalité par rapport à `_ServiceStep` ; CTA désactivé tant qu'aucune sélection.
-- **`kiosk_confirmation_screen_test.dart`** : rendu du numéro de ticket et de l'ETA depuis un faux
+- **`terminal_confirmation_screen_test.dart`** : rendu du numéro de ticket et de l'ETA depuis un faux
   résultat de `joinQueue` ; les trois branches d'erreur d'impression (faux
   `TicketPrinterGateway` levant chacune des exceptions de #160) affichent le message correspondant
   **sans** empêcher le bouton « Terminer »/le minuteur de fonctionner (vérifier que
@@ -987,25 +992,25 @@ web (aucun fichier de ces paquets n'est touché).
 
 - Aucun test existant (`test/widget_test.dart`, `test/salon_search_screen_test.dart`,
   `test/*booking*`, `test/*receipt*`) n'est affecté : #159 n'ajoute que des fichiers nouveaux sous
-  `lib/adapters/ui/kiosk/`, `lib/adapters/data/kiosk_config.dart` et `lib/main_kiosk.dart`, sans
+  `lib/adapters/ui/terminal/`, `lib/adapters/data/terminal_config.dart` et `lib/main_terminal.dart`, sans
   modifier `lib/main.dart` ni `lib/adapters/ui/app.dart`.
 - `flutter analyze` couvre automatiquement les nouveaux fichiers (analyse tout `lib/**`,
   indépendamment du point d'entrée).
 - **CI (`*.github/workflows/ci.yml:174`)** ne construit aujourd'hui que `flutter build apk --debug`
-  (entrée par défaut, `lib/main.dart`) — le second point d'entrée `main_kiosk.dart` **n'est pas**
+  (entrée par défaut, `lib/main.dart`) — le second point d'entrée `main_terminal.dart` **n'est pas**
   couvert par ce build. *Recommandation* : ajouter une étape `flutter build apk --debug -t
-  lib/main_kiosk.dart` pour détecter une régression de compilation sur ce second entry point ;
+  lib/main_terminal.dart` pour détecter une régression de compilation sur ce second entry point ;
   **à confirmer avec le porteur produit/CI** (coût : quelques dizaines de secondes de CI
-  supplémentaires, bénéfice : détection immédiate d'un import cassé côté kiosque).
+  supplémentaires, bénéfice : détection immédiate d'un import cassé côté terminal).
 
 ## Documentation Updates
 
-- **`app-mobile/README.md`** — nouvelle section « Mode kiosque — borne libre-service (US-8.5,
+- **`app-mobile/README.md`** — nouvelle section « Mode terminal — borne libre-service (US-8.5,
   #159) », sur le patron de la section « Mes reçus » (`README.md:183` et suivantes) : arborescence
   des nouveaux fichiers, les `--dart-define` (`APP_MODE`, `API_BASE_URL`), commande de
-  build/lancement (`flutter run -t lib/main_kiosk.dart --dart-define=APP_MODE=kiosk
+  build/lancement (`flutter run -t lib/main_terminal.dart --dart-define=APP_MODE=terminal
   --dart-define=API_BASE_URL=...`), la saisie du credential device au premier lancement (§C — le
-  `salon_id` vient de la session device ; `KIOSK_SALON_ID` uniquement comme override de
+  `salon_id` vient de la session device ; `TERMINAL_SALON_ID` uniquement comme override de
   développement local), et un rappel explicite que ce point d'entrée est **Android-first**
   (ADR-0001) comme le reste de l'app.
 - **Pas de nouvel ADR créé par #159.** Comme #158 et #160 avant elle, cette spec **ne crée pas**
@@ -1014,7 +1019,7 @@ web (aucun fichier de ces paquets n'est touché).
   committée avec #157). Les décisions structurantes que #159 soulève (choix `-t` + `--dart-define`
   plutôt que des flavors, mécanisme du minuteur d'inactivité `Listener`+`Timer`, question ouverte
   sur la vérification du PIN de sortie) sont consignées dans cette spec et la section README du
-  mode kiosque ; celles qui touchent au provisioning alimentent le **runbook** rédigé par #161
+  mode terminal ; celles qui touchent au provisioning alimentent le **runbook** rédigé par #161
   (« ADR, documentation & procédure de provisioning borne »), qui vérifie aussi la présence des
   deux ADR et met à jour `docs/adr/README.md`.
 - **`pubspec.yaml`** : commentaire explicatif au-dessus de la nouvelle section `assets:` (patron des
@@ -1030,7 +1035,7 @@ ainsi que les questions ouvertes propres à cette spec.
 
 ### Décisions M7 directement concernées
 
-1. **Décision n°3 (terminal & mode kiosque).** `main_kiosk.dart` + `--dart-define=APP_MODE=kiosk`,
+1. **Décision n°3 (terminal & mode terminal).** `main_terminal.dart` + `--dart-define=APP_MODE=terminal`,
    pas de flavors pour ce MVP — justifié en détail en *Proposed Implementation* §A, avec la liste
    des déclencheurs d'un futur passage à de vrais flavors. **Point non couvert par cette spec** :
    l'activation native d'Android Lock Task Mode (`startLockTask()`) est un appel de plateforme côté
@@ -1039,35 +1044,35 @@ ainsi que les questions ouvertes propres à cette spec.
    externe) — non tranché ici, **à confirmer** avec l'implémenteur et #161 (qui documente
    l'enrôlement).
 2. **Décision n°7 (inactivité & retour auto, 60 s / suspension 15 s).** Implémentée par
-   `KioskInactivityGuard` (§E). **Point de coordination avec #160** : le plafond de 15 s doit courir
+   `TerminalInactivityGuard` (§E). **Point de coordination avec #160** : le plafond de 15 s doit courir
    depuis l'appel `print()`, pas depuis une éventuelle reconnexion Bluetooth — #159 doit donc
    supposer une connexion imprimante déjà établie en amont de la confirmation (recommandation reprise
    de la spec de #160, *Risks* n°2), ce qui suppose que `EscPosTicketPrinterGateway.connect()` soit
    appelé de façon proactive dès l'écran d'accueil (§F.1) plutôt qu'à la confirmation — **à
    coordonner explicitement avec l'implémenteur de #160**.
 3. **Décision n°8 (borne mono-salon).** Traduite par la session device (§C) : le `salon_id` est
-   porté par le credential device et retourné par `POST /auth/kiosk/login` (#155) — mécanisme
+   porté par le credential device et retourné par `POST /auth/terminal/login` (#155) — mécanisme
    retenu pour tout le jalon, un APK unique pour toutes les bornes. Le
-   `--dart-define=KIOSK_SALON_ID` par device n'est **pas** retenu en production (recompilation ou
+   `--dart-define=TERMINAL_SALON_ID` par device n'est **pas** retenu en production (recompilation ou
    valeur à provisionner par borne physique) ; il ne subsiste que comme override de développement
    local, clairement marqué comme tel.
    Le repli sur un logo générique bundlé (premier asset local du paquet) est un changement mineur
    mais réel de l'outillage (`pubspec.yaml`) — à valider dans la même PR.
-4. **Décision n°9 (résilience réseau).** Traduite en `KioskUnavailableScreen` (§G) et en la règle
+4. **Décision n°9 (résilience réseau).** Traduite en `TerminalUnavailableScreen` (§G) et en la règle
    « identification/création de ticket toujours en direct ». **Question ouverte reprise de la spec
    de #158** (*Risks* n°1) : la durée de mise en cache court-terme du catalogue (et donc des
    `image_url` signées, à durée de validité limitée) n'est fixée par aucune décision produit — à
    trancher à l'implémentation, sans bloquer #159 qui peut démarrer sans cache (rafraîchissement à
    chaque affichage de l'écran de choix de prestation) en V1.
 5. **Décision n°11 (sécurité opérationnelle — PIN gérant, journalisation).** #159 pose le geste
-   d'entrée (`KioskExitGate`, §H) sans trancher la vérification (Option A : réutiliser
+   d'entrée (`TerminalExitGate`, §H) sans trancher la vérification (Option A : réutiliser
    `/auth/login` existant ; Option B : PIN court local, à coordonner avec #161). **Décision
    structurante à prendre avant l'implémentation** — elle conditionne si #159 a besoin d'un nouveau
    port (`ManagerPinVerifier` ou équivalent) ou peut se contenter de réutiliser `SignIn`/
    `HttpAuthGateway` déjà écrits pour l'app personnelle (en les important, cette fois, uniquement
-   dans le contexte de sortie du mode kiosque — ce qui ne contredit pas §I, puisque ce n'est plus
+   dans le contexte de sortie du mode terminal — ce qui ne contredit pas §I, puisque ce n'est plus
    une « session personnelle active en fin de parcours **client** », mais un geste de maintenance
-   gérant qui met délibérément fin au parcours kiosque).
+   gérant qui met délibérément fin au parcours terminal).
 
 ### Questions ouvertes propres à #159
 
@@ -1085,16 +1090,17 @@ ainsi que les questions ouvertes propres à cette spec.
 - **Chiffres de conception « gros boutons » (§D).** Les tailles/contrastes proposés sont des
   cibles de premier jet, pas une revue UX/accessibilité formelle — *recommandation : les faire
   valider par une revue dédiée* (idéalement avec un test sur tablette physique en conditions de
-  salon) avant de les figer dans `kiosk_theme.dart`.
-- **Ajout d'une étape de build kiosque à `ci.yml`.** Recommandé (*Testing Plan*) mais non requis
+  salon) avant de les figer dans `terminal_theme.dart`.
+- **Ajout d'une étape de build terminal à `ci.yml`.** Recommandé (*Testing Plan*) mais non requis
   par l'acceptation littérale de #159 — **à confirmer** avec le porteur produit/l'équipe CI, le
   coût étant marginal (un second `flutter build apk --debug -t ...`).
-- **Dérive éventuelle des contrats de #155/#156 à la livraison.** Les contrats sont désormais
-  fixés par les specs sœurs (`POST /auth/kiosk/login` et le credential device pour #155 ;
-  lookup/création `{customer_id, first_name}` pour #156) ; les noms de ports
-  (`HttpKioskIdentityGateway`, `HttpKioskQueueGateway`) et de méthodes (`findByPhone`,
-  `createCustomer`) restent des choix propres à #159. **À revalider en tout début
-  d'implémentation de #159** contre le code réellement livré, une fois ces deux issues closes.
+- **Dérive éventuelle des contrats de #155/#156/#157 à la livraison.** Ces briques backend sont
+  désormais **livrées** (`POST /auth/terminal/login` + le credential device pour #155 ;
+  lookup/création `{customer_id, first_name}` pour #156 ; `POST /salons/{id}/queue/tickets` pour
+  #157) ; les noms de ports (`HttpTerminalIdentityGateway`, `HttpTerminalQueueGateway`) et de méthodes
+  (`findByPhone`, `createCustomer`, `joinQueue`) restent des choix propres à #159. **À revalider en
+  tout début d'implémentation de #159** contre le code réellement livré (formes JSON exactes,
+  en-têtes d'authentification device).
 
 ## Implementation Checklist
 
@@ -1104,48 +1110,48 @@ ainsi que les questions ouvertes propres à cette spec.
    `lib/application/ports/token_store.dart`, `lib/adapters/data/api_config.dart`,
    `lib/adapters/ui/salon_search_screen.dart` (debounce) — s'imprégner des patrons existants et de
    leurs limites documentées.
-2. **Vérifier l'état de #155/#156/#157/#158** au moment de démarrer l'implémentation (les specs
-   existent toutes ; vérifier le code réellement livré) — ajuster les noms de ports/méthodes de
-   cette spec au contrat réel.
+2. **Revalider les contrats livrés de #155/#156/#157/#158** au démarrage de l'implémentation (specs
+   **et** code backend désormais livrés) — ajuster les noms de ports/méthodes de cette spec aux
+   formes JSON et en-têtes réels.
 3. **Trancher les questions ouvertes** structurantes (US-003/branche RDV, bouton « sans
    identification », mécanisme de vérification du PIN de sortie, chronologie `connect()` imprimante
    proactif) avant d'écrire du code.
-4. **Credential device** : créer le port `KioskCredentialStore`, son adaptateur sécurisé
+4. **Credential device** : créer le port `TerminalCredentialStore`, son adaptateur sécurisé
    (`flutter_secure_storage`/Android Keystore, dépendance à valider) et
-   `kiosk_credential_entry_screen.dart` (§C) ; réduire `lib/adapters/data/kiosk_config.dart` à
-   l'override de développement local `KIOSK_SALON_ID`.
-5. **Thème** : créer `lib/adapters/ui/kiosk/kiosk_theme.dart` (tailles/contrastes §D, à valider par
+   `terminal_credential_entry_screen.dart` (§C) ; réduire `lib/adapters/data/terminal_config.dart` à
+   l'override de développement local `TERMINAL_SALON_ID`.
+5. **Thème** : créer `lib/adapters/ui/terminal/terminal_theme.dart` (tailles/contrastes §D, à valider par
    une revue UX avant de figer les valeurs définitives).
-6. **Minuteur** : créer `lib/adapters/ui/kiosk/kiosk_inactivity_guard.dart` ; écrire
-   `test/kiosk_inactivity_guard_test.dart` **avant** de le brancher sur un écran (mécanisme testable
+6. **Minuteur** : créer `lib/adapters/ui/terminal/terminal_inactivity_guard.dart` ; écrire
+   `test/terminal_inactivity_guard_test.dart` **avant** de le brancher sur un écran (mécanisme testable
    isolément).
-7. **Écrans, dans l'ordre du parcours** : `kiosk_home_screen.dart` →
-   `kiosk_numeric_keypad.dart` + `kiosk_phone_identification_screen.dart` →
-   `kiosk_create_customer_screen.dart` → `kiosk_service_card.dart` +
-   `kiosk_service_selection_screen.dart` → `kiosk_confirmation_screen.dart` (avec câblage de
+7. **Écrans, dans l'ordre du parcours** : `terminal_home_screen.dart` →
+   `terminal_numeric_keypad.dart` + `terminal_phone_identification_screen.dart` →
+   `terminal_create_customer_screen.dart` → `terminal_service_card.dart` +
+   `terminal_service_selection_screen.dart` → `terminal_confirmation_screen.dart` (avec câblage de
    `pauseForPrinting`/`resumeAfterPrinting` et des trois messages d'erreur de #160) —
    chaque écran accompagné de son test avant de passer au suivant.
-8. **Résilience** : créer `kiosk_unavailable_screen.dart`, câbler la bascule depuis
-   `kiosk_home_screen.dart` en cas d'échec de `GetSalonDetail`.
-9. **Sortie du mode kiosque** : créer `kiosk_exit_gate.dart` (geste + dialogue), avec la
+8. **Résilience** : créer `terminal_unavailable_screen.dart`, câbler la bascule depuis
+   `terminal_home_screen.dart` en cas d'échec de `GetSalonDetail`.
+9. **Sortie du mode terminal** : créer `terminal_exit_gate.dart` (geste + dialogue), avec la
    vérification tranchée à l'étape 3 (Option A ou B) — garder le geste **inerte** si la
    vérification n'est pas prête (voir *Security & Privacy Considerations*).
-10. **Composition root** : créer `lib/adapters/ui/kiosk/kiosk_app.dart` (`KioskApp`), assembler
-    `ApiConfig`, la session device et `KioskCredentialStore` (§C), les gateways kiosque,
-    `KioskInactivityGuard`, `KioskHomeScreen`.
-11. **Point d'entrée** : créer `lib/main_kiosk.dart`.
-12. **Assets** : ajouter `assets/images/kiosk_logo_fallback.png`, déclarer la section `assets:` dans
+10. **Composition root** : créer `lib/adapters/ui/terminal/terminal_app.dart` (`TerminalApp`), assembler
+    `ApiConfig`, la session device et `TerminalCredentialStore` (§C), les gateways terminal,
+    `TerminalInactivityGuard`, `TerminalHomeScreen`.
+11. **Point d'entrée** : créer `lib/main_terminal.dart`.
+12. **Assets** : ajouter `assets/images/terminal_logo_fallback.png`, déclarer la section `assets:` dans
     `pubspec.yaml` (actuellement commentée) avec un commentaire explicatif.
 13. **Tests** : exécuter `flutter test` (tous les nouveaux fichiers) et `flutter analyze` ;
     vérifier qu'aucun test existant n'est affecté.
 14. **CI** (si confirmé, voir *Risks*) : ajouter l'étape `flutter build apk --debug -t
-    lib/main_kiosk.dart` à `.github/workflows/ci.yml`.
-15. **Documentation** : section « Mode kiosque » dans `app-mobile/README.md` ; consigner les
+    lib/main_terminal.dart` à `.github/workflows/ci.yml`.
+15. **Documentation** : section « Mode terminal » dans `app-mobile/README.md` ; consigner les
     décisions structurantes dans cette spec/le README et alimenter le runbook de provisioning de
     #161, sans créer d'ADR séparée (les deux ADR du jalon — 0041 avec #155, 0042 avec #157 — sont
     portées par ces issues).
 16. **Vérification finale** : `flutter test` au vert (aucun test backend/web affecté) ; relire la
-    PR pour confirmer qu'**aucun** écran du dossier `lib/adapters/ui/kiosk/` n'importe
+    PR pour confirmer qu'**aucun** écran du dossier `lib/adapters/ui/terminal/` n'importe
     `AuthSession`/`SignIn`/les écrans personnels, qu'**aucune PII** (nom complet, téléphone) n'est
     affichée au-delà du prénom ou imprimée sur le ticket, et qu'**aucune signature IA** n'a été
     introduite dans le code, les commits ou la PR.

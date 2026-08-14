@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import ColumnElement, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
@@ -30,6 +30,7 @@ from coiflink_api.domain.errors import ServiceNotFound
 from coiflink_api.domain.service import (
     Service,
     ServiceFilter,
+    ServicePhoto,
     ServiceToCreate,
     ServiceUpdate,
 )
@@ -134,16 +135,65 @@ class SqlServiceRepository:
         self._session.refresh(row)
         return _to_domain(row)
 
-    def set_image(
-        self, salon_id: uuid.UUID, service_id: uuid.UUID, image_object_key: str | None
-    ) -> Service:
-        row = self._get_row(salon_id, service_id)
-        if row is None:
-            raise ServiceNotFound("Prestation introuvable.")
-        row.image_object_key = image_object_key
+    def add_photo(
+        self, salon_id: uuid.UUID, service_id: uuid.UUID, object_key: str
+    ) -> ServicePhoto:
+        position = self.count_photos(salon_id, service_id)
+        row = models.ServicePhoto(
+            salon_id=salon_id,
+            service_id=service_id,
+            object_key=object_key,
+            position=position,
+        )
+        self._session.add(row)
         self._session.flush()
         self._session.refresh(row)
-        return _to_domain(row)
+        return _photo_to_domain(row)
+
+    def list_photos(
+        self, salon_id: uuid.UUID, service_id: uuid.UUID
+    ) -> tuple[ServicePhoto, ...]:
+        stmt = (
+            select(models.ServicePhoto)
+            .where(
+                models.ServicePhoto.salon_id == salon_id,
+                models.ServicePhoto.service_id == service_id,
+            )
+            .order_by(
+                models.ServicePhoto.position.asc(), models.ServicePhoto.created_at.asc()
+            )
+        )
+        return tuple(_photo_to_domain(row) for row in self._session.scalars(stmt).all())
+
+    def count_photos(self, salon_id: uuid.UUID, service_id: uuid.UUID) -> int:
+        stmt = select(func.count()).where(
+            models.ServicePhoto.salon_id == salon_id,
+            models.ServicePhoto.service_id == service_id,
+        )
+        return int(self._session.scalar(stmt) or 0)
+
+    def delete_photo(
+        self, salon_id: uuid.UUID, service_id: uuid.UUID, photo_id: uuid.UUID
+    ) -> str | None:
+        """Supprime la photo `(salon_id, service_id, photo_id)` ; retourne sa clé d'objet.
+
+        Le filtre porte sur les trois identifiants : impossible de supprimer la
+        photo d'une autre prestation ou d'un autre salon (isolation §11.2).
+        `None` si aucune ligne.
+        """
+
+        stmt = select(models.ServicePhoto).where(
+            models.ServicePhoto.salon_id == salon_id,
+            models.ServicePhoto.service_id == service_id,
+            models.ServicePhoto.id == photo_id,
+        )
+        row = self._session.scalar(stmt)
+        if row is None:
+            return None
+        object_key = row.object_key
+        self._session.delete(row)
+        self._session.flush()
+        return object_key
 
     def _get_row(
         self, salon_id: uuid.UUID, service_id: uuid.UUID
@@ -167,9 +217,19 @@ def _to_domain(row: models.Service) -> Service:
         duration_minutes=row.duration_minutes,
         category=row.category,
         is_active=row.is_active,
-        image_object_key=row.image_object_key,
         created_at=row.created_at,
         updated_at=row.updated_at,
+    )
+
+
+def _photo_to_domain(row: models.ServicePhoto) -> ServicePhoto:
+    return ServicePhoto(
+        id=row.id,
+        salon_id=row.salon_id,
+        service_id=row.service_id,
+        object_key=row.object_key,
+        position=row.position,
+        created_at=row.created_at,
     )
 
 

@@ -10,9 +10,10 @@
 // n'est journalisé.
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, useTransition, type FormEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
-import { FilterIcon, PrinterIcon, RefreshIcon } from "@/src/adapters/ui/action-icons";
+import { EyeIcon, FilterIcon, PrinterIcon, RefreshIcon, XIcon } from "@/src/adapters/ui/action-icons";
 import { ReceiptPrintModal } from "@/src/adapters/ui/receipt-print-modal";
 import { SearchableSelect, SearchIcon } from "@/src/adapters/ui/searchable-select";
 import { LIST_PAGE_SIZE, TablePagination } from "@/src/adapters/ui/table-pagination";
@@ -22,6 +23,7 @@ import {
   paymentStatusLabel,
   type Transaction,
 } from "@/src/domain/payments/transaction";
+import { formatTicketNumber } from "@/src/domain/queue/queue";
 
 const COMPACT_INPUT_CLASS =
   "h-10 rounded-lg border border-border bg-surface px-3 text-sm text-foreground outline-none transition placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
@@ -68,6 +70,7 @@ export function TransactionHistory({
   const [isRefreshing, startRefresh] = useTransition();
   const [values, setValues] = useState({ dateFrom, dateTo, paymentMethod, q });
   const [printingPaymentId, setPrintingPaymentId] = useState<string | null>(null);
+  const [detailTransaction, setDetailTransaction] = useState<Transaction | null>(null);
 
   function set(key: keyof typeof values, value: string) {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -210,8 +213,8 @@ export function TransactionHistory({
                 <th className={CELL} scope="col">Montant</th>
                 <th className={CELL} scope="col">Mode</th>
                 <th className={CELL} scope="col">Statut</th>
-                <th className={`${CELL} w-12`} scope="col">
-                  <span className="sr-only">Reçu</span>
+                <th className={`${CELL} w-20`} scope="col">
+                  <span className="sr-only">Actions</span>
                 </th>
               </tr>
             </thead>
@@ -227,7 +230,16 @@ export function TransactionHistory({
                   <td className={`${CELL} whitespace-nowrap`}>
                     {formatTransactionDateTime(transaction.createdAt)}
                   </td>
-                  <td className={CELL}>{transaction.clientName ?? "—"}</td>
+                  <td className={CELL}>
+                    <div className="flex flex-col">
+                      <span>{transaction.clientName ?? "—"}</span>
+                      {transaction.ticketNumber != null ? (
+                        <span className="text-xs text-muted">
+                          {formatTicketNumber(transaction.ticketNumber)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </td>
                   <td className={`${CELL} whitespace-nowrap font-medium`}>
                     {formatXof(transaction.amount)}
                   </td>
@@ -236,15 +248,26 @@ export function TransactionHistory({
                     <StatusBadge status={transaction.status} />
                   </td>
                   <td className={CELL}>
-                    <button
-                      type="button"
-                      onClick={() => setPrintingPaymentId(transaction.id)}
-                      aria-label="Imprimer le reçu"
-                      title="Imprimer le reçu"
-                      className="inline-flex size-8 cursor-pointer items-center justify-center rounded-lg border border-border bg-surface text-muted transition hover:border-accent/40 hover:text-foreground"
-                    >
-                      <PrinterIcon className="shrink-0" />
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setDetailTransaction(transaction)}
+                        aria-label="Afficher le détail"
+                        title="Afficher le détail"
+                        className="inline-flex size-8 cursor-pointer items-center justify-center rounded-lg border border-border bg-surface text-muted transition hover:border-accent/40 hover:text-foreground"
+                      >
+                        <EyeIcon className="shrink-0" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPrintingPaymentId(transaction.id)}
+                        aria-label="Imprimer le reçu"
+                        title="Imprimer le reçu"
+                        className="inline-flex size-8 cursor-pointer items-center justify-center rounded-lg border border-border bg-surface text-muted transition hover:border-accent/40 hover:text-foreground"
+                      >
+                        <PrinterIcon className="shrink-0" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -273,7 +296,97 @@ export function TransactionHistory({
           onClose={() => setPrintingPaymentId(null)}
         />
       ) : null}
+
+      {detailTransaction ? (
+        <TransactionDetailDrawer
+          transaction={detailTransaction}
+          onClose={() => setDetailTransaction(null)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function TransactionDetailDrawer({
+  transaction,
+  onClose,
+}: {
+  transaction: Transaction;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return createPortal(
+    <div className="fixed inset-0 z-50">
+      <button
+        type="button"
+        className="absolute inset-0 cursor-default bg-foreground/35"
+        aria-label="Fermer le panneau"
+        onClick={onClose}
+      />
+      <aside
+        className="absolute inset-y-0 right-0 flex w-full max-w-md flex-col border-l border-border bg-surface shadow-elevated"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="transaction-detail-drawer-title"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
+          <div>
+            <h2
+              id="transaction-detail-drawer-title"
+              className="font-serif text-xl font-semibold text-ink"
+            >
+              Détail de la transaction
+            </h2>
+            <p className="mt-1 text-sm text-muted">
+              {formatTransactionDateTime(transaction.createdAt)}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted transition hover:border-accent/40 hover:text-foreground"
+            onClick={onClose}
+          >
+            <XIcon className="shrink-0" />
+            Fermer
+          </button>
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 py-5">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-border bg-background/50 p-4 text-sm">
+            <dt className="text-muted">Client</dt>
+            <dd>{transaction.clientName ?? "—"}</dd>
+            {transaction.ticketNumber != null ? (
+              <>
+                <dt className="text-muted">Ticket</dt>
+                <dd>{formatTicketNumber(transaction.ticketNumber)}</dd>
+              </>
+            ) : null}
+            <dt className="text-muted">Montant</dt>
+            <dd className="font-semibold">{formatXof(transaction.amount)}</dd>
+            <dt className="text-muted">Mode de paiement</dt>
+            <dd>{paymentMethodLabel(transaction.paymentMethod)}</dd>
+            <dt className="text-muted">Statut</dt>
+            <dd>
+              <StatusBadge status={transaction.status} />
+            </dd>
+            {transaction.reference ? (
+              <>
+                <dt className="text-muted">Référence</dt>
+                <dd>{transaction.reference}</dd>
+              </>
+            ) : null}
+          </dl>
+        </div>
+      </aside>
+    </div>,
+    document.body,
   );
 }
 

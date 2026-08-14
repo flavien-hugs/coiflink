@@ -97,6 +97,20 @@ class PaymentRepository(Protocol):
         """
         ...
 
+    def has_paid_payment(
+        self, salon_id: uuid.UUID, queue_ticket_id: uuid.UUID
+    ) -> bool:
+        """Vrai si le ticket `(salon_id, queue_ticket_id)` a déjà un paiement payé (§8.2).
+
+        Réutilise **exactement** la même notion de « payé » que la détection des
+        écarts de caisse (`PAID_PAYMENT_STATUSES` de `domain/discrepancy.py`) :
+        renvoie `True` **ssi** un paiement pour ce couple porte le statut
+        `VALIDATED` **ou** `ADJUSTED`. Sert de garde à `RecordPayment` pour refuser
+        un second encaissement sur un ticket déjà couvert (`QueueTicketAlreadyPaid`).
+        Filtre `salon_id` inconditionnel (isolation §11.2). Lecture seule.
+        """
+        ...
+
     def list_completed_without_payment(
         self,
         salon_id: uuid.UUID,
@@ -107,17 +121,17 @@ class PaymentRepository(Protocol):
     ) -> tuple[CashDiscrepancy, ...]:
         """Page des **écarts de caisse** du salon (US-5.4, #36) — lecture seule.
 
-        Liste les RDV `COMPLETED` du salon **auxquels aucun paiement `VALIDATED`/
-        `ADJUSTED` n'est rattaché** (rapprochement `NOT EXISTS` sur
-        `payments.appointment_id`). Applique **inconditionnellement** le filtre
-        `salon_id` (isolation §11.2 en profondeur : jamais un RDV d'un autre salon, et
-        un paiement d'un autre salon ne « couvre » jamais un RDV), puis
-        **conditionnellement** les bornes de dates du `filter` (sur
-        `appointment_date`, jour civil `Africa/Abidjan`). Chaque écart porte le
-        **montant attendu** (somme des `price_at_booking` du RDV) et résout
-        `client_id → users.full_name` (colonne non sensible **uniquement**, §11.3).
-        Tri déterministe `appointment_date DESC, start_time DESC, id DESC`, bornes
-        `limit`/`offset` appliquées **en SQL** (jamais en mémoire). **Aucune** écriture.
+        Liste les tickets walk-in `done` du salon **auxquels aucun paiement
+        `VALIDATED`/`ADJUSTED` n'est rattaché** (rapprochement `NOT EXISTS` sur
+        `payments.queue_ticket_id`). Applique **inconditionnellement** le filtre
+        `salon_id` (isolation §11.2 en profondeur : jamais un ticket d'un autre
+        salon, et un paiement d'un autre salon ne « couvre » jamais un ticket), puis
+        **conditionnellement** les bornes de dates du `filter` (sur `issued_date`,
+        jour civil `Africa/Abidjan`). Chaque écart porte le **montant attendu**
+        (somme des `Service.price` **actuels** des prestations du ticket) et résout
+        `customer_profile_id → customer_profiles.full_name` (colonne non sensible
+        **uniquement**, §11.3). Tri déterministe, bornes `limit`/`offset` appliquées
+        **en SQL** (jamais en mémoire). **Aucune** écriture.
         """
         ...
 
@@ -128,23 +142,8 @@ class PaymentRepository(Protocol):
 
         Applique **exactement** les mêmes clauses `WHERE`/`NOT EXISTS` que
         `list_completed_without_payment` (filtre `salon_id` inconditionnel + bornes de
-        dates), en comptant les **RDV** (jamais les lignes de prestation) pour un
+        dates), en comptant les **tickets** (jamais les lignes de prestation) pour un
         `total` cohérent avec la page.
-        """
-        ...
-
-    def list_paid_appointment_ids(
-        self, salon_id: uuid.UUID, appointment_ids: tuple[uuid.UUID, ...]
-    ) -> frozenset[uuid.UUID]:
-        """Sous-ensemble d'`appointment_ids` **couvert** par un paiement (file d'attente, #150).
-
-        « Couvert » reprend **exactement** la définition de `domain.discrepancy.
-        PAID_PAYMENT_STATUSES` (`VALIDATED`/`ADJUSTED`) : un paiement `CANCELLED`/
-        `PENDING` ne couvre rien. Bulk-lookup en **une** requête (`appointment_id IN
-        (...)`) — pas de N+1 sur la liste de la file. L'isolation §11.2 est imposée
-        **en SQL** (`WHERE salon_id`) : un paiement d'un autre salon ne couvre jamais
-        un RDV. `appointment_ids` vide renvoie un ensemble vide sans requête. Lecture
-        pure.
         """
         ...
 

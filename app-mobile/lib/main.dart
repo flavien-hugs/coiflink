@@ -1,17 +1,21 @@
-// Composition root de l'application mobile CoifLink (Flutter), hexagonal (ADR-0008).
+// Point d'entrée de l'application CoifLink Borne (US-8.5, #159).
 //
-// N'assemble que l'application : délègue toute la présentation à l'adapter UI
-// (`adapters/ui/app.dart`). Le domaine (`domain/`) et les cas d'usage
-// (`application/`) restent indépendants de Flutter. Conforme à ADR-0001.
+// Mode terminal **exclusif** : ce paquet n'a plus qu'un seul point d'entrée, aucun
+// `-t`/`--dart-define=APP_MODE` n'est nécessaire — `flutter run`/`flutter build`
+// suffisent. Seuls restent injectables au build : `API_BASE_URL`
+// (`adapters/data/api_config.dart`) et le credential propre à chaque borne
+// provisionnée, `TERMINAL_DEVICE_ID`/`TERMINAL_DEVICE_SECRET`
+// (`adapters/data/terminal_config.dart`).
+//
+//   flutter run \
+//     --dart-define=API_BASE_URL=https://api.coiflink.example \
+//     --dart-define=TERMINAL_DEVICE_ID=<device_id> \
+//     --dart-define=TERMINAL_DEVICE_SECRET=<secret>
 
 import 'package:flutter/material.dart';
 
-import 'adapters/ui/app.dart';
-
-// Réexporté pour que `CoifLinkApp` reste accessible via `package:coiflink_mobile/main.dart`
-// (compatibilité des tests et points d'entrée d'outillage).
-export 'adapters/ui/app.dart';
+import 'adapters/ui/terminal/terminal_app.dart';
 
 void main() {
-  runApp(const CoifLinkApp());
+  runApp(const TerminalApp());
 }

@@ -23,6 +23,12 @@ export interface SearchableSelectProps {
   emptyLabel?: string;
   ariaLabel?: string;
   className?: string;
+  // Appelé quand le menu se ferme **sans** sélection (clic extérieur, `Échap`) —
+  // jamais après un choix d'option (`onChange` suffit alors). Utile pour un
+  // appelant qui pilote lui-même un état « en édition » à annuler (miroir de
+  // l'`onBlur` d'un `<select>` natif), ex. l'assignation d'une coiffeuse dans
+  // `queue-board.tsx`.
+  onClose?: () => void;
 }
 
 export function SearchableSelect({
@@ -34,6 +40,7 @@ export function SearchableSelect({
   emptyLabel = "Aucun résultat",
   ariaLabel,
   className = "",
+  onClose,
 }: SearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -65,6 +72,14 @@ export function SearchableSelect({
     setQuery("");
   }, []);
 
+  // Fermeture **sans** sélection (clic extérieur, `Échap`) — distincte de `close`
+  // (utilisée aussi après un choix d'option) pour ne notifier `onClose` que
+  // lorsqu'il n'y a pas eu de sélection.
+  const dismiss = useCallback(() => {
+    close();
+    onClose?.();
+  }, [close, onClose]);
+
   useEffect(() => {
     if (!open) return undefined;
     updateMenuPosition();
@@ -72,14 +87,14 @@ export function SearchableSelect({
     function onPointerDown(event: MouseEvent) {
       const target = event.target as Node;
       if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) {
-        close();
+        dismiss();
       }
     }
     function onReposition() {
       updateMenuPosition();
     }
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape") dismiss();
     }
 
     window.addEventListener("mousedown", onPointerDown);
@@ -92,7 +107,7 @@ export function SearchableSelect({
       window.removeEventListener("resize", onReposition);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [open, close, updateMenuPosition]);
+  }, [open, dismiss, updateMenuPosition]);
 
   return (
     <div ref={rootRef} className={`relative ${className}`}>

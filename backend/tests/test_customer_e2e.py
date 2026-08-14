@@ -1,13 +1,18 @@
 """Tests e2e PostgreSQL du **module clients** (`SqlCustomerRepository`, #107).
 
 Comble le seul adapter de persistance du backend sans suite e2e : les modules
-`salon`/`appointment`/`user`/`salon_member`/`payment`/`cash_journal` exercent déjà
+`salon`/`queue_ticket`/`user`/`salon_member`/`payment`/`cash_journal` exercent déjà
 leur **chemin SQL réel** contre une vraie base ; le module `customer` (US-4.x) ne
 l'a jamais fait depuis #28. Les tests unitaires (domaine), cas d'usage (dépôts
 *fakes*) et API/BFF (`app.dependency_overrides`) ne touchent **aucune** vraie base :
 ils ne peuvent couvrir ni l'index unique partiel, ni la retraduction d'une
 `IntegrityError` sous course concurrente, ni la jointure `list_visits`, ni le
 round-trip de la migration `0005`.
+
+Rebranché sur `queue_tickets` (pivot walk-in exclusif, #148) : le lien fiche ↔
+visite/paiement est **direct** (`queue_tickets.customer_profile_id`), sans
+indirection par un compte `user_id` (l'ancien lien via `appointments.client_id` a
+disparu avec le pivot).
 
 Scénarios (spec `specs/suite-e2e-postgresql-module-clients.md`) :
 
@@ -18,17 +23,16 @@ indiscernable d'inexistante) *après* portée, `403` générique si le `salon_id
 chemin est hors périmètre ; `401` sans jeton (deny-by-default, ADR-0015).
 
 **B. Unicité `(salon_id, phone)` garantie en base** — deux `SqlCustomerRepository.create`
-concurrents (deux `Session`, `threading.Barrier`, patron
-`test_appointment_concurrency.py`) → exactement **1** succès + **1**
-`CustomerAlreadyExists` ; une seule ligne subsiste ; le numéro soumis n'apparaît pas
-dans l'erreur.
+concurrents (deux `Session`, `threading.Barrier`, patron `test_hairdresser_performance_e2e.py`)
+→ exactement **1** succès + **1** `CustomerAlreadyExists` ; une seule ligne subsiste ;
+le numéro soumis n'apparaît pas dans l'erreur.
 
-**C. `list_visits` — jointure + group-by multi-lignes** — fiche **liée** à un compte
-(lien posé directement en base : l'API ne crée que des walk-in) avec RDV `COMPLETED`
-multi-prestations → visites groupées par RDV, `total_amount` = somme des
-`price_at_booking`, ordre récent d'abord ; refiltrage `salon_id` (un RDV du même
-compte dans un autre salon n'apparaît jamais) ; walk-in (`user_id IS NULL`) →
-historique vide ; statuts non terminés exclus ; les stats partagent la brique.
+**C. `list_visits` — jointure + group-by multi-lignes** — fiche avec des tickets
+`done` multi-prestations (lien **direct** `queue_tickets.customer_profile_id`) →
+visites groupées par ticket, `total_amount` = somme des `services.price` courants
+(résolution en direct), ordre récent d'abord ; refiltrage `salon_id` (un ticket de
+la même fiche dans un autre salon n'apparaît jamais) ; fiche sans ticket → historique
+vide ; statuts non terminés exclus ; les stats partagent la brique.
 
 **D. Note privée (#32)** — persistance/replace/effacement (seule `notes` change,
 `updated_at` régénéré) ; traçabilité `CUSTOMER_NOTE_UPDATED` **sans PII** (`metadata`
@@ -102,7 +106,6 @@ _TEST_JWT_SECRET = "test-only-customer-e2e-jwt-secret-not-for-production"
 _E2E_PHONE_PREFIX = "+225077998"
 _PHONE_A_LOCAL = "0779980001"      # gérant A — parcours principal
 _PHONE_B_LOCAL = "0779980002"      # gérant B — isolation inter-salons
-_PHONE_CLIENT_LOCAL = "0779980003"  # client enregistré — lien fiche ↔ compte (#29)
 _PASSWORD = "customer-e2e-strong-password-2024"
 
 _SALON_NAME_A = "e2e-salon-customers-a"
@@ -133,7 +136,7 @@ def _wipe_test_data() -> None:
     """Supprime les données de test dans l'ordre des contraintes FK.
 
     Ordre : audit_logs (par `salon_id` **et** `actor_user_id`) → payments →
-    appointment_services → appointments → customer_profiles → services →
+    queue_ticket_services → queue_tickets → customer_profiles → services →
     salon_members (par `salon_id` **et** `user_id`) → salons → users. Toutes les
     données sont rattachées à un salon dont le propriétaire porte le préfixe réservé
     (miroir du wipe de `test_cash_discrepancies_e2e.py`, avec `customer_profiles`).
@@ -162,12 +165,12 @@ def _wipe_test_data() -> None:
         )
         conn.execute(
             text(
-                f"DELETE FROM appointment_services WHERE salon_id IN ({salons_of_prefix})"
+                f"DELETE FROM queue_ticket_services WHERE salon_id IN ({salons_of_prefix})"
             ),
             params,
         )
         conn.execute(
-            text(f"DELETE FROM appointments WHERE salon_id IN ({salons_of_prefix})"),
+            text(f"DELETE FROM queue_tickets WHERE salon_id IN ({salons_of_prefix})"),
             params,
         )
         conn.execute(
@@ -245,15 +248,6 @@ def _register_manager(client: TestClient, *, phone: str = _PHONE_A_LOCAL) -> str
     return resp.json()["id"]
 
 
-def _register_client(client: TestClient, *, phone: str = _PHONE_CLIENT_LOCAL) -> str:
-    resp = client.post(
-        "/auth/register",
-        json={"full_name": "Client E2E Fiches", "phone": phone, "password": _PASSWORD},
-    )
-    assert resp.status_code == 201, f"Inscription client échouée : {resp.text}"
-    return resp.json()["id"]
-
-
 def _login(client: TestClient, *, phone: str = _PHONE_A_LOCAL) -> str:
     resp = client.post("/auth/login", json={"identifier": phone, "password": _PASSWORD})
     assert resp.status_code == 200, f"Connexion échouée : {resp.text}"
@@ -315,7 +309,7 @@ def _get_customer(client: TestClient, token: str, salon_id: str, customer_id: st
 
 def _get_history(client: TestClient, token: str, salon_id: str, customer_id: str) -> dict:
     resp = client.get(
-        f"/salons/{salon_id}/customers/{customer_id}/appointments",
+        f"/salons/{salon_id}/customers/{customer_id}/visits",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200, f"Historique échoué : {resp.text}"
@@ -353,77 +347,60 @@ def _setup_manager_salon(
 # ─── Helpers SQL (insertion / lecture directes — bypass des gardes HTTP) ──────
 
 
-def _link_customer_to_user(customer_id: str, user_id: str) -> None:
-    """Rattache une fiche à un **compte** (`user_id`) — indispensable à `list_visits`.
-
-    L'API ne crée que des fiches walk-in (`user_id = NULL`) ; sans lien, `list_visits`
-    retourne un tuple vide. Le `user_id` doit être celui d'un client **enregistré**
-    (FK `customer_profiles.user_id → users.id`, cohérent avec `appointments.client_id`).
-    """
-    engine = get_engine()
-    with engine.connect() as conn:
-        conn.execute(
-            text("UPDATE customer_profiles SET user_id = :uid WHERE id = :cid"),
-            {"uid": user_id, "cid": customer_id},
-        )
-        conn.commit()
-
-
-def _insert_appointment(
+def _insert_ticket(
     *,
     salon_id: str,
-    client_id: str,
-    appointment_date: datetime.date,
-    start_time: str = "09:00",
-    end_time: str = "10:00",
-    status: str = "COMPLETED",
+    customer_profile_id: str,
+    issued_date: datetime.date,
+    ticket_number: int,
+    status: str = "done",
 ) -> str:
-    """Insère un RDV directement en base pour contrôler son statut/créneau.
+    """Insère un ticket walk-in directement en base pour contrôler son statut/jour.
 
-    `slot` est une colonne générée (COMPUTED) — pas d'insertion manuelle.
-    `hairdresser_id` est laissé NULL (non pertinent pour l'historique).
+    Le lien fiche ↔ ticket est **direct** (`customer_profile_id` = l'identifiant de
+    la fiche elle-même) — plus d'indirection par un compte `user_id` (l'ancien lien
+    via `appointments.client_id` a disparu avec le pivot #148).
     """
-    appt_id = str(uuid.uuid4())
+    ticket_id = str(uuid.uuid4())
+    completed_at = (
+        datetime.datetime.now(datetime.timezone.utc) if status == "done" else None
+    )
     engine = get_engine()
     with engine.connect() as conn:
         conn.execute(
             text(
-                "INSERT INTO appointments "
-                "(id, salon_id, client_id, appointment_date, start_time, end_time, status) "
-                "VALUES (:id, :salon_id, :client_id, :date, :start, :end, :status)"
+                "INSERT INTO queue_tickets "
+                "(id, salon_id, customer_profile_id, issued_date, ticket_number, "
+                "status, estimated_wait_minutes, completed_at) "
+                "VALUES (:id, :salon_id, :customer, :date, :number, :status, 0, "
+                ":completed_at)"
             ),
             {
-                "id": appt_id,
+                "id": ticket_id,
                 "salon_id": salon_id,
-                "client_id": client_id,
-                "date": appointment_date,
-                "start": start_time,
-                "end": end_time,
+                "customer": customer_profile_id,
+                "date": issued_date,
+                "number": ticket_number,
                 "status": status,
+                "completed_at": completed_at,
             },
         )
         conn.commit()
-    return appt_id
+    return ticket_id
 
 
-def _insert_appointment_service(
-    *, salon_id: str, appointment_id: str, service_id: str, price: str
+def _insert_ticket_service(
+    *, salon_id: str, queue_ticket_id: str, service_id: str
 ) -> None:
-    """Rattache une prestation (prix figé `price_at_booking`) à un RDV."""
+    """Rattache une prestation à un ticket (aucun prix figé — résolution en direct)."""
     engine = get_engine()
     with engine.connect() as conn:
         conn.execute(
             text(
-                "INSERT INTO appointment_services "
-                "(appointment_id, service_id, salon_id, price_at_booking) "
-                "VALUES (:appt, :service, :salon, :price)"
+                "INSERT INTO queue_ticket_services (queue_ticket_id, service_id, salon_id) "
+                "VALUES (:ticket, :service, :salon)"
             ),
-            {
-                "appt": appointment_id,
-                "service": service_id,
-                "salon": salon_id,
-                "price": decimal.Decimal(price),
-            },
+            {"ticket": queue_ticket_id, "service": service_id, "salon": salon_id},
         )
         conn.commit()
 
@@ -431,9 +408,8 @@ def _insert_appointment_service(
 def _insert_payment(
     *,
     salon_id: str,
-    client_id: str,
     recorded_by: str,
-    appointment_id: str,
+    queue_ticket_id: str,
     amount: str = _SERVICE_PRICE,
     status: str = "VALIDATED",
     created_at: datetime.datetime | None = None,
@@ -443,8 +419,9 @@ def _insert_payment(
     Bypass de l'API d'encaissement (#33, déjà couverte par `test_payments_e2e.py`) :
     seule la **lecture** fiche-scopée `list_payments` est exercée ici. Permet de
     couvrir des statuts que le chemin d'écriture normal ne produit pas directement
-    (`PENDING`/`CANCELLED`/`ADJUSTED`). `appointment_id` satisfait le `CHECK`
-    `ck_payments_ref_present` (un paiement est lié à un RDV **ou** une prestation).
+    (`PENDING`/`CANCELLED`/`ADJUSTED`). `queue_ticket_id` satisfait le `CHECK`
+    `ck_payments_ref_present` (un paiement est lié à un ticket, une prestation, **ou**
+    un RDV).
     """
     payment_id = str(uuid.uuid4())
     engine = get_engine()
@@ -452,18 +429,17 @@ def _insert_payment(
         params: dict[str, object] = {
             "id": payment_id,
             "salon_id": salon_id,
-            "client_id": client_id,
-            "appointment_id": appointment_id,
+            "queue_ticket_id": queue_ticket_id,
             "amount": decimal.Decimal(amount),
             "recorded_by": recorded_by,
             "status": status,
         }
         columns = (
-            "id, salon_id, client_id, appointment_id, amount, payment_method, "
+            "id, salon_id, queue_ticket_id, amount, payment_method, "
             "recorded_by, status, receipt_number"
         )
         values = (
-            ":id, :salon_id, :client_id, :appointment_id, :amount, 'CASH', "
+            ":id, :salon_id, :queue_ticket_id, :amount, 'CASH', "
             ":recorded_by, :status, "
             "(SELECT COALESCE(MAX(receipt_number), 0) + 1 FROM payments "
             "WHERE salon_id = :salon_id)"
@@ -658,8 +634,7 @@ class TestCustomerPhoneUniquenessRaceE2E:
         On appelle `SqlCustomerRepository.create` **directement** (deux `Session`
         distinctes) pour exercer le chemin `IntegrityError` : le pré-contrôle
         applicatif `phone_exists` masquerait sinon la course. La barrière aligne les
-        deux INSERT sur l'index unique partiel au même instant (patron
-        `test_appointment_concurrency.py`).
+        deux INSERT sur l'index unique partiel au même instant.
         """
         _, salon = _setup_manager_salon(_e2e_client)
         salon_uuid = uuid.UUID(salon)
@@ -710,53 +685,48 @@ class TestCustomerPhoneUniquenessRaceE2E:
 
 @pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
 class TestCustomerVisitsE2E:
-    """Jointure `appointments × appointment_services × services`, group-by, refiltrage salon."""
+    """Jointure `queue_tickets × queue_ticket_services × services`, group-by, refiltrage salon."""
 
-    def _linked_customer(
+    def _customer_with_service(
         self, client: TestClient
-    ) -> tuple[str, str, str, str, str]:
-        """Monte gérant A + salon A + prestation + fiche **liée** à un client enregistré.
+    ) -> tuple[str, str, str, str]:
+        """Monte gérant A + salon A + prestation + fiche.
 
-        Retourne (token, salon_id, customer_id, client_user_id, service_id).
+        Retourne (token, salon_id, customer_id, service_id). Le lien fiche ↔ ticket
+        est **direct** (`customer_profile_id` = `customer_id`) — plus besoin de
+        compte client enregistré ni de rattachement (pivot walk-in exclusif, #148).
         """
         token, salon = _setup_manager_salon(client)
-        client_user_id = _register_client(client)
         service_id = _create_service(client, token, salon)
-        customer_id = _create_customer(client, token, salon, full_name="Client Lié")["id"]
-        _link_customer_to_user(customer_id, client_user_id)
-        return token, salon, customer_id, client_user_id, service_id
+        customer_id = _create_customer(client, token, salon, full_name="Cliente Fidèle")["id"]
+        return token, salon, customer_id, service_id
 
     def test_visits_grouped_and_ordered_recent_first(self, _e2e_client: TestClient) -> None:
-        """Visites groupées par RDV, `total_amount` = somme des prix, plus récent d'abord."""
-        token, salon, customer_id, client_user_id, service_id = self._linked_customer(
-            _e2e_client
+        """Visites groupées par ticket, `total_amount` = somme des prix, plus récent d'abord."""
+        token, salon, customer_id, service_c = self._customer_with_service(_e2e_client)
+        service_a = _create_service(
+            _e2e_client, token, salon, name="Coupe", price="2000.00"
         )
-        service_two = _create_service(
+        service_b = _create_service(
             _e2e_client, token, salon, name="Barbe", price="3000.00"
         )
-        # RDV le plus ancien, multi-prestations (2000 + 3000 = 5000).
-        older = _insert_appointment(
-            salon_id=salon, client_id=client_user_id,
-            appointment_date=datetime.date(2026, 6, 20), start_time="09:00", end_time="10:00",
+        # Ticket le plus ancien, multi-prestations (2000 + 3000 = 5000).
+        older = _insert_ticket(
+            salon_id=salon, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 20), ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon, appointment_id=older, service_id=service_id, price="2000.00"
+        _insert_ticket_service(salon_id=salon, queue_ticket_id=older, service_id=service_a)
+        _insert_ticket_service(salon_id=salon, queue_ticket_id=older, service_id=service_b)
+        # Ticket plus récent, une seule prestation (5000, prix courant de service_c).
+        newer = _insert_ticket(
+            salon_id=salon, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 25), ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon, appointment_id=older, service_id=service_two, price="3000.00"
-        )
-        # RDV plus récent, une seule prestation (5000).
-        newer = _insert_appointment(
-            salon_id=salon, client_id=client_user_id,
-            appointment_date=datetime.date(2026, 6, 25), start_time="11:00", end_time="12:00",
-        )
-        _insert_appointment_service(
-            salon_id=salon, appointment_id=newer, service_id=service_id, price=_SERVICE_PRICE
-        )
+        _insert_ticket_service(salon_id=salon, queue_ticket_id=newer, service_id=service_c)
 
         history = _get_history(_e2e_client, token, salon, customer_id)
         items = history["items"]
-        assert [item["appointment_id"] for item in items] == [newer, older]
+        assert [item["queue_ticket_id"] for item in items] == [newer, older]
         older_item = items[1]
         assert len(older_item["services"]) == 2
         assert decimal.Decimal(older_item["total_amount"]) == decimal.Decimal("5000.00")
@@ -765,51 +735,46 @@ class TestCustomerVisitsE2E:
 
     def test_service_order_within_visit_is_stable(self, _e2e_client: TestClient) -> None:
         """L'ordre des prestations d'une visite est **stable** entre deux appels."""
-        token, salon, customer_id, client_user_id, service_id = self._linked_customer(
-            _e2e_client
-        )
+        token, salon, customer_id, service_id = self._customer_with_service(_e2e_client)
         service_two = _create_service(
             _e2e_client, token, salon, name="Barbe", price="3000.00"
         )
-        appt = _insert_appointment(
-            salon_id=salon, client_id=client_user_id,
-            appointment_date=datetime.date(2026, 6, 20),
+        ticket = _insert_ticket(
+            salon_id=salon, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 20), ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon, appointment_id=appt, service_id=service_id, price="2000.00"
-        )
-        _insert_appointment_service(
-            salon_id=salon, appointment_id=appt, service_id=service_two, price="3000.00"
-        )
+        _insert_ticket_service(salon_id=salon, queue_ticket_id=ticket, service_id=service_id)
+        _insert_ticket_service(salon_id=salon, queue_ticket_id=ticket, service_id=service_two)
 
         first = _get_history(_e2e_client, token, salon, customer_id)["items"][0]["services"]
         second = _get_history(_e2e_client, token, salon, customer_id)["items"][0]["services"]
         assert [s["service_id"] for s in first] == [s["service_id"] for s in second]
 
     def test_other_salon_visit_never_appears(self, _e2e_client: TestClient) -> None:
-        """Un RDV du **même compte** dans un autre salon n'apparaît jamais (refiltrage `salon_id`)."""
-        token_a, salon_a, customer_id, client_user_id, service_a = self._linked_customer(
-            _e2e_client
-        )
+        """Un ticket de la **même fiche** dans un autre salon n'apparaît jamais (refiltrage `salon_id`).
+
+        Isolation §11.2 : `customer_profiles.id` n'est jamais partagé entre salons
+        (chaque fiche appartient à un seul salon) ; ce test insère directement un
+        ticket du salon B référençant l'`id` de la fiche du salon A pour vérifier
+        que le filtre `salon_id` **réaffirmé en SQL** l'exclut malgré tout.
+        """
+        token_a, salon_a, customer_id, service_a = self._customer_with_service(_e2e_client)
         token_b, salon_b = _setup_manager_salon(
             _e2e_client, phone=_PHONE_B_LOCAL, name=_SALON_NAME_B
         )
         service_b = _create_service(_e2e_client, token_b, salon_b)
-        # RDV du même client, mais dans le salon B.
-        appt_b = _insert_appointment(
-            salon_id=salon_b, client_id=client_user_id,
-            appointment_date=datetime.date(2026, 6, 20),
+        ticket_b = _insert_ticket(
+            salon_id=salon_b, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 20), ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_b, appointment_id=appt_b, service_id=service_b, price=_SERVICE_PRICE
-        )
+        _insert_ticket_service(salon_id=salon_b, queue_ticket_id=ticket_b, service_id=service_b)
 
         history = _get_history(_e2e_client, token_a, salon_a, customer_id)
         assert history["items"] == []
         assert history["total_visits"] == 0
 
-    def test_walk_in_customer_has_empty_history(self, _e2e_client: TestClient) -> None:
-        """Fiche walk-in (`user_id IS NULL`) → historique vide, sans erreur ni oracle."""
+    def test_customer_without_tickets_has_empty_history(self, _e2e_client: TestClient) -> None:
+        """Fiche sans ticket → historique vide, sans erreur ni oracle."""
         token, salon = _setup_manager_salon(_e2e_client)
         customer_id = _create_customer(_e2e_client, token, salon)["id"]
 
@@ -819,48 +784,38 @@ class TestCustomerVisitsE2E:
         assert history["last_visit_at"] is None
         assert decimal.Decimal(history["total_amount"]) == decimal.Decimal("0")
 
-    def test_non_completed_statuses_excluded(self, _e2e_client: TestClient) -> None:
-        """Seuls les RDV `COMPLETED` comptent : les autres statuts sont exclus (#29)."""
-        token, salon, customer_id, client_user_id, service_id = self._linked_customer(
-            _e2e_client
+    def test_non_done_statuses_excluded(self, _e2e_client: TestClient) -> None:
+        """Seuls les tickets `done` comptent : les autres statuts sont exclus (#29)."""
+        token, salon, customer_id, service_id = self._customer_with_service(_e2e_client)
+        completed = _insert_ticket(
+            salon_id=salon, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 20), ticket_number=1, status="done",
         )
-        completed = _insert_appointment(
-            salon_id=salon, client_id=client_user_id,
-            appointment_date=datetime.date(2026, 6, 20), status="COMPLETED",
-        )
-        _insert_appointment_service(
-            salon_id=salon, appointment_id=completed, service_id=service_id, price=_SERVICE_PRICE
-        )
+        _insert_ticket_service(salon_id=salon, queue_ticket_id=completed, service_id=service_id)
         excluded_ids = []
-        for day, status in ((10, "PENDING"), (11, "CONFIRMED"), (12, "CANCELLED"), (13, "NO_SHOW")):
-            appt = _insert_appointment(
-                salon_id=salon, client_id=client_user_id,
-                appointment_date=datetime.date(2026, 6, day), status=status,
+        for day, status in ((10, "waiting"), (11, "called"), (12, "in_progress"), (13, "expired")):
+            ticket = _insert_ticket(
+                salon_id=salon, customer_profile_id=customer_id,
+                issued_date=datetime.date(2026, 6, day), ticket_number=1, status=status,
             )
-            _insert_appointment_service(
-                salon_id=salon, appointment_id=appt, service_id=service_id, price=_SERVICE_PRICE
-            )
-            excluded_ids.append(appt)
+            _insert_ticket_service(salon_id=salon, queue_ticket_id=ticket, service_id=service_id)
+            excluded_ids.append(ticket)
 
         history = _get_history(_e2e_client, token, salon, customer_id)
-        returned = {item["appointment_id"] for item in history["items"]}
+        returned = {item["queue_ticket_id"] for item in history["items"]}
         assert returned == {completed}
         assert returned.isdisjoint(excluded_ids)
 
     def test_stats_share_list_visits_brick(self, _e2e_client: TestClient) -> None:
-        """Les stats réutilisent `list_visits` : classement cohérent, `user_id`/`client_id` non exposés."""
-        token, salon, customer_id, client_user_id, service_id = self._linked_customer(
-            _e2e_client
-        )
-        # Deux RDV COMPLETED avec la même prestation → count == 2.
+        """Les stats réutilisent `list_visits` : classement cohérent, `customer_profile_id`/`client_id` non exposés."""
+        token, salon, customer_id, service_id = self._customer_with_service(_e2e_client)
+        # Deux tickets `done` avec la même prestation → count == 2.
         for day in (20, 21):
-            appt = _insert_appointment(
-                salon_id=salon, client_id=client_user_id,
-                appointment_date=datetime.date(2026, 6, day),
+            ticket = _insert_ticket(
+                salon_id=salon, customer_profile_id=customer_id,
+                issued_date=datetime.date(2026, 6, day), ticket_number=1,
             )
-            _insert_appointment_service(
-                salon_id=salon, appointment_id=appt, service_id=service_id, price=_SERVICE_PRICE
-            )
+            _insert_ticket_service(salon_id=salon, queue_ticket_id=ticket, service_id=service_id)
 
         stats = _get_stats(_e2e_client, token, salon, customer_id)
         assert stats["total_visits"] == 2
@@ -868,51 +823,49 @@ class TestCustomerVisitsE2E:
         top = stats["services"][0]
         assert top["service_id"] == service_id
         assert top["count"] == 2
-        assert "user_id" not in stats
+        assert "customer_profile_id" not in stats
         assert "client_id" not in stats
         for service in stats["services"]:
-            assert "user_id" not in service and "client_id" not in service
+            assert "customer_profile_id" not in service and "client_id" not in service
 
 
 class TestCustomerPaymentsE2E:
-    """Jointure `customer_profiles.user_id × payments.client_id`, refiltrage salon."""
+    """Jointure `payments.queue_ticket_id × queue_tickets.customer_profile_id`, refiltrage salon."""
 
-    def _linked_customer(
+    def _customer_with_manager(
         self, client: TestClient
-    ) -> tuple[str, str, str, str, str]:
-        """Monte gérant A + salon A + fiche **liée** à un client enregistré.
+    ) -> tuple[str, str, str, str]:
+        """Monte gérant A + salon A + fiche. Retourne (token, salon_id, customer_id, manager_id).
 
-        Retourne (token, salon_id, customer_id, client_user_id, manager_id).
+        Le lien fiche ↔ paiement est **direct** via le ticket
+        (`payments.queue_ticket_id → queue_tickets.customer_profile_id`) — plus
+        besoin de compte client enregistré (pivot walk-in exclusif, #148).
         """
         manager_id = _register_manager(client)
         token = _login(client)
         salon = _create_salon(client, token)
-        client_user_id = _register_client(client)
-        customer_id = _create_customer(client, token, salon, full_name="Client Lié")["id"]
-        _link_customer_to_user(customer_id, client_user_id)
-        return token, salon, customer_id, client_user_id, manager_id
+        customer_id = _create_customer(client, token, salon, full_name="Cliente Fidèle")["id"]
+        return token, salon, customer_id, manager_id
 
     def test_payments_ordered_recent_first(self, _e2e_client: TestClient) -> None:
-        """Paiements du compte lié, triés date décroissante (plus récent d'abord)."""
-        token, salon, customer_id, client_user_id, manager_id = self._linked_customer(
-            _e2e_client
+        """Paiements de la fiche, triés date décroissante (plus récent d'abord)."""
+        token, salon, customer_id, manager_id = self._customer_with_manager(_e2e_client)
+        ticket_older = _insert_ticket(
+            salon_id=salon, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 20), ticket_number=1,
         )
-        appt_older = _insert_appointment(
-            salon_id=salon, client_id=client_user_id,
-            appointment_date=datetime.date(2026, 6, 20),
-        )
-        appt_newer = _insert_appointment(
-            salon_id=salon, client_id=client_user_id,
-            appointment_date=datetime.date(2026, 6, 25),
+        ticket_newer = _insert_ticket(
+            salon_id=salon, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 25), ticket_number=1,
         )
         older = _insert_payment(
-            salon_id=salon, client_id=client_user_id, recorded_by=manager_id,
-            appointment_id=appt_older, amount="2000.00",
+            salon_id=salon, recorded_by=manager_id,
+            queue_ticket_id=ticket_older, amount="2000.00",
             created_at=datetime.datetime(2026, 6, 20, 9, 0, tzinfo=datetime.timezone.utc),
         )
         newer = _insert_payment(
-            salon_id=salon, client_id=client_user_id, recorded_by=manager_id,
-            appointment_id=appt_newer, amount="3000.00",
+            salon_id=salon, recorded_by=manager_id,
+            queue_ticket_id=ticket_newer, amount="3000.00",
             created_at=datetime.datetime(2026, 6, 25, 9, 0, tzinfo=datetime.timezone.utc),
         )
 
@@ -922,19 +875,17 @@ class TestCustomerPaymentsE2E:
 
     def test_all_statuses_returned(self, _e2e_client: TestClient) -> None:
         """Tous les statuts sont renvoyés (`PENDING`/`VALIDATED`/`CANCELLED`/`ADJUSTED`)."""
-        token, salon, customer_id, client_user_id, manager_id = self._linked_customer(
-            _e2e_client
-        )
+        token, salon, customer_id, manager_id = self._customer_with_manager(_e2e_client)
         for day, status in enumerate(
             ("PENDING", "VALIDATED", "CANCELLED", "ADJUSTED"), start=20
         ):
-            appt = _insert_appointment(
-                salon_id=salon, client_id=client_user_id,
-                appointment_date=datetime.date(2026, 6, day),
+            ticket = _insert_ticket(
+                salon_id=salon, customer_profile_id=customer_id,
+                issued_date=datetime.date(2026, 6, day), ticket_number=1,
             )
             _insert_payment(
-                salon_id=salon, client_id=client_user_id, recorded_by=manager_id,
-                appointment_id=appt, status=status,
+                salon_id=salon, recorded_by=manager_id,
+                queue_ticket_id=ticket, status=status,
             )
 
         payments = _get_payments(_e2e_client, token, salon, customer_id)
@@ -942,16 +893,14 @@ class TestCustomerPaymentsE2E:
         assert statuses == {"PENDING", "VALIDATED", "CANCELLED", "ADJUSTED"}
 
     def test_amount_and_currency_correct(self, _e2e_client: TestClient) -> None:
-        token, salon, customer_id, client_user_id, manager_id = self._linked_customer(
-            _e2e_client
-        )
-        appt = _insert_appointment(
-            salon_id=salon, client_id=client_user_id,
-            appointment_date=datetime.date(2026, 6, 20),
+        token, salon, customer_id, manager_id = self._customer_with_manager(_e2e_client)
+        ticket = _insert_ticket(
+            salon_id=salon, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 20), ticket_number=1,
         )
         _insert_payment(
-            salon_id=salon, client_id=client_user_id, recorded_by=manager_id,
-            appointment_id=appt, amount="12500.00",
+            salon_id=salon, recorded_by=manager_id,
+            queue_ticket_id=ticket, amount="12500.00",
         )
 
         payments = _get_payments(_e2e_client, token, salon, customer_id)
@@ -960,27 +909,24 @@ class TestCustomerPaymentsE2E:
         assert item["currency"] == "XOF"
 
     def test_other_salon_payment_never_appears(self, _e2e_client: TestClient) -> None:
-        """Un paiement du **même compte** dans un autre salon n'apparaît jamais (refiltrage `salon_id`)."""
-        token_a, salon_a, customer_id, client_user_id, manager_a = self._linked_customer(
-            _e2e_client
-        )
+        """Un paiement lié à un ticket de la **même fiche** dans un autre salon n'apparaît jamais."""
+        token_a, salon_a, customer_id, manager_a = self._customer_with_manager(_e2e_client)
         manager_b_id = _register_manager(_e2e_client, phone=_PHONE_B_LOCAL)
         token_b = _login(_e2e_client, phone=_PHONE_B_LOCAL)
         salon_b = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
-        appt_b = _insert_appointment(
-            salon_id=salon_b, client_id=client_user_id,
-            appointment_date=datetime.date(2026, 6, 20),
+        ticket_b = _insert_ticket(
+            salon_id=salon_b, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 20), ticket_number=1,
         )
         _insert_payment(
-            salon_id=salon_b, client_id=client_user_id, recorded_by=manager_b_id,
-            appointment_id=appt_b,
+            salon_id=salon_b, recorded_by=manager_b_id, queue_ticket_id=ticket_b,
         )
 
         payments = _get_payments(_e2e_client, token_a, salon_a, customer_id)
         assert payments["items"] == []
 
-    def test_walk_in_customer_has_empty_payments(self, _e2e_client: TestClient) -> None:
-        """Fiche walk-in (`user_id IS NULL`) → liste vide, sans erreur ni oracle."""
+    def test_customer_without_tickets_has_empty_payments(self, _e2e_client: TestClient) -> None:
+        """Fiche sans ticket → liste vide, sans erreur ni oracle."""
         token, salon = _setup_manager_salon(_e2e_client)
         customer_id = _create_customer(_e2e_client, token, salon)["id"]
 
@@ -990,24 +936,19 @@ class TestCustomerPaymentsE2E:
     def test_response_has_no_pii_beyond_amount_and_status(
         self, _e2e_client: TestClient
     ) -> None:
-        """Anti-oracle ADR-0026 : `user_id`/`client_id`/`recorded_by` absents de la réponse."""
-        token, salon, customer_id, client_user_id, manager_id = self._linked_customer(
-            _e2e_client
+        """§11.1/§11.3 : `customer_profile_id`/`client_id`/`recorded_by` absents de la réponse."""
+        token, salon, customer_id, manager_id = self._customer_with_manager(_e2e_client)
+        ticket = _insert_ticket(
+            salon_id=salon, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 20), ticket_number=1,
         )
-        appt = _insert_appointment(
-            salon_id=salon, client_id=client_user_id,
-            appointment_date=datetime.date(2026, 6, 20),
-        )
-        _insert_payment(
-            salon_id=salon, client_id=client_user_id, recorded_by=manager_id,
-            appointment_id=appt,
-        )
+        _insert_payment(salon_id=salon, recorded_by=manager_id, queue_ticket_id=ticket)
 
         payments = _get_payments(_e2e_client, token, salon, customer_id)
-        assert "user_id" not in payments
+        assert "customer_profile_id" not in payments
         assert "client_id" not in payments
         for item in payments["items"]:
-            assert "user_id" not in item
+            assert "customer_profile_id" not in item
             assert "client_id" not in item
             assert "recorded_by" not in item
 

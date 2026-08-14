@@ -2,7 +2,7 @@
 
 > Spécification de planification pour l'issue GitHub **#158 — US-8.4 : Photo de prestation dans
 > le catalogue public** (`feature` · Should · Effort S · PRD §17 « Borne Intelligente d'Accueil »,
-> promu au jalon **M7 — Borne client (kiosque libre-service)**, Épic 8). **Dépend de : aucune.**
+> promu au jalon **M7 — Borne client (terminal libre-service)**, Épic 8). **Dépend de : aucune.**
 > **Cette spec ne produit pas de code** : elle décrit l'approche à implémenter dans une phase
 > ultérieure.
 >
@@ -99,7 +99,7 @@ utile indépendamment à la fiche salon consultée par l'app mobile cliente hors
   (`http_salon_catalog_gateway.dart`) — sans modifier le contrat des écrans qui ne l'utilisent pas
   encore (`ServiceListTile`, `_ServiceStep`), pour qu'ils puissent l'exploiter plus tard sans
   nouveau changement de modèle (et pour que le futur écran « choix de prestation » de la borne
-  kiosque, #159, puisse le consommer dès sa livraison).
+  terminal, #159, puisse le consommer dès sa livraison).
 - **Couverture de tests** garantissant : image présente + stockage configuré → `image_url` signée ;
   image absente → `null` ; stockage non configuré → `null` (jamais une exception) ; jamais la clé
   d'objet brute dans la réponse ; non-régression des consommateurs existants de
@@ -115,7 +115,7 @@ utile indépendamment à la fiche salon consultée par l'app mobile cliente hors
   de vitrine, sans détail de prestations) ne porte pas de champ `services` : seule la fiche de
   détail (`GET /catalog/salons/{salon_id}`) est concernée.
 - **Rendu visuel sur la borne (grille de boutons avec photo, mise en cache d'image, etc.).** Objet
-  de #159 (mode kiosque de l'app mobile) et #160 (ticket imprimé) ; #158 livre uniquement la
+  de #159 (mode terminal de l'app mobile) et #160 (ticket imprimé) ; #158 livre uniquement la
   **donnée**, pas l'écran.
 - **Rappel des frontières du jalon M7 dans son ensemble** (au-delà de cette issue) : restent hors
   scope de M7 — vérification/check-in d'un rendez-vous existant depuis la borne, identification par
@@ -219,7 +219,7 @@ que rien ne suggère que la clé brute transite.
    (`_serviceFromJson`) : lire `image_url` du JSON, `json['image_url'] as String?`, et le passer au
    constructeur `SalonService`.
 3. **Aucun changement dans `ServiceListTile` ni `_ServiceStep`** au périmètre de #158 : le champ est
-   ajouté au modèle et au parsing uniquement, pour que #159 (mode kiosque) puisse s'en servir dès sa
+   ajouté au modèle et au parsing uniquement, pour que #159 (mode terminal) puisse s'en servir dès sa
    propre implémentation sans retoucher le modèle de données. Un affichage optionnel de vignette
    dans la fiche salon actuelle (hors borne) reste une amélioration possible mais n'est **pas**
    requis par l'acceptation de #158 (voir *Goals*) ; à trancher séparément si le porteur produit le
@@ -537,7 +537,7 @@ M7 qui concernent directement #158, à valider par le porteur produit avant l'im
    généralement courtes, alignées sur `presign_download`, cf. `PresignedUpload.expires_in` côté
    upload). *Recommandation technique* : ne rien changer côté backend pour #158 (les URLs restent à
    durée limitée, comme le logo) et laisser #159 décider, à son niveau, d'une stratégie de cache
-   d'image côté client kiosque (l'URL signée devra alors être **rafraîchie** à chaque nouvel appel
+   d'image côté client terminal (l'URL signée devra alors être **rafraîchie** à chaque nouvel appel
    catalogue plutôt que mise en cache au-delà de sa validité) — **à confirmer par le porteur produit
    avant l'implémentation de #159**, sans bloquer #158 qui ne fait qu'exposer le champ.
 2. **Portée de l'affichage côté app mobile cliente (hors borne).** La mission de #158 exige

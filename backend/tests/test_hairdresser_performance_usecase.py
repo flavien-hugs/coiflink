@@ -1,17 +1,20 @@
 """Tests unitaires — cas d'usage `SummarizeHairdresserPerformance` (US-6.5, #43).
 
-Ports remplacés par des fakes en mémoire : aucun I/O, aucune base.
+Ports remplacés par des fakes en mémoire : aucun I/O, aucune base. Rebranché sur
+`queue_tickets` (pivot walk-in exclusif, #148) : le port est désormais
+`QueueTicketRepository`, et l'équivalent walk-in de l'ancien statut RDV `CANCELLED`
+est le ticket `expired`.
 
 Couvre :
-- `performance_by_hairdresser` appelé **une** fois avec `REVENUE_STATUSES`
-  (COMPLETED — imposé serveur §8.1) et `CANCELLED_STATUSES` (CANCELLED) ;
+- `performance_by_hairdresser` appelé **une** fois avec les tickets `done` (imposé
+  serveur §8.1) et `expired` ;
 - `net_revenue_by_hairdresser` appelé **une** fois avec le bon `salon_id` et les
   bonnes bornes ;
 - `salon_id` et bornes `date_from`/`date_to` transmis tels quels aux deux ports ;
 - fusion : revenu `0.00` pour un coiffeur sans entrée dans la map caisse ;
 - fusion : revenu attribué correct quand la map caisse a une entrée ;
-- coiffeur avec CA en caisse mais absent du planning → exclu du rapport
-  (liste déterminée par le planning) ;
+- coiffeur avec CA en caisse mais absent de la file d'attente → exclu du rapport
+  (liste déterminée par la file d'attente) ;
 - rapport vide (aucun coiffeur assigné) est un état légitime ;
 - lecture pure : aucune méthode de mutation déclenchée (§11.4).
 """
@@ -24,7 +27,6 @@ import uuid
 from collections.abc import Mapping
 
 from coiflink_api.application.hairdresser_performance import SummarizeHairdresserPerformance
-from coiflink_api.domain.appointment import CANCELLED_STATUSES, REVENUE_STATUSES
 from coiflink_api.domain.hairdresser_performance import HairdresserActivityCounts
 
 # ---------------------------------------------------------------------------
@@ -38,14 +40,17 @@ _DATE_TO = datetime.date(2026, 8, 31)
 _H_ID_1 = uuid.UUID("11111111-0000-0000-0000-000000000001")
 _H_ID_2 = uuid.UUID("22222222-0000-0000-0000-000000000002")
 
+_COMPLETED_STATUSES: tuple[str, ...] = ("done",)
+_CANCELLED_STATUSES: tuple[str, ...] = ("expired",)
+
 
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
 
 
-class FakeAppointmentRepository:
-    """Fake du port `AppointmentRepository` pour `SummarizeHairdresserPerformance` (#43).
+class FakeQueueTicketRepository:
+    """Fake du port `QueueTicketRepository` pour `SummarizeHairdresserPerformance` (#43).
 
     `counts` contrôle ce que `performance_by_hairdresser` renvoie.
     `calls` enregistre les arguments reçus. Les méthodes de mutation lèvent
@@ -81,39 +86,6 @@ class FakeAppointmentRepository:
 
     def create(self, *a, **kw):  # type: ignore[no-untyped-def]
         raise NotImplementedError("SummarizeHairdresserPerformance ne doit pas écrire")
-
-    def update(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def cancel(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def set_status(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def assign_hairdresser(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def booked_slots(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def get_owned(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def get_in_salon(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_client(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_salon(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_hairdresser(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def count_by_status_for_day(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
 
     def demand_by_service(self, *a, **kw):  # type: ignore[no-untyped-def]
         raise NotImplementedError
@@ -175,53 +147,53 @@ def _execute(
     counts: tuple[HairdresserActivityCounts, ...] = (),
     revenue_map: Mapping[uuid.UUID, decimal.Decimal] | None = None,
 ):  # type: ignore[no-untyped-def]
-    appt_repo = FakeAppointmentRepository(counts=counts)
+    tickets_repo = FakeQueueTicketRepository(counts=counts)
     cash_repo = FakeCashJournalRepository(revenue_map=revenue_map)
-    result = SummarizeHairdresserPerformance(appt_repo, cash_repo).execute(
+    result = SummarizeHairdresserPerformance(tickets_repo, cash_repo).execute(
         _SALON_ID, date_from=_DATE_FROM, date_to=_DATE_TO
     )
-    return result, appt_repo, cash_repo
+    return result, tickets_repo, cash_repo
 
 
 # ---------------------------------------------------------------------------
-# Arguments transmis au port appointment
+# Arguments transmis au port queue_ticket
 # ---------------------------------------------------------------------------
 
 
-class TestPortAppointmentArgs:
+class TestPortQueueTicketArgs:
     def test_performance_by_hairdresser_called_once(self) -> None:
-        _, appt, _ = _execute()
-        assert len(appt.calls) == 1
+        _, tickets, _ = _execute()
+        assert len(tickets.calls) == 1
 
-    def test_salon_id_forwarded_to_appointment_port(self) -> None:
-        _, appt, _ = _execute()
-        assert appt.calls[0]["salon_id"] == _SALON_ID
+    def test_salon_id_forwarded_to_queue_ticket_port(self) -> None:
+        _, tickets, _ = _execute()
+        assert tickets.calls[0]["salon_id"] == _SALON_ID
 
-    def test_revenue_statuses_imposed(self) -> None:
-        """REVENUE_STATUSES (COMPLETED) imposé serveur, jamais soumis par l'appelant (§8.1)."""
-        _, appt, _ = _execute()
-        assert appt.calls[0]["completed_statuses"] == REVENUE_STATUSES
+    def test_completed_statuses_imposed(self) -> None:
+        """Tickets `done` imposé serveur, jamais soumis par l'appelant (§8.1)."""
+        _, tickets, _ = _execute()
+        assert tickets.calls[0]["completed_statuses"] == _COMPLETED_STATUSES
 
-    def test_completed_in_imposed_revenue_statuses(self) -> None:
-        _, appt, _ = _execute()
-        assert "COMPLETED" in appt.calls[0]["completed_statuses"]
+    def test_done_in_imposed_completed_statuses(self) -> None:
+        _, tickets, _ = _execute()
+        assert "done" in tickets.calls[0]["completed_statuses"]
 
     def test_cancelled_statuses_imposed(self) -> None:
-        """CANCELLED_STATUSES (CANCELLED) imposé serveur, jamais soumis par l'appelant."""
-        _, appt, _ = _execute()
-        assert appt.calls[0]["cancelled_statuses"] == CANCELLED_STATUSES
+        """Tickets `expired` imposé serveur, jamais soumis par l'appelant."""
+        _, tickets, _ = _execute()
+        assert tickets.calls[0]["cancelled_statuses"] == _CANCELLED_STATUSES
 
-    def test_cancelled_in_imposed_cancelled_statuses(self) -> None:
-        _, appt, _ = _execute()
-        assert "CANCELLED" in appt.calls[0]["cancelled_statuses"]
+    def test_expired_in_imposed_cancelled_statuses(self) -> None:
+        _, tickets, _ = _execute()
+        assert "expired" in tickets.calls[0]["cancelled_statuses"]
 
-    def test_date_from_forwarded_to_appointment_port(self) -> None:
-        _, appt, _ = _execute()
-        assert appt.calls[0]["date_from"] == _DATE_FROM
+    def test_date_from_forwarded_to_queue_ticket_port(self) -> None:
+        _, tickets, _ = _execute()
+        assert tickets.calls[0]["date_from"] == _DATE_FROM
 
-    def test_date_to_forwarded_to_appointment_port(self) -> None:
-        _, appt, _ = _execute()
-        assert appt.calls[0]["date_to"] == _DATE_TO
+    def test_date_to_forwarded_to_queue_ticket_port(self) -> None:
+        _, tickets, _ = _execute()
+        assert tickets.calls[0]["date_to"] == _DATE_TO
 
 
 # ---------------------------------------------------------------------------
@@ -248,13 +220,13 @@ class TestPortCashJournalArgs:
 
 
 # ---------------------------------------------------------------------------
-# Fusion des sources (planning + caisse)
+# Fusion des sources (file d'attente + caisse)
 # ---------------------------------------------------------------------------
 
 
 class TestRevenueFusion:
     def test_revenue_zero_when_hairdresser_absent_from_cash_map(self) -> None:
-        """Coiffeur dans le planning mais absent de la map caisse → CA = 0.00."""
+        """Coiffeur dans la file d'attente mais absent de la map caisse → CA = 0.00."""
         counts = (_counts_fixture(hairdresser_id=_H_ID_1),)
         result, _, _ = _execute(counts=counts, revenue_map={})
         assert result.entries[0].revenue == decimal.Decimal("0.00")
@@ -265,10 +237,10 @@ class TestRevenueFusion:
         result, _, _ = _execute(counts=counts, revenue_map=revenue_map)
         assert result.entries[0].revenue == decimal.Decimal("75000.00")
 
-    def test_hairdresser_with_cash_but_no_planning_entry_excluded(self) -> None:
-        """La liste des coiffeurs dérive du planning : un coiffeur avec du CA
-        mais sans RDV assigné dans la fenêtre n'apparaît pas."""
-        counts = ()  # aucun coiffeur au planning
+    def test_hairdresser_with_cash_but_no_queue_entry_excluded(self) -> None:
+        """La liste des coiffeurs dérive de la file d'attente : un coiffeur avec du CA
+        mais sans ticket assigné dans la fenêtre n'apparaît pas."""
+        counts = ()  # aucun coiffeur en file d'attente
         revenue_map = {_H_ID_1: decimal.Decimal("10000.00")}
         result, _, _ = _execute(counts=counts, revenue_map=revenue_map)
         assert result.entries == ()
@@ -328,8 +300,8 @@ class TestEmptyReport:
 
 
 class TestReadOnly:
-    def test_no_write_on_appointment_repo(self) -> None:
-        """Aucune méthode d'écriture ne doit être appelée sur le dépôt appointment."""
+    def test_no_write_on_queue_ticket_repo(self) -> None:
+        """Aucune méthode d'écriture ne doit être appelée sur le dépôt queue_ticket."""
         _execute()  # NotImplementedError si une écriture était déclenchée
 
     def test_no_append_on_cash_journal_repo(self) -> None:
@@ -372,4 +344,4 @@ class TestReportFields:
         assert not hasattr(entry, "client_id")
         assert not hasattr(entry, "phone")
         assert not hasattr(entry, "email")
-        assert not hasattr(entry, "appointment_id")
+        assert not hasattr(entry, "queue_ticket_id")

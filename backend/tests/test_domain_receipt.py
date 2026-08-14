@@ -7,7 +7,7 @@ Couvre :
   format dérivé de l'UUID du paiement) ;
 - montants portés en `Decimal` (jamais float) ;
 - `Receipt` sans ligne (paiement simple sans prestation liée) ;
-- `Receipt` multi-lignes (RDV avec plusieurs prestations) ;
+- `Receipt` multi-lignes (ticket walk-in avec plusieurs prestations) ;
 - `client_name`/`client_phone` : `None` par défaut (lecture client), renseignables
   (lecture gérante) ;
 - `DEFAULT_CURRENCY` est XOF.
@@ -30,7 +30,6 @@ from coiflink_api.domain.receipt import (
 
 _PAYMENT_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _SALON_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
-_APPT_ID = uuid.UUID("cccccccc-0000-0000-0000-000000000003")
 _PAID_AT = datetime.datetime(2026, 7, 30, 10, 15, 0, tzinfo=datetime.timezone.utc)
 
 
@@ -94,8 +93,8 @@ def test_receipt_line_is_frozen() -> None:
 def _make_receipt(
     *,
     lines: tuple[ReceiptLine, ...] = (),
-    appointment_id: uuid.UUID | None = None,
     reference: str | None = None,
+    ticket_number: int | None = None,
     client_name: str | None = None,
     client_phone: str | None = None,
 ) -> Receipt:
@@ -110,8 +109,8 @@ def _make_receipt(
         status="VALIDATED",
         reference=reference,
         paid_at=_PAID_AT,
-        appointment_id=appointment_id,
         lines=lines,
+        ticket_number=ticket_number,
         client_name=client_name,
         client_phone=client_phone,
     )
@@ -128,7 +127,6 @@ def test_receipt_construction_no_lines() -> None:
     assert r.status == "VALIDATED"
     assert r.reference is None
     assert r.paid_at == _PAID_AT
-    assert r.appointment_id is None
     assert r.lines == ()
 
 
@@ -167,16 +165,30 @@ def test_receipt_client_identity_settable_for_manager_view() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Receipt — multi-lignes (RDV)
+# Receipt — ticket_number (paiement lié à un ticket walk-in, #38)
 # ---------------------------------------------------------------------------
 
-def test_receipt_with_appointment_lines() -> None:
+def test_receipt_ticket_number_defaults_to_none() -> None:
+    """Un paiement lié à une prestation seule n'a pas de ticket."""
+    r = _make_receipt()
+    assert r.ticket_number is None
+
+
+def test_receipt_ticket_number_settable_for_ticket_linked_payment() -> None:
+    r = _make_receipt(ticket_number=42)
+    assert r.ticket_number == 42
+
+
+# ---------------------------------------------------------------------------
+# Receipt — multi-lignes (ticket walk-in)
+# ---------------------------------------------------------------------------
+
+def test_receipt_with_multiple_lines() -> None:
     lines = (
         ReceiptLine(service_name="Coupe homme", amount=decimal.Decimal("3000.00")),
         ReceiptLine(service_name="Barbe", amount=decimal.Decimal("2000.00")),
     )
-    r = _make_receipt(lines=lines, appointment_id=_APPT_ID)
-    assert r.appointment_id == _APPT_ID
+    r = _make_receipt(lines=lines)
     assert len(r.lines) == 2
     assert r.lines[0].service_name == "Coupe homme"
     assert r.lines[1].service_name == "Barbe"
@@ -203,9 +215,8 @@ def test_receipt_total_is_payment_amount_not_sum_of_lines() -> None:
 def test_receipt_single_service_line() -> None:
     """Paiement lié à une prestation seule : une seule ligne."""
     line = ReceiptLine(service_name="Soin", amount=decimal.Decimal("4500.00"))
-    r = _make_receipt(lines=(line,), appointment_id=None)
+    r = _make_receipt(lines=(line,))
     assert len(r.lines) == 1
-    assert r.appointment_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +261,6 @@ def test_two_receipts_with_different_amounts_are_not_equal() -> None:
         status="VALIDATED",
         reference=None,
         paid_at=_PAID_AT,
-        appointment_id=None,
         lines=(),
     )
     assert r1 != r2

@@ -193,26 +193,28 @@ class SqlCashJournalEntryRepository:
 
         Variante attribuée de `net_revenue_between` : somme **signée** des lignes
         `cash_journal` `PAYMENT`/`ADJUSTMENT` du salon, jointes au `payment`
-        (`transaction_id → payments.id`) puis au RDV (`payments.appointment_id →
-        appointments.id`), filtrées `appointments.hairdresser_id IS NOT NULL` et
-        `appointments.appointment_date ∈ [date_from, date_to]` **inclus**,
-        `GROUP BY appointments.hairdresser_id`. CA **net des corrections** (#34) : un
-        `ADJUSTMENT` fait baisser le total du coiffeur.
+        (`transaction_id → payments.id`) puis au ticket walk-in
+        (`payments.queue_ticket_id → queue_tickets.id`), filtrées
+        `queue_tickets.hairdresser_id IS NOT NULL` et `queue_tickets.issued_date ∈
+        [date_from, date_to]` **inclus**, `GROUP BY queue_tickets.hairdresser_id`. CA
+        **net des corrections** (#34) : un `ADJUSTMENT` fait baisser le total du
+        coiffeur.
 
-        L'**attribution par le RDV** (join `payments.appointment_id`) porte le
-        `hairdresser_id` **et** la borne `appointment_date` (axe **planning**, pas
-        `cash_journal.created_at`) : le CA partage la période des prestations/annulations.
-        Les lignes **sans `transaction_id`** ou dont le paiement n'a **pas** de RDV
-        assigné (prestation directe, `appointment_id IS NULL`) sont **exclues** par les
-        joins (inattribuables). Isolation §11.2 **réaffirmée en SQL**
-        (`WHERE cash_journal.salon_id`), couverte par `ix_cash_journal_salon_id`.
-        Lecture pure (aucun `flush`) ; renvoie `{hairdresser_id: Decimal}` quantifié au
-        centime — **aucune** PII (ni `client_id`, ni `reference`, ni `recorded_by`).
+        L'**attribution par le ticket** (join `payments.queue_ticket_id`) porte le
+        `hairdresser_id` **et** la borne `issued_date` (axe **file d'attente**, pas
+        `cash_journal.created_at`) : le CA partage la période des prestations
+        réalisées. Les lignes **sans `transaction_id`** ou dont le paiement n'a
+        **pas** de ticket associé (prestation directe, `queue_ticket_id IS NULL`)
+        sont **exclues** par les joins (inattribuables). Isolation §11.2
+        **réaffirmée en SQL** (`WHERE cash_journal.salon_id`), couverte par
+        `ix_cash_journal_salon_id`. Lecture pure (aucun `flush`) ; renvoie
+        `{hairdresser_id: Decimal}` quantifié au centime — **aucune** PII (ni
+        `client_id`, ni `reference`, ni `recorded_by`).
         """
 
         stmt = (
             select(
-                models.Appointment.hairdresser_id,
+                models.QueueTicket.hairdresser_id,
                 func.coalesce(func.sum(models.CashJournal.amount), 0).label("net"),
             )
             .join(
@@ -220,16 +222,16 @@ class SqlCashJournalEntryRepository:
                 models.Payment.id == models.CashJournal.transaction_id,
             )
             .join(
-                models.Appointment,
-                models.Appointment.id == models.Payment.appointment_id,
+                models.QueueTicket,
+                models.QueueTicket.id == models.Payment.queue_ticket_id,
             )
             .where(
                 models.CashJournal.salon_id == salon_id,
                 models.CashJournal.operation_type.in_(_REVENUE_OPERATION_TYPES),
-                models.Appointment.hairdresser_id.is_not(None),
-                models.Appointment.appointment_date.between(date_from, date_to),
+                models.QueueTicket.hairdresser_id.is_not(None),
+                models.QueueTicket.issued_date.between(date_from, date_to),
             )
-            .group_by(models.Appointment.hairdresser_id)
+            .group_by(models.QueueTicket.hairdresser_id)
         )
         return {
             row.hairdresser_id: decimal.Decimal(row.net or 0).quantize(_AMOUNT_QUANTUM)

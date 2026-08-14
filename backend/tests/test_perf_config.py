@@ -30,14 +30,14 @@ class TestBudgets:
 
     def test_all_four_budget_group_constants_defined(self) -> None:
         assert config.BUDGET_SALON_SEARCH
-        assert config.BUDGET_APPOINTMENT_CREATE
+        assert config.BUDGET_TICKET_CREATE
         assert config.BUDGET_DASHBOARD
         assert config.BUDGET_API_GENERAL
 
     def test_budgets_ms_covers_all_four_groups(self) -> None:
         expected = {
             config.BUDGET_SALON_SEARCH,
-            config.BUDGET_APPOINTMENT_CREATE,
+            config.BUDGET_TICKET_CREATE,
             config.BUDGET_DASHBOARD,
             config.BUDGET_API_GENERAL,
         }
@@ -47,9 +47,9 @@ class TestBudgets:
         """PRD §12.1 : recherche salon < 2 s."""
         assert config.BUDGETS_MS[config.BUDGET_SALON_SEARCH] == 2000
 
-    def test_appointment_create_budget_is_3000_ms(self) -> None:
-        """PRD §12.1 : création de rendez-vous < 3 s."""
-        assert config.BUDGETS_MS[config.BUDGET_APPOINTMENT_CREATE] == 3000
+    def test_ticket_create_budget_is_3000_ms(self) -> None:
+        """PRD §12.1 : émission d'un ticket walk-in < 3 s."""
+        assert config.BUDGETS_MS[config.BUDGET_TICKET_CREATE] == 3000
 
     def test_dashboard_budget_is_3000_ms(self) -> None:
         """PRD §12.1 : dashboard gérant (agrégat 5 lectures) < 3 s."""
@@ -186,8 +186,8 @@ class TestDatasetProfile:
     def test_default_clients(self) -> None:
         assert config.DatasetProfile().clients == 100
 
-    def test_default_completed_appointments(self) -> None:
-        assert config.DatasetProfile().completed_appointments == 200
+    def test_default_completed_tickets(self) -> None:
+        assert config.DatasetProfile().completed_tickets == 200
 
     def test_default_token_clients(self) -> None:
         d = config.DatasetProfile()

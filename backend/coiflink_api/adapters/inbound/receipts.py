@@ -67,20 +67,20 @@ class ReceiptResponse(BaseModel):
 
     Montants en **chaîne décimale** (`NUMERIC(12,2)`, jamais de flottant). Le
     **total** de référence est `amount` (le paiement tel qu'enregistré) ; les
-    `lines` sont informatives. `reference`/`appointment_id` peuvent être `null`.
+    `lines` sont informatives. `reference` peut être `null`.
     """
 
     receipt_number: str
     payment_id: uuid.UUID
     salon_id: uuid.UUID
     salon_name: str
+    ticket_number: int | None
     amount: decimal.Decimal
     currency: str
     payment_method: str
     status: str
     reference: str | None
     paid_at: datetime.datetime
-    appointment_id: uuid.UUID | None
     lines: list[ReceiptLineResponse]
 
 
@@ -110,13 +110,13 @@ def _receipt_response(receipt: Receipt) -> ReceiptResponse:
         payment_id=receipt.payment_id,
         salon_id=receipt.salon_id,
         salon_name=receipt.salon_name,
+        ticket_number=receipt.ticket_number,
         amount=receipt.amount,
         currency=receipt.currency,
         payment_method=receipt.payment_method,
         status=receipt.status,
         reference=receipt.reference,
         paid_at=receipt.paid_at,
-        appointment_id=receipt.appointment_id,
         lines=[
             ReceiptLineResponse(service_name=line.service_name, amount=line.amount)
             for line in receipt.lines

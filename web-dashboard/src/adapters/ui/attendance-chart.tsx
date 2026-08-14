@@ -32,7 +32,7 @@ export function AttendanceChart({ series }: { series: AttendanceSeries | null })
         <DashboardBarChart
           points={scale.points}
           colorClassName="text-palm"
-          ariaLabel="Fréquentation du salon (nombre de rendez-vous) sur la période"
+          ariaLabel="Fréquentation du salon (nombre de tickets servis) sur la période"
           formatValue={(value) => value.toLocaleString("fr-FR")}
         />
       )}
@@ -57,7 +57,7 @@ function PanelShell({ children }: { children: React.ReactNode }) {
 function EmptyState() {
   return (
     <p className="px-4 py-10 text-center text-sm text-muted">
-      Aucun rendez-vous sur la période.
+      Aucun ticket sur la période.
     </p>
   );
 }

@@ -335,10 +335,10 @@ class GetCustomerVisitHistory:
     Lecture **fiche-scopée** : la fiche est d'abord résolue **dans le salon**
     (réutilise `GetCustomer` → `CustomerNotFound`/`404` **après** portée, sans
     oracle — une fiche d'un autre salon est indiscernable d'une inexistante). Puis
-    les RDV `COMPLETED` liés sont lus via le port (le lien `user_id` reste
-    encapsulé côté dépôt, la lecture refiltre `salon_id`), et le résumé dérivé est
-    construit **en mémoire** (`build_history`, pur). Aucune écriture, aucun audit
-    (patron des lectures `ListSalonCustomers` / `ListSalonAppointments`).
+    les tickets `done` liés sont lus via le port (lien direct
+    `queue_tickets.customer_profile_id`, `salon_id` refiltré en SQL), et le résumé
+    dérivé est construit **en mémoire** (`build_history`, pur). Aucune écriture,
+    aucun audit (patron des lectures `ListSalonCustomers`).
     """
 
     def __init__(self, repository: CustomerRepository) -> None:
@@ -349,7 +349,7 @@ class GetCustomerVisitHistory:
     ) -> VisitHistory:
         # 1. Résout la fiche DANS le salon (404 après portée si hors salon/inconnue).
         GetCustomer(self._repository).execute(salon_id, customer_id)
-        # 2. Lit les RDV terminés liés (COMPLETED) — `user_id` encapsulé côté dépôt,
+        # 2. Lit les tickets terminés liés (done) — lien direct customer_profile_id,
         #    salon_id refiltré en SQL (défense en profondeur §11.2).
         visits = self._repository.list_visits(salon_id, customer_id, HISTORY_STATUSES)
         # 3. Construit le résumé dérivé (pur, jamais persisté).
@@ -361,10 +361,10 @@ class GetCustomerPaymentHistory:
 
     Lecture **fiche-scopée**, miroir de `GetCustomerVisitHistory` : la fiche est
     d'abord résolue **dans le salon** (`GetCustomer` → `CustomerNotFound`/`404`
-    **après** portée, sans oracle), puis les paiements du compte lié sont lus via
-    le port (le lien `user_id` reste encapsulé côté dépôt, la lecture refiltre
-    `salon_id`). Tous statuts confondus — aucune agrégation, aucune écriture,
-    aucun audit.
+    **après** portée, sans oracle), puis les paiements liés à ses tickets sont lus
+    via le port (`payments.queue_ticket_id → queue_tickets.customer_profile_id`,
+    la lecture refiltre `salon_id`). Tous statuts confondus — aucune agrégation,
+    aucune écriture, aucun audit.
     """
 
     def __init__(self, repository: CustomerRepository) -> None:
@@ -375,8 +375,8 @@ class GetCustomerPaymentHistory:
     ) -> tuple[CustomerPayment, ...]:
         # 1. Résout la fiche DANS le salon (404 après portée si hors salon/inconnue).
         GetCustomer(self._repository).execute(salon_id, customer_id)
-        # 2. Lit les paiements liés — `user_id` encapsulé côté dépôt, salon_id
-        #    refiltré en SQL (défense en profondeur §11.2).
+        # 2. Lit les paiements liés à ses tickets — salon_id refiltré en SQL
+        #    (défense en profondeur §11.2).
         return self._repository.list_payments(salon_id, customer_id)
 
 
@@ -387,10 +387,10 @@ class GetCustomerServiceStats:
     base**) : la fiche est d'abord résolue **dans le salon** (réutilise
     `GetCustomer` → `CustomerNotFound`/`404` **après** portée, sans oracle — une
     fiche d'un autre salon est indiscernable d'une inexistante). Puis les visites
-    `COMPLETED` liées sont lues via la **même** `list_visits(HISTORY_STATUSES)`
-    (le lien `user_id` reste encapsulé côté dépôt, `salon_id` refiltré en SQL), et
-    le classement des prestations préférées est agrégé **en mémoire**
-    (`favourite_services`, pur). Aucune écriture, aucun audit (patron des lectures
+    `done` liées sont lues via la **même** `list_visits(HISTORY_STATUSES)` (lien
+    direct `customer_profile_id`, `salon_id` refiltré en SQL), et le classement
+    des prestations préférées est agrégé **en mémoire** (`favourite_services`,
+    pur). Aucune écriture, aucun audit (patron des lectures
     `GetCustomerVisitHistory` / `ListSalonCustomers`).
     """
 
@@ -402,8 +402,8 @@ class GetCustomerServiceStats:
     ) -> CustomerServiceStats:
         # 1. Résout la fiche DANS le salon (404 après portée si hors salon/inconnue).
         GetCustomer(self._repository).execute(salon_id, customer_id)
-        # 2. Lit les visites terminées liées (COMPLETED) — `user_id` encapsulé côté
-        #    dépôt, `salon_id`/`client_id` refiltrés en SQL (défense en profondeur §11.2).
+        # 2. Lit les tickets terminés liés (done) — lien direct customer_profile_id,
+        #    salon_id refiltré en SQL (défense en profondeur §11.2).
         visits = self._repository.list_visits(salon_id, customer_id, HISTORY_STATUSES)
         # 3. Agrège le classement des prestations préférées (pur, jamais persisté).
         return favourite_services(visits)

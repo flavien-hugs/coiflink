@@ -24,7 +24,7 @@ from typing import Protocol
 
 from coiflink_api.domain.employee import Employee
 from coiflink_api.domain.salon import Salon, SalonPhoto
-from coiflink_api.domain.service import Service
+from coiflink_api.domain.service import Service, ServicePhoto
 
 # Bornes de pagination (déni de service par page géante → refus côté adapter).
 CATALOG_LIMIT_MIN = 1
@@ -108,6 +108,18 @@ class SalonCatalogRepository(Protocol):
 
         Chaque `SalonPhoto` porte une **clé d'objet** (jamais une URL) : le cas
         d'usage la résout en URL signée à la lecture (ADR-0005).
+        """
+        ...
+
+    def list_service_photos(self, salon_id: uuid.UUID) -> tuple[ServicePhoto, ...]:
+        """Photos de **toutes** les prestations du salon, en une seule requête.
+
+        Une seule ligne `WHERE salon_id = ?`, triée par `service_id` puis
+        `position` croissante (la position 0 de chaque prestation sert de
+        couverture, `PublicServiceView.image_url`) — le cas d'usage
+        (`GetPublicSalon`) regroupe ensuite par `service_id` en mémoire.
+        Évite un aller-retour SQL par prestation (N+1) sur une fiche pouvant
+        lister des dizaines de prestations actives.
         """
         ...
 

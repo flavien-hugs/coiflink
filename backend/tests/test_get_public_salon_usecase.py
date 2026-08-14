@@ -27,7 +27,7 @@ from coiflink_api.application.catalog import (
 from coiflink_api.domain.enums import SalonStatus
 from coiflink_api.domain.errors import SalonNotFound
 from coiflink_api.domain.salon import Salon, SalonPhoto
-from coiflink_api.domain.service import Service
+from coiflink_api.domain.service import Service, ServicePhoto
 
 from .conftest import FakeMediaStorage, FakeSalonCatalogRepository
 
@@ -72,7 +72,6 @@ def _service(
     *,
     name: str = "Coupe homme",
     is_active: bool = True,
-    image_object_key: str | None = None,
 ) -> Service:
     return Service(
         id=uuid.uuid4(),
@@ -83,7 +82,6 @@ def _service(
         duration_minutes=30,
         category="Coupe",
         is_active=is_active,
-        image_object_key=image_object_key,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )
@@ -94,6 +92,19 @@ def _photo(salon_id: uuid.UUID, *, position: int = 0) -> SalonPhoto:
         id=uuid.uuid4(),
         salon_id=salon_id,
         object_key=f"salons/{salon_id}/photos/{uuid.uuid4()}.jpg",
+        position=position,
+        created_at=_CREATED_AT,
+    )
+
+
+def _service_photo(
+    service: Service, *, object_key: str = "services/salon-id/photo.png", position: int = 0
+) -> ServicePhoto:
+    return ServicePhoto(
+        id=uuid.uuid4(),
+        salon_id=service.salon_id,
+        service_id=service.id,
+        object_key=object_key,
         position=position,
         created_at=_CREATED_AT,
     )
@@ -273,10 +284,13 @@ def test_logo_url_none_when_no_object_key_even_with_storage() -> None:
 
 
 def test_service_image_url_signed_when_key_set_and_storage_configured() -> None:
-    # image_object_key renseigné + FakeMediaStorage → image_url est l'URL signée.
+    # Une couverture (position 0) + FakeMediaStorage → image_url est l'URL signée.
     salon = _salon()
-    svc = _service(salon.id, image_object_key="services/salon-id/photo.png")
-    repo = FakeSalonCatalogRepository([salon], services={salon.id: [svc]})
+    svc = _service(salon.id)
+    photo = _service_photo(svc, object_key="services/salon-id/photo.png")
+    repo = FakeSalonCatalogRepository(
+        [salon], services={salon.id: [svc]}, service_photos={svc.id: [photo]}
+    )
 
     view = GetPublicSalon(repo, FakeMediaStorage()).execute(salon.id)
     service = view.services[0]
@@ -287,10 +301,10 @@ def test_service_image_url_signed_when_key_set_and_storage_configured() -> None:
     assert service.image_url != "services/salon-id/photo.png"
 
 
-def test_service_image_url_none_when_no_object_key() -> None:
-    # image_object_key=None → image_url is None, même avec un stockage configuré.
+def test_service_image_url_none_when_no_photo() -> None:
+    # Aucune photo → image_url is None, même avec un stockage configuré.
     salon = _salon()
-    svc = _service(salon.id, image_object_key=None)
+    svc = _service(salon.id)
     repo = FakeSalonCatalogRepository([salon], services={salon.id: [svc]})
 
     view = GetPublicSalon(repo, FakeMediaStorage()).execute(salon.id)
@@ -298,12 +312,15 @@ def test_service_image_url_none_when_no_object_key() -> None:
     assert view.services[0].image_url is None
 
 
-def test_service_image_url_none_without_storage_even_with_key() -> None:
-    # Stockage non configuré → image_url is None même si image_object_key renseigné.
+def test_service_image_url_none_without_storage_even_with_photo() -> None:
+    # Stockage non configuré → image_url is None même si une photo existe.
     # La règle de résilience (spec §Security) : jamais d'exception 5xx, image_url=null.
     salon = _salon()
-    svc = _service(salon.id, image_object_key="services/salon-id/photo.png")
-    repo = FakeSalonCatalogRepository([salon], services={salon.id: [svc]})
+    svc = _service(salon.id)
+    photo = _service_photo(svc, object_key="services/salon-id/photo.png")
+    repo = FakeSalonCatalogRepository(
+        [salon], services={salon.id: [svc]}, service_photos={svc.id: [photo]}
+    )
 
     view = GetPublicSalon(repo, media_storage=None).execute(salon.id)
 
@@ -314,8 +331,11 @@ def test_service_view_image_object_key_not_in_fields() -> None:
     # ADR-0005 / spec §A.4 : la clé d'objet brute ne doit jamais franchir la
     # frontière publique — PublicServiceView ne porte pas image_object_key.
     salon = _salon()
-    svc = _service(salon.id, image_object_key="services/salon-id/photo.png")
-    repo = FakeSalonCatalogRepository([salon], services={salon.id: [svc]})
+    svc = _service(salon.id)
+    photo = _service_photo(svc, object_key="services/salon-id/photo.png")
+    repo = FakeSalonCatalogRepository(
+        [salon], services={salon.id: [svc]}, service_photos={svc.id: [photo]}
+    )
 
     view = GetPublicSalon(repo, FakeMediaStorage()).execute(salon.id)
     field_names = {f.name for f in dataclasses.fields(view.services[0])}
@@ -342,3 +362,63 @@ def test_detail_view_has_no_management_fields() -> None:
     assert "created_at" not in field_names
     assert "updated_at" not in field_names
     assert "logo_object_key" not in field_names
+
+
+# ---------------------------------------------------------------------------
+# Anti N+1 — une seule requête groupée pour les photos de TOUTES les prestations
+# ---------------------------------------------------------------------------
+
+
+def test_service_photos_fetched_in_a_single_call_regardless_of_service_count() -> None:
+    # Régression : list_service_photos(salon_id) doit être appelée UNE SEULE
+    # fois par exécution, jamais une fois par prestation (anti N+1).
+    salon = _salon()
+    services = [_service(salon.id, name=f"Prestation {i}") for i in range(5)]
+    photos = {
+        services[0].id: [_service_photo(services[0])],
+        services[2].id: [_service_photo(services[2]), _service_photo(services[2], position=1)],
+    }
+    repo = FakeSalonCatalogRepository(
+        [salon], services={salon.id: services}, service_photos=photos
+    )
+
+    view = GetPublicSalon(repo, FakeMediaStorage()).execute(salon.id)
+
+    assert repo.list_service_photos_calls == [salon.id]
+    by_name = {sv.name: sv for sv in view.services}
+    assert by_name["Prestation 0"].image_url is not None
+    assert by_name["Prestation 2"].image_url is not None
+    assert by_name["Prestation 1"].image_url is None
+
+
+# ---------------------------------------------------------------------------
+# Galerie complète (pas seulement la couverture) — client borne kiosque
+# ---------------------------------------------------------------------------
+
+
+def test_service_view_exposes_the_full_photo_gallery_not_only_the_cover() -> None:
+    # La borne kiosque parcourt TOUTES les photos, pas seulement image_url.
+    salon = _salon()
+    svc = _service(salon.id)
+    photo0 = _service_photo(svc, object_key="services/salon-id/a.png", position=0)
+    photo1 = _service_photo(svc, object_key="services/salon-id/b.png", position=1)
+    repo = FakeSalonCatalogRepository(
+        [salon], services={salon.id: [svc]}, service_photos={svc.id: [photo0, photo1]}
+    )
+
+    view = GetPublicSalon(repo, FakeMediaStorage()).execute(salon.id)
+    service = view.services[0]
+
+    assert len(service.photos) == 2
+    assert service.photos[0].url == service.image_url  # couverture = photos[0]
+    assert all(p.url is not None and "?" in p.url for p in service.photos)
+
+
+def test_service_view_photos_empty_list_when_no_photo() -> None:
+    salon = _salon()
+    svc = _service(salon.id)
+    repo = FakeSalonCatalogRepository([salon], services={salon.id: [svc]})
+
+    view = GetPublicSalon(repo, FakeMediaStorage()).execute(salon.id)
+
+    assert view.services[0].photos == ()

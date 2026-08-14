@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   AMOUNT_MAX,
   DEFAULT_CURRENCY,
+  MOBILE_MONEY_PHONE_MAX_LENGTH,
   PAYMENT_METHOD_OPTIONS,
   PAYMENT_METHOD_VALUES,
   REFERENCE_MAX_LENGTH,
@@ -109,7 +110,14 @@ describe("validatePayment — amount", () => {
 describe("validatePayment — paymentMethod", () => {
   it("toutes les valeurs valides de l'énumération sont acceptées", () => {
     for (const method of PAYMENT_METHOD_VALUES) {
-      const r = validatePayment(valid({ paymentMethod: method }));
+      // Mobile Money exige en plus téléphone + référence (cf. describe dédié
+      // ci-dessous) — les fournir ici aussi pour isoler ce test à la seule
+      // question « le mode lui-même est-il accepté ? ».
+      const extra =
+        method === "MOBILE_MONEY_MANUAL"
+          ? { reference: "MM-TX-0001", mobileMoneyPhone: "0700000000" }
+          : {};
+      const r = validatePayment(valid({ paymentMethod: method, ...extra }));
       expect(r.ok).toBe(true);
     }
   });
@@ -169,37 +177,133 @@ describe("validatePayment — reference", () => {
 });
 
 // ---------------------------------------------------------------------------
-// validatePayment — présence de la référence (prestation OU RDV, §8.2)
+// validatePayment — présence de la référence (prestation OU ticket, §8.2)
 // ---------------------------------------------------------------------------
 
-describe("validatePayment — présence prestation/RDV (§8.2)", () => {
-  it("ni appointmentId ni serviceId → missing-reference", () => {
-    const r = validatePayment(valid({ serviceId: null, appointmentId: null }));
+describe("validatePayment — présence prestation/ticket (§8.2)", () => {
+  it("ni queueTicketId ni serviceId → missing-reference", () => {
+    const r = validatePayment(valid({ serviceId: null, queueTicketId: null }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("missing-reference");
   });
 
   it("serviceId seul → ok", () => {
-    const r = validatePayment(valid({ serviceId: "service-uuid", appointmentId: null }));
+    const r = validatePayment(valid({ serviceId: "service-uuid", queueTicketId: null }));
     expect(r.ok).toBe(true);
   });
 
-  it("appointmentId seul → ok", () => {
-    const r = validatePayment(valid({ serviceId: null, appointmentId: "appointment-uuid" }));
+  it("queueTicketId seul → ok", () => {
+    const r = validatePayment(valid({ serviceId: null, queueTicketId: "ticket-uuid" }));
     expect(r.ok).toBe(true);
   });
 
   it("les deux présents → ok", () => {
     const r = validatePayment(
-      valid({ serviceId: "service-uuid", appointmentId: "appointment-uuid" }),
+      valid({ serviceId: "service-uuid", queueTicketId: "ticket-uuid" }),
     );
     expect(r.ok).toBe(true);
   });
 
   it("chaînes vides traitées comme absentes → missing-reference", () => {
-    const r = validatePayment(valid({ serviceId: "  ", appointmentId: "" }));
+    const r = validatePayment(valid({ serviceId: "  ", queueTicketId: "" }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("missing-reference");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validatePayment — Mobile Money : téléphone + référence obligatoires
+// ---------------------------------------------------------------------------
+
+function validMobileMoney(overrides: Partial<RawPaymentInput> = {}): RawPaymentInput {
+  return valid({
+    paymentMethod: "MOBILE_MONEY_MANUAL",
+    reference: "MM-TX-0001",
+    mobileMoneyPhone: "0700000000",
+    ...overrides,
+  });
+}
+
+describe("validatePayment — Mobile Money (téléphone + référence obligatoires)", () => {
+  it("téléphone et référence présents → ok", () => {
+    const r = validatePayment(validMobileMoney());
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.mobileMoneyPhone).toBe("0700000000");
+      expect(r.value.reference).toBe("MM-TX-0001");
+    }
+  });
+
+  it("téléphone absent → missing-mobile-money-phone", () => {
+    const r = validatePayment(validMobileMoney({ mobileMoneyPhone: undefined }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("missing-mobile-money-phone");
+  });
+
+  it("téléphone composé uniquement d'espaces → missing-mobile-money-phone", () => {
+    const r = validatePayment(validMobileMoney({ mobileMoneyPhone: "   " }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("missing-mobile-money-phone");
+  });
+
+  it("téléphone manifestement inexploitable (lettres) → invalid-mobile-money-phone", () => {
+    const r = validatePayment(validMobileMoney({ mobileMoneyPhone: "not-a-phone" }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invalid-mobile-money-phone");
+  });
+
+  it.each(["----", "()", ".."])(
+    "téléphone composé uniquement de séparateurs (%s, aucun chiffre) → invalid-mobile-money-phone",
+    (phone) => {
+      const r = validatePayment(validMobileMoney({ mobileMoneyPhone: phone }));
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe("invalid-mobile-money-phone");
+    },
+  );
+
+  it(`téléphone dépassant ${MOBILE_MONEY_PHONE_MAX_LENGTH} caractères → invalid-mobile-money-phone`, () => {
+    const tooLong = "0".repeat(MOBILE_MONEY_PHONE_MAX_LENGTH + 1);
+    const r = validatePayment(validMobileMoney({ mobileMoneyPhone: tooLong }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invalid-mobile-money-phone");
+  });
+
+  it("téléphone déjà international (+225…) accepté", () => {
+    const r = validatePayment(validMobileMoney({ mobileMoneyPhone: "+2250700000000" }));
+    expect(r.ok).toBe(true);
+  });
+
+  it("référence absente → missing-mobile-money-reference", () => {
+    const r = validatePayment(validMobileMoney({ reference: undefined }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("missing-mobile-money-reference");
+  });
+
+  it("référence composée uniquement d'espaces → missing-mobile-money-reference", () => {
+    const r = validatePayment(validMobileMoney({ reference: "   " }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("missing-mobile-money-reference");
+  });
+
+  it("téléphone absent prime sur une référence elle aussi absente (ordre stable)", () => {
+    const r = validatePayment(
+      validMobileMoney({ mobileMoneyPhone: undefined, reference: undefined }),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("missing-mobile-money-phone");
+  });
+
+  it("un autre mode ignore silencieusement un téléphone fourni (jamais transmis)", () => {
+    const r = validatePayment(
+      valid({ paymentMethod: "CASH", mobileMoneyPhone: "0700000000" }),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.mobileMoneyPhone).toBeNull();
+  });
+
+  it("un autre mode n'exige pas de référence même sans téléphone", () => {
+    const r = validatePayment(valid({ paymentMethod: "CARD_MANUAL", reference: undefined }));
+    expect(r.ok).toBe(true);
   });
 });
 
@@ -216,7 +320,7 @@ describe("validatePayment — ordre stable des motifs", () => {
 
   it("mode invalide prime sur une référence manquante", () => {
     const r = validatePayment(
-      valid({ paymentMethod: "BITCOIN", serviceId: null, appointmentId: null }),
+      valid({ paymentMethod: "BITCOIN", serviceId: null, queueTicketId: null }),
     );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("invalid-method");

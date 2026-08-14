@@ -1,4 +1,4 @@
-"""Tests unitaires pour `load_auth_config` (#8).
+"""Tests unitaires pour `load_auth_config` (#8) et `load_media_config`.
 
 Vérifie : valeurs par défaut, parsing des drapeaux booléens OTP, parsing
 des paramètres entiers, et robustesse face à des valeurs malformées.
@@ -10,7 +10,7 @@ import datetime
 
 import pytest
 
-from coiflink_api.config import AuthConfig, load_auth_config
+from coiflink_api.config import AuthConfig, MediaConfig, load_auth_config, load_media_config
 from coiflink_api.domain.otp import (
     DEFAULT_OTP_LENGTH,
     DEFAULT_OTP_MAX_ATTEMPTS,
@@ -106,3 +106,51 @@ class TestOtpParameters:
         assert config.otp_length == 4
         assert config.otp_ttl == datetime.timedelta(seconds=300)
         assert config.otp_max_attempts == 5
+
+
+class TestMediaConfigPresignEndpoint:
+    """`presign_endpoint_url` : hôte des URLs pré-signées, distinct de l'hôte des
+    appels réseau internes du backend (`endpoint_url`) — cf. docstring
+    `MediaConfig`. Le repli sur `endpoint_url` préserve le comportement d'avant
+    l'introduction de `S3_PUBLIC_ENDPOINT_URL` pour tout déploiement qui ne la
+    définit pas."""
+
+    def test_falls_back_to_endpoint_url_when_public_endpoint_unset(self) -> None:
+        config = MediaConfig(endpoint_url="http://minio:9000")
+        assert config.presign_endpoint_url == "http://minio:9000"
+
+    def test_uses_public_endpoint_url_when_set(self) -> None:
+        config = MediaConfig(
+            endpoint_url="http://minio:9000",
+            public_endpoint_url="http://192.168.1.128:9000",
+        )
+        assert config.presign_endpoint_url == "http://192.168.1.128:9000"
+
+    def test_both_empty_yields_empty(self) -> None:
+        config = MediaConfig()
+        assert config.presign_endpoint_url == ""
+
+
+class TestLoadMediaConfig:
+    def test_public_endpoint_url_defaults_to_empty(self) -> None:
+        config = load_media_config({})
+        assert config.public_endpoint_url == ""
+
+    def test_public_endpoint_url_read_from_environment(self) -> None:
+        config = load_media_config({"S3_PUBLIC_ENDPOINT_URL": "http://192.168.1.128:9000"})
+        assert config.public_endpoint_url == "http://192.168.1.128:9000"
+
+    def test_public_endpoint_url_is_stripped(self) -> None:
+        config = load_media_config({"S3_PUBLIC_ENDPOINT_URL": "  http://192.168.1.128:9000  "})
+        assert config.public_endpoint_url == "http://192.168.1.128:9000"
+
+    def test_endpoint_url_and_public_endpoint_url_are_independent(self) -> None:
+        config = load_media_config(
+            {
+                "S3_ENDPOINT_URL": "http://minio:9000",
+                "S3_PUBLIC_ENDPOINT_URL": "http://192.168.1.128:9000",
+            }
+        )
+        assert config.endpoint_url == "http://minio:9000"
+        assert config.public_endpoint_url == "http://192.168.1.128:9000"
+        assert config.presign_endpoint_url == "http://192.168.1.128:9000"

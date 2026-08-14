@@ -2,20 +2,19 @@
 
 Ces tests vérifient des propriétés déterministes et sans I/O externe :
 
-- `_next_monday()` retourne toujours un lundi futur (garantie de déterminisme des créneaux).
 - Le préfixe de téléphones réservé (`+225068999`) n'entre pas en collision avec les autres
   suites e2e (prévention de corruption du nettoyage FK en CI).
 - Les constantes de numéros locaux sont cohérentes avec le préfixe réservé.
 - Le `_TEST_JWT_SECRET` de test ne ressemble pas à un vrai token (politique §11.4).
-- `_wipe_test_data()` supprime `notifications`/`campaigns` **avant** `appointments`
-  (contrainte FK `RESTRICT` introduite par #45/#49 — régression statique).
+- `_wipe_test_data()` supprime les tables walk-in (`cash_journal`/`payments`/
+  `queue_ticket_services`/`queue_tickets`) dans l'ordre FK-safe imposé par le pivot
+  walk-in exclusif (#148, migration `0017`) — régression statique.
 - Les trois classes de parcours portent toutes un `@pytest.mark.skipif` (skip propre).
 - `docs/strategie-de-tests.md` reflète #50 comme **livré** (invariant documentaire).
 """
 
 from __future__ import annotations
 
-import datetime
 import re
 from pathlib import Path
 
@@ -32,7 +31,6 @@ from .test_critical_journeys_e2e import (  # noqa: E402
     _PHONE_HAIRDRESSER_LOCAL,
     _PHONE_MANAGER_LOCAL,
     _TEST_JWT_SECRET,
-    _next_monday,
 )
 
 _SUSPICIOUS_SECRET_PATTERNS = re.compile(
@@ -41,23 +39,6 @@ _SUSPICIOUS_SECRET_PATTERNS = re.compile(
     r"|sk-[A-Za-z0-9]{20,}"
     r"|Bearer [A-Za-z0-9+/=]{20,}"
 )
-
-
-class TestNextMondayHelper:
-    """Garanties de déterminisme de `_next_monday()` — aucune I/O."""
-
-    def test_returns_a_monday(self) -> None:
-        assert _next_monday().weekday() == 0
-
-    def test_is_strictly_in_the_future(self) -> None:
-        assert _next_monday() > datetime.date.today()
-
-    def test_at_most_seven_days_ahead(self) -> None:
-        delta = (_next_monday() - datetime.date.today()).days
-        assert 1 <= delta <= 7
-
-    def test_stable_within_same_day(self) -> None:
-        assert _next_monday() == _next_monday()
 
 
 class TestPhonePrefixConsistency:
@@ -144,9 +125,13 @@ class TestJwtSecretPolicy:
 class TestFkSafeWipeOrder:
     """Régression statique : `_wipe_test_data()` doit supprimer les tables dans l'ordre FK-safe.
 
-    Depuis #45/#49, `notifications` et `campaigns` ont une FK `ON DELETE RESTRICT` vers
-    `appointments`/`salons`/`users`. Un ordre incorrect provoque une violation de contrainte
-    au nettoyage — erreur silencieuse dans CI si les données de test s'accumulent.
+    Depuis le pivot walk-in exclusif (#148, migration `0017`), le module Rendez-vous
+    et les notifications de RDV ont disparu **avec leurs tables** — les seules
+    contraintes FK `RESTRICT` pertinentes ici portent sur la chaîne walk-in
+    (`cash_journal` → `payments` → `queue_ticket_services` → `queue_tickets` →
+    `customer_profiles`) et sur les comptes (`salons` → `users`). Un ordre incorrect
+    provoque une violation de contrainte au nettoyage — erreur silencieuse en CI si
+    les données de test s'accumulent.
     """
 
     def _delete_order(self) -> list[str]:
@@ -162,21 +147,6 @@ class TestFkSafeWipeOrder:
         body = match.group(0)
         return re.findall(r"DELETE FROM (\w+)", body)
 
-    def test_notifications_before_appointments(self) -> None:
-        order = self._delete_order()
-        assert "notifications" in order, "notifications manquant dans _wipe_test_data()"
-        assert "appointments" in order, "appointments manquant dans _wipe_test_data()"
-        assert order.index("notifications") < order.index("appointments"), (
-            "notifications doit être supprimé AVANT appointments (FK RESTRICT depuis #45)."
-        )
-
-    def test_campaigns_before_appointments(self) -> None:
-        order = self._delete_order()
-        assert "campaigns" in order, "campaigns manquant dans _wipe_test_data()"
-        assert order.index("campaigns") < order.index("appointments"), (
-            "campaigns doit être supprimé AVANT appointments (FK RESTRICT depuis #49)."
-        )
-
     def test_cash_journal_before_payments(self) -> None:
         order = self._delete_order()
         assert "cash_journal" in order, "cash_journal manquant dans _wipe_test_data()"
@@ -185,10 +155,30 @@ class TestFkSafeWipeOrder:
             "cash_journal doit être supprimé AVANT payments (FK sur transaction_id)."
         )
 
-    def test_payments_before_appointments(self) -> None:
+    def test_payments_before_queue_tickets(self) -> None:
         order = self._delete_order()
-        assert order.index("payments") < order.index("appointments"), (
-            "payments doit être supprimé AVANT appointments."
+        assert "queue_tickets" in order, "queue_tickets manquant dans _wipe_test_data()"
+        assert order.index("payments") < order.index("queue_tickets"), (
+            "payments doit être supprimé AVANT queue_tickets (FK queue_ticket_id)."
+        )
+
+    def test_queue_ticket_services_before_queue_tickets(self) -> None:
+        order = self._delete_order()
+        assert "queue_ticket_services" in order, (
+            "queue_ticket_services manquant dans _wipe_test_data()"
+        )
+        assert order.index("queue_ticket_services") < order.index("queue_tickets"), (
+            "queue_ticket_services doit être supprimé AVANT queue_tickets (jonction)."
+        )
+
+    def test_queue_tickets_before_customer_profiles(self) -> None:
+        order = self._delete_order()
+        assert "customer_profiles" in order, (
+            "customer_profiles manquant dans _wipe_test_data()"
+        )
+        assert order.index("queue_tickets") < order.index("customer_profiles"), (
+            "queue_tickets doit être supprimé AVANT customer_profiles "
+            "(FK RESTRICT customer_profile_id)."
         )
 
     def test_salons_before_users(self) -> None:
@@ -210,8 +200,8 @@ class TestSkipMarkersPresent:
     def test_all_journey_classes_have_skipif(self) -> None:
         source = _JOURNEYS_FILE.read_text()
         journey_classes = [
-            "TestBookingJourneyE2E",
-            "TestManagerAppointmentJourneyE2E",
+            "TestQueueJourneyE2E",
+            "TestManagerQueueJourneyE2E",
             "TestCheckoutJourneyE2E",
         ]
         for cls in journey_classes:

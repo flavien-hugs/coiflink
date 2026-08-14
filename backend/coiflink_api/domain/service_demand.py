@@ -9,25 +9,24 @@ décroissant) sur les mêmes prestations agrégées. L'isoler ici (sans I/O) le 
 testable sans base et garantit un ordre **stable**, indépendant de l'ordre SQL.
 
 Conformément à l'hexagonal (ADR-0008), le module ne connaît ni FastAPI ni
-SQLAlchemy : l'adapter sortant (`adapters/outbound/persistence/appointment_repository
+SQLAlchemy : l'adapter sortant (`adapters/outbound/persistence/queue_ticket_repository
 .py::demand_by_service`) fait l'**agrégat en base** (`GROUP BY service_id`, `COUNT`
-volume, `SUM(price_at_booking)` revenu) et renvoie des `ServiceDemand` **non
-triés** ; le cas d'usage (`application/service_demand.py`) les ordonne via
+volume, `SUM(services.price)` revenu **courant**) et renvoie des `ServiceDemand`
+**non triés** ; le cas d'usage (`application/service_demand.py`) les ordonne via
 `rank_service_demand` ; l'adapter entrant (`adapters/inbound/stats.py`) projette le
 résultat en JSON.
 
-**Volume & revenu = RDV `COMPLETED` uniquement** (réalisés), en cohérence avec
-l'invariant §8.1 (`REVENUE_STATUSES == (COMPLETED,)`) et avec #31 (mêmes
-« occurrences réalisées » + « somme des prix figés » à l'échelle d'une fiche). Un
-RDV `PENDING`/`CONFIRMED`/`CANCELLED`/`NO_SHOW` ne pèse **ni** en volume **ni** en
-revenu — « annulés exclus » (§8.1) est vrai **par construction** du filtre de
-statut décidé côté serveur (le cas d'usage impose `REVENUE_STATUSES`).
+**Volume & revenu = tickets `done` uniquement** (réalisés), en cohérence avec
+l'invariant §8.1. Un ticket `waiting`/`called`/`in_progress`/`expired` ne pèse
+**ni** en volume **ni** en revenu — « non réalisés exclus » (§8.1) est vrai **par
+construction** du filtre de statut décidé côté serveur.
 
-**Revenu = somme des `price_at_booking`** (prix **figés** à la réservation, jamais
-le tarif courant), devise **XOF** (§9.6), `Decimal` de bout en bout
-(`NUMERIC(12,2)`, sérialisé en **chaîne** décimale, jamais de flottant) — même base
-de « revenu par prestation » que #31. Cette grandeur (valeur des prestations
-réalisées) peut **différer** du CA du salon (#40, dérivé du journal de caisse net).
+**Revenu = somme des `services.price` courants** (pivot walk-in : `queue_ticket_
+services` ne fige aucun prix, contrairement à l'ancien `appointment_services
+.price_at_booking` — décision « résolution en direct » #148), devise **XOF**
+(§9.6), `Decimal` de bout en bout (`NUMERIC(12,2)`, sérialisé en **chaîne**
+décimale, jamais de flottant). Cette grandeur (valeur des prestations réalisées)
+peut **différer** du CA du salon (#40, dérivé du journal de caisse net).
 """
 
 from __future__ import annotations

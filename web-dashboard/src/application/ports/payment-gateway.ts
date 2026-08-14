@@ -16,7 +16,8 @@ import type {
 // spécifique (le montant ne correspond pas à la prestation liée, §5.3/§8.2),
 // `reference-not-found` = `422` (prestation/RDV introuvable pour ce salon, sans
 // oracle §11.2), `forbidden` = `403` (rôle ≠ gérant ou salon hors périmètre),
-// `unauthenticated` = `401`, `unavailable` = `503`/panne réseau.
+// `unauthenticated` = `401`, `already-paid` = `409` (ticket déjà couvert par un
+// paiement valide, #166), `unavailable` = `503`/panne réseau.
 export type RecordPaymentResult =
   | { ok: true; payment: Payment }
   | {
@@ -27,6 +28,7 @@ export type RecordPaymentResult =
         | "reference-not-found"
         | "forbidden"
         | "unauthenticated"
+        | "already-paid"
         | "unavailable";
     };
 

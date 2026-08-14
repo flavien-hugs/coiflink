@@ -34,7 +34,7 @@ from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenSe
 from coiflink_api.application.authorization import AccessPolicy
 from coiflink_api.application.customers import CreateCustomer, CustomerCommand
 from coiflink_api.domain.credentials import UserCredentials
-from coiflink_api.domain.enums import AppointmentStatus, Role, UserStatus
+from coiflink_api.domain.enums import Role, UserStatus
 from coiflink_api.domain.visit import CustomerVisit, VisitService
 from coiflink_api.main import app
 
@@ -63,7 +63,7 @@ _OTHER_SALON_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
 _MANAGER_TOKEN = make_access_token(_MANAGER_ID, Role.MANAGER.value)
 
 _SERVICE_ID = uuid.UUID("dddddddd-0000-0000-0000-000000000001")
-_APT_ID = uuid.UUID("eeeeeeee-0000-0000-0000-000000000001")
+_TICKET_ID = uuid.UUID("eeeeeeee-0000-0000-0000-000000000001")
 
 
 # ---------------------------------------------------------------------------
@@ -90,14 +90,13 @@ def _make_completed_visit() -> CustomerVisit:
     svc = VisitService(
         service_id=_SERVICE_ID,
         name="Coupe homme",
-        price_at_booking=decimal.Decimal("5000.00"),
+        price=decimal.Decimal("5000.00"),
     )
     return CustomerVisit(
-        appointment_id=_APT_ID,
-        date=datetime.date(2026, 7, 20),
-        start_time=datetime.time(9, 0, 0),
-        end_time=datetime.time(10, 0, 0),
-        status=AppointmentStatus.COMPLETED.value,
+        queue_ticket_id=_TICKET_ID,
+        issued_date=datetime.date(2026, 7, 20),
+        completed_at=datetime.datetime(2026, 7, 20, 9, 0, 0),
+        status="done",
         services=(svc,),
         total_amount=decimal.Decimal("5000.00"),
     )

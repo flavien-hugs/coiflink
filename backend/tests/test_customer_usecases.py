@@ -36,7 +36,6 @@ from coiflink_api.application.customers import (
 )
 from coiflink_api.domain.audit import AuditAction, AuditEntry, ENTITY_TYPE_CUSTOMER
 from coiflink_api.domain.customer import CustomerFilter
-from coiflink_api.domain.enums import AppointmentStatus
 from coiflink_api.domain.errors import (
     CustomerAlreadyExists,
     CustomerNotFound,
@@ -424,13 +423,13 @@ class TestListSalonCustomers:
 
 _SERVICE_ID_A = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _SERVICE_ID_B = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
-_APT_ID_1 = uuid.UUID("11111111-1111-0000-0000-000000000001")
-_APT_ID_2 = uuid.UUID("22222222-2222-0000-0000-000000000002")
+_TICKET_ID_1 = uuid.UUID("11111111-1111-0000-0000-000000000001")
+_TICKET_ID_2 = uuid.UUID("22222222-2222-0000-0000-000000000002")
 
 _DATE_RECENT = datetime.date(2026, 7, 20)
 _DATE_OLDER = datetime.date(2026, 6, 15)
-_TIME_09 = datetime.time(9, 0, 0)
-_TIME_10 = datetime.time(10, 0, 0)
+_COMPLETED_AT_RECENT = datetime.datetime(2026, 7, 20, 9, 0, 0)
+_COMPLETED_AT_OLDER = datetime.datetime(2026, 6, 15, 9, 0, 0)
 
 _PAYMENT_ID_1 = uuid.UUID("55555555-5555-0000-0000-000000000005")
 _PAYMENT_ID_2 = uuid.UUID("66666666-6666-0000-0000-000000000006")
@@ -438,37 +437,36 @@ _PAYMENT_CREATED_AT = datetime.datetime(2026, 7, 20, 9, 30, tzinfo=datetime.time
 
 
 def _make_completed_visit(
-    appointment_id: uuid.UUID,
+    queue_ticket_id: uuid.UUID,
     date: datetime.date = _DATE_RECENT,
     price: str = "5000.00",
 ) -> CustomerVisit:
     svc = VisitService(
         service_id=_SERVICE_ID_A,
         name="Coupe homme",
-        price_at_booking=decimal.Decimal(price),
+        price=decimal.Decimal(price),
     )
+    completed_at = datetime.datetime.combine(date, datetime.time(9, 0, 0))
     return CustomerVisit(
-        appointment_id=appointment_id,
-        date=date,
-        start_time=_TIME_09,
-        end_time=_TIME_10,
-        status=AppointmentStatus.COMPLETED.value,
+        queue_ticket_id=queue_ticket_id,
+        issued_date=date,
+        completed_at=completed_at,
+        status="done",
         services=(svc,),
         total_amount=decimal.Decimal(price),
     )
 
 
-def _make_visit_with_status(status: str, appointment_id: uuid.UUID) -> CustomerVisit:
+def _make_visit_with_status(status: str, queue_ticket_id: uuid.UUID) -> CustomerVisit:
     svc = VisitService(
         service_id=_SERVICE_ID_A,
         name="Prestation",
-        price_at_booking=decimal.Decimal("1000.00"),
+        price=decimal.Decimal("1000.00"),
     )
     return CustomerVisit(
-        appointment_id=appointment_id,
-        date=_DATE_RECENT,
-        start_time=_TIME_09,
-        end_time=_TIME_10,
+        queue_ticket_id=queue_ticket_id,
+        issued_date=_DATE_RECENT,
+        completed_at=_COMPLETED_AT_RECENT,
         status=status,
         services=(svc,),
         total_amount=decimal.Decimal("1000.00"),
@@ -511,32 +509,32 @@ class TestGetCustomerVisitHistory:
         history = GetCustomerVisitHistory(repo).execute(_SALON_ID, customer.id)
         assert history.total_amount == decimal.Decimal("0")
 
-    def test_only_completed_visits_returned(self) -> None:
-        """Seules les visites `COMPLETED` apparaissent — pas PENDING/CONFIRMED/CANCELLED/NO_SHOW."""
+    def test_only_done_visits_returned(self) -> None:
+        """Seules les visites `done` apparaissent — pas waiting/called/in_progress/expired."""
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
-        completed = _make_completed_visit(_APT_ID_1)
-        pending = _make_visit_with_status(AppointmentStatus.PENDING.value, _APT_ID_2)
+        completed = _make_completed_visit(_TICKET_ID_1)
+        waiting = _make_visit_with_status("waiting", _TICKET_ID_2)
         # Le fake reproduit le filtre du dépôt SQL sur `statuses`.
-        repo.set_visits(customer.id, (completed, pending))
+        repo.set_visits(customer.id, (completed, waiting))
         history = GetCustomerVisitHistory(repo).execute(_SALON_ID, customer.id)
-        ids = [v.appointment_id for v in history.visits]
-        assert _APT_ID_1 in ids
-        assert _APT_ID_2 not in ids
+        ids = [v.queue_ticket_id for v in history.visits]
+        assert _TICKET_ID_1 in ids
+        assert _TICKET_ID_2 not in ids
 
-    def test_cancelled_visit_excluded(self) -> None:
+    def test_expired_visit_excluded(self) -> None:
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
-        cancelled = _make_visit_with_status(AppointmentStatus.CANCELLED.value, _APT_ID_2)
-        repo.set_visits(customer.id, (cancelled,))
+        expired = _make_visit_with_status("expired", _TICKET_ID_2)
+        repo.set_visits(customer.id, (expired,))
         history = GetCustomerVisitHistory(repo).execute(_SALON_ID, customer.id)
         assert history.visits == ()
 
-    def test_no_show_visit_excluded(self) -> None:
+    def test_in_progress_visit_excluded(self) -> None:
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
-        no_show = _make_visit_with_status(AppointmentStatus.NO_SHOW.value, _APT_ID_2)
-        repo.set_visits(customer.id, (no_show,))
+        in_progress = _make_visit_with_status("in_progress", _TICKET_ID_2)
+        repo.set_visits(customer.id, (in_progress,))
         history = GetCustomerVisitHistory(repo).execute(_SALON_ID, customer.id)
         assert history.visits == ()
 
@@ -549,21 +547,21 @@ class TestGetCustomerVisitHistory:
         _, _, statuses = repo.last_visits_call
         assert statuses == HISTORY_STATUSES
 
-    def test_total_visits_matches_number_of_completed(self) -> None:
+    def test_total_visits_matches_number_of_done(self) -> None:
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
-        visit1 = _make_completed_visit(_APT_ID_1, date=_DATE_RECENT, price="5000.00")
-        visit2 = _make_completed_visit(_APT_ID_2, date=_DATE_OLDER, price="2000.00")
+        visit1 = _make_completed_visit(_TICKET_ID_1, date=_DATE_RECENT, price="5000.00")
+        visit2 = _make_completed_visit(_TICKET_ID_2, date=_DATE_OLDER, price="2000.00")
         repo.set_visits(customer.id, (visit1, visit2))
         history = GetCustomerVisitHistory(repo).execute(_SALON_ID, customer.id)
         assert history.total_visits == 2
 
-    def test_total_amount_is_sum_of_price_at_booking(self) -> None:
-        """Le montant est la somme des `price_at_booking` figés, pas le tarif courant."""
+    def test_total_amount_is_sum_of_price(self) -> None:
+        """Le montant est la somme des `price` courants, résolution en direct (#148)."""
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
-        visit1 = _make_completed_visit(_APT_ID_1, price="5000.00")
-        visit2 = _make_completed_visit(_APT_ID_2, price="2000.00")
+        visit1 = _make_completed_visit(_TICKET_ID_1, price="5000.00")
+        visit2 = _make_completed_visit(_TICKET_ID_2, price="2000.00")
         repo.set_visits(customer.id, (visit1, visit2))
         history = GetCustomerVisitHistory(repo).execute(_SALON_ID, customer.id)
         assert history.total_amount == decimal.Decimal("7000.00")
@@ -571,13 +569,12 @@ class TestGetCustomerVisitHistory:
     def test_last_visit_at_is_most_recent_visit_datetime(self) -> None:
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
-        visit_recent = _make_completed_visit(_APT_ID_1, date=_DATE_RECENT)
-        visit_older = _make_completed_visit(_APT_ID_2, date=_DATE_OLDER)
-        # Most-recent-first order (as returned by SQL ORDER BY date DESC).
+        visit_recent = _make_completed_visit(_TICKET_ID_1, date=_DATE_RECENT)
+        visit_older = _make_completed_visit(_TICKET_ID_2, date=_DATE_OLDER)
+        # Most-recent-first order (as returned by SQL ORDER BY issued_date DESC).
         repo.set_visits(customer.id, (visit_recent, visit_older))
         history = GetCustomerVisitHistory(repo).execute(_SALON_ID, customer.id)
-        expected = datetime.datetime.combine(_DATE_RECENT, _TIME_09)
-        assert history.last_visit_at == expected
+        assert history.last_visit_at == _COMPLETED_AT_RECENT
 
     def test_repository_call_uses_correct_salon_and_customer_ids(self) -> None:
         """Défense en profondeur §11.2 : `salon_id` est transmis au dépôt."""
@@ -678,31 +675,31 @@ class TestGetCustomerPaymentHistory:
 
 
 _SERVICE_ID_C = uuid.UUID("cccccccc-cccc-0000-0000-000000000003")
-_APT_ID_3 = uuid.UUID("33333333-3333-0000-0000-000000000003")
-_APT_ID_4 = uuid.UUID("44444444-4444-0000-0000-000000000004")
+_TICKET_ID_3 = uuid.UUID("33333333-3333-0000-0000-000000000003")
+_TICKET_ID_4 = uuid.UUID("44444444-4444-0000-0000-000000000004")
 
 
 def _make_completed_visit_with_services(
-    appointment_id: uuid.UUID,
+    queue_ticket_id: uuid.UUID,
     services_data: list[tuple[uuid.UUID, str, str]],
     date: datetime.date = _DATE_RECENT,
 ) -> CustomerVisit:
-    """Crée une visite COMPLETED avec les prestations (service_id, nom, prix)."""
+    """Crée une visite (ticket `done`) avec les prestations (service_id, nom, prix)."""
     services = tuple(
         VisitService(
             service_id=sid,
             name=name,
-            price_at_booking=decimal.Decimal(price),
+            price=decimal.Decimal(price),
         )
         for sid, name, price in services_data
     )
     total = sum((decimal.Decimal(p) for _, _, p in services_data), decimal.Decimal("0"))
+    completed_at = datetime.datetime.combine(date, datetime.time(9, 0, 0))
     return CustomerVisit(
-        appointment_id=appointment_id,
-        date=date,
-        start_time=_TIME_09,
-        end_time=_TIME_10,
-        status=AppointmentStatus.COMPLETED.value,
+        queue_ticket_id=queue_ticket_id,
+        issued_date=date,
+        completed_at=completed_at,
+        status="done",
         services=services,
         total_amount=total,
     )
@@ -730,7 +727,7 @@ class TestGetCustomerServiceStats:
             GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
 
     def test_walk_in_returns_empty_services(self) -> None:
-        """Fiche walk-in (aucune visite COMPLETED) → classement vide (comportement normal)."""
+        """Fiche walk-in (aucune visite `done`) → classement vide (comportement normal)."""
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
         stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
@@ -755,7 +752,7 @@ class TestGetCustomerServiceStats:
         assert stats.currency == "XOF"
 
     def test_statuses_passed_to_repository_is_history_statuses(self) -> None:
-        """Le cas d'usage passe exactement `HISTORY_STATUSES` au dépôt (filtre COMPLETED)."""
+        """Le cas d'usage passe exactement `HISTORY_STATUSES` au dépôt (filtre `done`)."""
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
         GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
@@ -780,41 +777,41 @@ class TestGetCustomerServiceStats:
             GetCustomerServiceStats(repo).execute(_SALON_ID, uuid.uuid4())
         assert repo.last_visits_call is None
 
-    def test_only_completed_visits_counted(self) -> None:
-        """Seules les visites `COMPLETED` sont comptabilisées — PENDING/CANCELLED exclus."""
+    def test_only_done_visits_counted(self) -> None:
+        """Seules les visites `done` sont comptabilisées — waiting/expired exclus."""
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
         completed = _make_completed_visit_with_services(
-            _APT_ID_1, [(_SERVICE_ID_A, "Coupe homme", "5000.00")]
+            _TICKET_ID_1, [(_SERVICE_ID_A, "Coupe homme", "5000.00")]
         )
-        pending = _make_visit_with_status(AppointmentStatus.PENDING.value, _APT_ID_2)
-        cancelled = _make_visit_with_status(AppointmentStatus.CANCELLED.value, _APT_ID_3)
-        repo.set_visits(customer.id, (completed, pending, cancelled))
+        waiting = _make_visit_with_status("waiting", _TICKET_ID_2)
+        expired = _make_visit_with_status("expired", _TICKET_ID_3)
+        repo.set_visits(customer.id, (completed, waiting, expired))
         stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
-        # Seul le COMPLETED compte : un service, count=1.
+        # Seul le `done` compte : un service, count=1.
         assert len(stats.services) == 1
         assert stats.services[0].count == 1
         assert stats.total_visits == 1
         assert stats.total_services == 1
 
-    def test_no_show_visit_excluded(self) -> None:
+    def test_in_progress_visit_excluded(self) -> None:
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
-        no_show = _make_visit_with_status(AppointmentStatus.NO_SHOW.value, _APT_ID_2)
-        repo.set_visits(customer.id, (no_show,))
+        in_progress = _make_visit_with_status("in_progress", _TICKET_ID_2)
+        repo.set_visits(customer.id, (in_progress,))
         stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
         assert stats.services == ()
         assert stats.total_visits == 0
 
     def test_multiple_visits_aggregated(self) -> None:
-        """Plusieurs visites COMPLETED → services agrégés par fréquence."""
+        """Plusieurs visites `done` → services agrégés par fréquence."""
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
         v1 = _make_completed_visit_with_services(
-            _APT_ID_1, [(_SERVICE_ID_A, "Coupe homme", "5000.00")]
+            _TICKET_ID_1, [(_SERVICE_ID_A, "Coupe homme", "5000.00")]
         )
         v2 = _make_completed_visit_with_services(
-            _APT_ID_2,
+            _TICKET_ID_2,
             [(_SERVICE_ID_A, "Coupe homme", "5000.00"), (_SERVICE_ID_B, "Barbe", "2000.00")],
             date=_DATE_OLDER,
         )
@@ -828,15 +825,15 @@ class TestGetCustomerServiceStats:
         assert stats.services[1].service_id == _SERVICE_ID_B
         assert stats.services[1].count == 1
 
-    def test_total_amount_is_sum_of_price_at_booking(self) -> None:
-        """Montants = somme des `price_at_booking` figés, pas le tarif courant."""
+    def test_total_amount_is_sum_of_price(self) -> None:
+        """Montants = somme des `price` courants, résolution en direct (#148)."""
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
         v1 = _make_completed_visit_with_services(
-            _APT_ID_1, [(_SERVICE_ID_A, "Coupe homme", "5000.00")]
+            _TICKET_ID_1, [(_SERVICE_ID_A, "Coupe homme", "5000.00")]
         )
         v2 = _make_completed_visit_with_services(
-            _APT_ID_2, [(_SERVICE_ID_A, "Coupe homme", "6000.00")]
+            _TICKET_ID_2, [(_SERVICE_ID_A, "Coupe homme", "6000.00")]
         )
         repo.set_visits(customer.id, (v1, v2))
         stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)
@@ -846,7 +843,7 @@ class TestGetCustomerServiceStats:
         repo = FakeCustomerRepository()
         customer = self._create_customer(repo, _SALON_ID)
         visit = _make_completed_visit_with_services(
-            _APT_ID_1, [(_SERVICE_ID_A, "Coupe", "5000.00")]
+            _TICKET_ID_1, [(_SERVICE_ID_A, "Coupe", "5000.00")]
         )
         repo.set_visits(customer.id, (visit,))
         stats = GetCustomerServiceStats(repo).execute(_SALON_ID, customer.id)

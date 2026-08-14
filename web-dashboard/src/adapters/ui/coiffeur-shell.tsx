@@ -1,8 +1,9 @@
 // Shell de la zone coiffeur — adapter UI (hexagonal, ADR-0008), US-3.6 #27.
-// Server Component de présentation : navigation **réduite** (le coiffeur ne gère
-// rien, il **consulte** — PRD §5), une seule entrée « Mon planning ». Réutilise les
-// surfaces visuelles du dashboard (`coiflink-sidebar-surface`/`coiflink-page-surface`)
-// et le bouton de déconnexion. Aucune logique métier ni appel réseau ici.
+// Server Component de présentation : navigation **réduite**, une seule entrée
+// « Mes tickets » (modèle walk-in exclusif — le RDV a été retiré côté backend).
+// Réutilise les surfaces visuelles du dashboard (`coiflink-sidebar-surface`/
+// `coiflink-page-surface`) et le bouton de déconnexion. Aucune logique métier
+// ni appel réseau ici.
 
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -46,11 +47,11 @@ export function CoiffeurShell({ userName, children }: CoiffeurShellProps) {
             className="min-h-0 flex-1 overflow-y-auto px-3 py-5"
           >
             <Link
-              href="/coiffeur/planning"
+              href="/coiffeur/tickets"
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/90 transition hover:bg-accent/15 hover:text-sidebar-foreground"
             >
-              <NavSectionIcon sectionKey="planning" className="shrink-0" />
-              Mon planning
+              <NavSectionIcon sectionKey="file-attente" className="shrink-0" />
+              Mes tickets
             </Link>
           </nav>
 

@@ -212,28 +212,28 @@ class CustomerPageResponse(BaseModel):
 
 
 class VisitServiceResponse(BaseModel):
-    """Prestation d'une visite : libellé + prix figé (US-4.2, #29).
+    """Prestation d'une visite : libellé + prix courant (US-4.2, #29).
 
-    `price_at_booking` est le prix **figé à la réservation** (`NUMERIC(12,2)`
-    sérialisé en chaîne décimale, jamais de flottant), jamais le tarif courant.
+    `price` est le prix **courant** (`NUMERIC(12,2)` sérialisé en chaîne
+    décimale, jamais de flottant) — résolution en direct, `queue_ticket_services`
+    ne fige aucun prix (décision #148).
     """
 
     service_id: uuid.UUID
     name: str
-    price_at_booking: decimal.Decimal
+    price: decimal.Decimal
 
 
 class CustomerVisitResponse(BaseModel):
-    """Une visite terminée : date, créneau, prestations nommées et montant total.
+    """Une visite terminée : jour, horodatage de clôture, prestations et montant total.
 
-    **`client_id`/`user_id` ne sont pas exposés** (anti-oracle ADR-0026) : seule
-    l'identité du RDV (`appointment_id`) et ses données de visite sont renvoyées.
+    **`client_id`/`customer_profile_id` ne sont pas exposés** (§11.1/§11.3) : seule
+    l'identité du ticket (`queue_ticket_id`) et ses données de visite sont renvoyées.
     """
 
-    appointment_id: uuid.UUID
-    date: datetime.date
-    start_time: datetime.time
-    end_time: datetime.time
+    queue_ticket_id: uuid.UUID
+    issued_date: datetime.date
+    completed_at: datetime.datetime
     status: str
     services: list[VisitServiceResponse]
     total_amount: decimal.Decimal
@@ -243,10 +243,10 @@ class CustomerVisitHistoryResponse(BaseModel):
     """Historique des visites d'une fiche + résumé **dérivé en lecture** (US-4.2, #29).
 
     `total_visits`/`last_visit_at`/`total_amount` sont calculés à la volée depuis
-    les visites `COMPLETED` (jamais lus des colonnes dénormalisées de
-    `customer_profiles`). Fiche walk-in ou sans visite → `items: []`,
-    `total_visits: 0`, `last_visit_at: null`, `total_amount: "0"` (comportement
-    normal, pas une erreur). Devise **XOF** (§9.6).
+    les visites (tickets `done`, jamais lus des colonnes dénormalisées de
+    `customer_profiles`). Fiche sans visite → `items: []`, `total_visits: 0`,
+    `last_visit_at: null`, `total_amount: "0"` (comportement normal, pas une
+    erreur). Devise **XOF** (§9.6).
     """
 
     customer_id: uuid.UUID
@@ -258,13 +258,13 @@ class CustomerVisitHistoryResponse(BaseModel):
 
 
 class CustomerPaymentResponse(BaseModel):
-    """Un paiement du compte lié à une fiche (fiche client).
+    """Un paiement lié à un ticket de la fiche (fiche client).
 
     `status` reflète l'état réel du paiement (`PENDING`/`VALIDATED`/
     `CANCELLED`/`ADJUSTED`, §9.6) — tous statuts sont renvoyés, c'est
-    justement l'utilité de cette colonne. **`client_id`/`user_id`/
-    `recorded_by`/`reference` ne sont pas exposés** (anti-oracle ADR-0026,
-    miroir `CustomerVisitResponse`).
+    justement l'utilité de cette colonne. **`client_id`/`queue_ticket_id`/
+    `recorded_by`/`reference` ne sont pas exposés** (§11.1/§11.3, miroir
+    `CustomerVisitResponse`).
     """
 
     payment_id: uuid.UUID
@@ -277,10 +277,9 @@ class CustomerPaymentResponse(BaseModel):
 class CustomerPaymentHistoryResponse(BaseModel):
     """Historique des paiements d'une fiche (fiche client, miroir #29).
 
-    `items` est trié **date décroissante** (plus récent d'abord). Fiche
-    walk-in ou sans paiement → `items: []` (comportement normal, pas une
-    erreur). **`user_id`/`client_id` ne sont jamais exposés** (anti-oracle
-    ADR-0026).
+    `items` est trié **date décroissante** (plus récent d'abord). Fiche sans
+    paiement → `items: []` (comportement normal, pas une erreur).
+    **`queue_ticket_id`/`client_id` ne sont jamais exposés** (§11.1/§11.3).
     """
 
     customer_id: uuid.UUID
@@ -290,10 +289,10 @@ class CustomerPaymentHistoryResponse(BaseModel):
 class ServiceFrequencyResponse(BaseModel):
     """Une prestation dans le classement des préférences d'un client (US-4.3, #31).
 
-    `count` = nombre d'occurrences **réalisées** (`COMPLETED`) ; `total_amount` =
-    somme des `price_at_booking` de cette prestation (prix **figés**, `NUMERIC(12,2)`
-    sérialisé en chaîne décimale, jamais de flottant). `name` est le libellé
-    **courant** (résoluble même si la prestation est soft-deletée).
+    `count` = nombre d'occurrences **réalisées** (tickets `done`) ; `total_amount`
+    = somme des `price` **courants** de cette prestation (`NUMERIC(12,2)` sérialisé
+    en chaîne décimale, jamais de flottant, résolution en direct #148). `name` est
+    le libellé **courant** (résoluble même si la prestation est soft-deletée).
     """
 
     service_id: uuid.UUID
@@ -306,11 +305,11 @@ class CustomerServiceStatsResponse(BaseModel):
     """Prestations préférées d'une fiche : classement **dérivé en lecture** (US-4.3, #31).
 
     Les prestations sont classées de la **plus fréquente à la moins fréquente**.
-    `total_visits`/`total_services` sont dérivés à la volée des visites `COMPLETED`
-    (jamais persistés). Fiche walk-in ou sans visite → `services: []`,
+    `total_visits`/`total_services` sont dérivés à la volée des visites (tickets
+    `done`, jamais persistés). Fiche sans visite → `services: []`,
     `total_visits: 0`, `total_services: 0` (comportement **normal**, pas une
-    erreur). **`user_id`/`client_id` ne sont jamais exposés** (anti-oracle
-    ADR-0026). Devise **XOF** (§9.6).
+    erreur). **`customer_profile_id`/`client_id` ne sont jamais exposés**
+    (§11.1/§11.3). Devise **XOF** (§9.6).
     """
 
     customer_id: uuid.UUID
@@ -361,16 +360,15 @@ def _customer_response(customer: Customer) -> CustomerResponse:
 
 def _visit_response(visit: CustomerVisit) -> CustomerVisitResponse:
     return CustomerVisitResponse(
-        appointment_id=visit.appointment_id,
-        date=visit.date,
-        start_time=visit.start_time,
-        end_time=visit.end_time,
+        queue_ticket_id=visit.queue_ticket_id,
+        issued_date=visit.issued_date,
+        completed_at=visit.completed_at,
         status=visit.status,
         services=[
             VisitServiceResponse(
                 service_id=service.service_id,
                 name=service.name,
-                price_at_booking=service.price_at_booking,
+                price=service.price,
             )
             for service in visit.services
         ],
@@ -685,7 +683,7 @@ def update_customer_note(
 
 
 @router.get(
-    "/{salon_id}/customers/{customer_id}/appointments",
+    "/{salon_id}/customers/{customer_id}/visits",
     response_model=CustomerVisitHistoryResponse,
     summary="Historique des visites terminées d'un client (prestations + montants)",
     responses={
@@ -703,14 +701,14 @@ def get_customer_history(
         Principal, Depends(require_permission(Permission.CUSTOMER_MANAGE))
     ],
 ) -> CustomerVisitHistoryResponse:
-    """Historique des visites `COMPLETED` de la fiche `(salon_id, customer_id)` (US-4.2, #29).
+    """Historique des visites (tickets `done`) de la fiche `(salon_id, customer_id)` (US-4.2, #29).
 
     Lecture **fiche-scopée** : la fiche est résolue dans le salon (`404` **après**
-    portée si hors salon/inconnue, sans oracle) puis ses RDV terminés liés sont
-    lus (lien `user_id` encapsulé côté dépôt, `salon_id` refiltré en SQL). Le
-    résumé (`total_visits`, `last_visit_at`, `total_amount`) est **dérivé en
-    lecture**. Une fiche walk-in ou sans visite réalisée → `items: []` (comportement
-    normal). Aucune écriture, aucun audit — ni `user_id`/`client_id` exposés.
+    portée si hors salon/inconnue, sans oracle) puis ses tickets terminés liés sont
+    lus (lien direct `customer_profile_id`, `salon_id` refiltré en SQL). Le résumé
+    (`total_visits`, `last_visit_at`, `total_amount`) est **dérivé en lecture**.
+    Une fiche sans visite réalisée → `items: []` (comportement normal). Aucune
+    écriture, aucun audit — ni `customer_profile_id`/`client_id` exposés.
     """
 
     try:
@@ -782,13 +780,13 @@ def get_customer_stats(
 ) -> CustomerServiceStatsResponse:
     """Prestations préférées de la fiche `(salon_id, customer_id)` (US-4.3, #31).
 
-    Lecture **fiche-scopée** dérivée des visites `COMPLETED` (réutilise la brique
-    #29, **aucun nouvel accès base**) : la fiche est résolue dans le salon (`404`
-    **après** portée si hors salon/inconnue, sans oracle) puis ses visites
+    Lecture **fiche-scopée** dérivée des visites (tickets `done`, réutilise la
+    brique #29, **aucun nouvel accès base**) : la fiche est résolue dans le salon
+    (`404` **après** portée si hors salon/inconnue, sans oracle) puis ses visites
     terminées liées sont agrégées **par `service_id`** et classées de la plus
-    fréquente à la moins fréquente. Une fiche walk-in ou sans visite réalisée →
-    `services: []` (comportement normal). Montants **figés** (`price_at_booking`,
-    XOF). Aucune écriture, aucun audit — ni `user_id`/`client_id` exposés.
+    fréquente à la moins fréquente. Une fiche sans visite réalisée → `services: []`
+    (comportement normal). Montants **courants** (résolution en direct, XOF).
+    Aucune écriture, aucun audit — ni `customer_profile_id`/`client_id` exposés.
     """
 
     try:

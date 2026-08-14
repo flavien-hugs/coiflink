@@ -13,7 +13,7 @@ Couvre :
 - `total` cohérent sous filtre (différent de la taille de la page) ;
 - `total` sans filtre ;
 - filtre sans correspondance → page vide + total = 0 ;
-- tri déterministe `appointment_date DESC, start_time DESC, appointment_id DESC`
+- tri déterministe `issued_date DESC, ticket_number DESC, queue_ticket_id DESC`
   (plus récent d'abord) ;
 - `ListCashDiscrepancies` ne déclenche **aucune** écriture ni audit ;
 - résolution `client_name` transmise depuis le dépôt.
@@ -41,8 +41,8 @@ _DATE_A = datetime.date(2026, 3, 1)    # plus ancien
 _DATE_B = datetime.date(2026, 3, 15)   # intermédiaire
 _DATE_C = datetime.date(2026, 3, 31)   # plus récent
 
-_TIME_EARLY = datetime.time(8, 0)
-_TIME_LATE = datetime.time(14, 0)
+_TICKET_EARLY = 3
+_TICKET_LATE = 14
 
 _NO_FILTER = validate_discrepancy_filter()
 
@@ -54,20 +54,23 @@ _NO_FILTER = validate_discrepancy_filter()
 
 def _make_discrepancy(
     *,
-    appointment_id: uuid.UUID | None = None,
+    queue_ticket_id: uuid.UUID | None = None,
     salon_id: uuid.UUID = _SALON_ID,
-    appointment_date: datetime.date = _DATE_B,
-    start_time: datetime.time = _TIME_EARLY,
-    client_id: uuid.UUID | None = None,
+    issued_date: datetime.date = _DATE_B,
+    ticket_number: int = _TICKET_EARLY,
+    customer_profile_id: uuid.UUID | None = None,
     expected_amount: decimal.Decimal = decimal.Decimal("5000.00"),
     client_name: str | None = None,
 ) -> CashDiscrepancy:
     return CashDiscrepancy(
-        appointment_id=appointment_id or uuid.uuid4(),
+        queue_ticket_id=queue_ticket_id or uuid.uuid4(),
         salon_id=salon_id,
-        appointment_date=appointment_date,
-        start_time=start_time,
-        client_id=client_id or uuid.uuid4(),
+        ticket_number=ticket_number,
+        issued_date=issued_date,
+        completed_at=datetime.datetime.combine(
+            issued_date, datetime.time(10, 0), tzinfo=datetime.timezone.utc
+        ),
+        customer_profile_id=customer_profile_id or uuid.uuid4(),
         expected_amount=expected_amount,
         client_name=client_name,
     )
@@ -95,12 +98,12 @@ class TestListCashDiscrepanciesEmpty:
         )
         assert total == 1
         assert len(page) == 1
-        assert page[0].appointment_id == d.appointment_id
+        assert page[0].queue_ticket_id == d.queue_ticket_id
 
     def test_multiple_discrepancies_all_returned(self) -> None:
-        ds = [_make_discrepancy(appointment_date=_DATE_A),
-              _make_discrepancy(appointment_date=_DATE_B),
-              _make_discrepancy(appointment_date=_DATE_C)]
+        ds = [_make_discrepancy(issued_date=_DATE_A),
+              _make_discrepancy(issued_date=_DATE_B),
+              _make_discrepancy(issued_date=_DATE_C)]
         repo = FakePaymentRepository(discrepancies=ds)
         page, total = ListCashDiscrepancies(repo).execute(
             _SALON_ID, filter=_NO_FILTER, limit=50, offset=0
@@ -126,14 +129,14 @@ class TestListCashDiscrepanciesSalonIsolation:
         assert page == ()
 
     def test_only_own_salon_discrepancies_returned(self) -> None:
-        da = _make_discrepancy(salon_id=_SALON_ID, appointment_date=_DATE_B)
-        db = _make_discrepancy(salon_id=_OTHER_SALON_ID, appointment_date=_DATE_B)
+        da = _make_discrepancy(salon_id=_SALON_ID, issued_date=_DATE_B)
+        db = _make_discrepancy(salon_id=_OTHER_SALON_ID, issued_date=_DATE_B)
         repo = FakePaymentRepository(discrepancies=[da, db])
         page, total = ListCashDiscrepancies(repo).execute(
             _SALON_ID, filter=_NO_FILTER, limit=50, offset=0
         )
         assert total == 1
-        assert page[0].appointment_id == da.appointment_id
+        assert page[0].queue_ticket_id == da.queue_ticket_id
 
 
 # ---------------------------------------------------------------------------
@@ -143,55 +146,55 @@ class TestListCashDiscrepanciesSalonIsolation:
 
 class TestListCashDiscrepanciesDateFilter:
     def test_date_from_excludes_earlier(self) -> None:
-        old = _make_discrepancy(appointment_date=_DATE_A)
-        recent = _make_discrepancy(appointment_date=_DATE_C)
+        old = _make_discrepancy(issued_date=_DATE_A)
+        recent = _make_discrepancy(issued_date=_DATE_C)
         repo = FakePaymentRepository(discrepancies=[old, recent])
         f = validate_discrepancy_filter(date_from=_DATE_B)
         page, total = ListCashDiscrepancies(repo).execute(
             _SALON_ID, filter=f, limit=50, offset=0
         )
         assert total == 1
-        assert page[0].appointment_date == _DATE_C
+        assert page[0].issued_date == _DATE_C
 
     def test_date_to_excludes_later(self) -> None:
-        old = _make_discrepancy(appointment_date=_DATE_A)
-        recent = _make_discrepancy(appointment_date=_DATE_C)
+        old = _make_discrepancy(issued_date=_DATE_A)
+        recent = _make_discrepancy(issued_date=_DATE_C)
         repo = FakePaymentRepository(discrepancies=[old, recent])
         f = validate_discrepancy_filter(date_to=_DATE_B)
         page, total = ListCashDiscrepancies(repo).execute(
             _SALON_ID, filter=f, limit=50, offset=0
         )
         assert total == 1
-        assert page[0].appointment_date == _DATE_A
+        assert page[0].issued_date == _DATE_A
 
     def test_date_range_includes_both_bounds(self) -> None:
-        da = _make_discrepancy(appointment_date=_DATE_A)
-        db = _make_discrepancy(appointment_date=_DATE_B)
-        dc = _make_discrepancy(appointment_date=_DATE_C)
+        da = _make_discrepancy(issued_date=_DATE_A)
+        db = _make_discrepancy(issued_date=_DATE_B)
+        dc = _make_discrepancy(issued_date=_DATE_C)
         repo = FakePaymentRepository(discrepancies=[da, db, dc])
         f = validate_discrepancy_filter(date_from=_DATE_A, date_to=_DATE_B)
         page, total = ListCashDiscrepancies(repo).execute(
             _SALON_ID, filter=f, limit=50, offset=0
         )
         assert total == 2
-        dates = {d.appointment_date for d in page}
+        dates = {d.issued_date for d in page}
         assert _DATE_A in dates
         assert _DATE_B in dates
         assert _DATE_C not in dates
 
     def test_single_day_filter_matches_only_that_day(self) -> None:
-        d_match = _make_discrepancy(appointment_date=_DATE_B)
-        d_miss = _make_discrepancy(appointment_date=_DATE_A)
+        d_match = _make_discrepancy(issued_date=_DATE_B)
+        d_miss = _make_discrepancy(issued_date=_DATE_A)
         repo = FakePaymentRepository(discrepancies=[d_match, d_miss])
         f = validate_discrepancy_filter(date_from=_DATE_B, date_to=_DATE_B)
         page, total = ListCashDiscrepancies(repo).execute(
             _SALON_ID, filter=f, limit=50, offset=0
         )
         assert total == 1
-        assert page[0].appointment_date == _DATE_B
+        assert page[0].issued_date == _DATE_B
 
     def test_no_match_returns_empty(self) -> None:
-        d = _make_discrepancy(appointment_date=_DATE_A)
+        d = _make_discrepancy(issued_date=_DATE_A)
         repo = FakePaymentRepository(discrepancies=[d])
         f = validate_discrepancy_filter(date_from=_DATE_C, date_to=_DATE_C)
         page, total = ListCashDiscrepancies(repo).execute(
@@ -210,7 +213,7 @@ class TestListCashDiscrepanciesPagination:
     def _seed_n(self, n: int) -> FakePaymentRepository:
         ds = [
             _make_discrepancy(
-                appointment_date=datetime.date(2026, 1, i + 1),
+                issued_date=datetime.date(2026, 1, i + 1),
             )
             for i in range(n)
         ]
@@ -231,8 +234,8 @@ class TestListCashDiscrepanciesPagination:
         page_2, _ = ListCashDiscrepancies(repo).execute(
             _SALON_ID, filter=_NO_FILTER, limit=2, offset=2
         )
-        ids_0 = {d.appointment_id for d in page_0}
-        ids_2 = {d.appointment_id for d in page_2}
+        ids_0 = {d.queue_ticket_id for d in page_0}
+        ids_2 = {d.queue_ticket_id for d in page_2}
         assert ids_0.isdisjoint(ids_2), "offset ne doit pas chevaucher la première page"
 
     def test_total_reflects_full_filtered_count(self) -> None:
@@ -260,35 +263,35 @@ class TestListCashDiscrepanciesPagination:
 
 class TestListCashDiscrepanciesSortOrder:
     def test_most_recent_date_first(self) -> None:
-        old = _make_discrepancy(appointment_date=_DATE_A)
-        recent = _make_discrepancy(appointment_date=_DATE_C)
+        old = _make_discrepancy(issued_date=_DATE_A)
+        recent = _make_discrepancy(issued_date=_DATE_C)
         repo = FakePaymentRepository(discrepancies=[old, recent])
         page, _ = ListCashDiscrepancies(repo).execute(
             _SALON_ID, filter=_NO_FILTER, limit=10, offset=0
         )
-        assert page[0].appointment_date == _DATE_C
-        assert page[1].appointment_date == _DATE_A
+        assert page[0].issued_date == _DATE_C
+        assert page[1].issued_date == _DATE_A
 
-    def test_same_date_later_time_first(self) -> None:
-        """À date égale, l'heure de début la plus tardive apparaît en tête."""
-        early = _make_discrepancy(appointment_date=_DATE_B, start_time=_TIME_EARLY)
-        late = _make_discrepancy(appointment_date=_DATE_B, start_time=_TIME_LATE)
+    def test_same_date_higher_ticket_number_first(self) -> None:
+        """À date égale, le numéro de ticket le plus élevé apparaît en tête."""
+        early = _make_discrepancy(issued_date=_DATE_B, ticket_number=_TICKET_EARLY)
+        late = _make_discrepancy(issued_date=_DATE_B, ticket_number=_TICKET_LATE)
         repo = FakePaymentRepository(discrepancies=[early, late])
         page, _ = ListCashDiscrepancies(repo).execute(
             _SALON_ID, filter=_NO_FILTER, limit=10, offset=0
         )
-        assert page[0].start_time == _TIME_LATE
-        assert page[1].start_time == _TIME_EARLY
+        assert page[0].ticket_number == _TICKET_LATE
+        assert page[1].ticket_number == _TICKET_EARLY
 
     def test_insertion_order_irrelevant(self) -> None:
         """Le tri est stable quel que soit l'ordre d'insertion."""
-        d1 = _make_discrepancy(appointment_date=_DATE_C)  # récent inséré en premier
-        d2 = _make_discrepancy(appointment_date=_DATE_A)  # ancien inséré en second
+        d1 = _make_discrepancy(issued_date=_DATE_C)  # récent inséré en premier
+        d2 = _make_discrepancy(issued_date=_DATE_A)  # ancien inséré en second
         repo = FakePaymentRepository(discrepancies=[d1, d2])
         page, _ = ListCashDiscrepancies(repo).execute(
             _SALON_ID, filter=_NO_FILTER, limit=10, offset=0
         )
-        assert page[0].appointment_date >= page[1].appointment_date
+        assert page[0].issued_date >= page[1].issued_date
 
 
 # ---------------------------------------------------------------------------

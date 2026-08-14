@@ -23,6 +23,7 @@ import { PrinterIcon, XIcon } from "@/src/adapters/ui/action-icons";
 import { formatXof, paymentMethodLabel } from "@/src/domain/payments/payment";
 import type { ManagerReceipt } from "@/src/domain/payments/receipt";
 import { formatTransactionDateTime, paymentStatusLabel } from "@/src/domain/payments/transaction";
+import { formatTicketNumber } from "@/src/domain/queue/queue";
 
 type LoadState =
   | { status: "loading" }
@@ -233,6 +234,9 @@ function ReceiptBody({ receipt }: { receipt: ManagerReceipt }) {
       <p className="text-center font-serif text-sm font-semibold text-ink">{receipt.salonName}</p>
       <p className="mt-1 text-center text-muted">{receipt.receiptNumber}</p>
       <p className="text-center text-muted">{formatTransactionDateTime(receipt.paidAt)}</p>
+      {receipt.ticketNumber != null ? (
+        <p className="text-center text-muted">{formatTicketNumber(receipt.ticketNumber)}</p>
+      ) : null}
 
       <div className="my-3 border-t border-dashed border-border" />
 

@@ -20,6 +20,7 @@ from typing import Protocol
 from coiflink_api.domain.service import (
     Service,
     ServiceFilter,
+    ServicePhoto,
     ServiceToCreate,
     ServiceUpdate,
 )
@@ -76,16 +77,38 @@ class ServiceRepository(Protocol):
         """
         ...
 
-    def set_image(
-        self, salon_id: uuid.UUID, service_id: uuid.UUID, image_object_key: str | None
-    ) -> Service:
-        """Remplace la clé d'objet image de la prestation ; retourne l'entité relue.
+    def add_photo(
+        self, salon_id: uuid.UUID, service_id: uuid.UUID, object_key: str
+    ) -> ServicePhoto:
+        """Ajoute une photo en fin de galerie (`position` = nombre de photos actuel).
 
-        `None` efface l'illustration (aucune image). Action **dédiée**, découplée
-        de `update()` (miroir `set_active`/`AttachSalonLogo` — le binaire est
-        téléversé séparément, la clé est revalidée par le cas d'usage avant
-        d'atteindre le dépôt). Lève `domain.errors.ServiceNotFound` si
-        `(salon_id, service_id)` est absent.
+        Miroir `SalonRepository.add_photo`. La limite (`MEDIA_MAX_PHOTOS`) et la
+        revalidation du préfixe de clé sont du ressort du cas d'usage
+        (`AddServicePhoto`), pas du dépôt.
+        """
+        ...
+
+    def list_photos(
+        self, salon_id: uuid.UUID, service_id: uuid.UUID
+    ) -> tuple[ServicePhoto, ...]:
+        """Photos de la prestation, ordonnées par `position` croissante.
+
+        La photo de `position = 0` sert de couverture catalogue.
+        """
+        ...
+
+    def count_photos(self, salon_id: uuid.UUID, service_id: uuid.UUID) -> int:
+        """Nombre de photos actuel de la prestation (vérification de la limite)."""
+        ...
+
+    def delete_photo(
+        self, salon_id: uuid.UUID, service_id: uuid.UUID, photo_id: uuid.UUID
+    ) -> str | None:
+        """Supprime la photo `(salon_id, service_id, photo_id)` ; retourne sa clé d'objet.
+
+        Le filtre porte sur `salon_id`, `service_id` **et** `id` (isolation
+        §11.2) : impossible de supprimer la photo d'une autre prestation ou d'un
+        autre salon. `None` si aucune ligne (photo ou prestation introuvable).
         """
         ...
 

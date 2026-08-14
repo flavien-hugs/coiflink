@@ -11,12 +11,13 @@ Expose, sous `/admin/…` (router **plateforme**, non salon-scopé) :
   `STATS_READ_PLATFORM` (**deuxième** consommateur). Renvoie un **instantané unique**
   (non paginé) de **scalaires globaux** consolidés sur toute la plateforme : salons
   inscrits (`salons_total`) et actifs (`salons_active`), clients inscrits
-  (`clients_total`), rendez-vous (`appointments_total` + `appointments_this_month`) et
-  **revenus plateforme** (`revenue_total` + `revenue_this_month`, net via
-  `cash_journal`, même source de vérité que #37/#40). **Aucune** identité d'entité
-  n'est émise (§11.3, plus fort que #37). Le KPI « abonnements » du backlog est
-  **volontairement absent** : aucun modèle d'abonnement n'existe (voir
-  `domain/platform_kpis.py`, ADR-0032).
+  (`clients_total`), tickets walk-in (`tickets_total` + `tickets_this_month`,
+  rebranché sur `queue_tickets` avec le pivot walk-in exclusif #148) et **revenus
+  plateforme** (`revenue_total` + `revenue_this_month`, net via `cash_journal`, même
+  source de vérité que #37/#40). **Aucune** identité d'entité n'est émise (§11.3,
+  plus fort que #37). Le KPI « abonnements » du backlog est **volontairement
+  absent** : aucun modèle d'abonnement n'existe (voir `domain/platform_kpis.py`,
+  ADR-0032).
 
 **Vue plateforme, pas exploitation d'un salon.** À la différence des lectures caisse
 salon-scopées (#34/#35/#36, montées sous `/salons/{salon_id}/…`, gardées par
@@ -126,18 +127,18 @@ class PlatformKpiResponse(BaseModel):
     `revenue_total`/`revenue_this_month` sont la **somme signée** des lignes
     `cash_journal` (net des corrections #34, **même source de vérité** que #37/#40),
     sérialisés en chaîne décimale (`NUMERIC(12,2)`, jamais un flottant) ; ils **peuvent
-    être négatifs**. `appointments_total` compte **tous** les RDV créés (volume
-    plateforme, tous statuts). **Aucun** champ `subscriptions` : aucun modèle
-    d'abonnement n'existe (voir `domain/platform_kpis.py`, ADR-0032) — « revenus
-    plateforme » (flux net encaissé) ≠ « revenus d'abonnement » (facturation SaaS
-    inexistante).
+    être négatifs**. `tickets_total` compte **tous** les tickets walk-in émis (volume
+    plateforme, tous statuts, rebranché sur `queue_tickets` avec le pivot #148).
+    **Aucun** champ `subscriptions` : aucun modèle d'abonnement n'existe (voir
+    `domain/platform_kpis.py`, ADR-0032) — « revenus plateforme » (flux net encaissé)
+    ≠ « revenus d'abonnement » (facturation SaaS inexistante).
     """
 
     salons_total: int = Field(examples=[128])
     salons_active: int = Field(examples=[97])
     clients_total: int = Field(examples=[5421])
-    appointments_total: int = Field(examples=[18342])
-    appointments_this_month: int = Field(examples=[1204])
+    tickets_total: int = Field(examples=[18342])
+    tickets_this_month: int = Field(examples=[1204])
     revenue_total: decimal.Decimal = Field(examples=["12500000.00"])
     revenue_this_month: decimal.Decimal = Field(examples=["980000.00"])
     currency: str = Field(examples=["XOF"])
@@ -193,8 +194,8 @@ def _kpi_response(snapshot: PlatformKpiSnapshot) -> PlatformKpiResponse:
         salons_total=snapshot.salons_total,
         salons_active=snapshot.salons_active,
         clients_total=snapshot.clients_total,
-        appointments_total=snapshot.appointments_total,
-        appointments_this_month=snapshot.appointments_this_month,
+        tickets_total=snapshot.tickets_total,
+        tickets_this_month=snapshot.tickets_this_month,
         revenue_total=snapshot.revenue_total,
         revenue_this_month=snapshot.revenue_this_month,
         currency=snapshot.currency,
@@ -299,9 +300,9 @@ def get_platform_kpis(
 
     Renvoie un **instantané unique** (non paginé) de scalaires globaux : salons
     inscrits (`salons_total`) et actifs (`salons_active`), clients inscrits
-    (`clients_total`), rendez-vous (`appointments_total` = **volume créé, tous
-    statuts** ; `appointments_this_month` = RDV du mois civil courant comparés sur
-    `appointment_date`) et **revenus plateforme** (`revenue_total`/`revenue_this_month`
+    (`clients_total`), tickets walk-in (`tickets_total` = **volume émis, tous
+    statuts** ; `tickets_this_month` = tickets du mois civil courant comparés sur
+    `issued_date`) et **revenus plateforme** (`revenue_total`/`revenue_this_month`
     = **somme signée** des lignes `cash_journal`, net des corrections #34, **même
     source de vérité** que #37/#40 ; « revenus plateforme » = flux net encaissé, **pas**
     un revenu d'abonnement — aucun modèle SaaS n'existe, cf. ADR-0032). Le paramètre

@@ -1,29 +1,30 @@
-"""Tests e2e pour le Dashboard Manager — activité du salon (#148).
+"""Tests e2e pour le Dashboard Manager — activité du salon, pivot walk-in (#148).
 
 Groupes (PostgreSQL requis) exerçant le **chemin SQL réel** des six routes
 `/salons/{id}/dashboard/*` — aucune suite unitaire/API (adossée à des fakes en
 mémoire, `test_dashboard_usecases.py`/`test_dashboard_api.py`) ne vérifie :
 
-    - le prédicat **`slot @> now`** (colonne générée `tsrange`, dérivation
-      « en cours » sans statut ni migration) — `dashboard/kpis.in_progress` et
-      `dashboard/in-progress` ;
-    - les **jointures de noms** (`users` ×2 + `services`) de
+    - les **agrégats `GROUP BY`** réels sur `queue_tickets`
+      (`count_by_status_in_range`, `count_distinct_completed_clients`,
+      `attendance_series`) et le **net `cash_journal`** (`net_revenue_series`) ;
+    - le décompte **direct** des tickets `in_progress` (`count_in_progress`,
+      `list_in_progress_details`) — plus aucune arithmétique de créneau (l'ancien
+      prédicat RDV `slot @> now` a disparu avec le pivot walk-in exclusif) ;
+    - les **jointures de noms** (`customer_profiles` + `users` + `services`) de
       `list_in_progress_details` — émission maîtrisée (§11.3) ;
-    - les **agrégats `GROUP BY`** réels (`count_by_status_in_range`,
-      `count_distinct_completed_clients`, `attendance_series`) et la
-      **conversion de fuseau** de `net_revenue_series`
-      (`date(timezone('Africa/Abidjan', created_at))`) ;
-    - le **flux fusionné, trié et dédupliqué** de `ListRecentActivity`
-      (paiements réels + notifications salon réelles) ;
-    - les **alertes dérivées** (`late`/`prolonged_wait`/`payment_anomaly`) sur
-      des RDV et écarts de caisse réels ;
+    - le flux d'activité **borné aux paiements réels** (`ListRecentActivity`,
+      #148) — les notifications ont disparu avec le pivot, plus rien à notifier
+      pour un client déjà sur place ;
+    - les alertes **dérivées** de faits réels sur des tickets et écarts de caisse
+      réels (`prolonged_wait`/`payment_anomaly` — l'ancienne alerte `late`,
+      propre au créneau RDV, n'a pas d'équivalent walk-in et a été retirée) ;
     - l'**isolation §11.2** inter-salons et l'absence de PII (§11.3) sur des
       réponses réellement matérialisées par PostgreSQL.
 
-Les RDV/notifications/lignes de caisse sont insérés **directement en base**
-(bypass des gardes HTTP de réservation, patron `test_hairdresser_performance_e2e.py`
-#43) pour contrôler statut, date et horodatage sans dépendre du parcours de
-réservation complet (déjà couvert par #21/#45/#46/#48). Les **paiements** de la
+Les tickets/prestations/lignes de caisse sont insérés **directement en base**
+(bypass des gardes HTTP de la borne walk-in, patron `test_hairdresser_performance_
+e2e.py` #43) pour contrôler statut, jour et horodatage sans dépendre du parcours de
+prise en charge complet (déjà couvert par #157/#150). Les **paiements** de la
 timeline passent par l'API réelle (`POST /payments`) — c'est ce chemin que
 `ListRecentActivity` lit (patron #36/#43).
 
@@ -41,6 +42,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import os
+import uuid
 from collections.abc import Generator
 
 import pytest
@@ -90,56 +92,78 @@ _DASHBOARD_ROUTES = (
 def _wipe_test_data() -> None:
     """Supprime les données de test dans l'ordre des contraintes FK (`ON DELETE RESTRICT`).
 
-    Ordre : audit_logs → notifications → cash_journal → payments →
-    appointment_services → appointments → services → salon_members → salons →
-    users. `notifications` **avant** `appointments`/`salons`/`users` (mémoire
-    projet, FK RESTRICT depuis #45) ; `cash_journal` **avant** `payments`
-    (FK composite `(salon_id, transaction_id) → payments`).
+    Ordre : audit_logs → cash_journal → payments → queue_ticket_services →
+    queue_tickets → customer_profiles → services → salon_members → salons →
+    users. La table `notifications` a été supprimée par la migration
+    destructive `0017` avec tout le module Rendez-vous/Notification — plus
+    rien à nettoyer ici.
     """
     engine = get_engine()
+    salons_of_prefix = (
+        "SELECT id FROM salons WHERE owner_id IN "
+        "(SELECT id FROM users WHERE phone LIKE :prefix)"
+    )
+    params = {"prefix": f"{_E2E_PHONE_PREFIX}%"}
     with engine.connect() as conn:
-        for table, column in (
-            ("audit_logs", "salon_id"),
-            ("notifications", "salon_id"),
-            ("cash_journal", "salon_id"),
-            ("payments", "salon_id"),
-            ("appointment_services", "salon_id"),
-            ("appointments", "salon_id"),
-            ("services", "salon_id"),
-        ):
-            conn.execute(
-                text(
-                    f"DELETE FROM {table} WHERE {column} IN "
-                    "(SELECT id FROM salons WHERE owner_id IN "
-                    "(SELECT id FROM users WHERE phone LIKE :prefix))"
-                ),
-                {"prefix": f"{_E2E_PHONE_PREFIX}%"},
-            )
+        conn.execute(
+            text(f"DELETE FROM audit_logs WHERE salon_id IN ({salons_of_prefix})"),
+            params,
+        )
         conn.execute(
             text(
-                "DELETE FROM salon_members WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
+                "DELETE FROM audit_logs WHERE actor_user_id IN "
+                "(SELECT id FROM users WHERE phone LIKE :prefix)"
             ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            params,
+        )
+        conn.execute(
+            text(f"DELETE FROM cash_journal WHERE salon_id IN ({salons_of_prefix})"),
+            params,
+        )
+        conn.execute(
+            text(f"DELETE FROM payments WHERE salon_id IN ({salons_of_prefix})"),
+            params,
+        )
+        conn.execute(
+            text(
+                f"DELETE FROM queue_ticket_services WHERE salon_id IN ({salons_of_prefix})"
+            ),
+            params,
+        )
+        conn.execute(
+            text(f"DELETE FROM queue_tickets WHERE salon_id IN ({salons_of_prefix})"),
+            params,
+        )
+        conn.execute(
+            text(
+                f"DELETE FROM customer_profiles WHERE salon_id IN ({salons_of_prefix})"
+            ),
+            params,
+        )
+        conn.execute(
+            text(f"DELETE FROM services WHERE salon_id IN ({salons_of_prefix})"), params
+        )
+        conn.execute(
+            text(f"DELETE FROM salon_members WHERE salon_id IN ({salons_of_prefix})"),
+            params,
         )
         conn.execute(
             text(
                 "DELETE FROM salon_members WHERE user_id IN "
                 "(SELECT id FROM users WHERE phone LIKE :prefix)"
             ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            params,
         )
         conn.execute(
             text(
                 "DELETE FROM salons WHERE owner_id IN "
                 "(SELECT id FROM users WHERE phone LIKE :prefix)"
             ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            params,
         )
         conn.execute(
             text("DELETE FROM users WHERE phone LIKE :prefix"),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            params,
         )
         conn.commit()
 
@@ -258,129 +282,123 @@ def _add_hairdresser(
     return hairdresser_id
 
 
-# ─── Helpers — bypass SQL (RDV, prestations, notifications, caisse) ──────────
+# ─── Helpers — bypass SQL (tickets walk-in, prestations, caisse) ─────────────
 
 
-def _seed_appointment(
-    salon_id: str,
-    client_id: str,
-    hairdresser_id: str | None,
-    *,
-    day: datetime.date,
-    start_time: datetime.time,
-    end_time: datetime.time,
-    status: str,
-    service_id: str | None = None,
-    price_at_booking: str | None = None,
-) -> str:
-    """Insère directement en base un RDV (statut/jour/créneau/coiffeur contrôlés).
-
-    Bypass des gardes de réservation HTTP — seul le SQL des lectures dashboard
-    est exercé ici (parcours complet déjà couvert par #21/#45/#46). Alimente la
-    colonne générée `slot` (`tsrange`), base du prédicat réel `slot @> now`.
-    """
-    engine = get_engine()
-    with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                "INSERT INTO appointments "
-                "(salon_id, client_id, hairdresser_id, appointment_date, "
-                "start_time, end_time, status) "
-                "VALUES (:salon_id, :client_id, :hairdresser_id, :day, "
-                ":start_time, :end_time, :status) RETURNING id"
-            ),
-            {
-                "salon_id": salon_id,
-                "client_id": client_id,
-                "hairdresser_id": hairdresser_id,
-                "day": day,
-                "start_time": start_time.isoformat(),
-                "end_time": end_time.isoformat(),
-                "status": status,
-            },
-        )
-        appointment_id = row.scalar_one()
-        if service_id is not None:
-            conn.execute(
-                text(
-                    "INSERT INTO appointment_services "
-                    "(salon_id, appointment_id, service_id, price_at_booking) "
-                    "VALUES (:salon_id, :appointment_id, :service_id, :price)"
-                ),
-                {
-                    "salon_id": salon_id,
-                    "appointment_id": str(appointment_id),
-                    "service_id": service_id,
-                    "price": price_at_booking,
-                },
-            )
-        conn.commit()
-    return str(appointment_id)
-
-
-def _attach_service(
-    salon_id: str, appointment_id: str, service_id: str, *, price: str
-) -> None:
-    """Ajoute une **deuxième** prestation à un RDV déjà créé (liste en-cours, #148)."""
+def _insert_customer_profile(*, salon_id: str, full_name: str) -> str:
+    """Insère une fiche client walk-in directement en base."""
+    profile_id = str(uuid.uuid4())
     engine = get_engine()
     with engine.connect() as conn:
         conn.execute(
             text(
-                "INSERT INTO appointment_services "
-                "(salon_id, appointment_id, service_id, price_at_booking) "
-                "VALUES (:salon_id, :appointment_id, :service_id, :price)"
+                "INSERT INTO customer_profiles (id, salon_id, full_name) "
+                "VALUES (:id, :salon_id, :full_name)"
             ),
-            {
-                "salon_id": salon_id,
-                "appointment_id": appointment_id,
-                "service_id": service_id,
-                "price": price,
-            },
+            {"id": profile_id, "salon_id": salon_id, "full_name": full_name},
         )
         conn.commit()
+    return profile_id
 
 
-def _seed_notification(
+def _seed_ticket(
     salon_id: str,
-    appointment_id: str | None,
     *,
-    type_: str,
-    title: str,
-    message: str,
-    created_at: datetime.datetime,
-    user_id: str | None = None,
-    channel: str = "IN_APP",
+    issued_date: datetime.date,
+    ticket_number: int,
+    status: str,
+    customer_profile_id: str | None = None,
+    hairdresser_id: str | None = None,
+    estimated_wait_minutes: int = 15,
+    created_at: datetime.datetime | None = None,
+    started_at: datetime.datetime | None = None,
+    completed_at: datetime.datetime | None = None,
+    service_id: str | None = None,
 ) -> str:
-    """Insère directement une ligne `notifications` (horodatage contrôlé, #148).
+    """Insère directement en base un ticket walk-in (statut/jour/horodatages contrôlés).
 
-    Bypass de l'émission applicative (#45–#48, déjà couverte par
-    `test_appointment_notification_e2e.py`) : seule la **lecture** salon-scopée
-    `SqlNotificationRepository.list_for_salon` (nouvelle, #148) est exercée ici.
+    Bypass des gardes de la borne HTTP (`POST /queue`, verrou consultatif
+    ADR-0040) — seul le SQL des lectures dashboard est exercé ici, pas le
+    parcours complet de prise de ticket (déjà couvert par #157). `created_at`/
+    `started_at`/`completed_at` ne sont écrits que si explicitement fournis
+    (sinon défaut serveur / `NULL`), pour contrôler l'attente réelle
+    (`count_waiting_beyond_estimate`) et l'ordre `list_in_progress_details`.
     """
+    ticket_id = str(uuid.uuid4())
+    columns = [
+        "id",
+        "salon_id",
+        "customer_profile_id",
+        "hairdresser_id",
+        "issued_date",
+        "ticket_number",
+        "status",
+        "estimated_wait_minutes",
+    ]
+    values = [
+        ":id",
+        ":salon_id",
+        ":customer",
+        ":hairdresser",
+        ":date",
+        ":number",
+        ":status",
+        ":wait",
+    ]
+    params: dict[str, object] = {
+        "id": ticket_id,
+        "salon_id": salon_id,
+        "customer": customer_profile_id,
+        "hairdresser": hairdresser_id,
+        "date": issued_date,
+        "number": ticket_number,
+        "status": status,
+        "wait": estimated_wait_minutes,
+    }
+    for column, value in (
+        ("created_at", created_at),
+        ("started_at", started_at),
+        ("completed_at", completed_at),
+    ):
+        if value is not None:
+            columns.append(column)
+            values.append(f":{column}")
+            params[column] = value
+
     engine = get_engine()
     with engine.connect() as conn:
-        row = conn.execute(
+        conn.execute(
             text(
-                "INSERT INTO notifications "
-                "(user_id, salon_id, appointment_id, type, channel, title, "
-                "message, status, created_at) "
-                "VALUES (:user_id, :salon_id, :appointment_id, :type, :channel, "
-                ":title, :message, 'PENDING', :created_at) RETURNING id"
+                f"INSERT INTO queue_tickets ({', '.join(columns)}) "
+                f"VALUES ({', '.join(values)})"
             ),
-            {
-                "user_id": user_id,
-                "salon_id": salon_id,
-                "appointment_id": appointment_id,
-                "type": type_,
-                "channel": channel,
-                "title": title,
-                "message": message,
-                "created_at": created_at,
-            },
+            params,
         )
-        notification_id = row.scalar_one()
+        if service_id is not None:
+            conn.execute(
+                text(
+                    "INSERT INTO queue_ticket_services "
+                    "(queue_ticket_id, service_id, salon_id) "
+                    "VALUES (:ticket, :service, :salon)"
+                ),
+                {"ticket": ticket_id, "service": service_id, "salon": salon_id},
+            )
         conn.commit()
-    return str(notification_id)
+    return ticket_id
+
+
+def _attach_ticket_service(salon_id: str, queue_ticket_id: str, service_id: str) -> None:
+    """Ajoute une **deuxième** prestation à un ticket déjà créé (liste en-cours, #148)."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO queue_ticket_services (queue_ticket_id, service_id, salon_id) "
+                "VALUES (:ticket, :service, :salon)"
+            ),
+            {"ticket": queue_ticket_id, "service": service_id, "salon": salon_id},
+        )
+        conn.commit()
 
 
 def _seed_cash_journal(
@@ -394,10 +412,9 @@ def _seed_cash_journal(
     """Insère directement une ligne `cash_journal` (jour/horodatage contrôlés, #148).
 
     Bypass de l'écriture applicative (`RecordPayment`, #34/#35, déjà couverte
-    ailleurs) : seule la **lecture agrégée** `net_revenue_series` (nouvelle,
-    #148 — conversion de fuseau `Africa/Abidjan` incluse) est exercée ici.
-    `transaction_id` reste `NULL` (nullable, aucune jointure requise par la
-    lecture testée).
+    ailleurs) : seule la **lecture agrégée** (`net_revenue_between`/
+    `net_revenue_series`) est exercée ici. `transaction_id` reste `NULL`
+    (nullable, aucune jointure requise par la lecture testée).
     """
     engine = get_engine()
     with engine.connect() as conn:
@@ -418,26 +435,31 @@ def _seed_cash_journal(
         conn.commit()
 
 
-def _record_payment_for_appointment(
+def _record_payment(
     client: TestClient,
     manager_token: str,
     salon_id: str,
     *,
     amount: str,
-    appointment_id: str,
-    client_id: str,
+    queue_ticket_id: str,
+    client_id: str | None = None,
 ) -> str:
-    """Enregistre un paiement `VALIDATED` **via l'API réelle** — alimente la
-    timeline d'activité (`ListRecentActivity`, patron #36/#43)."""
+    """Enregistre un paiement `VALIDATED` **via l'API réelle**, lié à un ticket.
+
+    C'est ce qui alimente la timeline d'activité (`ListRecentActivity`, patron
+    #36/#43) et couvre l'écart de caisse (`payment_anomaly`). `client_id` est
+    **optionnel** (résolution du nom d'affichage, `payments.client_id →
+    users.full_name`) — un ticket anonyme ne porte aucun `client_name`.
+    """
+    body: dict[str, object] = {
+        "amount": amount,
+        "payment_method": "CASH",
+        "queue_ticket_id": queue_ticket_id,
+    }
+    if client_id is not None:
+        body["client_id"] = client_id
     resp = client.post(
-        f"/salons/{salon_id}/payments",
-        json={
-            "amount": amount,
-            "payment_method": "CASH",
-            "appointment_id": appointment_id,
-            "client_id": client_id,
-        },
-        headers=_auth(manager_token),
+        f"/salons/{salon_id}/payments", json=body, headers=_auth(manager_token)
     )
     assert resp.status_code == 201, f"Enregistrement paiement échoué : {resp.text}"
     return resp.json()["id"]
@@ -449,8 +471,8 @@ def _day_noon(day: datetime.date) -> datetime.datetime:
 
 
 def _now_salon() -> datetime.datetime:
-    """Instant présent **naïf** dans le fuseau salon (`Africa/Abidjan`, #148)."""
-    return datetime.datetime.now(SALON_TIMEZONE).replace(tzinfo=None)
+    """Instant présent **aware** dans le fuseau salon (`Africa/Abidjan` = UTC+0, #148)."""
+    return datetime.datetime.now(SALON_TIMEZONE)
 
 
 # ─── Helpers — appels des routes dashboard ────────────────────────────────────
@@ -506,7 +528,7 @@ def _dashboard_alerts(client: TestClient, token: str, salon_id: str) -> dict:
     return resp.json()
 
 
-# ─── Groupe 1 : KPI — agrégats réels + évolution + prédicat `slot @> now` ────
+# ─── Groupe 1 : KPI — agrégats réels + évolution + statut ticket réel ────────
 
 
 @pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
@@ -518,51 +540,42 @@ class TestDashboardKpisE2E:
     ) -> None:
         """`waiting_clients`/`clients_count` dérivent de `GROUP BY status`/`COUNT(DISTINCT)` réels.
 
-        Aujourd'hui : 2 RDV `PENDING` (attente), 1 RDV `COMPLETED` (client A) → en
-        attente = 2, clientes = 1. Hier (période précédente, longueur 1 jour) :
-        1 RDV `PENDING`, 1 RDV `COMPLETED` (client B) → en attente = 1, clientes = 1.
+        Aujourd'hui : 2 tickets `waiting`, 1 ticket `done` (fiche A) → en attente
+        = 2, clientes = 1. Hier (période précédente, longueur 1 jour) : 1 ticket
+        `waiting`, 1 ticket `done` (fiche B) → en attente = 1, clientes = 1.
         Évolution « en attente » = up (2 > 1).
         """
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_a = _register_client_account(
-            _e2e_client, phone=_PHONE_CLIENT_A_LOCAL, full_name="Cliente A"
-        )
-        client_b = _register_client_account(
-            _e2e_client, phone=_PHONE_CLIENT_B_LOCAL, full_name="Cliente B"
-        )
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
+        client_a = _insert_customer_profile(salon_id=salon_id, full_name="Cliente A")
+        client_b = _insert_customer_profile(salon_id=salon_id, full_name="Cliente B")
 
         today = _now_salon().date()
         yesterday = today - datetime.timedelta(days=1)
 
         # Aujourd'hui.
-        _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=datetime.time(9, 0), end_time=datetime.time(9, 30),
-            status="PENDING",
+        _seed_ticket(
+            salon_id, issued_date=today, ticket_number=1, status="waiting",
+            customer_profile_id=client_a,
         )
-        _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=datetime.time(10, 0), end_time=datetime.time(10, 30),
-            status="PENDING",
+        _seed_ticket(
+            salon_id, issued_date=today, ticket_number=2, status="waiting",
+            customer_profile_id=client_a,
         )
-        _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=datetime.time(11, 0), end_time=datetime.time(11, 30),
-            status="COMPLETED",
+        _seed_ticket(
+            salon_id, issued_date=today, ticket_number=3, status="done",
+            customer_profile_id=client_a,
         )
         # Hier (période précédente).
-        _seed_appointment(
-            salon_id, client_b, None, day=yesterday,
-            start_time=datetime.time(9, 0), end_time=datetime.time(9, 30),
-            status="PENDING",
+        _seed_ticket(
+            salon_id, issued_date=yesterday, ticket_number=1, status="waiting",
+            customer_profile_id=client_b,
         )
-        _seed_appointment(
-            salon_id, client_b, None, day=yesterday,
-            start_time=datetime.time(10, 0), end_time=datetime.time(10, 30),
-            status="COMPLETED",
+        _seed_ticket(
+            salon_id, issued_date=yesterday, ticket_number=2, status="done",
+            customer_profile_id=client_b,
         )
 
         kpis = _dashboard_kpis(
@@ -581,7 +594,7 @@ class TestDashboardKpisE2E:
     def test_revenue_kpi_reflects_real_cash_journal_net_with_evolution(
         self, _e2e_client: TestClient
     ) -> None:
-        """`revenue` dérive du **net `cash_journal`** réel (pas d'un comptage de RDV)."""
+        """`revenue` dérive du **net `cash_journal`** réel (pas d'un comptage de tickets)."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
@@ -612,53 +625,29 @@ class TestDashboardKpisE2E:
         assert kpis["revenue"]["direction"] == "up"
         assert kpis["revenue"]["currency"] == "XOF"
 
-    def test_in_progress_kpi_derived_from_real_slot_predicate(
+    def test_in_progress_kpi_derived_from_real_ticket_status(
         self, _e2e_client: TestClient
     ) -> None:
-        """`in_progress` compte les `CONFIRMED` dont `slot @> now` (SQL réel, pas un fake)."""
+        """`in_progress` compte les tickets `in_progress` — décompte direct, aucune arithmétique de créneau."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_a = _register_client_account(
-            _e2e_client, phone=_PHONE_CLIENT_A_LOCAL, full_name="Cliente En Cours"
-        )
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
+        today = _now_salon().date()
 
-        now = _now_salon()
-        today = now.date()
-
-        # En cours : créneau [now-15min, now+15min).
-        _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=(now - datetime.timedelta(minutes=15)).time(),
-            end_time=(now + datetime.timedelta(minutes=15)).time(),
-            status="CONFIRMED",
-        )
-        # Hors créneau : dans 3h.
-        _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=(now + datetime.timedelta(hours=3)).time(),
-            end_time=(now + datetime.timedelta(hours=3, minutes=30)).time(),
-            status="CONFIRMED",
-        )
-        # PENDING dans le même créneau horaire : exclu par le statut, jamais « en cours ».
-        _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=(now - datetime.timedelta(minutes=10)).time(),
-            end_time=(now + datetime.timedelta(minutes=10)).time(),
-            status="PENDING",
-        )
+        # En cours : statut stocké, décompté directement.
+        _seed_ticket(salon_id, issued_date=today, ticket_number=1, status="in_progress")
+        # `waiting`/`done` : jamais « en cours », quel que soit l'horodatage.
+        _seed_ticket(salon_id, issued_date=today, ticket_number=2, status="waiting")
+        _seed_ticket(salon_id, issued_date=today, ticket_number=3, status="done")
 
         kpis = _dashboard_kpis(_e2e_client, manager_token, salon_id)
         assert kpis["in_progress"]["current"] == 1
 
     def test_other_salon_data_excluded_from_kpis(self, _e2e_client: TestClient) -> None:
-        """Isolation §11.2 : les RDV du salon B n'entrent jamais dans les KPI du salon A."""
+        """Isolation §11.2 : les tickets du salon B n'entrent jamais dans les KPI du salon A."""
         manager_a_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         manager_b_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_B_LOCAL)
-        client_b = _register_client_account(
-            _e2e_client, phone=_PHONE_CLIENT_B_LOCAL, full_name="Cliente Salon B"
-        )
         assert manager_a_id and manager_b_id
         token_a = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         token_b = _login(_e2e_client, phone=_PHONE_MANAGER_B_LOCAL)
@@ -666,11 +655,7 @@ class TestDashboardKpisE2E:
         salon_b_id = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
 
         today = _now_salon().date()
-        _seed_appointment(
-            salon_b_id, client_b, None, day=today,
-            start_time=datetime.time(9, 0), end_time=datetime.time(9, 30),
-            status="PENDING",
-        )
+        _seed_ticket(salon_b_id, issued_date=today, ticket_number=1, status="waiting")
         _seed_cash_journal(
             salon_b_id, manager_b_id, amount="50000.00", created_at=_day_noon(today)
         )
@@ -680,19 +665,18 @@ class TestDashboardKpisE2E:
         assert decimal.Decimal(kpis["revenue"]["current"]) == decimal.Decimal("0.00")
 
     def test_kpis_response_has_no_pii(self, _e2e_client: TestClient) -> None:
-        """§11.3 : compteurs-only, aucun `client_id`/téléphone/jeton dans la réponse."""
+        """§11.3 : compteurs-only, aucun `customer_profile_id`/téléphone/jeton dans la réponse."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_a = _register_client_account(
-            _e2e_client, phone=_PHONE_CLIENT_A_LOCAL, full_name="Cliente Confidentielle"
-        )
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
         today = _now_salon().date()
-        _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=datetime.time(9, 0), end_time=datetime.time(9, 30),
-            status="PENDING",
+        client_a = _insert_customer_profile(
+            salon_id=salon_id, full_name="Cliente Confidentielle"
+        )
+        _seed_ticket(
+            salon_id, issued_date=today, ticket_number=1, status="waiting",
+            customer_profile_id=client_a,
         )
 
         resp = _e2e_client.get(
@@ -732,24 +716,22 @@ class TestDashboardKpisE2E:
             assert resp.status_code == 403, f"{route} devrait refuser hors périmètre"
 
 
-# ─── Groupe 2 : prestations en cours — jointures de noms réelles ─────────────
+# ─── Groupe 2 : tickets en cours — jointures de noms réelles ─────────────────
 
 
 @pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
 class TestDashboardInProgressE2E:
-    """`GET /salons/{id}/dashboard/in-progress` : jointures `users`×2 + `services` réelles."""
+    """`GET /salons/{id}/dashboard/in-progress` : jointures `customer_profiles`/`users`/`services` réelles."""
 
     def test_in_progress_list_resolves_names_via_real_joins(
         self, _e2e_client: TestClient
     ) -> None:
         """Cliente, coiffeuse et prestations résolues par jointure SQL réelle (#43/#36)."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_a = _register_client_account(
-            _e2e_client, phone=_PHONE_CLIENT_A_LOCAL, full_name="Awa Koné"
-        )
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
+        client_a = _insert_customer_profile(salon_id=salon_id, full_name="Awa Koné")
         hairdresser_id = _add_hairdresser(
             _e2e_client, manager_token, salon_id,
             full_name="Fatou D.", phone=_PHONE_HAIRDRESSER_LOCAL,
@@ -761,34 +743,27 @@ class TestDashboardInProgressE2E:
             _e2e_client, manager_token, salon_id, name="Coloration", price="20000.00"
         )
 
-        now = _now_salon()
+        now = _now_salon().replace(tzinfo=None)
         today = now.date()
-        appointment_id = _seed_appointment(
-            salon_id, client_a, hairdresser_id, day=today,
-            start_time=(now - datetime.timedelta(minutes=20)).time(),
-            end_time=(now + datetime.timedelta(minutes=40)).time(),
-            status="CONFIRMED",
-            service_id=service_1, price_at_booking="10000.00",
+        ticket_id = _seed_ticket(
+            salon_id, issued_date=today, ticket_number=1, status="in_progress",
+            customer_profile_id=client_a, hairdresser_id=hairdresser_id,
+            started_at=now, service_id=service_1,
         )
-        _attach_service(salon_id, appointment_id, service_2, price="20000.00")
+        _attach_ticket_service(salon_id, ticket_id, service_2)
 
-        # Hors créneau — ne doit jamais apparaître.
-        _seed_appointment(
-            salon_id, client_a, hairdresser_id, day=today,
-            start_time=(now + datetime.timedelta(hours=4)).time(),
-            end_time=(now + datetime.timedelta(hours=4, minutes=30)).time(),
-            status="CONFIRMED",
-        )
+        # Statut `waiting` — ne doit jamais apparaître dans « en cours ».
+        _seed_ticket(salon_id, issued_date=today, ticket_number=2, status="waiting")
 
         result = _dashboard_in_progress(_e2e_client, manager_token, salon_id)
 
         assert len(result["items"]) == 1
         item = result["items"][0]
-        assert item["appointment_id"] == appointment_id
+        assert item["queue_ticket_id"] == ticket_id
         assert item["client_name"] == "Awa Koné"
         assert item["hairdresser_name"] == "Fatou D."
         assert set(item["service_names"]) == {"Coupe femme", "Coloration"}
-        assert item["status"] == "CONFIRMED"
+        assert item["status"] == "in_progress"
 
         # Émission maîtrisée (§11.3) : le nom d'affichage est présent, jamais un
         # identifiant ou un contact.
@@ -799,12 +774,16 @@ class TestDashboardInProgressE2E:
         assert hairdresser_id not in raw
         assert _PHONE_HAIRDRESSER_LOCAL not in raw
 
-    def test_in_progress_empty_when_nothing_in_slot(self, _e2e_client: TestClient) -> None:
-        """Aucun RDV `CONFIRMED` en cours → liste vide (état légitime, pas une erreur)."""
+    def test_in_progress_empty_when_no_ticket_in_progress(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Aucun ticket `in_progress` → liste vide (état légitime, pas une erreur)."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
+        today = _now_salon().date()
+        _seed_ticket(salon_id, issued_date=today, ticket_number=1, status="waiting")
 
         result = _dashboard_in_progress(_e2e_client, manager_token, salon_id)
         assert result["items"] == []
@@ -851,14 +830,11 @@ class TestDashboardSeriesE2E:
         assert by_day[today.isoformat()] == decimal.Decimal("5000.00")
         assert series["currency"] == "XOF"
 
-    def test_attendance_series_buckets_reflect_real_appointment_counts_with_zero_fill(
+    def test_attendance_series_buckets_reflect_real_ticket_counts_with_zero_fill(
         self, _e2e_client: TestClient
     ) -> None:
-        """Bucket = nombre de RDV (tous statuts) par jour ; jour sans RDV = `0`."""
+        """Bucket = nombre de tickets (tous statuts) par jour ; jour sans ticket = `0`."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_a = _register_client_account(
-            _e2e_client, phone=_PHONE_CLIENT_A_LOCAL, full_name="Cliente Fréquentation"
-        )
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
@@ -866,16 +842,9 @@ class TestDashboardSeriesE2E:
         today = _now_salon().date()
         two_days_ago = today - datetime.timedelta(days=2)
 
-        _seed_appointment(
-            salon_id, client_a, None, day=two_days_ago,
-            start_time=datetime.time(9, 0), end_time=datetime.time(9, 30), status="CANCELLED",
-        )
-        for start_hour in (9, 10):
-            _seed_appointment(
-                salon_id, client_a, None, day=today,
-                start_time=datetime.time(start_hour, 0), end_time=datetime.time(start_hour, 30),
-                status="PENDING",
-            )
+        _seed_ticket(salon_id, issued_date=two_days_ago, ticket_number=1, status="expired")
+        _seed_ticket(salon_id, issued_date=today, ticket_number=1, status="waiting")
+        _seed_ticket(salon_id, issued_date=today, ticket_number=2, status="waiting")
 
         series = _dashboard_attendance_series(
             _e2e_client, manager_token, salon_id,
@@ -888,17 +857,23 @@ class TestDashboardSeriesE2E:
         assert by_day[today.isoformat()] == 2
 
 
-# ─── Groupe 4 : timeline d'activité — flux fusionné réel ─────────────────────
+# ─── Groupe 4 : timeline d'activité — paiements réels uniquement (#148) ──────
 
 
 @pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
 class TestDashboardActivityE2E:
-    """`GET /salons/{id}/dashboard/activity` : paiements + notifications réels fusionnés."""
+    """`GET /salons/{id}/dashboard/activity` : paiements réels, triés — plus de notifications."""
 
-    def test_activity_merges_real_payments_and_notifications_sorted_and_deduped(
+    def test_activity_reflects_real_payments_sorted_by_recency(
         self, _e2e_client: TestClient
     ) -> None:
-        """Flux trié décroissant, dédupliqué par `(type, appointment_id)`, kinds neutres."""
+        """Flux borné aux **paiements**, trié décroissant — aucune notification, faits réels seuls.
+
+        Les notifications ont disparu avec le pivot walk-in exclusif (#148) : la
+        timeline n'a plus rien à fusionner ni à dédupliquer, elle **liste
+        directement** les paiements horodatés (patron #36) triés par
+        `occurred_at` décroissant.
+        """
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         client_a = _register_client_account(
             _e2e_client, phone=_PHONE_CLIENT_A_LOCAL, full_name="Cliente Activité"
@@ -906,116 +881,75 @@ class TestDashboardActivityE2E:
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
-        service_id = _create_service(
-            _e2e_client, manager_token, salon_id, name="Coupe", price="12000.00"
+        service_5000 = _create_service(
+            _e2e_client, manager_token, salon_id, name="Coupe", price="5000.00"
         )
-
+        service_8000 = _create_service(
+            _e2e_client, manager_token, salon_id, name="Coloration", price="8000.00"
+        )
         today = _now_salon().date()
-        appointment_id = _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=datetime.time(9, 0), end_time=datetime.time(9, 30),
-            status="COMPLETED",
-            service_id=service_id, price_at_booking="12000.00",
-        )
-        _record_payment_for_appointment(
-            _e2e_client, manager_token, salon_id,
-            amount="12000.00", appointment_id=appointment_id, client_id=client_a,
-        )
 
-        base = datetime.datetime.now(datetime.timezone.utc)
-        _seed_notification(
-            salon_id, appointment_id,
-            type_="NEW_BOOKING", title="Nouvelle réservation",
-            message="Une nouvelle réservation a été effectuée.",
-            created_at=base - datetime.timedelta(hours=3),
+        ticket_1 = _seed_ticket(
+            salon_id, issued_date=today, ticket_number=1, status="done",
+            service_id=service_5000,
         )
-        _seed_notification(
-            salon_id, appointment_id,
-            type_="CANCELLATION", title="Réservation annulée",
-            message="Une réservation a été annulée.",
-            created_at=base - datetime.timedelta(hours=2),
+        _record_payment(
+            _e2e_client, manager_token, salon_id,
+            amount="5000.00", queue_ticket_id=ticket_1, client_id=client_a,
         )
-        # Doublon (même type + même RDV, horodatage différent) → dédupliqué : un
-        # seul évènement `appointment_update` doit survivre (le plus récent).
-        _seed_notification(
-            salon_id, appointment_id,
-            type_="APPOINTMENT_UPDATE", title="RDV modifié (ancien)",
-            message="Le rendez-vous a été modifié.",
-            created_at=base - datetime.timedelta(hours=1, minutes=30),
+        ticket_2 = _seed_ticket(
+            salon_id, issued_date=today, ticket_number=2, status="done",
+            service_id=service_8000,
         )
-        _seed_notification(
-            salon_id, appointment_id,
-            type_="APPOINTMENT_UPDATE", title="RDV modifié (récent)",
-            message="Le rendez-vous a été modifié.",
-            created_at=base - datetime.timedelta(minutes=45),
-        )
-        # Notification **client** (hors activité salon, #148 Non-Goals) : jamais dans le flux.
-        _seed_notification(
-            salon_id, appointment_id,
-            type_="CONFIRMATION", title="RDV confirmé",
-            message="Votre rendez-vous est confirmé.",
-            created_at=base - datetime.timedelta(minutes=30),
+        _record_payment(
+            _e2e_client, manager_token, salon_id,
+            amount="8000.00", queue_ticket_id=ticket_2, client_id=client_a,
         )
 
         feed = _dashboard_activity(_e2e_client, manager_token, salon_id, limit=20)
         items = feed["items"]
 
-        kinds = [item["kind"] for item in items]
-        assert kinds.count("appointment_update") == 1
-        assert "payment" in kinds
-        assert "new_booking" in kinds
-        assert "cancellation" in kinds
-        assert "confirmation" not in kinds
-
-        update_item = next(item for item in items if item["kind"] == "appointment_update")
-        assert update_item["label"] == "RDV modifié (récent)"
+        assert len(items) == 2
+        assert {item["kind"] for item in items} == {"payment"}
 
         occurred_at = [
             datetime.datetime.fromisoformat(item["occurred_at"]) for item in items
         ]
         assert occurred_at == sorted(occurred_at, reverse=True)
-
-        payment_item = next(item for item in items if item["kind"] == "payment")
-        assert decimal.Decimal(payment_item["amount"]) == decimal.Decimal("12000.00")
-        assert payment_item["client_name"] == "Cliente Activité"
-
-        notification_item = next(item for item in items if item["kind"] == "new_booking")
-        assert notification_item["amount"] is None
-        assert notification_item["client_name"] is None
+        # Le paiement le plus récent (8000.00, enregistré en second) vient en tête.
+        assert decimal.Decimal(items[0]["amount"]) == decimal.Decimal("8000.00")
+        assert decimal.Decimal(items[1]["amount"]) == decimal.Decimal("5000.00")
+        for item in items:
+            assert item["client_name"] == "Cliente Activité"
+            assert item["currency"] == "XOF"
+            assert item["label"] == "Paiement enregistré"
 
     def test_activity_respects_limit_top_n(self, _e2e_client: TestClient) -> None:
-        """`limit` borne le flux fusionné (garde de coût §12.1, top-N)."""
+        """`limit` borne le flux (garde de coût §12.1, top-N)."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_a = _register_client_account(
-            _e2e_client, phone=_PHONE_CLIENT_A_LOCAL, full_name="Cliente Limite"
-        )
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
+        service_id = _create_service(
+            _e2e_client, manager_token, salon_id, name="Coupe", price="1000.00"
+        )
         today = _now_salon().date()
 
-        # Chaque notification porte un `appointment_id` **distinct** — la déduplication
-        # par `(type, appointment_id)` ne doit fusionner que des doublons d'un même RDV.
-        base = datetime.datetime.now(datetime.timezone.utc)
-        for offset_minutes in range(5):
-            appointment_id = _seed_appointment(
-                salon_id, client_a, None, day=today,
-                start_time=datetime.time(8 + offset_minutes, 0),
-                end_time=datetime.time(8 + offset_minutes, 30),
-                status="PENDING",
+        for ticket_number in range(1, 6):
+            ticket_id = _seed_ticket(
+                salon_id, issued_date=today, ticket_number=ticket_number, status="done",
+                service_id=service_id,
             )
-            _seed_notification(
-                salon_id, appointment_id,
-                type_="NEW_BOOKING", title=f"Réservation {offset_minutes}",
-                message="Une nouvelle réservation a été effectuée.",
-                created_at=base - datetime.timedelta(minutes=offset_minutes),
+            _record_payment(
+                _e2e_client, manager_token, salon_id,
+                amount="1000.00", queue_ticket_id=ticket_id,
             )
 
         feed = _dashboard_activity(_e2e_client, manager_token, salon_id, limit=2)
         assert len(feed["items"]) == 2
 
     def test_activity_isolated_per_salon(self, _e2e_client: TestClient) -> None:
-        """Isolation §11.2 : une notification du salon B n'apparaît jamais dans le flux A."""
+        """Isolation §11.2 : un paiement du salon B n'apparaît jamais dans le flux A."""
         manager_a_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         manager_b_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_B_LOCAL)
         assert manager_a_id and manager_b_id
@@ -1023,33 +957,41 @@ class TestDashboardActivityE2E:
         token_b = _login(_e2e_client, phone=_PHONE_MANAGER_B_LOCAL)
         salon_a_id = _create_salon(_e2e_client, token_a, name=_SALON_NAME_A)
         salon_b_id = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
+        service_b = _create_service(
+            _e2e_client, token_b, salon_b_id, name="Coupe B", price="9000.00"
+        )
+        today = _now_salon().date()
 
-        _seed_notification(
-            salon_b_id, None,
-            type_="NEW_BOOKING", title="Réservation salon B",
-            message="Une nouvelle réservation a été effectuée.",
-            created_at=datetime.datetime.now(datetime.timezone.utc),
+        ticket_b = _seed_ticket(
+            salon_b_id, issued_date=today, ticket_number=1, status="done",
+            service_id=service_b,
+        )
+        _record_payment(
+            _e2e_client, token_b, salon_b_id,
+            amount="9000.00", queue_ticket_id=ticket_b,
         )
 
         feed_a = _dashboard_activity(_e2e_client, token_a, salon_a_id)
         assert feed_a["items"] == []
 
 
-# ─── Groupe 5 : alertes — dérivées de faits réels ────────────────────────────
+# ─── Groupe 5 : alertes — dérivées de faits réels (#148) ─────────────────────
 
 
 @pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
 class TestDashboardAlertsE2E:
-    """`GET /salons/{id}/dashboard/alerts` : `late`/`prolonged_wait`/`payment_anomaly` réels."""
+    """`GET /salons/{id}/dashboard/alerts` : `prolonged_wait`/`payment_anomaly` réels.
 
-    def test_alerts_derived_from_real_late_prolonged_wait_and_payment_anomaly(
+    L'ancienne alerte `late` (RDV `CONFIRMED` dont le créneau était dépassé sans
+    clôture) n'a **pas d'équivalent walk-in** — un ticket n'a pas de créneau
+    horaire — et a disparu avec le pivot (#148). Seules deux alertes subsistent.
+    """
+
+    def test_alerts_derived_from_real_prolonged_wait_and_payment_anomaly(
         self, _e2e_client: TestClient
     ) -> None:
-        """Trois alertes dérivées de RDV et d'un écart de caisse réellement persistés."""
+        """Les deux alertes restantes dérivent de tickets réellement persistés."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_a = _register_client_account(
-            _e2e_client, phone=_PHONE_CLIENT_A_LOCAL, full_name="Cliente Alertes"
-        )
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
@@ -1057,44 +999,40 @@ class TestDashboardAlertsE2E:
         now = _now_salon()
         today = now.date()
 
-        # `late` : CONFIRMED dont le créneau est passé sans clôture.
-        _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=(now - datetime.timedelta(hours=2)).time(),
-            end_time=(now - datetime.timedelta(hours=1)).time(),
-            status="CONFIRMED",
+        # `prolonged_wait` : `waiting` dont l'attente réelle (30 min) dépasse
+        # l'estimation figée (5 min).
+        _seed_ticket(
+            salon_id, issued_date=today, ticket_number=1, status="waiting",
+            estimated_wait_minutes=5, created_at=now - datetime.timedelta(minutes=30),
         )
-        # `prolonged_wait` : PENDING dont le début est dépassé, non confirmé.
-        _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=(now - datetime.timedelta(hours=1)).time(),
-            end_time=(now + datetime.timedelta(minutes=30)).time(),
-            status="PENDING",
+        # `waiting` dont l'attente réelle **n'excède pas** l'estimation : ne
+        # doit jamais peser dans l'alerte (contrôle négatif).
+        _seed_ticket(
+            salon_id, issued_date=today, ticket_number=2, status="waiting",
+            estimated_wait_minutes=60, created_at=now,
         )
-        # `payment_anomaly` : COMPLETED sans aucun paiement rattaché (#36).
-        _seed_appointment(
-            salon_id, client_a, None, day=today,
-            start_time=datetime.time(8, 0), end_time=datetime.time(8, 30),
-            status="COMPLETED",
+        # `payment_anomaly` : `done` sans aucun paiement rattaché (#36).
+        _seed_ticket(
+            salon_id, issued_date=today, ticket_number=3, status="done",
+            completed_at=now,
         )
 
         alerts = _dashboard_alerts(_e2e_client, manager_token, salon_id)
         by_kind = {item["kind"]: item for item in alerts["items"]}
 
-        assert by_kind["late"]["count"] >= 1
-        assert by_kind["late"]["severity"] == "warning"
-        assert by_kind["prolonged_wait"]["count"] >= 1
+        assert by_kind["prolonged_wait"]["count"] == 1
         assert by_kind["prolonged_wait"]["severity"] == "info"
-        assert by_kind["payment_anomaly"]["count"] >= 1
+        assert by_kind["payment_anomaly"]["count"] == 1
         assert by_kind["payment_anomaly"]["severity"] == "warning"
+        assert "late" not in by_kind
 
-        # Ordre d'affichage stable (autorité serveur).
+        # Ordre d'affichage stable (autorité serveur) : anomalie de paiement
+        # avant attente prolongée.
         kinds_order = [item["kind"] for item in alerts["items"]]
-        assert kinds_order.index("payment_anomaly") < kinds_order.index("late")
-        assert kinds_order.index("late") < kinds_order.index("prolonged_wait")
+        assert kinds_order.index("payment_anomaly") < kinds_order.index("prolonged_wait")
 
     def test_alerts_empty_when_no_alerts(self, _e2e_client: TestClient) -> None:
-        """Salon sans RDV en retard/attente prolongée ni écart de caisse → liste vide."""
+        """Salon sans ticket en attente prolongée ni écart de caisse → liste vide."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
@@ -1104,25 +1042,19 @@ class TestDashboardAlertsE2E:
         assert alerts["items"] == []
 
     def test_alerts_isolated_per_salon(self, _e2e_client: TestClient) -> None:
-        """Isolation §11.2 : un RDV en retard du salon B n'entre jamais dans les alertes A."""
+        """Isolation §11.2 : un écart de caisse du salon B n'entre jamais dans les alertes A."""
         manager_a_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         manager_b_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_B_LOCAL)
-        client_b = _register_client_account(
-            _e2e_client, phone=_PHONE_CLIENT_B_LOCAL, full_name="Cliente Salon B Alertes"
-        )
         assert manager_a_id and manager_b_id
         token_a = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         token_b = _login(_e2e_client, phone=_PHONE_MANAGER_B_LOCAL)
         salon_a_id = _create_salon(_e2e_client, token_a, name=_SALON_NAME_A)
         salon_b_id = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
 
-        now = _now_salon()
-        today = now.date()
-        _seed_appointment(
-            salon_b_id, client_b, None, day=today,
-            start_time=(now - datetime.timedelta(hours=2)).time(),
-            end_time=(now - datetime.timedelta(hours=1)).time(),
-            status="CONFIRMED",
+        today = _now_salon().date()
+        _seed_ticket(
+            salon_b_id, issued_date=today, ticket_number=1, status="done",
+            completed_at=_now_salon(),
         )
 
         alerts_a = _dashboard_alerts(_e2e_client, token_a, salon_a_id)

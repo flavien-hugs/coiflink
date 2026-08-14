@@ -74,10 +74,11 @@ def _make_payment(
         payment_method=payment_method,
         status=status,
         recorded_by=_ACTOR_ID,
-        appointment_id=None,
         service_id=_SERVICE_ID,
+        queue_ticket_id=None,
         client_id=client_id,
         reference=None,
+        mobile_money_phone=None,
         created_at=created_at,
     )
 

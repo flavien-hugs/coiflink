@@ -89,13 +89,6 @@ def _wipe_test_data() -> None:
         )
         conn.execute(
             text(
-                f"DELETE FROM notifications WHERE salon_id IN ({salons_of_prefix}) "
-                f"OR user_id IN ({users_of_prefix})"
-            ),
-            params,
-        )
-        conn.execute(
-            text(
                 f"DELETE FROM campaigns WHERE salon_id IN ({salons_of_prefix}) "
                 f"OR created_by IN ({users_of_prefix})"
             ),
@@ -107,16 +100,6 @@ def _wipe_test_data() -> None:
         )
         conn.execute(
             text(f"DELETE FROM payments WHERE salon_id IN ({salons_of_prefix})"), params
-        )
-        conn.execute(
-            text(
-                f"DELETE FROM appointment_services WHERE salon_id IN ({salons_of_prefix})"
-            ),
-            params,
-        )
-        conn.execute(
-            text(f"DELETE FROM appointments WHERE salon_id IN ({salons_of_prefix})"),
-            params,
         )
         conn.execute(
             text(f"DELETE FROM services WHERE salon_id IN ({salons_of_prefix})"), params
@@ -197,22 +180,6 @@ def _login(client: TestClient, *, phone: str) -> str:
     resp = client.post("/auth/login", json={"identifier": phone, "password": _PASSWORD})
     assert resp.status_code == 200, f"Connexion échouée ({phone}) : {resp.text}"
     return resp.json()["access_token"]
-
-
-def _next_monday() -> datetime.date:
-    today = datetime.date.today()
-    return today + datetime.timedelta(days=((7 - today.weekday()) % 7 or 7))
-
-
-def _first_slot(client: TestClient, salon_id: str, *, date: datetime.date, service_id: str) -> str:
-    resp = client.get(
-        f"/catalog/salons/{salon_id}/availability",
-        params={"date": date.isoformat(), "service_id": service_id},
-    )
-    assert resp.status_code == 200, f"Disponibilité échouée : {resp.text}"
-    slots = resp.json()["slots"]
-    assert slots, "Aucun créneau libre — le salon devrait être réservable et vide."
-    return slots[0]["start"]
 
 
 # ─── Helpers SQL (lecture directe du journal) ─────────────────────────────────
@@ -307,28 +274,6 @@ def _ctx(_e2e_client: TestClient) -> _Ctx:
     )
 
 
-def _complete_appointment(client: TestClient, ctx: _Ctx) -> str:
-    """Réserve (client) puis fait passer un RDV en `COMPLETED` (gérant) → appointment_id."""
-
-    date = _next_monday()
-    start = _first_slot(client, ctx.salon_id, date=date, service_id=ctx.service_id)
-    booking = client.post(
-        f"/salons/{ctx.salon_id}/appointments",
-        json={"date": date.isoformat(), "start_time": start, "service_ids": [ctx.service_id]},
-        headers=_auth(ctx.client_token),
-    )
-    assert booking.status_code == 201, f"Réservation échouée : {booking.text}"
-    appointment_id = booking.json()["id"]
-    for target in ("CONFIRMED", "COMPLETED"):
-        resp = client.post(
-            f"/salons/{ctx.salon_id}/appointments/{appointment_id}/status",
-            json={"status": target},
-            headers=_auth(ctx.manager_token),
-        )
-        assert resp.status_code == 200, f"Transition {target} échouée : {resp.text}"
-    return appointment_id
-
-
 # ─── Tests ────────────────────────────────────────────────────────────────────
 
 
@@ -361,15 +306,14 @@ class TestSensitiveAuditE2E:
         )
         assert resp.status_code == 200, f"Mise à jour note échouée : {resp.text}"
 
-        # 3. Encaissement d'un RDV terminé → PAYMENT_RECORDED. Réservé **avant** toute
-        #    modification de prestation, pour que `price_at_booking` reste `_SERVICE_PRICE`.
-        appointment_id = _complete_appointment(client, _ctx)
+        # 3. Encaissement d'une prestation → PAYMENT_RECORDED. Encaissé **avant** toute
+        #    modification de prestation, pour que le montant attendu reste `_SERVICE_PRICE`.
         payment = client.post(
             f"/salons/{_ctx.salon_id}/payments",
             json={
                 "amount": _SERVICE_PRICE,
                 "payment_method": "CASH",
-                "appointment_id": appointment_id,
+                "service_id": _ctx.service_id,
                 "client_id": _ctx.client_id,
             },
             headers=auth,
@@ -423,15 +367,14 @@ class TestSensitiveAuditE2E:
         """Un paiement au **montant incohérent** (`422`) ne laisse **aucune** entrée d'audit (atomicité)."""
 
         client = _e2e_client
-        appointment_id = _complete_appointment(client, _ctx)
 
         before = _count_audit_for_salon(_ctx.salon_id)
         incoherent = client.post(
             f"/salons/{_ctx.salon_id}/payments",
             json={
-                "amount": "4999.00",  # ≠ prix figé de la prestation
+                "amount": "4999.00",  # ≠ prix courant de la prestation
                 "payment_method": "CASH",
-                "appointment_id": appointment_id,
+                "service_id": _ctx.service_id,
                 "client_id": _ctx.client_id,
             },
             headers=_auth(_ctx.manager_token),

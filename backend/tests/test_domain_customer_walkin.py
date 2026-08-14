@@ -1,4 +1,4 @@
-"""Tests unitaires — domaine walk-in kiosque (US-8.2, #156).
+"""Tests unitaires — domaine walk-in terminal (US-8.2, #156).
 
 Couvre les fonctions et dataclasses ajoutées à `domain/customer.py` pour la borne :
 - `walk_in_first_name` : extraction du prénom (premier token de `full_name`) ;
@@ -57,7 +57,7 @@ class TestWalkInFirstName:
     def test_single_char_name(self) -> None:
         assert walk_in_first_name("A B") == "A"
 
-    def test_full_name_composed_by_kiosk_roundtrips(self) -> None:
+    def test_full_name_composed_by_terminal_roundtrips(self) -> None:
         """La composition « Prénom Nom » garantit que walk_in_first_name == first_name."""
         first_name = "Awa"
         last_name = "Koné"

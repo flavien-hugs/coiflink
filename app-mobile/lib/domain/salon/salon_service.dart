@@ -3,9 +3,11 @@
 // Domaine **pur** : aucune dépendance à Flutter ni à un client HTTP (ADR-0008).
 // Reflète une prestation `ACTIVE` telle qu'exposée par la fiche publique
 // `GET /catalog/salons/{id}` (`id`, `name`, `description`, `price`,
-// `duration_minutes`, `category`, `image_url`) — jamais `is_active`, `salon_id`
-// ni timestamps (donnée de gestion, spec §A.4). Seules les prestations actives
-// remontent.
+// `duration_minutes`, `category`, `image_url`, `photos`) — jamais `is_active`,
+// `salon_id` ni timestamps (donnée de gestion, spec §A.4). Seules les
+// prestations actives remontent.
+
+import 'salon_photo.dart';
 
 /// Prestation proposée par un salon, affichée dans sa fiche.
 class SalonService {
@@ -17,6 +19,7 @@ class SalonService {
     this.durationMinutes,
     this.category,
     this.imageUrl,
+    this.photos = const [],
   });
 
   /// Identifiant opaque de la prestation (UUID côté backend).
@@ -37,8 +40,14 @@ class SalonService {
 
   final String? category;
 
-  /// URL **signée** à durée limitée de l'illustration de la prestation (#158),
-  /// ou `null` si aucune image / stockage non configuré. Comme
-  /// `SalonDetail.logoUrl` : ne pas mettre en cache au-delà de sa validité.
+  /// URL **signée** à durée limitée de la **couverture** (`photos.first.url`),
+  /// ou `null` si aucune photo / stockage non configuré. Commodité pour un
+  /// simple affichage de vignette. Comme `SalonDetail.logoUrl` : ne pas mettre
+  /// en cache au-delà de sa validité.
   final String? imageUrl;
+
+  /// Galerie complète, ordonnée (index 0 = couverture, cohérent avec
+  /// [imageUrl]). Réutilise [SalonPhoto] (même forme `{id, url}` que les
+  /// photos de salon) plutôt qu'un type dupliqué identique.
+  final List<SalonPhoto> photos;
 }

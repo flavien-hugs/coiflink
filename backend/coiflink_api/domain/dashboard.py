@@ -180,6 +180,14 @@ class DashboardKpis:
     leur **évolution** vs la période précédente. `in_progress` est un **instantané**
     (nombre de prestations en cours **maintenant**) — sans évolution (l'issue ne liste
     que « nombre actuel »). Uniquement des compteurs, un montant et une devise (§11.3).
+
+    `attendance_today`/`revenue_this_week` alimentent les cartes « À surveiller »
+    (réorganisation du tableau de bord) — **bornes fixes**, volontairement
+    **indépendantes** du filtre de période (`date_from`/`date_to` ci-dessus) : le CA
+    du jour et la fréquentation du jour sont déjà visibles ailleurs (tuile CA, ce
+    même KPI d'ici) — ces deux champs répondent à une question différente,
+    toujours la même (« vs hier », « vs la semaine dernière »), pour ne jamais
+    dépendre de ce que le gérant a sélectionné dans le filtre.
     """
 
     date_from: datetime.date
@@ -188,6 +196,8 @@ class DashboardKpis:
     in_progress: int
     revenue: Evolution
     clients_count: Evolution
+    attendance_today: Evolution
+    revenue_this_week: Evolution
     currency: str = DEFAULT_CURRENCY
 
 
@@ -231,20 +241,23 @@ def build_series(
 
 @dataclass(frozen=True)
 class InProgressService:
-    """Une prestation **en cours maintenant** (liste opérationnelle §148, avec noms).
+    """Un ticket walk-in **en cours maintenant** (liste opérationnelle §148, avec noms).
 
     Émet **uniquement** des **noms d'affichage** (`client_name`, `service_names`,
-    `hairdresser_name` = `users.full_name`/`services.name`, patron #43/#36) — **jamais**
-    `client_id`/`user_id` ni contact. `status` vaut toujours `CONFIRMED` au MVP
-    (« en cours » est **dérivé**, pas stocké) ; il est renvoyé pour transparence.
+    `hairdresser_name` = `customer_profiles.full_name`/`services.name`/`users.full_name`,
+    patron #43/#36) — **jamais** `customer_profile_id`/`hairdresser_id` ni contact.
+    `status` vaut toujours `in_progress` (statut **stocké** du ticket, contrairement à
+    l'ancien RDV où « en cours » était dérivé d'un créneau) ; il est renvoyé pour
+    transparence. `started_at` remplace l'ancien couple `start_time`/`end_time` — un
+    ticket walk-in n'a pas de créneau planifié, seulement l'instant où la prise en
+    charge a commencé.
     """
 
-    appointment_id: str
+    queue_ticket_id: str
     client_name: str | None
     service_names: tuple[str, ...]
     hairdresser_name: str | None
-    start_time: datetime.time
-    end_time: datetime.time
+    started_at: datetime.datetime
     status: str
 
 

@@ -62,7 +62,6 @@ _ADMIN_ID = uuid.UUID("44444444-0000-0000-0000-000000000044")
 
 _SALON_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _PAYMENT_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")
-_APPT_ID = uuid.UUID("cccccccc-0000-0000-0000-000000000001")
 
 _PAID_AT = datetime.datetime(2026, 7, 30, 10, 15, 0, tzinfo=datetime.timezone.utc)
 
@@ -95,10 +94,10 @@ def _make_receipt(
     payment_id: uuid.UUID = _PAYMENT_ID,
     *,
     amount: decimal.Decimal = decimal.Decimal("5000.00"),
-    appointment_id: uuid.UUID | None = None,
     lines: tuple[ReceiptLine, ...] = (),
     reference: str | None = None,
     receipt_number: int = 1,
+    ticket_number: int | None = None,
     client_name: str | None = None,
     client_phone: str | None = None,
 ) -> Receipt:
@@ -113,8 +112,8 @@ def _make_receipt(
         status="VALIDATED",
         reference=reference,
         paid_at=_PAID_AT,
-        appointment_id=appointment_id,
         lines=lines,
+        ticket_number=ticket_number,
         client_name=client_name,
         client_phone=client_phone,
     )
@@ -211,6 +210,22 @@ class TestListReceiptsWithData:
         item = r.json()["items"][0]
         assert item["salon_name"] == "Salon Élégance"
 
+    def test_item_has_ticket_number_when_ticket_linked(
+        self, client_http: TestClient, receipt_repo: FakeReceiptRepository
+    ) -> None:
+        receipt_repo._by_client[_CLIENT_ID] = (_make_receipt(ticket_number=42),)
+        r = client_http.get(_RECEIPTS_LIST_URL, headers={"Authorization": f"Bearer {_CLIENT_TOKEN}"})
+        item = r.json()["items"][0]
+        assert item["ticket_number"] == 42
+
+    def test_item_has_null_ticket_number_for_service_only_payment(
+        self, client_http: TestClient, receipt_repo: FakeReceiptRepository
+    ) -> None:
+        receipt_repo._by_client[_CLIENT_ID] = (_make_receipt(),)
+        r = client_http.get(_RECEIPTS_LIST_URL, headers={"Authorization": f"Bearer {_CLIENT_TOKEN}"})
+        item = r.json()["items"][0]
+        assert item["ticket_number"] is None
+
     def test_amount_is_decimal_string(
         self, client_http: TestClient, receipt_repo: FakeReceiptRepository
     ) -> None:
@@ -234,7 +249,7 @@ class TestListReceiptsWithData:
     ) -> None:
         lines = (ReceiptLine(service_name="Coupe", amount=decimal.Decimal("3000.00")),)
         receipt_repo._by_client[_CLIENT_ID] = (
-            _make_receipt(appointment_id=_APPT_ID, lines=lines),
+            _make_receipt(lines=lines),
         )
         r = client_http.get(_RECEIPTS_LIST_URL, headers={"Authorization": f"Bearer {_CLIENT_TOKEN}"})
         item = r.json()["items"][0]
@@ -297,7 +312,7 @@ class TestGetReceiptOk:
             ReceiptLine(service_name="Barbe", amount=decimal.Decimal("2000.00")),
         )
         receipt_repo._by_client[_CLIENT_ID] = (
-            _make_receipt(appointment_id=_APPT_ID, lines=lines),
+            _make_receipt(lines=lines),
         )
         r = client_http.get(
             _receipt_url(_PAYMENT_ID),
@@ -562,8 +577,11 @@ def _make_manager_receipt(
     *,
     client_name: str | None = "Awa Koné",
     client_phone: str | None = "+2250700000001",
+    ticket_number: int | None = None,
 ) -> Receipt:
-    return _make_receipt(client_name=client_name, client_phone=client_phone)
+    return _make_receipt(
+        client_name=client_name, client_phone=client_phone, ticket_number=ticket_number
+    )
 
 
 class TestManagerReceiptEndpoint:
@@ -598,6 +616,19 @@ class TestManagerReceiptEndpoint:
             body = r.json()
             assert body["client_name"] == "Awa Koné"
             assert body["client_phone"] == "+2250700000001"
+        finally:
+            self._teardown()
+
+    def test_returns_ticket_number_for_ticket_linked_payment(
+        self, receipt_repo: FakeReceiptRepository
+    ) -> None:
+        receipt_repo._by_salon[_SALON_ID] = (_make_manager_receipt(ticket_number=7),)
+        c = self._client_with_scope(receipt_repo)
+        try:
+            r = c.get(
+                _MANAGER_RECEIPT_URL, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
+            )
+            assert r.json()["ticket_number"] == 7
         finally:
             self._teardown()
 

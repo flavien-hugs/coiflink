@@ -6,16 +6,14 @@ se connecter à un serveur :
 
 - `SeedContext.is_ready()` — pré-condition des scénarios.
 - `run_salon_search()` — route publique, variation de paramètres.
+- `run_ticket_create()` — fiche walk-in (borne) → émission de ticket, jeton borne.
 - `run_manager_dashboard()` — 4 lectures agrégées, jeton gérant, agrégat de latence.
 - `run_api_general()` — lecture protégée, jeton requis.
-- `run_appointment_create()` — parcours 3 étapes, arrêt anticipé sur erreur/pas de créneau.
 - `weighted_groups()` — tous les groupes présents, poids relatifs cohérents.
-- `_future_slot_date()` — toujours un lundi futur en format ISO.
 """
 
 from __future__ import annotations
 
-import datetime
 import random
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,9 +27,9 @@ from perf.scenarios import (
     SeedContext,
     TimedResponse,
     run_api_general,
-    run_appointment_create,
     run_manager_dashboard,
     run_salon_search,
+    run_ticket_create,
     weighted_groups,
 )
 
@@ -79,34 +77,6 @@ class MockTimedHttp:
         return TimedResponse(status=self._status, elapsed_ms=self._elapsed_ms, json=self._body)
 
 
-class _SequentialMockHttp:
-    """Transport de test séquentiel : chaque appel consomme la prochaine `TimedResponse`."""
-
-    def __init__(self, responses: list[TimedResponse]) -> None:
-        self._responses = responses
-        self._idx = 0
-        self.calls: list[_Call] = []
-
-    def send(
-        self,
-        method: str,
-        label: str,
-        path: str,
-        *,
-        params: dict | None = None,
-        json: dict | None = None,
-        token: str | None = None,
-    ) -> TimedResponse:
-        self.calls.append(_Call(method, label, path, params, json, token))
-        resp = (
-            self._responses[self._idx]
-            if self._idx < len(self._responses)
-            else self._responses[-1]
-        )
-        self._idx += 1
-        return resp
-
-
 # ─── Fixtures de contexte ─────────────────────────────────────────────────────
 
 
@@ -115,6 +85,7 @@ def _make_context(n_salons: int = 2, n_clients: int = 3) -> SeedContext:
         SalonFixture(
             salon_id=f"salon-{i}",
             manager_token=f"mgr-token-{i}",
+            terminal_token=f"term-token-{i}",
             service_ids=[f"svc-{i}-1", f"svc-{i}-2"],
             hairdresser_ids=[f"hd-{i}-1"],
             name=f"Salon {i}",
@@ -130,11 +101,6 @@ def _make_context(n_salons: int = 2, n_clients: int = 3) -> SeedContext:
     )
 
 
-def _availability_body() -> dict:
-    """Corps de disponibilités minimal avec un créneau libre."""
-    return {"slots": [{"start": "09:00", "end": "09:30"}]}
-
-
 # ─── SeedContext.is_ready() ───────────────────────────────────────────────────
 
 
@@ -148,7 +114,7 @@ class TestSeedContext:
 
     def test_is_ready_false_when_no_client_tokens(self) -> None:
         ctx = SeedContext(
-            salons=[SalonFixture("s", "t", ["svc"], ["hd"], "Nom")],
+            salons=[SalonFixture("s", "t", "term", ["svc"], ["hd"], "Nom")],
             client_tokens=[],
         )
         assert ctx.is_ready() is False
@@ -272,7 +238,7 @@ class TestManagerDashboard:
         run_manager_dashboard(http, _make_context(), random.Random(0))
         paths = {c.path for c in http.calls}
         expected_fragments = [
-            "daily-summary",
+            "dashboard/kpis",
             "revenue",
             "service-demand",
             "hairdresser-performance",
@@ -333,102 +299,6 @@ class TestApiGeneral:
         )
 
 
-# ─── Scénario 2 : Création de rendez-vous ─────────────────────────────────────
-
-
-class TestAppointmentCreate:
-    def test_returns_appointment_group(self) -> None:
-        http = MockTimedHttp(status=200, elapsed_ms=50.0, body=_availability_body())
-        sample = run_appointment_create(http, _make_context(), random.Random(0))
-        assert sample.group == config.BUDGET_APPOINTMENT_CREATE
-
-    def test_happy_path_makes_three_requests(self) -> None:
-        http = MockTimedHttp(status=200, elapsed_ms=50.0, body=_availability_body())
-        run_appointment_create(http, _make_context(), random.Random(0))
-        assert len(http.calls) == 3
-
-    def test_first_call_is_get_salon_detail(self) -> None:
-        http = MockTimedHttp(status=200, elapsed_ms=50.0, body=_availability_body())
-        run_appointment_create(http, _make_context(), random.Random(0))
-        first = http.calls[0]
-        assert first.method == "GET"
-        assert "/catalog/salons/" in first.path
-
-    def test_second_call_is_availability(self) -> None:
-        http = MockTimedHttp(status=200, elapsed_ms=50.0, body=_availability_body())
-        run_appointment_create(http, _make_context(), random.Random(0))
-        assert "availability" in http.calls[1].path
-
-    def test_third_call_is_post_appointment(self) -> None:
-        http = MockTimedHttp(status=200, elapsed_ms=50.0, body=_availability_body())
-        run_appointment_create(http, _make_context(), random.Random(0))
-        third = http.calls[2]
-        assert third.method == "POST"
-        assert "/appointments" in third.path
-
-    def test_third_call_uses_client_token(self) -> None:
-        """La création de RDV exige un jeton client (#21)."""
-        http = MockTimedHttp(status=200, elapsed_ms=50.0, body=_availability_body())
-        run_appointment_create(http, _make_context(), random.Random(0))
-        assert http.calls[2].token is not None
-
-    def test_third_call_has_json_payload(self) -> None:
-        http = MockTimedHttp(status=200, elapsed_ms=50.0, body=_availability_body())
-        run_appointment_create(http, _make_context(), random.Random(0))
-        payload = http.calls[2].json_body
-        assert payload is not None
-        assert "date" in payload
-        assert "start_time" in payload
-        assert "service_ids" in payload
-
-    def test_elapsed_is_sum_of_three_calls(self) -> None:
-        http = MockTimedHttp(status=200, elapsed_ms=100.0, body=_availability_body())
-        sample = run_appointment_create(http, _make_context(), random.Random(0))
-        assert sample.elapsed_ms == pytest.approx(300.0)
-
-    def test_ok_on_happy_path(self) -> None:
-        http = MockTimedHttp(status=200, elapsed_ms=50.0, body=_availability_body())
-        sample = run_appointment_create(http, _make_context(), random.Random(0))
-        assert sample.ok is True
-
-    def test_stops_early_when_salon_detail_fails(self) -> None:
-        """Si le détail salon répond 404, on arrête après 1 appel."""
-        http = MockTimedHttp(status=404)
-        sample = run_appointment_create(http, _make_context(), random.Random(0))
-        assert sample.ok is False
-        assert len(http.calls) == 1
-
-    def test_stops_early_when_no_available_slots(self) -> None:
-        """Si les disponibilités sont vides, on arrête après 2 appels (pas de création)."""
-        http = MockTimedHttp(status=200, elapsed_ms=50.0, body={"slots": []})
-        sample = run_appointment_create(http, _make_context(), random.Random(0))
-        assert sample.ok is False
-        assert len(http.calls) == 2
-
-    def test_stops_early_when_availability_returns_error(self) -> None:
-        """Si GET availability renvoie 500 (pas de créneaux lisibles), on s'arrête après 2 appels."""
-        responses = [
-            TimedResponse(status=200, elapsed_ms=50.0, json={"name": "Salon"}),  # détail OK
-            TimedResponse(status=500, elapsed_ms=50.0, json=None),               # availability KO
-        ]
-        http = _SequentialMockHttp(responses)
-        sample = run_appointment_create(http, _make_context(), random.Random(0))
-        assert sample.ok is False
-        assert len(http.calls) == 2
-
-    def test_not_ok_when_booking_post_fails_with_409(self) -> None:
-        """Un 409 (double-réservation sous concurrence) est compté comme erreur."""
-        responses = [
-            TimedResponse(status=200, elapsed_ms=50.0, json={"name": "Salon"}),
-            TimedResponse(status=200, elapsed_ms=50.0, json=_availability_body()),
-            TimedResponse(status=409, elapsed_ms=50.0, json={"detail": "conflict"}),
-        ]
-        http = _SequentialMockHttp(responses)
-        sample = run_appointment_create(http, _make_context(), random.Random(0))
-        assert sample.ok is False
-        assert len(http.calls) == 3
-
-
 # ─── Pondération du trafic (weighted_groups) ──────────────────────────────────
 
 
@@ -446,12 +316,12 @@ class TestWeightedGroups:
             "BUDGET_SALON_SEARCH doit avoir le poids le plus élevé (trafic catalogue dominant)."
         )
 
-    def test_appointment_create_has_lowest_count(self) -> None:
-        """La création de RDV (écriture + effets de bord) est la moins fréquente."""
+    def test_ticket_create_has_lowest_count(self) -> None:
+        """L'émission de ticket (écriture + effets de bord) est la moins fréquente."""
         plan = weighted_groups()
         counts = {g: plan.count(g) for g in config.BUDGETS_MS}
-        assert counts[config.BUDGET_APPOINTMENT_CREATE] == min(counts.values()), (
-            "BUDGET_APPOINTMENT_CREATE doit avoir le poids le plus faible (écriture limitée)."
+        assert counts[config.BUDGET_TICKET_CREATE] == min(counts.values()), (
+            "BUDGET_TICKET_CREATE doit avoir le poids le plus faible (écriture limitée)."
         )
 
     def test_total_length_equals_sum_of_weights(self) -> None:
@@ -464,50 +334,62 @@ class TestWeightedGroups:
             assert w > 0, f"Le poids de {group!r} doit être strictement positif."
 
 
-# ─── _future_slot_date() ──────────────────────────────────────────────────────
+# ─── Scénario 2 : émission de ticket walk-in ──────────────────────────────────
 
 
-class TestFutureSlotDate:
-    """Garanties de déterminisme de `_future_slot_date()` — aucune I/O."""
+class TestTicketCreate:
+    """`run_ticket_create()` : fiche walk-in (borne) → émission de ticket."""
 
-    def _call(self, seed: int = 42) -> str:
-        from perf.scenarios import _future_slot_date
+    def test_returns_ticket_create_group(self) -> None:
+        http = MockTimedHttp(status=201, body={"customer_id": "cust-1"})
+        sample = run_ticket_create(http, _make_context(), random.Random(0))
+        assert sample.group == config.BUDGET_TICKET_CREATE
 
-        return _future_slot_date(random.Random(seed))
+    def test_makes_exactly_two_requests_on_success(self) -> None:
+        """Fiche walk-in puis ticket : deux appels quand tout aboutit."""
+        http = MockTimedHttp(status=201, body={"customer_id": "cust-1"})
+        run_ticket_create(http, _make_context(), random.Random(0))
+        assert len(http.calls) == 2
 
-    def test_returns_valid_iso_date(self) -> None:
-        datetime.date.fromisoformat(self._call())  # lève si invalide
+    def test_second_call_uses_customer_id_from_first(self) -> None:
+        """Le ticket référence la fiche walk-in tout juste créée."""
+        http = MockTimedHttp(status=201, body={"customer_id": "cust-1"})
+        run_ticket_create(http, _make_context(), random.Random(0))
+        assert http.calls[1].json_body["customer_profile_id"] == "cust-1"
 
-    def test_is_strictly_in_the_future(self) -> None:
-        date = datetime.date.fromisoformat(self._call())
-        assert date > datetime.date.today()
+    def test_uses_terminal_token(self) -> None:
+        """L'émission de ticket exige le jeton borne (`QUEUE_TICKET_CREATE`, TERMINAL uniquement)."""
+        http = MockTimedHttp(status=201, body={"customer_id": "cust-1"})
+        run_ticket_create(http, _make_context(), random.Random(0))
+        assert all(c.token is not None for c in http.calls)
 
-    def test_is_always_a_monday(self) -> None:
-        for seed in range(10):
-            date = datetime.date.fromisoformat(self._call(seed))
-            assert date.weekday() == 0, (
-                f"_future_slot_date() a renvoyé {date.strftime('%A')} ({date}) "
-                "pour seed={seed} — doit toujours être un lundi."
-            )
+    def test_elapsed_is_sum_of_two_calls(self) -> None:
+        http = MockTimedHttp(status=201, elapsed_ms=40.0, body={"customer_id": "cust-1"})
+        sample = run_ticket_create(http, _make_context(), random.Random(0))
+        assert sample.elapsed_ms == pytest.approx(80.0)
 
-    def test_within_nine_weeks_from_next_monday(self) -> None:
-        today = datetime.date.today()
-        days_ahead = (7 - today.weekday()) % 7 or 7
-        next_monday = today + datetime.timedelta(days=days_ahead)
-        max_date = next_monday + datetime.timedelta(weeks=8)
-        for seed in range(10):
-            date = datetime.date.fromisoformat(self._call(seed))
-            assert date <= max_date, (
-                f"_future_slot_date() a renvoyé {date} qui dépasse la fenêtre "
-                f"attendue (max {max_date})."
-            )
+    def test_ok_when_both_calls_succeed(self) -> None:
+        http = MockTimedHttp(status=201, body={"customer_id": "cust-1"})
+        sample = run_ticket_create(http, _make_context(), random.Random(0))
+        assert sample.ok is True
 
-    def test_same_seed_gives_same_result(self) -> None:
-        assert self._call(seed=99) == self._call(seed=99)
+    def test_stops_after_one_request_when_customer_creation_fails(self) -> None:
+        """Une fiche walk-in refusée n'entraîne aucune tentative d'émission de ticket."""
+        http = MockTimedHttp(status=422)
+        sample = run_ticket_create(http, _make_context(), random.Random(0))
+        assert len(http.calls) == 1
+        assert sample.ok is False
 
-    def test_different_seeds_produce_variation(self) -> None:
-        results = {self._call(seed=i) for i in range(10)}
-        assert len(results) > 1, (
-            "_future_slot_date() doit varier selon le seed (étaler les créneaux "
-            "réduit les collisions de réservation sous concurrence)."
-        )
+    def test_not_ok_when_ticket_creation_fails(self) -> None:
+        calls = {"n": 0}
+
+        class PartialHttp:
+            calls: list = field(default_factory=list)
+
+            def send(self, method, label, path, *, params=None, json=None, token=None):
+                calls["n"] += 1
+                status = 201 if calls["n"] == 1 else 422
+                return TimedResponse(status=status, elapsed_ms=10.0, json={"customer_id": "cust-1"})
+
+        sample = run_ticket_create(PartialHttp(), _make_context(), random.Random(0))
+        assert sample.ok is False

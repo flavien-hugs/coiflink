@@ -34,8 +34,8 @@ from coiflink_api.adapters.inbound.security import (
     get_user_repository,
 )
 from coiflink_api.adapters.outbound.notifications.otp_sender_stub import StubOtpSender
-from coiflink_api.adapters.outbound.persistence.kiosk_device_repository import (
-    SqlKioskDeviceRepository,
+from coiflink_api.adapters.outbound.persistence.terminal_device_repository import (
+    SqlTerminalDeviceRepository,
 )
 from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.adapters.outbound.persistence.user_repository import (
@@ -45,21 +45,31 @@ from coiflink_api.adapters.outbound.security.argon2_hasher import Argon2Hasher
 from coiflink_api.adapters.outbound.security.login_rate_limiter_memory import (
     InMemoryLoginRateLimiter,
 )
+from coiflink_api.adapters.outbound.security.terminal_activation_in_memory import (
+    InMemoryTerminalActivationRepository,
+)
 from coiflink_api.adapters.outbound.security.otp_in_memory import InMemoryOtpRepository
 from coiflink_api.application.authentication import (
     AuthenticateUser,
     LoginCommand,
     RefreshTokens,
 )
-from coiflink_api.application.kiosk_authentication import (
-    AuthenticateKioskDevice,
-    KioskLoginCommand,
+from coiflink_api.application.terminal_authentication import (
+    AuthenticateTerminalDevice,
+    TerminalLoginCommand,
+)
+from coiflink_api.application.terminal_device_activation import (
+    ActivateTerminalDevice,
+    ActivateTerminalDeviceCommand,
 )
 from coiflink_api.application.password_reset import (
     ConfirmPasswordReset,
     PasswordResetConfirmCommand,
     PasswordResetRequestCommand,
     RequestPasswordReset,
+)
+from coiflink_api.application.ports.terminal_activation_repository import (
+    TerminalActivationRepository,
 )
 from coiflink_api.application.ports.login_rate_limiter import LoginRateLimiter
 from coiflink_api.application.ports.otp_repository import OtpRepository
@@ -73,6 +83,7 @@ from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
     EmailAlreadyInUse,
     ExpiredToken,
+    InvalidActivationCode,
     InvalidCredentials,
     InvalidEmail,
     InvalidName,
@@ -436,14 +447,14 @@ def refresh(
 
 
 # --------------------------------------------------------------------------- #
-# Authentification d'une borne kiosque (US-8.1, #155 — credential de device).
+# Authentification d'une borne terminal (US-8.1, #155 — credential de device).
 # Échange `(device_id, secret)` contre une paire JWT **standard et courte** au
-# rôle KIOSK. Route **publique-listée** (endpoint d'authentification, comme
+# rôle TERMINAL. Route **publique-listée** (endpoint d'authentification, comme
 # `/auth/login`) et rate-limitée par `device_id`. Réponse générique unique pour
 # tout échec (device inconnu, secret faux, device révoqué) — aucun oracle.
 # --------------------------------------------------------------------------- #
-class KioskLoginRequest(BaseModel):
-    """Corps de `POST /auth/kiosk/login`. `secret` n'est jamais renvoyé ni journalisé."""
+class TerminalLoginRequest(BaseModel):
+    """Corps de `POST /auth/terminal/login`. `secret` n'est jamais renvoyé ni journalisé."""
 
     device_id: str = Field(
         min_length=1, max_length=64, examples=["11111111-1111-1111-1111-111111111111"]
@@ -453,7 +464,7 @@ class KioskLoginRequest(BaseModel):
     secret: str = Field(min_length=1, max_length=512, examples=["k7Yw…Qc"])
 
 
-class KioskTokenResponse(TokenResponse):
+class TerminalTokenResponse(TokenResponse):
     """Paire de jetons émise à une borne + `salon_id` (mécanisme du jalon M7).
 
     Ajoute `salon_id` à `TokenResponse` : la borne apprend son salon au
@@ -464,15 +475,15 @@ class KioskTokenResponse(TokenResponse):
     salon_id: uuid.UUID
 
 
-def get_kiosk_login_rate_limiter(request: Request) -> LoginRateLimiter:
-    """Limiteur anti-bruteforce **dédié au login kiosque** (singleton `app.state`).
+def get_terminal_login_rate_limiter(request: Request) -> LoginRateLimiter:
+    """Limiteur anti-bruteforce **dédié au login terminal** (singleton `app.state`).
 
     Distinct du limiteur de connexion personnelle : verrouiller une borne ne doit
     pas verrouiller les connexions humaines (et inversement). Repli sûr avec les
     seuils de connexion d'`AuthConfig` si l'état n'est pas configuré.
     """
 
-    limiter = getattr(request.app.state, "kiosk_login_rate_limiter", None)
+    limiter = getattr(request.app.state, "terminal_login_rate_limiter", None)
     if limiter is None:
         config: AuthConfig = (
             getattr(request.app.state, "auth_config", None) or AuthConfig()
@@ -482,21 +493,21 @@ def get_kiosk_login_rate_limiter(request: Request) -> LoginRateLimiter:
             window=config.login_window,
             lockout=config.login_lockout,
         )
-        request.app.state.kiosk_login_rate_limiter = limiter
+        request.app.state.terminal_login_rate_limiter = limiter
     return limiter
 
 
-def get_authenticate_kiosk_device(
+def get_authenticate_terminal_device(
     request: Request,
     session: Annotated[Session, Depends(get_session)],
     hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
     token_service: Annotated[TokenService, Depends(get_token_service)],
-    rate_limiter: Annotated[LoginRateLimiter, Depends(get_kiosk_login_rate_limiter)],
-) -> AuthenticateKioskDevice:
+    rate_limiter: Annotated[LoginRateLimiter, Depends(get_terminal_login_rate_limiter)],
+) -> AuthenticateTerminalDevice:
     """Assemble le cas d'usage d'**authentification borne** (aucune règle métier ici)."""
 
-    return AuthenticateKioskDevice(
-        SqlKioskDeviceRepository(session),
+    return AuthenticateTerminalDevice(
+        SqlTerminalDeviceRepository(session),
         hasher,
         token_service,
         rate_limiter,
@@ -505,10 +516,10 @@ def get_authenticate_kiosk_device(
 
 
 @router.post(
-    "/kiosk/login",
-    response_model=KioskTokenResponse,
+    "/terminal/login",
+    response_model=TerminalTokenResponse,
     status_code=status.HTTP_200_OK,
-    summary="Connexion d'une borne kiosque (device_id + secret) — émet un JWT + refresh",
+    summary="Connexion d'une borne terminal (device_id + secret) — émet un JWT + refresh",
     responses={
         200: {"description": "Paire de jetons + salon_id de la borne"},
         401: {"description": "Credential invalide (device inconnu, secret faux ou révoqué) — générique"},
@@ -516,11 +527,11 @@ def get_authenticate_kiosk_device(
         503: {"description": "JWT_SECRET non configuré"},
     },
 )
-def kiosk_login(
-    payload: KioskLoginRequest,
+def terminal_login(
+    payload: TerminalLoginRequest,
     request: Request,
-    usecase: Annotated[AuthenticateKioskDevice, Depends(get_authenticate_kiosk_device)],
-) -> KioskTokenResponse:
+    usecase: Annotated[AuthenticateTerminalDevice, Depends(get_authenticate_terminal_device)],
+) -> TerminalTokenResponse:
     """Authentifie une borne et émet une paire de jetons ; `401` générique / `429` si bruteforce.
 
     La réponse porte le `salon_id` du device. Tout échec (device inconnu, secret
@@ -528,7 +539,7 @@ def kiosk_login(
     l'existence ou l'état d'une borne.
     """
 
-    command = KioskLoginCommand(
+    command = TerminalLoginCommand(
         device_id=payload.device_id,
         secret=payload.secret,
         client_ip=_client_ip(request),
@@ -551,13 +562,149 @@ def kiosk_login(
         ) from exc
 
     pair = result.tokens
-    return KioskTokenResponse(
+    return TerminalTokenResponse(
         access_token=pair.access_token,
         refresh_token=pair.refresh_token,
         token_type=pair.token_type,
         expires_in=pair.expires_in,
         salon_id=result.salon_id,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Activation d'une borne terminal (US-8.1, #155 — provisioning silencieux).
+# Le gérant lit un **code à 6 chiffres** sur la réponse du provisioning et le saisit
+# sur la borne ; celle-ci l'échange **une seule fois** contre son secret longue durée,
+# puis utilise `/auth/terminal/login` inchangé pour toutes ses sessions.
+# Route **publique-listée** : une borne non encore activée n'a aucun credential, donc
+# aucun principal à présenter — c'est un endpoint d'**échange**, au même titre que
+# `/auth/terminal/login` ou `/auth/password/reset/confirm`. Le provisioning
+# (`/salons/{id}/terminal-devices`) reste, lui, protégé (`TERMINAL_PROVISION` + portée salon).
+# Anti-abus rate-limité **par IP** (le `device_id` est inconnu tant que le code n'est
+# pas résolu) et code **à usage unique** ; tout échec (code inconnu, expiré, déjà
+# utilisé, trop d'essais) renvoie le **même** `400` générique — aucun oracle.
+# --------------------------------------------------------------------------- #
+class TerminalActivateRequest(BaseModel):
+    """Corps de `POST /auth/terminal/activate`. Le code n'est jamais renvoyé ni journalisé."""
+
+    # `min_length=1` (jamais la longueur exacte du code) pour ne pas divulguer la
+    # politique d'activation par une erreur de validation (anti-énumération).
+    code: str = Field(min_length=1, max_length=32, examples=["123456"])
+
+
+class TerminalActivateResponse(BaseModel):
+    """Réponse `200` de l'activation — identité de la borne **+ secret (une fois)**.
+
+    Le `secret` n'est renvoyé qu'ici, une seule fois — jamais relisible ensuite. La
+    borne doit le stocker localement et l'utiliser via `POST /auth/terminal/login` pour
+    toute session future.
+    """
+
+    device_id: uuid.UUID
+    secret: str
+
+
+def _get_terminal_activation_repository(request: Request) -> TerminalActivationRepository:
+    """Dépôt de défis d'activation (singleton `app.state`), partagé avec le provisioning.
+
+    **Même** attribut `app.state.terminal_activation_repository` que le getter du router
+    `terminal_devices.py` : `app.state` est porté par l'application, pas par le router,
+    donc le code émis au provisioning est retrouvé ici. Repli sûr si non câblé.
+    """
+
+    repo = getattr(request.app.state, "terminal_activation_repository", None)
+    if repo is None:
+        repo = InMemoryTerminalActivationRepository()
+        request.app.state.terminal_activation_repository = repo
+    return repo
+
+
+def get_terminal_activation_rate_limiter(request: Request) -> LoginRateLimiter:
+    """Limiteur anti-bruteforce **dédié à l'activation borne** (singleton `app.state`).
+
+    Distinct du limiteur de login terminal : verrouiller les activations ne doit pas
+    verrouiller les bornes déjà en service (et inversement). Faute de seuils
+    d'activation dédiés dans `AuthConfig`, on réutilise ceux de connexion — même
+    ordre de grandeur pour une saisie manuelle à 6 chiffres.
+    """
+
+    limiter = getattr(request.app.state, "terminal_activation_rate_limiter", None)
+    if limiter is None:
+        config: AuthConfig = (
+            getattr(request.app.state, "auth_config", None) or AuthConfig()
+        )
+        limiter = InMemoryLoginRateLimiter(
+            max_attempts=config.login_max_attempts,
+            window=config.login_window,
+            lockout=config.login_lockout,
+        )
+        request.app.state.terminal_activation_rate_limiter = limiter
+    return limiter
+
+
+def get_activate_terminal_device(
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+    hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
+    rate_limiter: Annotated[
+        LoginRateLimiter, Depends(get_terminal_activation_rate_limiter)
+    ],
+) -> ActivateTerminalDevice:
+    """Assemble le cas d'usage d'**activation borne** (aucune règle métier ici)."""
+
+    return ActivateTerminalDevice(
+        _get_terminal_activation_repository(request),
+        SqlTerminalDeviceRepository(session),
+        hasher,
+        rate_limiter=rate_limiter,
+    )
+
+
+@router.post(
+    "/terminal/activate",
+    response_model=TerminalActivateResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Active une borne terminal via son code à 6 chiffres — secret rendu une seule fois",
+    responses={
+        200: {"description": "Secret de borne émis — à utiliser ensuite via /auth/terminal/login"},
+        400: {"description": "Code d'activation invalide, expiré ou déjà utilisé (message générique)"},
+        429: {"description": "Trop de tentatives (anti-bruteforce par IP)"},
+    },
+)
+def activate_terminal_device(
+    payload: TerminalActivateRequest,
+    request: Request,
+    usecase: Annotated[ActivateTerminalDevice, Depends(get_activate_terminal_device)],
+) -> TerminalActivateResponse:
+    """Échange le code d'activation contre le secret longue durée de la borne.
+
+    Le secret est **généré ici**, à l'activation — jamais au provisioning — et
+    renvoyé **une seule fois** (seul son condensat argon2id est stocké). Le code est
+    à **usage unique** : une seconde tentative avec le même code échoue. Tout échec
+    (code inconnu, expiré, déjà consommé, trop d'essais) renvoie le **même** `400`
+    générique ; `429` + `Retry-After` si l'IP est verrouillée.
+    """
+
+    command = ActivateTerminalDeviceCommand(
+        code=payload.code, client_ip=_client_ip(request)
+    )
+    try:
+        result = usecase.execute(command)
+    except TooManyLoginAttempts as exc:
+        headers = (
+            {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Trop de tentatives d'activation. Réessayez plus tard.",
+            headers=headers,
+        ) from exc
+    except InvalidActivationCode as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    return TerminalActivateResponse(device_id=result.device_id, secret=result.secret)
 
 
 # --------------------------------------------------------------------------- #
@@ -803,8 +950,10 @@ __all__ = [
     "LoginRequest",
     "RefreshRequest",
     "TokenResponse",
-    "KioskLoginRequest",
-    "KioskTokenResponse",
+    "TerminalLoginRequest",
+    "TerminalTokenResponse",
+    "TerminalActivateRequest",
+    "TerminalActivateResponse",
     "PasswordResetRequestSchema",
     "PasswordResetConfirmSchema",
     "MessageResponse",

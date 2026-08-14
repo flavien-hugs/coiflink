@@ -264,66 +264,54 @@ class SqlCustomerRepository:
         customer_id: uuid.UUID,
         statuses: tuple[str, ...],
     ) -> tuple[CustomerVisit, ...]:
-        """RDV `statuses` du compte lié à la fiche `(salon_id, customer_id)`, triés récent d'abord.
+        """Tickets `statuses` de la fiche `(salon_id, customer_id)`, triés récent d'abord.
 
-        Le lien `customer_profiles.user_id == appointments.client_id` est calculé
-        **entièrement en SQL** et **jamais** exposé (anti-oracle ADR-0026). Étapes :
-
-        1. Projette l'`user_id` de la fiche filtrée `(id, salon_id)` (isolation
-           §11.2). Fiche introuvable dans le salon **ou** walk-in
-           (`user_id IS NULL`) → tuple vide (aucun RDV reliable, pas une erreur).
-        2. Charge les RDV `(salon_id, client_id = user_id, status IN statuses)` —
-           le `salon_id` est **refiltré** (cloisonnement strict : jamais un RDV du
-           même compte dans un autre salon) — joints à leurs prestations
-           (`appointment_services`) et libellés (`services.name`), triés `date
-           DESC, start_time DESC`. Les lignes plates (une par prestation) sont
-           regroupées par RDV, l'ordre des prestations stabilisé par `created_at`
-           de la jonction puis `service_id`. **Lecture seule** : aucun flush.
+        Rebranché sur `queue_tickets` (pivot walk-in exclusif, #148) : le lien
+        fiche ↔ ticket est **direct** (`queue_tickets.customer_profile_id ==
+        customer_id`) — plus d'indirection par `user_id`/`appointments.client_id`
+        (l'ancien lien compte a disparu avec le pivot). Charge les tickets
+        `(salon_id, customer_profile_id, status IN statuses)` — le `salon_id` est
+        **refiltré** (cloisonnement strict, isolation §11.2) — joints à leurs
+        prestations (`queue_ticket_services`) et libellés/prix **courants**
+        (`services.name`/`services.price`, résolution en direct — aucun prix figé
+        côté ticket, décision #148), triés `issued_date DESC, completed_at DESC`.
+        Les lignes plates (une par prestation) sont regroupées par ticket, l'ordre
+        des prestations stabilisé par `created_at` de la jonction puis
+        `service_id`. Une fiche hors salon/inexistante donne un tuple vide (la
+        résolution `(salon_id, id)` est déjà garantie par l'appelant, mais la
+        requête reste **auto-cloisonnée**). **Lecture seule** : aucun flush.
         """
-
-        user_id = self._session.scalar(
-            select(models.CustomerProfile.user_id).where(
-                models.CustomerProfile.id == customer_id,
-                models.CustomerProfile.salon_id == salon_id,
-            )
-        )
-        if user_id is None:
-            # Fiche hors salon/inexistante, ou fiche walk-in : aucun RDV reliable.
-            # L'`user_id` n'est jamais renvoyé — indiscernable d'une fiche liée
-            # sans visite terminée (aucun oracle sur l'existence d'un compte).
-            return ()
 
         stmt = (
             select(
-                models.Appointment.id,
-                models.Appointment.appointment_date,
-                models.Appointment.start_time,
-                models.Appointment.end_time,
-                models.Appointment.status,
-                models.AppointmentService.service_id,
-                models.AppointmentService.price_at_booking,
-                models.AppointmentService.created_at,
+                models.QueueTicket.id,
+                models.QueueTicket.issued_date,
+                models.QueueTicket.completed_at,
+                models.QueueTicket.status,
+                models.QueueTicketService.service_id,
+                models.Service.price,
+                models.QueueTicketService.created_at,
                 models.Service.name,
             )
             .join(
-                models.AppointmentService,
-                models.AppointmentService.appointment_id == models.Appointment.id,
+                models.QueueTicketService,
+                models.QueueTicketService.queue_ticket_id == models.QueueTicket.id,
             )
             .join(
                 models.Service,
-                models.Service.id == models.AppointmentService.service_id,
+                models.Service.id == models.QueueTicketService.service_id,
             )
             .where(
-                models.Appointment.salon_id == salon_id,
-                models.Appointment.client_id == user_id,
-                models.Appointment.status.in_(statuses),
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.customer_profile_id == customer_id,
+                models.QueueTicket.status.in_(statuses),
             )
             .order_by(
-                models.Appointment.appointment_date.desc(),
-                models.Appointment.start_time.desc(),
-                models.Appointment.id.desc(),
-                models.AppointmentService.created_at.asc(),
-                models.AppointmentService.service_id.asc(),
+                models.QueueTicket.issued_date.desc(),
+                models.QueueTicket.completed_at.desc(),
+                models.QueueTicket.id.desc(),
+                models.QueueTicketService.created_at.asc(),
+                models.QueueTicketService.service_id.asc(),
             )
         )
 
@@ -338,10 +326,9 @@ class SqlCustomerRepository:
             services = tuple(current_services)
             visits.append(
                 CustomerVisit(
-                    appointment_id=current_row.id,
-                    date=current_row.appointment_date,
-                    start_time=current_row.start_time,
-                    end_time=current_row.end_time,
+                    queue_ticket_id=current_row.id,
+                    issued_date=current_row.issued_date,
+                    completed_at=current_row.completed_at,
                     status=current_row.status,
                     services=services,
                     total_amount=visit_total(services),
@@ -358,7 +345,7 @@ class SqlCustomerRepository:
                 VisitService(
                     service_id=row.service_id,
                     name=row.name,
-                    price_at_booking=row.price_at_booking,
+                    price=row.price,
                 )
             )
         _flush()
@@ -370,23 +357,15 @@ class SqlCustomerRepository:
     ) -> tuple[CustomerPayment, ...]:
         """Paiements du compte lié à la fiche `(salon_id, customer_id)`, triés récent d'abord.
 
-        Miroir de `list_visits` : le lien `customer_profiles.user_id ==
-        payments.client_id` est calculé **entièrement en SQL** et **jamais**
-        exposé (anti-oracle ADR-0026). Fiche introuvable dans le salon **ou**
-        walk-in (`user_id IS NULL`) → tuple vide (aucun paiement reliable, pas
-        une erreur). Tous statuts confondus (`PENDING`/`VALIDATED`/`CANCELLED`/
+        Rebranché sur `queue_tickets` (pivot walk-in exclusif, #148) : le lien
+        fiche ↔ paiement passe par le ticket (`payments.queue_ticket_id →
+        queue_tickets.customer_profile_id`), calculé **entièrement en SQL** — plus
+        d'indirection par `user_id`/`payments.client_id` (l'ancien lien compte a
+        disparu avec le pivot). Fiche sans ticket payé → tuple vide (pas une
+        erreur). Tous statuts confondus (`PENDING`/`VALIDATED`/`CANCELLED`/
         `ADJUSTED`) — c'est justement la colonne affichée. **Lecture seule** :
         aucun flush.
         """
-
-        user_id = self._session.scalar(
-            select(models.CustomerProfile.user_id).where(
-                models.CustomerProfile.id == customer_id,
-                models.CustomerProfile.salon_id == salon_id,
-            )
-        )
-        if user_id is None:
-            return ()
 
         rows = self._session.execute(
             select(
@@ -396,9 +375,14 @@ class SqlCustomerRepository:
                 models.Payment.currency,
                 models.Payment.status,
             )
+            .join(
+                models.QueueTicket,
+                models.QueueTicket.id == models.Payment.queue_ticket_id,
+            )
             .where(
                 models.Payment.salon_id == salon_id,
-                models.Payment.client_id == user_id,
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.customer_profile_id == customer_id,
             )
             .order_by(models.Payment.created_at.desc(), models.Payment.id.desc())
         ).all()

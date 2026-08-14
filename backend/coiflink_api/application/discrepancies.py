@@ -4,10 +4,10 @@ Tranche applicative hexagonale : ce cas d'usage ne dépend que d'un **port**
 (`PaymentRepository`) — aucune dépendance FastAPI/SQLAlchemy. Il matérialise le
 critère d'acceptation #36 :
 
-> Un RDV terminé sans paiement est signalé comme écart.
+> Un ticket walk-in terminé sans paiement est signalé comme écart.
 
 `ListCashDiscrepancies` est une **lecture pure** (calquée sur `ListTransactions`
-#35) : il liste les RDV `COMPLETED` d'un salon **sans paiement rattaché**, paginés,
+#35) : il liste les tickets `done` d'un salon **sans paiement rattaché**, paginés,
 sous un `DiscrepancyFilter` validé (bornes de dates optionnelles). Comme le journal
 #34 et l'historique #35, il **ne journalise aucune action** §11.4 — la consultation
 reste bornée par la permission `CASH_JOURNAL_READ`.
@@ -24,7 +24,7 @@ from coiflink_api.domain.discrepancy import CashDiscrepancy, DiscrepancyFilter
 class ListCashDiscrepancies:
     """Liste paginée des écarts de caisse d'un salon (lecture — pas d'audit).
 
-    Retourne `(page, total)` : la page d'écarts (RDV `COMPLETED` non encaissés, plus
+    Retourne `(page, total)` : la page d'écarts (tickets `done` non encaissés, plus
     récents d'abord) et le total **sous le même filtre** (pagination correcte).
     Lecture pure : aucune écriture, aucun audit.
     """

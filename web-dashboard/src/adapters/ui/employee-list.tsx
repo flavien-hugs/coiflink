@@ -1,19 +1,29 @@
 "use client";
 
 // Tableau de gestion des coiffeuses — adapter UI (hexagonal, ADR-0008). Miroir
-// `ServiceList` (#17) : recherche **client** (le salon a peu de coiffeuses,
-// pas besoin d'un aller-retour serveur), tri par nom, drawer d'ajout/
-// modification, action activer/désactiver (disponibilité aux affectations,
-// #150). Les mutations passent par les Route Handlers BFF, le backend reste
-// l'autorité.
+// `ServiceList` (#17) : filtres (recherche, disponibilité) et tri **client**
+// (le salon a peu de coiffeuses, pas besoin d'un aller-retour serveur) —
+// même intention visuelle que `QueueBoard`, drawer d'ajout/modification,
+// action activer/désactiver (disponibilité aux affectations, #150). Les
+// mutations passent par les Route Handlers BFF, le backend reste l'autorité.
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 
-import { CheckIcon, PencilIcon, PersonIcon, PlusIcon, TrashIcon, XIcon } from "@/src/adapters/ui/action-icons";
+import {
+  CheckIcon,
+  FilterIcon,
+  PencilIcon,
+  PersonIcon,
+  PlusIcon,
+  RefreshIcon,
+  TrashIcon,
+  XIcon,
+} from "@/src/adapters/ui/action-icons";
 import { EmployeeForm } from "@/src/adapters/ui/employee-form";
 import { EmptyState } from "@/src/adapters/ui/empty-state";
-import { SearchIcon } from "@/src/adapters/ui/searchable-select";
+import { SearchableSelect, SearchIcon } from "@/src/adapters/ui/searchable-select";
+import { SortDirectionToggle, type SortDirection } from "@/src/adapters/ui/sort-direction-toggle";
 import { TablePagination, useClientPagination } from "@/src/adapters/ui/table-pagination";
 import { isEmployeeActive, type Employee } from "@/src/domain/employee/employee";
 
@@ -38,22 +48,60 @@ export interface EmployeeListProps {
 
 export function EmployeeList({ salonId, employees }: EmployeeListProps) {
   const router = useRouter();
+  const [isRefreshing, startRefresh] = useTransition();
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState({ q: "", status: "" });
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const hasActiveFilters = filters.q.trim().length > 0 || filters.status !== "";
 
   const activeCount = employees.filter(isEmployeeActive).length;
   const inactiveCount = employees.length - activeCount;
 
-  const filtered = employees
-    .filter((employee) =>
-      query.trim().length === 0
-        ? true
-        : employee.fullName.toLowerCase().includes(query.trim().toLowerCase()),
-    )
-    .sort((a, b) => COLLATOR.compare(a.fullName, b.fullName));
-  const pagination = useClientPagination(filtered, query);
+  const statusOptions = useMemo(
+    () => [
+      { value: "", label: "Toutes les disponibilités" },
+      { value: "ACTIVE", label: "Disponible" },
+      { value: "INACTIVE", label: "Désactivée" },
+    ],
+    [],
+  );
+
+  const filtered = useMemo(() => {
+    const q = filters.q.trim().toLowerCase();
+    return employees.filter((employee) => {
+      if (q && !employee.fullName.toLowerCase().includes(q)) return false;
+      if (filters.status && employee.status !== filters.status) return false;
+      return true;
+    });
+  }, [employees, filters]);
+
+  const sorted = useMemo(() => {
+    const factor = sortDirection === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => COLLATOR.compare(a.fullName, b.fullName) * factor);
+  }, [filtered, sortDirection]);
+
+  const pagination = useClientPagination(
+    sorted,
+    `${filters.q}|${filters.status}|${sortDirection}|${employees
+      .map((employee) => employee.id)
+      .join("|")}`,
+  );
+
+  function setFilter(key: keyof typeof filters, value: string) {
+    setFilters((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function onResetFilters() {
+    setFilters({ q: "", status: "" });
+  }
+
+  function onRefresh() {
+    startRefresh(() => {
+      router.refresh();
+    });
+  }
 
   async function onToggleActive(employee: Employee) {
     setError(null);
@@ -112,17 +160,69 @@ export function EmployeeList({ salonId, employees }: EmployeeListProps) {
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-soft">
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <div className="relative flex-1 sm:max-w-xs">
-            <SearchIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-            <input
-              type="search"
-              aria-label="Rechercher une coiffeuse"
-              className={`${COMPACT_INPUT_CLASS} w-full pl-9`}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Nom de la coiffeuse"
+        <div className="flex flex-col gap-2 border-b border-border px-4 py-3 xl:flex-row xl:items-center">
+          <form
+            onSubmit={(event) => event.preventDefault()}
+            aria-label="Filtres des coiffeuses"
+            className="flex flex-1 flex-wrap items-center gap-2"
+          >
+            <div className="relative flex-1 sm:max-w-xs">
+              <SearchIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <input
+                type="search"
+                aria-label="Rechercher une coiffeuse"
+                className={`${COMPACT_INPUT_CLASS} w-full pl-9`}
+                value={filters.q}
+                onChange={(event) => setFilter("q", event.target.value)}
+                placeholder="Nom de la coiffeuse"
+              />
+            </div>
+
+            <SearchableSelect
+              value={filters.status}
+              options={statusOptions}
+              onChange={(value) => setFilter("status", value)}
+              ariaLabel="Filtrer par disponibilité"
+              placeholder="Toutes les disponibilités"
+              searchPlaceholder="Rechercher une disponibilité"
+              className="w-full sm:w-52"
             />
+
+            {hasActiveFilters ? (
+              <button
+                type="button"
+                onClick={onResetFilters}
+                className="inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
+              >
+                <RefreshIcon className="shrink-0" />
+                Réinitialiser
+              </button>
+            ) : null}
+          </form>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 text-sm text-muted">
+              <FilterIcon className="shrink-0" />
+              {sorted.length} coiffeuse{sorted.length > 1 ? "s" : ""}
+            </span>
+
+            <SortDirectionToggle
+              direction={sortDirection}
+              onToggle={() =>
+                setSortDirection((current) => (current === "asc" ? "desc" : "asc"))
+              }
+            />
+
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={isRefreshing}
+              aria-label="Actualiser la liste des coiffeuses"
+              title="Actualiser la liste des coiffeuses"
+              className="inline-flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border bg-surface text-muted transition hover:border-accent/40 hover:text-foreground disabled:cursor-default disabled:opacity-60"
+            >
+              <RefreshIcon className={`shrink-0 ${isRefreshing ? "animate-spin" : ""}`} />
+            </button>
           </div>
         </div>
 
@@ -223,20 +323,20 @@ export function EmployeeList({ salonId, employees }: EmployeeListProps) {
                   </tr>
                 );
               })}
-              {filtered.length === 0 ? (
+              {sorted.length === 0 ? (
                 <tr>
                   <td colSpan={7}>
                     <EmptyState
                       icon={<PersonIcon className="size-6" />}
                       title={
-                        query.trim().length > 0
-                          ? "Aucune coiffeuse ne correspond à la recherche."
+                        hasActiveFilters
+                          ? "Aucune coiffeuse ne correspond aux filtres."
                           : "Aucune coiffeuse pour le moment."
                       }
                       description={
-                        query.trim().length > 0
+                        hasActiveFilters
                           ? undefined
-                          : "Ajoutez votre première coiffeuse pour commencer à assigner des rendez-vous."
+                          : "Ajoutez votre première coiffeuse pour commencer à prendre en charge des tickets."
                       }
                     />
                   </td>
@@ -248,7 +348,7 @@ export function EmployeeList({ salonId, employees }: EmployeeListProps) {
         <TablePagination
           label="la liste des coiffeuses"
           page={pagination.page}
-          totalItems={filtered.length}
+          totalItems={sorted.length}
           onPageChange={pagination.setPage}
         />
       </div>

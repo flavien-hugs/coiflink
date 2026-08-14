@@ -185,7 +185,7 @@ function History({ history }: { history: VisitHistory }) {
   return (
     <div className="flex flex-col gap-5">
       <p className="max-w-prose text-sm text-muted">
-        Les rendez-vous terminés de ce client, du plus récent au plus ancien, avec
+        Les visites terminées de ce client, du plus récent au plus ancien, avec
         leurs prestations et montants.
       </p>
       <CustomerVisitHistory history={history} />
@@ -217,7 +217,7 @@ function FavouriteServices({ stats }: { stats: CustomerServiceStats | null }) {
     <div className="flex flex-col gap-5">
       <p className="max-w-prose text-sm text-muted">
         Les prestations les plus fréquentes de ce client, calculées sur ses
-        rendez-vous terminés, de la plus fréquente à la moins fréquente.
+        visites terminées, de la plus fréquente à la moins fréquente.
       </p>
       <CustomerServiceStatsPanel stats={stats} />
     </div>

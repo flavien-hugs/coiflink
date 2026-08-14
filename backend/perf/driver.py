@@ -28,7 +28,7 @@ from .scenarios import SeedContext, TimedResponse
 # Ordre stable des groupes dans le rapport (aligne CSV/JSON/Markdown).
 _GROUP_ORDER = (
     config.BUDGET_SALON_SEARCH,
-    config.BUDGET_APPOINTMENT_CREATE,
+    config.BUDGET_TICKET_CREATE,
     config.BUDGET_DASHBOARD,
     config.BUDGET_API_GENERAL,
 )

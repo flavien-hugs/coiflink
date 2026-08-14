@@ -12,7 +12,7 @@ import type { AlertList } from "../src/domain/dashboard/alerts";
 
 const POPULATED: AlertList = {
   items: [
-    { kind: "late", severity: "warning", count: 2 },
+    { kind: "prolonged_wait", severity: "warning", count: 2 },
     { kind: "payment_anomaly", severity: "critical", count: 1 },
   ],
 };
@@ -43,19 +43,20 @@ describe("AlertsPanel — aucune alerte (état vide positif)", () => {
 describe("AlertsPanel — alertes peuplées", () => {
   it("affiche le libellé actionnable de chaque alerte", () => {
     const html = render(POPULATED);
-    expect(html).toContain("Retard");
+    expect(html).toContain("Attente prolongée");
     expect(html).toContain("Anomalie de paiement");
   });
 
   it("affiche l'aide contextuelle de chaque alerte", () => {
     const html = render(POPULATED);
-    expect(html).toContain("dépassée");
+    expect(html).toContain("attente");
+    expect(html).toContain("sans paiement");
   });
 
-  it("affiche l'effectif francisé « N rendez-vous »", () => {
+  it("affiche l'effectif francisé « N ticket(s) »", () => {
     const html = render(POPULATED);
-    expect(html).toContain("2 rendez-vous");
-    expect(html).toContain("1 rendez-vous");
+    expect(html).toContain("2 tickets");
+    expect(html).toContain("1 ticket");
   });
 
   it("applique un jeton de sévérité critique (danger) à l'anomalie de paiement", () => {
@@ -72,6 +73,6 @@ describe("AlertsPanel — absence de PII (counts-first)", () => {
   it("n'expose aucun identifiant brut (compteurs seulement)", () => {
     const html = render(POPULATED);
     expect(html).not.toMatch(/client_id/i);
-    expect(html).not.toMatch(/appointment_id/i);
+    expect(html).not.toMatch(/queue_ticket_id/i);
   });
 });

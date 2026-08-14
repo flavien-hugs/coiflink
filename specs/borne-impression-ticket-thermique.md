@@ -1,9 +1,9 @@
 # Impression du ticket de passage sur imprimante thermique (US-8.6)
 
 > Spécification de planification pour l'issue GitHub **#160 — US-8.6 : Impression du ticket sur
-> imprimante thermique** (`feature` · Must · Effort M · jalon **M7 — Borne client (kiosque
+> imprimante thermique** (`feature` · Must · Effort M · jalon **M7 — Borne client (terminal
 > libre-service)**, Épic 8). **Dépend de #157** (ticket de passage walk-in & estimation d'attente)
-> **et #159** (mode kiosque de l'application mobile). **Cette spec ne produit pas de code** : elle
+> **et #159** (mode terminal de l'application mobile). **Cette spec ne produit pas de code** : elle
 > décrit l'approche à implémenter dans une phase ultérieure.
 >
 > Conventions du dépôt : contenu rédigé en **français** (PRD, README, ADR, commentaires
@@ -70,8 +70,8 @@ amont sont **spécifiées par leurs specs sœurs** (leur implémentation reste �
 - **#157** (`specs/borne-ticket-file-attente-walkin.md`) définit le domaine `QueueTicket` —
   `ticket_number` en **entier brut**, séquentiel par salon et par jour, `service_ids` en liste
   (≥ 1), statut, ETA — et son endpoint « rejoindre la file ».
-- **#159** (`specs/borne-app-mobile-mode-kiosque.md`) définit `main_kiosk.dart`, les écrans borne
-  sous `lib/adapters/ui/kiosk/` et le timer d'inactivité (60 s, suspendu pendant l'impression) —
+- **#159** (`specs/borne-app-mobile-mode-kiosque.md`) définit `main_terminal.dart`, les écrans borne
+  sous `lib/adapters/ui/terminal/` et le timer d'inactivité (60 s, suspendu pendant l'impression) —
   l'écran de confirmation qui **appellera** l'impression y est spécifié, son implémentation restant
   à venir.
 
@@ -128,7 +128,7 @@ temps réel des coiffeurs disponibles avant affectation, paiement autonome sur l
 - **Le domaine `QueueTicket` et l'endpoint « rejoindre la file »** — livrés par #157. #160 ne
   consomme qu'un `TicketPrintPayload` déjà résolu par l'appelant (voir *Goals*) ; il ne définit ni
   numérotation, ni formule d'ETA, ni statut de ticket.
-- **Les écrans borne, le point d'entrée `main_kiosk.dart` et le timer d'inactivité** — livrés par
+- **Les écrans borne, le point d'entrée `main_terminal.dart` et le timer d'inactivité** — livrés par
   #159. #160 fournit le port, l'adaptateur et un aperçu de ticket réutilisable ; il ne construit
   **aucun** écran d'accueil/identification/choix de prestation.
 - **Le choix définitif et l'audit du paquet ESC/POS/Bluetooth/USB.** Cette spec **nomme des
@@ -150,7 +150,7 @@ temps réel des coiffeurs disponibles avant affectation, paiement autonome sur l
   devices).** Le couplage borne↔imprimante est un geste de **provisioning**, plus proche du
   périmètre de #161 (« procédure de provisioning d'un device ») que d'une fonctionnalité applicative
   répétée par le client.
-- **iOS.** La décision produit n°3 retient une tablette **Android** en boîtier kiosque pour la V1 ;
+- **iOS.** La décision produit n°3 retient une tablette **Android** en boîtier terminal pour la V1 ;
   cette spec ne couvre pas de contraintes iOS (voir *Risks* pour une limite technique aggravante sur
   ce point : le Bluetooth classique (SPP), utilisé par la plupart des imprimantes thermiques
   génériques, n'est de toute façon pas accessible depuis une app iOS non certifiée MFi).
@@ -215,7 +215,7 @@ ADR et met à jour l'index `docs/adr/README.md` (voir *Documentation Updates*).
   ReceiptGateway`). #160 suit la même convention pour ses propres tests.
 - **Composition root unique** : `app-mobile/lib/adapters/ui/app.dart:40-51` instancie
   `ApiConfig.fromEnvironment()` puis chaque gateway/cas d'usage à la main (pas de DI magique). #159
-  créera l'équivalent `main_kiosk.dart` ; #160 y ajoutera l'instanciation de
+  créera l'équivalent `main_terminal.dart` ; #160 y ajoutera l'instanciation de
   `TicketPrinterGateway` une fois ce fichier livré.
 - **Dossiers par fonctionnalité** : `lib/domain/{appointment,receipt,salon}/`,
   `lib/adapters/ui/{booking,appointments,receipts}/` — #160 introduit `lib/domain/ticket/` (objet de
@@ -223,7 +223,7 @@ ADR et met à jour l'index `docs/adr/README.md` (voir *Documentation Updates*).
 
 ### Ce qui est spécifié par les specs sœurs mais pas encore implémenté
 
-- **`app-mobile/lib/adapters/ui/kiosk/`** (écrans #159) — pas encore implémenté, mais le chemin est
+- **`app-mobile/lib/adapters/ui/terminal/`** (écrans #159) — pas encore implémenté, mais le chemin est
   **confirmé** par la spec #159 (`specs/borne-app-mobile-mode-kiosque.md`), qui y place ses écrans
   et y attend `ticket_preview.dart` (§E) ; l'écran de confirmation qui appellera
   `TicketPrinterGateway.print` y est spécifié.
@@ -402,14 +402,14 @@ ce point n'est tranché par aucune des décisions produit fournies et doit l'êt
   Ce choix est **explicitement une décision à valider** avant l'implémentation réelle (voir *Risks*),
   pas un fait acquis de cette spec — la mission de #160 formulait déjà cette réserve.
 
-### (E) Aperçu à l'écran — `lib/adapters/ui/kiosk/ticket_preview.dart` *(chemin confirmé par la spec #159)*
+### (E) Aperçu à l'écran — `lib/adapters/ui/terminal/ticket_preview.dart` *(chemin confirmé par la spec #159)*
 
 Un petit widget `StatelessWidget` (`TicketPreview({required TicketPrintPayload payload})`) qui
 **rend à l'écran** le même contenu que celui qui part vers l'imprimante (nom du salon centré,
 numéro — même formatage « N° 014 » que le papier —, date/heure, prestations, une ligne par
 prestation), en `Text` monospace façon reçu — **indépendant** du succès de
 l'impression : le client voit toujours son numéro à l'écran, même si le papier ne sort pas (voir
-*Security & Privacy Considerations*, *Non-Goals*). Le dossier `adapters/ui/kiosk/` (cohérent avec
+*Security & Privacy Considerations*, *Non-Goals*). Le dossier `adapters/ui/terminal/` (cohérent avec
 `adapters/ui/{receipts,booking,appointments}/` existants) est **confirmé par la spec #159**
 (`specs/borne-app-mobile-mode-kiosque.md`), qui attend précisément `ticket_preview.dart` à cet
 emplacement.
@@ -449,7 +449,7 @@ emplacement.
 | `lib/application/ports/ticket_printer_gateway.dart` | port `TicketPrinterGateway` + `TicketPrinterStatus` + exceptions typées |
 | `lib/adapters/data/ticket_escpos_formatter.dart` | formateur ESC/POS **pur**, sans plugin (payload → octets) |
 | `lib/adapters/data/esc_pos_ticket_printer_gateway.dart` | adaptateur matériel Bluetooth/USB (paquet à choisir) |
-| `lib/adapters/ui/kiosk/ticket_preview.dart` *(chemin confirmé par la spec #159)* | aperçu à l'écran du contenu du ticket |
+| `lib/adapters/ui/terminal/ticket_preview.dart` *(chemin confirmé par la spec #159)* | aperçu à l'écran du contenu du ticket |
 | `test/ticket_escpos_formatter_test.dart` | tests du formatage (contenu, page de code, structure des commandes) |
 | `test/esc_pos_ticket_printer_gateway_test.dart` | tests du mapping d'erreurs via un faux transport injecté |
 | `test/ticket_preview_test.dart` | test widget de l'aperçu (§E) |
@@ -460,8 +460,8 @@ emplacement.
 | --- | --- |
 | `app-mobile/pubspec.yaml` | ajout du/des paquet(s) ESC/POS/Bluetooth/USB retenu(s), avec un commentaire explicatif (patron des dépendances existantes) |
 | `app-mobile/android/app/src/main/AndroidManifest.xml` | permissions Bluetooth (`BLUETOOTH_CONNECT`/`BLUETOOTH_SCAN`, Android 12+) et/ou `android.hardware.usb.host` selon le transport retenu |
-| `app-mobile/lib/adapters/ui/kiosk/*` *(livré par #159)* | câblage de `TicketPrinterGateway.print` dans l'écran de confirmation, gestion des trois exceptions (§F) |
-| `app-mobile/lib/main_kiosk.dart` *(livré par #159)* | instanciation de `EscPosTicketPrinterGateway` (ou d'un faux en dev) dans la composition root |
+| `app-mobile/lib/adapters/ui/terminal/*` *(livré par #159)* | câblage de `TicketPrinterGateway.print` dans l'écran de confirmation, gestion des trois exceptions (§F) |
+| `app-mobile/lib/main_terminal.dart` *(livré par #159)* | instanciation de `EscPosTicketPrinterGateway` (ou d'un faux en dev) dans la composition root |
 | `app-mobile/README.md` | nouvelle section « Ticket de passage — impression thermique (US-8.6, #160) » |
 
 ### À lire (sans modifier) pour rester fidèle aux patrons
@@ -536,8 +536,8 @@ formateur (§C) doit translittérer — décision à trancher avant l'implément
 - **Pas de nouvelle route, pas de nouvelle permission, pas de nouvel oracle.** #160 n'introduit
   aucune surface HTTP ; l'invariant deny-by-default (ADR-0015) n'est pas concerné.
 - **Provisioning de l'imprimante = geste de configuration, pas une action cliente.** L'appairage
-  Bluetooth (ou la connexion USB) doit être réalisé **avant** l'activation du mode kiosque verrouillé
-  (Android Lock Task Mode, décision produit n°3) : une fois la borne verrouillée en mode kiosque, un
+  Bluetooth (ou la connexion USB) doit être réalisé **avant** l'activation du mode terminal verrouillé
+  (Android Lock Task Mode, décision produit n°3) : une fois la borne verrouillée en mode terminal, un
   client ne doit **jamais** se retrouver à devoir naviguer dans les réglages Bluetooth du système
   d'exploitation. `connect()` (§B) suppose donc un device **déjà appairé** au niveau OS ; toute
   procédure d'appairage initial relève du provisioning (#161), pas du parcours client.
@@ -634,7 +634,7 @@ ci-dessous, comme choix à valider par le porteur produit avant l'implémentatio
    appelant. **Ce qui reste à trancher** : lequel des deux transports (Bluetooth classique vs USB)
    est retenu en premier pour la V1 — chacun a ses paquets Flutter candidats distincts (§D) et des
    implications de permissions Android différentes ; **recommandation : commencer par le Bluetooth
-   classique** (pas de câble à gérer sur un boîtier kiosque, imprimantes 80mm Bluetooth très
+   classique** (pas de câble à gérer sur un boîtier terminal, imprimantes 80mm Bluetooth très
    répandues et peu coûteuses en Côte d'Ivoire), avec l'USB comme option de repli si l'audit du
    paquet Bluetooth s'avère décevant.
 2. **Timer d'inactivité 60 s, suspendu pendant l'impression jusqu'à confirmation ou 15 s maximum
@@ -646,20 +646,20 @@ ci-dessous, comme choix à valider par le porteur produit avant l'implémentatio
    d'imprimer**, pour que le budget de 15 s couvre uniquement la génération + écriture des octets
    (de l'ordre de la seconde pour un ticket de 5-6 lignes sur une imprimante 80mm standard). **À
    confirmer avec l'implémenteur de #159**, qui pilote effectivement ce timer.
-3. **Tablette Android en boîtier kiosque, Android Lock Task Mode natif (décision n°3).** Implique
+3. **Tablette Android en boîtier terminal, Android Lock Task Mode natif (décision n°3).** Implique
    que l'appairage Bluetooth de l'imprimante **doit être fait avant** le verrouillage en mode
-   kiosque (voir *Security & Privacy Considerations*) — `connect()` ne doit jamais avoir besoin
+   terminal (voir *Security & Privacy Considerations*) — `connect()` ne doit jamais avoir besoin
    d'ouvrir une UI système de pairage à laquelle un client verrait accès. **À vérifier** : le paquet
    ESC/POS retenu (§D) doit pouvoir se connecter à un device **déjà appairé** sans redemander de
    confirmation utilisateur à chaque lancement de l'app.
-4. **Sortie du mode kiosque et actions de maintenance protégées par PIN gérant, journalisées
+4. **Sortie du mode terminal et actions de maintenance protégées par PIN gérant, journalisées
    (décision n°11).** **Question à trancher** : une action de type « réessayer la connexion
    imprimante » doit-elle être **librement accessible** au client (simple bouton « Réessayer » sur
-   le message d'échec, §F) ou réservée au gérant derrière le PIN de sortie du mode kiosque ?
+   le message d'échec, §F) ou réservée au gérant derrière le PIN de sortie du mode terminal ?
    **Recommandation : librement accessible au client** pour un simple retry non destructif (ce
    n'est pas une action de maintenance au sens de la décision n°11, qui vise la sortie du mode
-   kiosque et les mises à jour applicatives) ; réserver le PIN aux actions réellement sensibles
-   (redémarrage, changement de device appairé, sortie du kiosque).
+   terminal et les mises à jour applicatives) ; réserver le PIN aux actions réellement sensibles
+   (redémarrage, changement de device appairé, sortie du terminal).
 
 **Questions ouvertes propres à #160, non couvertes par la liste de décisions produit :**
 
@@ -683,7 +683,7 @@ ci-dessous, comme choix à valider par le porteur produit avant l'implémentatio
   du PRD), une alerte distante nécessiterait un nouveau développement backend (notification ou
   entrée de tableau de bord) hors du périmètre M7 tel que défini* — à documenter comme suivi
   explicite plutôt qu'à improviser dans #160.
-- **Chemin de l'écran de confirmation borne (§E) — résolu.** `adapters/ui/kiosk/` est **confirmé
+- **Chemin de l'écran de confirmation borne (§E) — résolu.** `adapters/ui/terminal/` est **confirmé
   par la spec #159** (`specs/borne-app-mobile-mode-kiosque.md`), qui y attend `ticket_preview.dart` ;
   ce n'est plus une question ouverte, seule l'implémentation de #159 reste à livrer. Le port et le
   formateur (§B/§C) n'en dépendent de toute façon pas.
@@ -716,10 +716,10 @@ ci-dessous, comme choix à valider par le porteur produit avant l'implémentatio
 10. **Manifeste Android** : ajouter les permissions Bluetooth (`BLUETOOTH_CONNECT`/`BLUETOOTH_SCAN`)
     et/ou `android.hardware.usb.host` selon le transport retenu ; `pubspec.yaml` : ajouter la
     dépendance avec un commentaire explicatif.
-11. **Aperçu à l'écran** : créer le widget d'aperçu (§E, chemin `adapters/ui/kiosk/` confirmé par
+11. **Aperçu à l'écran** : créer le widget d'aperçu (§E, chemin `adapters/ui/terminal/` confirmé par
     la spec #159) + son test widget.
 12. **Câblage** (dépend de #159 livré) : instancier `EscPosTicketPrinterGateway` dans
-    `main_kiosk.dart`, brancher `print()` dans l'écran de confirmation avec la gestion des trois
+    `main_terminal.dart`, brancher `print()` dans l'écran de confirmation avec la gestion des trois
     messages d'échec (§F), vérifier que le retour auto à l'accueil n'est jamais bloqué.
 13. **Test manuel sur device physique** : appairage réel, impression, simulation panne papier,
     déconnexion en cours d'impression — documenté pour nourrir la procédure de provisioning de #161.

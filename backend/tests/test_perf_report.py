@@ -309,11 +309,11 @@ class TestPerfReportOverallVerdict:
 
     def test_overall_fail_dominates_warn(self) -> None:
         budget_search = config.BUDGETS_MS[config.BUDGET_SALON_SEARCH]
-        budget_appt = config.BUDGETS_MS[config.BUDGET_APPOINTMENT_CREATE]
+        budget_ticket = config.BUDGETS_MS[config.BUDGET_TICKET_CREATE]
         alert_search = config.alert_threshold_ms(budget_search)
         results = [
             _make_result([alert_search + 10.0] * 50, group=config.BUDGET_SALON_SEARCH),  # WARN
-            _make_result([float(budget_appt + 500)] * 50, group=config.BUDGET_APPOINTMENT_CREATE),  # FAIL
+            _make_result([float(budget_ticket + 500)] * 50, group=config.BUDGET_TICKET_CREATE),  # FAIL
             _make_result([10.0] * 50, group=config.BUDGET_DASHBOARD),
             _make_result([10.0] * 50, group=config.BUDGET_API_GENERAL),
         ]

@@ -98,8 +98,12 @@ def _upload_url_url(salon_id: uuid.UUID) -> str:
     return f"/salons/{salon_id}/services/media/upload-url"
 
 
-def _image_url(salon_id: uuid.UUID, service_id: uuid.UUID) -> str:
-    return f"/salons/{salon_id}/services/{service_id}/image"
+def _photos_url(salon_id: uuid.UUID, service_id: uuid.UUID) -> str:
+    return f"/salons/{salon_id}/services/{service_id}/photos"
+
+
+def _photo_url(salon_id: uuid.UUID, service_id: uuid.UUID, photo_id: uuid.UUID) -> str:
+    return f"/salons/{salon_id}/services/{service_id}/photos/{photo_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -1149,8 +1153,8 @@ class TestServiceImageUploadUrl:
             app.dependency_overrides.pop(get_access_policy, None)
 
 
-class TestAttachServiceImage:
-    def test_valid_key_returns_200_with_image_url(
+class TestAddServicePhoto:
+    def test_valid_key_returns_201_with_image_url(
         self,
         manager_client_with_service_and_storage: tuple[
             TestClient, uuid.UUID, FakeMediaStorage
@@ -1158,13 +1162,32 @@ class TestAttachServiceImage:
     ) -> None:
         client, service_id, _storage = manager_client_with_service_and_storage
         key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
-        r = client.put(
-            _image_url(_SALON_ID, service_id),
+        r = client.post(
+            _photos_url(_SALON_ID, service_id),
             json={"object_key": key},
             headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
         )
-        assert r.status_code == 200
-        assert r.json()["image_url"] is not None
+        assert r.status_code == 201
+        body = r.json()
+        assert body["image_url"] is not None
+        assert len(body["photos"]) == 1
+
+    def test_object_key_over_max_length_returns_422(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        """Une clé > 1024 caractères échoue en 422 (validation Pydantic), jamais
+        en 500 (DataError SQL non intercepté) — régression."""
+        client, service_id, _storage = manager_client_with_service_and_storage
+        too_long_key = f"services/{_SALON_ID}/" + ("a" * 1024) + ".png"
+        r = client.post(
+            _photos_url(_SALON_ID, service_id),
+            json={"object_key": too_long_key},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 422
 
     def test_key_from_other_salon_returns_422(
         self,
@@ -1174,41 +1197,20 @@ class TestAttachServiceImage:
     ) -> None:
         client, service_id, _storage = manager_client_with_service_and_storage
         bad_key = f"services/{_OTHER_SALON_ID}/{uuid.uuid4()}.png"
-        r = client.put(
-            _image_url(_SALON_ID, service_id),
+        r = client.post(
+            _photos_url(_SALON_ID, service_id),
             json={"object_key": bad_key},
             headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
         )
         assert r.status_code == 422
-
-    def test_null_key_clears_image(
-        self,
-        manager_client_with_service_and_storage: tuple[
-            TestClient, uuid.UUID, FakeMediaStorage
-        ],
-    ) -> None:
-        client, service_id, _storage = manager_client_with_service_and_storage
-        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
-        client.put(
-            _image_url(_SALON_ID, service_id),
-            json={"object_key": key},
-            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
-        )
-        r = client.put(
-            _image_url(_SALON_ID, service_id),
-            json={"object_key": None},
-            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
-        )
-        assert r.status_code == 200
-        assert r.json()["image_url"] is None
 
     def test_unknown_service_returns_404(
         self, manager_client_with_storage: tuple[TestClient, FakeMediaStorage]
     ) -> None:
         client, _storage = manager_client_with_storage
         key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
-        r = client.put(
-            _image_url(_SALON_ID, uuid.uuid4()),
+        r = client.post(
+            _photos_url(_SALON_ID, uuid.uuid4()),
             json={"object_key": key},
             headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
         )
@@ -1221,8 +1223,9 @@ class TestAttachServiceImage:
         ],
     ) -> None:
         client, service_id, _storage = manager_client_with_service_and_storage
-        r = client.put(
-            _image_url(_SALON_ID, service_id), json={"object_key": None}
+        r = client.post(
+            _photos_url(_SALON_ID, service_id),
+            json={"object_key": f"services/{_SALON_ID}/{uuid.uuid4()}.png"},
         )
         assert r.status_code == 401
 
@@ -1233,9 +1236,131 @@ class TestAttachServiceImage:
         ],
     ) -> None:
         client, service_id, _storage = manager_client_with_service_and_storage
-        r = client.put(
-            _image_url(_OTHER_SALON_ID, service_id),
-            json={"object_key": None},
+        r = client.post(
+            _photos_url(_OTHER_SALON_ID, service_id),
+            json={"object_key": f"services/{_SALON_ID}/{uuid.uuid4()}.png"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 403
+
+    def test_photo_limit_exceeded_returns_409(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+        service_repo: FakeServiceRepository,
+    ) -> None:
+        """`MEDIA_MAX_PHOTOS` + 1 photos → 409 Conflict."""
+        from coiflink_api.config import DEFAULT_MEDIA_MAX_PHOTOS
+
+        client, service_id, _storage = manager_client_with_service_and_storage
+        for _ in range(DEFAULT_MEDIA_MAX_PHOTOS):
+            service_repo.add_photo(
+                _SALON_ID, service_id, f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+            )
+        r = client.post(
+            _photos_url(_SALON_ID, service_id),
+            json={"object_key": f"services/{_SALON_ID}/{uuid.uuid4()}.png"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 409
+
+    def test_audit_entry_recorded(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+        audit_log: FakeAuditLog,
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        client.post(
+            _photos_url(_SALON_ID, service_id),
+            json={"object_key": key},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert len(audit_log.recorded) == 1
+        assert audit_log.recorded[0].metadata == {"changed": ["photos"]}
+
+
+class TestRemoveServicePhoto:
+    def _add_photo(
+        self, client: TestClient, service_id: uuid.UUID
+    ) -> uuid.UUID:
+        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
+        r = client.post(
+            _photos_url(_SALON_ID, service_id),
+            json={"object_key": key},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        return uuid.UUID(r.json()["photos"][0]["id"])
+
+    def test_valid_photo_returns_204(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        photo_id = self._add_photo(client, service_id)
+        r = client.delete(
+            _photo_url(_SALON_ID, service_id, photo_id),
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 204
+
+    def test_removed_photo_absent_from_subsequent_read(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        photo_id = self._add_photo(client, service_id)
+        client.delete(
+            _photo_url(_SALON_ID, service_id, photo_id),
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        r = client.get(
+            _service_url(_SALON_ID, service_id),
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.json()["photos"] == []
+
+    def test_unknown_photo_returns_404(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        r = client.delete(
+            _photo_url(_SALON_ID, service_id, uuid.uuid4()),
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 404
+
+    def test_no_token_returns_401(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        photo_id = self._add_photo(client, service_id)
+        r = client.delete(_photo_url(_SALON_ID, service_id, photo_id))
+        assert r.status_code == 401
+
+    def test_manager_out_of_scope_returns_403(
+        self,
+        manager_client_with_service_and_storage: tuple[
+            TestClient, uuid.UUID, FakeMediaStorage
+        ],
+    ) -> None:
+        client, service_id, _storage = manager_client_with_service_and_storage
+        photo_id = self._add_photo(client, service_id)
+        r = client.delete(
+            _photo_url(_OTHER_SALON_ID, service_id, photo_id),
             headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
         )
         assert r.status_code == 403
@@ -1248,21 +1373,22 @@ class TestAttachServiceImage:
         audit_log: FakeAuditLog,
     ) -> None:
         client, service_id, _storage = manager_client_with_service_and_storage
-        key = f"services/{_SALON_ID}/{uuid.uuid4()}.png"
-        client.put(
-            _image_url(_SALON_ID, service_id),
-            json={"object_key": key},
+        photo_id = self._add_photo(client, service_id)
+        audit_log.recorded.clear()
+        client.delete(
+            _photo_url(_SALON_ID, service_id, photo_id),
             headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
         )
         assert len(audit_log.recorded) == 1
-        assert audit_log.recorded[0].metadata == {"changed": ["image_object_key"]}
+        assert audit_log.recorded[0].metadata == {"changed": ["photos"]}
 
 
 class TestServiceImageRoutesDoNotCollide:
-    def test_upload_url_and_service_id_route_are_distinct(
+    def test_random_service_id_returns_404_not_upload_url_behavior(
         self, manager_client_with_storage: tuple[TestClient, FakeMediaStorage]
     ) -> None:
-        """`.../services/media/upload-url` n'est jamais confondue avec `.../services/{id}`."""
+        """`.../services/{id}` avec un id aléatoire → 404, jamais confondu avec
+        la route littérale `.../services/media/upload-url`."""
         client, _storage = manager_client_with_storage
         r = client.get(
             _service_url(_SALON_ID, uuid.uuid4()),
@@ -1271,6 +1397,21 @@ class TestServiceImageRoutesDoNotCollide:
         # « media » n'existe pas comme prestation : 404 (portée déjà validée),
         # jamais une collision avec la route littérale `media/upload-url`.
         assert r.status_code == 404
+
+    def test_upload_url_route_is_reachable_and_distinct_from_service_id_route(
+        self, manager_client_with_storage: tuple[TestClient, FakeMediaStorage]
+    ) -> None:
+        """La route littérale `.../services/media/upload-url` répond bien elle-même
+        (pas juste « le id aléatoire donne 404 ») — sans quoi le test précédent
+        passerait même si cette route n'existait plus du tout."""
+        client, _storage = manager_client_with_storage
+        r = client.post(
+            _upload_url_url(_SALON_ID),
+            json={"content_type": "image/png"},
+            headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+        )
+        assert r.status_code == 200
+        assert r.json()["object_key"].startswith(f"services/{_SALON_ID}/")
 
 
 class TestDenyByDefault:

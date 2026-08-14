@@ -30,6 +30,7 @@ from coiflink_api.adapters.inbound.salons import get_audit_log, get_salon_reposi
 from coiflink_api.adapters.inbound.security import (
     PUBLIC_ROUTE_PATHS,
     get_access_policy,
+    get_salon_scope_repository,
     get_user_repository,
 )
 from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenService
@@ -55,6 +56,7 @@ from .conftest import (
 _MANAGER_ID = uuid.UUID(FAKE_ACCESS_CLAIMS.sub)
 _OTHER_MANAGER_ID = uuid.UUID("22222222-0000-0000-0000-000000000002")
 _ADMIN_ID = uuid.UUID("33333333-0000-0000-0000-000000000003")
+_HAIRDRESSER_ID = uuid.UUID("44444444-0000-0000-0000-000000000004")
 _SALON_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 
 _SALONS_URL = "/salons"
@@ -71,6 +73,7 @@ _VALID_BODY = {
 }
 
 _MANAGER_TOKEN = make_access_token(_MANAGER_ID, Role.MANAGER.value)
+_HAIRDRESSER_TOKEN = make_access_token(_HAIRDRESSER_ID, Role.HAIRDRESSER.value)
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +130,7 @@ def manager_client(
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     app.dependency_overrides[get_user_repository] = lambda: user_repo
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+    app.dependency_overrides[get_salon_scope_repository] = lambda: scope_repo
     try:
         yield TestClient(app)
     finally:
@@ -134,6 +138,37 @@ def manager_client(
         app.dependency_overrides.pop(get_audit_log, None)
         app.dependency_overrides.pop(get_user_repository, None)
         app.dependency_overrides.pop(get_access_policy, None)
+        app.dependency_overrides.pop(get_salon_scope_repository, None)
+
+
+@pytest.fixture()
+def hairdresser_client(
+    salon_repo: FakeSalonRepository, audit_log: FakeAuditLog
+) -> Generator[tuple[TestClient, FakeSalonScopeRepository], None, None]:
+    """TestClient avec HAIRDRESSER authentifié — portée par appartenance `salon_members`.
+
+    Contrairement à `manager_client`, un coiffeur n'est **jamais** `owner_id` : sa
+    portée (et donc ce que `GET /salons` doit lui renvoyer) vient exclusivement de
+    `scope_repo.scopes`, positionné par chaque test (#157, régression « aucun salon
+    rattaché » de la zone coiffeur).
+    """
+    creds = _creds(_HAIRDRESSER_ID, Role.HAIRDRESSER.value)
+    user_repo = FakeAuthUserRepository(credentials_by_id={str(creds.id): creds})
+    scope_repo = FakeSalonScopeRepository(scopes={creds.id: frozenset()})
+
+    app.dependency_overrides[get_salon_repository] = lambda: salon_repo
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    app.dependency_overrides[get_user_repository] = lambda: user_repo
+    app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
+    app.dependency_overrides[get_salon_scope_repository] = lambda: scope_repo
+    try:
+        yield TestClient(app), scope_repo
+    finally:
+        app.dependency_overrides.pop(get_salon_repository, None)
+        app.dependency_overrides.pop(get_audit_log, None)
+        app.dependency_overrides.pop(get_user_repository, None)
+        app.dependency_overrides.pop(get_access_policy, None)
+        app.dependency_overrides.pop(get_salon_scope_repository, None)
 
 
 @pytest.fixture()
@@ -920,6 +955,72 @@ class TestListSalons:
 
     def test_missing_token_returns_401(self, manager_client: TestClient) -> None:
         r = manager_client.get(_SALONS_URL)
+        assert r.status_code == 401
+
+
+class TestListSalonsHairdresser:
+    """Régression : un coiffeur n'est **jamais** `owner_id` — son salon doit venir
+    de son appartenance `salon_members` (`SalonScopeRepository`), pas de
+    `list_for_owner`. Avant ce correctif, `GET /salons` renvoyait toujours une
+    liste vide pour un coiffeur (bug « Aucun salon rattaché à votre compte »
+    systématique sur la zone coiffeur, #157)."""
+
+    def test_returns_salon_where_member(
+        self,
+        hairdresser_client: tuple[TestClient, "FakeSalonScopeRepository"],
+        salon_repo: FakeSalonRepository,
+    ) -> None:
+        from coiflink_api.application.salons import CreateSalon, CreateSalonCommand
+
+        client, scope_repo = hairdresser_client
+        owner_id = uuid.uuid4()
+        salon = CreateSalon(salon_repo).execute(
+            CreateSalonCommand(name="Salon de la coiffeuse"), owner_id=owner_id
+        )
+        scope_repo.scopes[_HAIRDRESSER_ID] = frozenset({salon.id})
+
+        r = client.get(
+            _SALONS_URL, headers={"Authorization": f"Bearer {_HAIRDRESSER_TOKEN}"}
+        )
+        assert r.status_code == 200
+        ids = [item["id"] for item in r.json()]
+        assert str(salon.id) in ids
+
+    def test_empty_when_not_a_member_of_any_salon(
+        self, hairdresser_client: tuple[TestClient, "FakeSalonScopeRepository"]
+    ) -> None:
+        client, _ = hairdresser_client
+        r = client.get(
+            _SALONS_URL, headers={"Authorization": f"Bearer {_HAIRDRESSER_TOKEN}"}
+        )
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_does_not_return_salon_owned_by_coincidental_id(
+        self,
+        hairdresser_client: tuple[TestClient, "FakeSalonScopeRepository"],
+        salon_repo: FakeSalonRepository,
+    ) -> None:
+        """Même si un salon existe avec `owner_id` == l'id du coiffeur (coïncidence
+        d'UUID), il n'apparaît pas sans appartenance `salon_members` explicite —
+        un coiffeur n'est jamais propriétaire."""
+        from coiflink_api.application.salons import CreateSalon, CreateSalonCommand
+
+        client, _ = hairdresser_client
+        CreateSalon(salon_repo).execute(
+            CreateSalonCommand(name="Salon coïncidence"), owner_id=_HAIRDRESSER_ID
+        )
+
+        r = client.get(
+            _SALONS_URL, headers={"Authorization": f"Bearer {_HAIRDRESSER_TOKEN}"}
+        )
+        assert r.json() == []
+
+    def test_missing_token_returns_401(
+        self, hairdresser_client: tuple[TestClient, "FakeSalonScopeRepository"]
+    ) -> None:
+        client, _ = hairdresser_client
+        r = client.get(_SALONS_URL)
         assert r.status_code == 401
 
 

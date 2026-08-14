@@ -4,7 +4,7 @@
 // identifiant + mot de passe vers le Route Handler BFF `POST /api/auth/login`
 // (qui proxifie `POST /auth/login` et pose les cookies httpOnly). En cas de
 // succès, redirige vers `/` : la racine route ensuite **côté serveur** vers la
-// zone du rôle (`/gerant` pour un gérant, `/coiffeur/planning` pour un coiffeur —
+// zone du rôle (`/gerant` pour un gérant, `/coiffeur/tickets` pour un coiffeur —
 // #27), sans divulguer de contenu privé. Les messages d'erreur restent
 // **génériques** (aucun détail sensible) ; identifiant et mot de passe ne sont
 // jamais journalisés.

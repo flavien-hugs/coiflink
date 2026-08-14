@@ -68,19 +68,19 @@ function toCustomer(payload: CustomerResponsePayload): Customer {
   };
 }
 
-// Forme du corps `CustomerVisitHistoryResponse` renvoyé par le backend (#29).
-// `client_id`/`user_id` ne sont **pas** exposés (anti-oracle ADR-0026).
+// Forme du corps renvoyé par `GET .../customers/{customer_id}/visits` (modèle
+// walk-in, `QueueTicket`). `client_id`/`user_id` ne sont **pas** exposés
+// (anti-oracle ADR-0026).
 interface VisitServicePayload {
   service_id: string;
   name: string;
-  price_at_booking: string;
+  price: string;
 }
 
 interface CustomerVisitPayload {
-  appointment_id: string;
-  date: string;
-  start_time: string;
-  end_time: string;
+  queue_ticket_id: string;
+  issued_date: string;
+  completed_at: string;
   status: string;
   services: VisitServicePayload[];
   total_amount: string;
@@ -100,15 +100,14 @@ function toHistory(payload: CustomerHistoryPayload): VisitHistory {
   return {
     customerId: payload.customer_id,
     visits: payload.items.map((item) => ({
-      appointmentId: item.appointment_id,
-      date: item.date,
-      startTime: item.start_time,
-      endTime: item.end_time,
+      queueTicketId: item.queue_ticket_id,
+      issuedDate: item.issued_date,
+      completedAt: item.completed_at,
       status: item.status,
       services: item.services.map((service) => ({
         serviceId: service.service_id,
         name: service.name,
-        priceAtBooking: service.price_at_booking,
+        price: service.price,
       })),
       totalAmount: item.total_amount,
     })),
@@ -348,7 +347,7 @@ export function createHttpCustomerGateway(
       let response: Response;
       try {
         response = await fetch(
-          `${customersUrl(salonId)}/${encodeURIComponent(customerId)}/appointments`,
+          `${customersUrl(salonId)}/${encodeURIComponent(customerId)}/visits`,
           { headers: { ...authHeader() }, cache: "no-store" },
         );
       } catch {

@@ -8,6 +8,9 @@ Couvre les règles de validation pures :
 - `segment_to_customer_filter` : mappage segment → `CustomerFilter` (joignabilité SMS,
   genre) ;
 - `build_campaign` : assemblage, `status = PENDING`, aucun champ destinataire ;
+- `resolve_notification_channel` : priorité PUSH → SMS → IN_APP, pureté, exclusion
+  WHATSAPP/EMAIL (hérité du module notifications de RDV disparu avec #148, seul
+  appelant restant) ;
 - Messages d'erreur neutres (ne reprennent jamais le corps soumis).
 
 Aucune base, aucun réseau — domaine pur.
@@ -24,14 +27,21 @@ from coiflink_api.domain.campaign import (
     CAMPAIGN_MESSAGE_MAX_LENGTH,
     CAMPAIGN_TITLE_MAX_LENGTH,
     CampaignToCreate,
+    ChannelAvailability,
     build_campaign,
     normalize_campaign_segment,
     normalize_campaign_type,
+    resolve_notification_channel,
     segment_to_customer_filter,
     validate_campaign_message,
     validate_campaign_title,
 )
-from coiflink_api.domain.enums import CampaignSegment, CampaignStatus, CampaignType
+from coiflink_api.domain.enums import (
+    CampaignSegment,
+    CampaignStatus,
+    CampaignType,
+    NotificationChannel,
+)
 from coiflink_api.domain.errors import (
     InvalidCampaignMessage,
     InvalidCampaignSegment,
@@ -359,3 +369,44 @@ class TestBuildCampaign:
         campaign = self._build()
         with pytest.raises(dataclasses.FrozenInstanceError):
             campaign.status = "SENT"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# resolve_notification_channel
+# ---------------------------------------------------------------------------
+
+
+class TestResolveNotificationChannel:
+    def test_push_available_returns_push(self) -> None:
+        avail = ChannelAvailability(has_push_token=True, has_phone=True)
+        assert resolve_notification_channel(avail) == NotificationChannel.PUSH.value
+
+    def test_push_wins_over_phone(self) -> None:
+        avail = ChannelAvailability(has_push_token=True, has_phone=False)
+        assert resolve_notification_channel(avail) == NotificationChannel.PUSH.value
+
+    def test_phone_only_returns_sms(self) -> None:
+        avail = ChannelAvailability(has_push_token=False, has_phone=True)
+        assert resolve_notification_channel(avail) == NotificationChannel.SMS.value
+
+    def test_neither_available_falls_back_to_in_app(self) -> None:
+        avail = ChannelAvailability(has_push_token=False, has_phone=False)
+        assert resolve_notification_channel(avail) == NotificationChannel.IN_APP.value
+
+    def test_default_availability_falls_back_to_in_app(self) -> None:
+        assert resolve_notification_channel(ChannelAvailability()) == NotificationChannel.IN_APP.value
+
+    def test_never_returns_whatsapp(self) -> None:
+        for has_push, has_phone in ((True, True), (True, False), (False, True), (False, False)):
+            avail = ChannelAvailability(has_push_token=has_push, has_phone=has_phone)
+            assert resolve_notification_channel(avail) != NotificationChannel.WHATSAPP.value
+
+    def test_never_returns_email(self) -> None:
+        for has_push, has_phone in ((True, True), (True, False), (False, True), (False, False)):
+            avail = ChannelAvailability(has_push_token=has_push, has_phone=has_phone)
+            assert resolve_notification_channel(avail) != NotificationChannel.EMAIL.value
+
+    def test_pure_deterministic(self) -> None:
+        """Aucune I/O : le même signal produit toujours le même canal."""
+        avail = ChannelAvailability(has_push_token=False, has_phone=True)
+        assert resolve_notification_channel(avail) == resolve_notification_channel(avail)

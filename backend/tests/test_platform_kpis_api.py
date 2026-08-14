@@ -85,8 +85,8 @@ class FakePlatformKpiRepository:
             salons_total=0,
             salons_active=0,
             clients_total=0,
-            appointments_total=0,
-            appointments_this_month=0,
+            tickets_total=0,
+            tickets_this_month=0,
             revenue_total=decimal.Decimal("0.00"),
             revenue_this_month=decimal.Decimal("0.00"),
         )
@@ -130,8 +130,8 @@ def _make_counts(**kwargs) -> PlatformKpiCounts:
         salons_total=128,
         salons_active=97,
         clients_total=5421,
-        appointments_total=18342,
-        appointments_this_month=1204,
+        tickets_total=18342,
+        tickets_this_month=1204,
         revenue_total=decimal.Decimal("12500000.00"),
         revenue_this_month=decimal.Decimal("980000.00"),
     )
@@ -206,12 +206,12 @@ class TestGetPlatformKpis200:
         r = admin_client.get(_URL, headers={"Authorization": f"Bearer {_ADMIN_TOKEN}"})
         assert r.json()["clients_total"] == 0
 
-    def test_empty_platform_zero_appointments(
+    def test_empty_platform_zero_tickets(
         self, admin_client: TestClient
     ) -> None:
         r = admin_client.get(_URL, headers={"Authorization": f"Bearer {_ADMIN_TOKEN}"})
-        assert r.json()["appointments_total"] == 0
-        assert r.json()["appointments_this_month"] == 0
+        assert r.json()["tickets_total"] == 0
+        assert r.json()["tickets_this_month"] == 0
 
     def test_empty_platform_zero_revenue(
         self, admin_client: TestClient
@@ -229,7 +229,7 @@ class TestGetPlatformKpis200:
         assert data["salons_total"] == 128
         assert data["salons_active"] == 97
         assert data["clients_total"] == 5421
-        assert data["appointments_total"] == 18342
+        assert data["tickets_total"] == 18342
 
 
 # ---------------------------------------------------------------------------
@@ -277,19 +277,19 @@ class TestGetPlatformKpisResponseSchema:
         assert "clients_total" in data
         assert data["clients_total"] == 500
 
-    def test_has_appointments_total(
+    def test_has_tickets_total(
         self, admin_client: TestClient, kpi_repo: FakePlatformKpiRepository
     ) -> None:
-        data = self._get(admin_client, kpi_repo, _make_counts(appointments_total=1000))
-        assert "appointments_total" in data
-        assert data["appointments_total"] == 1000
+        data = self._get(admin_client, kpi_repo, _make_counts(tickets_total=1000))
+        assert "tickets_total" in data
+        assert data["tickets_total"] == 1000
 
-    def test_has_appointments_this_month(
+    def test_has_tickets_this_month(
         self, admin_client: TestClient, kpi_repo: FakePlatformKpiRepository
     ) -> None:
-        data = self._get(admin_client, kpi_repo, _make_counts(appointments_this_month=42))
-        assert "appointments_this_month" in data
-        assert data["appointments_this_month"] == 42
+        data = self._get(admin_client, kpi_repo, _make_counts(tickets_this_month=42))
+        assert "tickets_this_month" in data
+        assert data["tickets_this_month"] == 42
 
     def test_has_revenue_total(
         self, admin_client: TestClient, kpi_repo: FakePlatformKpiRepository
@@ -425,8 +425,8 @@ class TestGetPlatformKpisResponseSchema:
             "salons_total",
             "salons_active",
             "clients_total",
-            "appointments_total",
-            "appointments_this_month",
+            "tickets_total",
+            "tickets_this_month",
             "revenue_total",
             "revenue_this_month",
             "currency",

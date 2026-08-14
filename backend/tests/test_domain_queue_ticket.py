@@ -6,7 +6,9 @@ Couvre (aucune I/O, domaine pur) :
   nulle, cas dégénérés combinés.
 - Machine à états `can_transition` / `assert_transition` : table de vérité complète
   (5 statuts, toutes les transitions autorisées et refusées).
-- `validate_service_ids` : tuple vide → `InvalidQueueTicketServices` ; non-vide → ok.
+- `validate_service_ids` : tuple vide ou doublon → `InvalidQueueTicketServices` ; non-vide et sans doublon → ok.
+- `validate_cancellation_reason` : vide/blanc/trop long → `InvalidQueueTicketCancellationReason` ;
+  motif valide → trimé.
 - Constantes : `QUEUE_TICKET_STATUSES`, `QUEUE_TICKET_ACTIVE_STATUSES`,
   `QUEUE_TICKET_PENDING_STATUSES`, `DEFAULT_WAIT_MINUTES_NO_STAFF`.
 """
@@ -18,11 +20,13 @@ import uuid
 import pytest
 
 from coiflink_api.domain.errors import (
+    InvalidQueueTicketCancellationReason,
     InvalidQueueTicketServices,
     InvalidQueueTicketTransition,
 )
 from coiflink_api.domain.queue_ticket import (
     ALLOWED_QUEUE_TICKET_TRANSITIONS,
+    CANCELLATION_REASON_MAX_LENGTH,
     DEFAULT_WAIT_MINUTES_NO_STAFF,
     QUEUE_TICKET_ACTIVE_STATUSES,
     QUEUE_TICKET_PENDING_STATUSES,
@@ -30,6 +34,7 @@ from coiflink_api.domain.queue_ticket import (
     assert_transition,
     can_transition,
     estimate_wait_minutes,
+    validate_cancellation_reason,
     validate_service_ids,
 )
 
@@ -259,9 +264,61 @@ class TestValidateServiceIds:
         result = validate_service_ids(sids)
         assert result is sids
 
+    def test_duplicate_service_id_raises_invalid_services(self) -> None:
+        """Un doublon violerait silencieusement la PK composite (`IntegrityError` → 500)."""
+        sid = uuid.uuid4()
+        with pytest.raises(InvalidQueueTicketServices):
+            validate_service_ids((sid, sid))
+
+    def test_duplicate_among_others_raises_invalid_services(self) -> None:
+        a, b = uuid.uuid4(), uuid.uuid4()
+        with pytest.raises(InvalidQueueTicketServices):
+            validate_service_ids((a, b, a))
+
     def test_error_message_is_not_empty(self) -> None:
         with pytest.raises(InvalidQueueTicketServices) as exc_info:
             validate_service_ids(())
+        assert str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# validate_cancellation_reason
+# ---------------------------------------------------------------------------
+
+
+class TestValidateCancellationReason:
+    def test_none_raises_invalid_reason(self) -> None:
+        with pytest.raises(InvalidQueueTicketCancellationReason):
+            validate_cancellation_reason(None)
+
+    def test_empty_string_raises_invalid_reason(self) -> None:
+        with pytest.raises(InvalidQueueTicketCancellationReason):
+            validate_cancellation_reason("")
+
+    def test_whitespace_only_raises_invalid_reason(self) -> None:
+        with pytest.raises(InvalidQueueTicketCancellationReason):
+            validate_cancellation_reason("   ")
+
+    def test_too_long_raises_invalid_reason(self) -> None:
+        too_long = "a" * (CANCELLATION_REASON_MAX_LENGTH + 1)
+        with pytest.raises(InvalidQueueTicketCancellationReason):
+            validate_cancellation_reason(too_long)
+
+    def test_exactly_max_length_is_accepted(self) -> None:
+        exact = "a" * CANCELLATION_REASON_MAX_LENGTH
+        assert validate_cancellation_reason(exact) == exact
+
+    def test_valid_reason_is_accepted(self) -> None:
+        result = validate_cancellation_reason("Cliente absente")
+        assert result == "Cliente absente"
+
+    def test_leading_and_trailing_whitespace_is_trimmed(self) -> None:
+        result = validate_cancellation_reason("  Cliente absente  ")
+        assert result == "Cliente absente"
+
+    def test_error_message_is_not_empty(self) -> None:
+        with pytest.raises(InvalidQueueTicketCancellationReason) as exc_info:
+            validate_cancellation_reason("")
         assert str(exc_info.value)
 
 
@@ -283,11 +340,13 @@ class TestQueueTicketConstants:
             "expired",
         }
 
-    def test_active_statuses_excludes_expired(self) -> None:
-        assert "expired" not in QUEUE_TICKET_ACTIVE_STATUSES
+    def test_active_statuses_includes_expired(self) -> None:
+        """Élargissement délibéré : un ticket annulé (`expired`) reste visible le
+        reste de la journée dans la file gérant, motif inclus."""
+        assert "expired" in QUEUE_TICKET_ACTIVE_STATUSES
 
-    def test_active_statuses_contains_four_values(self) -> None:
-        assert len(QUEUE_TICKET_ACTIVE_STATUSES) == 4
+    def test_active_statuses_contains_five_values(self) -> None:
+        assert len(QUEUE_TICKET_ACTIVE_STATUSES) == 5
 
     def test_active_statuses_contains_expected_values(self) -> None:
         assert set(QUEUE_TICKET_ACTIVE_STATUSES) == {
@@ -295,6 +354,7 @@ class TestQueueTicketConstants:
             "called",
             "in_progress",
             "done",
+            "expired",
         }
 
     def test_pending_statuses_is_waiting_and_in_progress(self) -> None:

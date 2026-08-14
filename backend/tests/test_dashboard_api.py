@@ -9,12 +9,14 @@ Six routes sous `/salons/{salon_id}/dashboard/` :
   - GET dashboard/alerts
 
 Utilise FastAPI `TestClient` avec override de dépendances :
-- `get_appointment_repository`  → `FakeDashboardAppointmentRepo` ;
+- `get_queue_ticket_repository` → `FakeDashboardQueueTicketRepo` ;
 - `get_cash_journal_repository` → `FakeDashboardCashRepo` ;
 - `get_payment_repository`      → `FakeDashboardPaymentRepo` ;
-- `get_notification_repository` → `FakeDashboardNotificationRepo` ;
 - `get_user_repository`         → `FakeAuthUserRepository` (clés de rôle) ;
 - `get_access_policy`           → `AccessPolicy(FakeSalonScopeRepository(...))`.
+
+Rebranché sur `queue_tickets` (pivot walk-in exclusif) : les notifications ont
+disparu, `dashboard/activity` ne porte plus que des évènements paiement.
 
 Couvre :
 - 200 : structure attendue de chaque route (champs requis présents) ;
@@ -40,25 +42,22 @@ from collections.abc import Generator, Mapping
 import pytest
 from fastapi.testclient import TestClient
 
+from coiflink_api.adapters.inbound.queue_tickets import get_queue_ticket_repository
 from coiflink_api.adapters.inbound.security import (
     PUBLIC_ROUTE_PATHS,
     get_access_policy,
     get_user_repository,
 )
 from coiflink_api.adapters.inbound.stats import (
-    get_appointment_repository,
     get_cash_journal_repository,
-    get_notification_repository,
     get_payment_repository,
 )
 from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenService
 from coiflink_api.application.authorization import AccessPolicy
-from coiflink_api.domain.appointment import Appointment
 from coiflink_api.domain.credentials import UserCredentials
 from coiflink_api.domain.dashboard import InProgressService
 from coiflink_api.domain.discrepancy import DiscrepancyFilter
-from coiflink_api.domain.enums import AppointmentStatus, Role, UserStatus
-from coiflink_api.domain.notification import SalonNotification
+from coiflink_api.domain.enums import Role, UserStatus
 from coiflink_api.domain.payment import DEFAULT_CURRENCY, Payment
 from coiflink_api.domain.transaction import Transaction, TransactionFilter
 from coiflink_api.main import app
@@ -113,21 +112,23 @@ _ALL_DASHBOARD_URLS = [
 # ---------------------------------------------------------------------------
 
 
-class FakeDashboardAppointmentRepo:
-    """Fake du port `AppointmentRepository` pour les routes dashboard (#148)."""
+class FakeDashboardQueueTicketRepo:
+    """Fake du port `QueueTicketRepository` pour les routes dashboard (#148)."""
 
     def __init__(
         self,
         counts_by_status: list[Mapping[str, int]] | None = None,
         distinct_clients: list[int] | None = None,
-        appointments: tuple[Appointment, ...] = (),
         in_progress_items: tuple[InProgressService, ...] = (),
+        in_progress_count: int = 0,
+        waiting_beyond_estimate: int = 0,
         attendance: Mapping[datetime.date, int] | None = None,
     ) -> None:
         self._counts_by_status = counts_by_status or [{}]
         self._distinct_clients = distinct_clients or [0]
-        self._appointments = appointments
         self._in_progress_items = in_progress_items
+        self._in_progress_count = in_progress_count
+        self._waiting_beyond_estimate = waiting_beyond_estimate
         self._attendance = attendance or {}
         self._count_idx = 0
         self._clients_idx = 0
@@ -148,7 +149,6 @@ class FakeDashboardAppointmentRepo:
         self,
         salon_id: uuid.UUID,
         *,
-        statuses: tuple[str, ...],
         date_from: datetime.date,
         date_to: datetime.date,
     ) -> int:
@@ -156,17 +156,16 @@ class FakeDashboardAppointmentRepo:
         self._clients_idx += 1
         return result
 
-    def list_for_salon(
-        self,
-        salon_id: uuid.UUID,
-        date_from: datetime.date,
-        date_to: datetime.date,
-        statuses: tuple[str, ...] | None = None,
-    ) -> tuple[Appointment, ...]:
-        return self._appointments
+    def count_in_progress(self, salon_id: uuid.UUID) -> int:
+        return self._in_progress_count
+
+    def count_waiting_beyond_estimate(
+        self, salon_id: uuid.UUID, *, now: datetime.datetime
+    ) -> int:
+        return self._waiting_beyond_estimate
 
     def list_in_progress_details(
-        self, salon_id: uuid.UUID, *, now: datetime.datetime
+        self, salon_id: uuid.UUID
     ) -> tuple[InProgressService, ...]:
         return self._in_progress_items
 
@@ -179,7 +178,7 @@ class FakeDashboardAppointmentRepo:
     ) -> Mapping[datetime.date, int]:
         return self._attendance
 
-    def count_by_status_for_day(self, salon_id, day):  # type: ignore[no-untyped-def]
+    def demand_by_service(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         raise NotImplementedError
 
 
@@ -267,24 +266,6 @@ class FakeDashboardPaymentRepo:
         raise NotImplementedError
 
 
-class FakeDashboardNotificationRepo:
-    """Fake du port `NotificationRepository` pour les routes dashboard (#148)."""
-
-    def __init__(self, notifications: tuple[SalonNotification, ...] = ()) -> None:
-        self._notifications = notifications
-
-    def list_for_salon(
-        self, salon_id: uuid.UUID, *, limit: int
-    ) -> tuple[SalonNotification, ...]:
-        return self._notifications
-
-    def enqueue(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def cancel_pending_for_appointment(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -330,15 +311,13 @@ def _teardown_overrides() -> Generator[None, None, None]:
 
 @pytest.fixture()
 def client() -> Generator[TestClient, None, None]:
-    appt_repo = FakeDashboardAppointmentRepo()
+    tickets_repo = FakeDashboardQueueTicketRepo()
     cash_repo = FakeDashboardCashRepo()
     payment_repo = FakeDashboardPaymentRepo()
-    notif_repo = FakeDashboardNotificationRepo()
 
-    app.dependency_overrides[get_appointment_repository] = lambda: appt_repo
+    app.dependency_overrides[get_queue_ticket_repository] = lambda: tickets_repo
     app.dependency_overrides[get_cash_journal_repository] = lambda: cash_repo
     app.dependency_overrides[get_payment_repository] = lambda: payment_repo
-    app.dependency_overrides[get_notification_repository] = lambda: notif_repo
     app.dependency_overrides[get_user_repository] = lambda: _user_repo_with_all_roles()
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(
         _scope_repo_for_manager()
@@ -378,6 +357,27 @@ def _assert_no_pii(payload: object) -> None:
     elif isinstance(payload, list):
         for item in payload:
             _assert_no_pii(item)
+
+
+def _override_all(
+    *,
+    tickets_repo: FakeDashboardQueueTicketRepo | None = None,
+    cash_repo: FakeDashboardCashRepo | None = None,
+    payment_repo: FakeDashboardPaymentRepo | None = None,
+) -> None:
+    app.dependency_overrides[get_queue_ticket_repository] = lambda: (
+        tickets_repo or FakeDashboardQueueTicketRepo()
+    )
+    app.dependency_overrides[get_cash_journal_repository] = lambda: (
+        cash_repo or FakeDashboardCashRepo()
+    )
+    app.dependency_overrides[get_payment_repository] = lambda: (
+        payment_repo or FakeDashboardPaymentRepo()
+    )
+    app.dependency_overrides[get_user_repository] = lambda: _user_repo_with_all_roles()
+    app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(
+        _scope_repo_for_manager()
+    )
 
 
 # ===========================================================================
@@ -639,37 +639,29 @@ class TestDashboardInProgress200:
     def test_item_shape_with_in_progress_service(self) -> None:
         """Vérifie le schéma d'un item retourné par in-progress."""
         item = InProgressService(
-            appointment_id=str(uuid.uuid4()),
+            queue_ticket_id=str(uuid.uuid4()),
             client_name="Awa Koné",
             service_names=("Coupe femme",),
             hairdresser_name="Fatou D.",
-            start_time=datetime.time(14, 0),
-            end_time=datetime.time(15, 30),
-            status=AppointmentStatus.CONFIRMED.value,
+            started_at=datetime.datetime(2026, 8, 7, 14, 0),
+            status="in_progress",
         )
-        appt_repo = FakeDashboardAppointmentRepo(in_progress_items=(item,))
-        app.dependency_overrides[get_appointment_repository] = lambda: appt_repo
-        app.dependency_overrides[get_cash_journal_repository] = lambda: FakeDashboardCashRepo()
-        app.dependency_overrides[get_payment_repository] = lambda: FakeDashboardPaymentRepo()
-        app.dependency_overrides[get_notification_repository] = lambda: FakeDashboardNotificationRepo()
-        app.dependency_overrides[get_user_repository] = lambda: _user_repo_with_all_roles()
-        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(
-            _scope_repo_for_manager()
-        )
+        tickets_repo = FakeDashboardQueueTicketRepo(in_progress_items=(item,))
+        _override_all(tickets_repo=tickets_repo)
         try:
             with TestClient(app) as c:
                 r = c.get(_IN_PROGRESS_URL, headers=_manager_headers())
             data = r.json()
             assert len(data["items"]) == 1
             first = data["items"][0]
-            assert "appointment_id" in first
+            assert "queue_ticket_id" in first
             assert "client_name" in first
             assert "service_names" in first
             assert "hairdresser_name" in first
-            assert "start_time" in first
-            assert "end_time" in first
+            assert "started_at" in first
             assert "status" in first
-            # Non-PII: no client_id, no contact
+            # Non-PII: no customer_profile_id, no contact
+            assert "customer_profile_id" not in first
             assert "client_id" not in first
         finally:
             app.dependency_overrides.clear()
@@ -725,22 +717,16 @@ class TestDashboardActivity200:
             payment_method="CASH",
             status="VALIDATED",
             recorded_by=uuid.uuid4(),
-            appointment_id=None,
             service_id=None,
+            queue_ticket_id=None,
             client_id=uuid.uuid4(),
             reference=None,
+            mobile_money_phone=None,
             created_at=datetime.datetime(2026, 8, 7, 12, 0),
         )
         txn = Transaction(payment=payment, client_name="Awa Koné")
         payment_repo = FakeDashboardPaymentRepo(transactions=(txn,))
-        app.dependency_overrides[get_appointment_repository] = lambda: FakeDashboardAppointmentRepo()
-        app.dependency_overrides[get_cash_journal_repository] = lambda: FakeDashboardCashRepo()
-        app.dependency_overrides[get_payment_repository] = lambda: payment_repo
-        app.dependency_overrides[get_notification_repository] = lambda: FakeDashboardNotificationRepo()
-        app.dependency_overrides[get_user_repository] = lambda: _user_repo_with_all_roles()
-        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(
-            _scope_repo_for_manager()
-        )
+        _override_all(payment_repo=payment_repo)
         try:
             with TestClient(app) as c:
                 r = c.get(_ACTIVITY_URL, headers=_manager_headers())
@@ -803,28 +789,9 @@ class TestDashboardAlerts200:
 
     def test_alert_item_shape(self) -> None:
         """Vérifie la forme d'un item alerte (kind, severity, count)."""
-        appt = Appointment(
-            id=uuid.uuid4(),
-            salon_id=_SALON_ID,
-            client_id=uuid.uuid4(),
-            hairdresser_id=None,
-            date=datetime.date(2026, 8, 7),
-            start_time=datetime.time(10, 0),
-            end_time=datetime.time(11, 0),
-            status=AppointmentStatus.CONFIRMED.value,
-            client_note=None,
-            created_at=datetime.datetime(2026, 8, 1),
-        )
-        appt_repo = FakeDashboardAppointmentRepo(appointments=(appt,))
+        tickets_repo = FakeDashboardQueueTicketRepo(waiting_beyond_estimate=1)
         payment_repo = FakeDashboardPaymentRepo(anomaly_count=1)
-        app.dependency_overrides[get_appointment_repository] = lambda: appt_repo
-        app.dependency_overrides[get_cash_journal_repository] = lambda: FakeDashboardCashRepo()
-        app.dependency_overrides[get_payment_repository] = lambda: payment_repo
-        app.dependency_overrides[get_notification_repository] = lambda: FakeDashboardNotificationRepo()
-        app.dependency_overrides[get_user_repository] = lambda: _user_repo_with_all_roles()
-        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(
-            _scope_repo_for_manager()
-        )
+        _override_all(tickets_repo=tickets_repo, payment_repo=payment_repo)
         try:
             with TestClient(app) as c:
                 r = c.get(_ALERTS_URL, headers=_manager_headers())
@@ -882,18 +849,7 @@ class TestDashboardSalonIsolation:
     @pytest.mark.parametrize("url", _ALL_DASHBOARD_URLS)
     def test_other_salon_returns_403(self, url: str) -> None:
         other_salon_url = url.replace(str(_SALON_ID), str(_OTHER_SALON_ID))
-        appt_repo = FakeDashboardAppointmentRepo()
-        cash_repo = FakeDashboardCashRepo()
-        payment_repo = FakeDashboardPaymentRepo()
-        notif_repo = FakeDashboardNotificationRepo()
-        app.dependency_overrides[get_appointment_repository] = lambda: appt_repo
-        app.dependency_overrides[get_cash_journal_repository] = lambda: cash_repo
-        app.dependency_overrides[get_payment_repository] = lambda: payment_repo
-        app.dependency_overrides[get_notification_repository] = lambda: notif_repo
-        app.dependency_overrides[get_user_repository] = lambda: _user_repo_with_all_roles()
-        app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(
-            _scope_repo_for_manager()
-        )
+        _override_all()
         try:
             with TestClient(app) as c:
                 r = c.get(other_salon_url, headers=_manager_headers())

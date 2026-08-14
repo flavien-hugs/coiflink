@@ -8,10 +8,10 @@ Ce module porte deux responsabilités **pures** :
 
 - les entités d'écriture/lecture (`PaymentToCreate`, `Payment`), toutes rattachées
   à un salon (`salon_id`) — miroir de l'isolation §11.2 ;
-- la **validation** propre au paiement (montant, mode, référence prestation/RDV,
+- la **validation** propre au paiement (montant, mode, référence prestation/ticket,
   devise), qui matérialise la spécification §8.2 « montant + mode + utilisateur
-  responsable ; paiement lié à une prestation OU un RDV ». Cette validation précède
-  **toute** écriture.
+  responsable ; paiement lié à une prestation OU un ticket ». Cette validation
+  précède **toute** écriture.
 
 Points de sécurité/qualité de donnée (PRD §8.2/§11.3) :
 
@@ -39,9 +39,12 @@ from coiflink_api.domain.errors import (
     InvalidPaymentAmount,
     InvalidPaymentCurrency,
     InvalidPaymentMethod,
+    MobileMoneyPhoneRequired,
+    MobileMoneyReferenceRequired,
     PaymentAmountMismatch,
     PaymentReferenceRequired,
 )
+from coiflink_api.domain.phone import normalize_phone
 
 # Précision de comparaison des montants : le centime (miroir de `NUMERIC(12,2)`).
 # Toute comparaison de cohérence quantifie à ce pas, en `Decimal` (jamais un
@@ -59,6 +62,10 @@ DEFAULT_CURRENCY = "XOF"
 # Borne de la référence libre (numéro de reçu, id de transaction Mobile Money…),
 # alignée sur `payments.reference` (`String(255)`).
 REFERENCE_MAX_LENGTH = 255
+
+# Borne du téléphone Mobile Money, alignée sur `payments.mobile_money_phone`
+# (`String(32)`) — même borne que `users.phone`.
+MOBILE_MONEY_PHONE_MAX_LENGTH = 32
 
 # Modes de paiement autorisés, dérivés de l'énumération du domaine (source de
 # vérité partagée avec la contrainte `CHECK` du schéma).
@@ -95,13 +102,12 @@ def validate_amount(amount: decimal.Decimal | int | None) -> decimal.Decimal:
 
 
 def expected_amount_for_prices(prices: Iterable[decimal.Decimal]) -> decimal.Decimal:
-    """Somme (pure) des prix figés d'un RDV → « montant attendu » (§5.3/§8.2, US-5.1).
+    """Somme (pure) d'une collection de prix → « montant attendu » (§5.3/§8.2, US-5.1).
 
-    Alimente la vérification de cohérence pour un paiement lié à un rendez-vous : le
-    montant attendu est la **somme des `price_at_booking`** de ses lignes (prix figés
-    à la réservation, source de vérité déjà utilisée par #29/#30/#31 — un changement
-    de tarif ultérieur ne réécrit pas l'historique). Le résultat est quantifié au
-    centime (`NUMERIC(12,2)`), en `Decimal`. Une somme vide vaut `0.00`.
+    Alimente la vérification de cohérence d'un paiement : le montant attendu est la
+    **somme** des prix des prestations rattachées à la référence (typiquement les
+    `Service.price` actuels des prestations d'un ticket walk-in). Le résultat est
+    quantifié au centime (`NUMERIC(12,2)`), en `Decimal`. Une somme vide vaut `0.00`.
     """
 
     total = sum(prices, decimal.Decimal("0"))
@@ -179,19 +185,55 @@ def normalize_reference(reference: str | None) -> str | None:
 
 
 def require_reference_present(
-    appointment_id: uuid.UUID | None, service_id: uuid.UUID | None
+    service_id: uuid.UUID | None,
+    queue_ticket_id: uuid.UUID | None,
 ) -> None:
-    """Impose qu'un paiement référence une prestation **ou** un RDV (§8.2).
+    """Impose qu'un paiement référence une prestation **ou** un ticket (§8.2).
 
-    Miroir du `CHECK (appointment_id IS NOT NULL OR service_id IS NOT NULL)` de la
-    table `payments`. Lève `PaymentReferenceRequired` (→ `422`) si les deux sont
-    absents. Le contrôle applicatif produit un message métier clair **avant** que la
-    contrainte base ne rejette l'`INSERT`.
+    Miroir du `CHECK ref_present` (`service_id IS NOT NULL OR queue_ticket_id IS NOT
+    NULL`) de la table `payments`. Lève `PaymentReferenceRequired` (→ `422`) si les
+    deux sont absents. Le contrôle applicatif produit un message métier clair
+    **avant** que la contrainte base ne rejette l'`INSERT`.
     """
 
-    if appointment_id is None and service_id is None:
+    if service_id is None and queue_ticket_id is None:
         raise PaymentReferenceRequired(
-            "Un paiement doit être lié à une prestation ou à un rendez-vous."
+            "Un paiement doit être lié à une prestation ou un ticket."
+        )
+
+
+def validate_mobile_money_phone(payment_method: str, raw_phone: str | None) -> str | None:
+    """Valide le téléphone Mobile Money : requis + E.164 pour ce mode, sinon toujours `None`.
+
+    Retombe systématiquement sur `None` pour un autre mode (jamais persisté hors
+    `MOBILE_MONEY_MANUAL` — évite une donnée orpheline sans rapport avec le
+    paiement réel), même si une valeur est fournie. Pour `MOBILE_MONEY_MANUAL` :
+    lève `MobileMoneyPhoneRequired` si absent, ou `InvalidPhone` (normalisation
+    partagée `domain/phone.py`, même forme canonique que le reste du domaine) si
+    le format est invalide.
+    """
+
+    if payment_method != PaymentMethod.MOBILE_MONEY_MANUAL.value:
+        return None
+    if not isinstance(raw_phone, str) or not raw_phone.strip():
+        raise MobileMoneyPhoneRequired(
+            "Le numéro de téléphone Mobile Money est requis."
+        )
+    return normalize_phone(raw_phone)
+
+
+def require_mobile_money_reference(payment_method: str, reference: str | None) -> None:
+    """Impose un numéro de transaction pour Mobile Money (§8.2, US-5.1).
+
+    `reference` est déjà normalisée (`normalize_reference`) au moment de l'appel :
+    `None` signifie donc absente ou vide, quel que soit le mode. Miroir du `CHECK
+    mobile_money_details_present` (migration 0019). Lève `MobileMoneyReferenceRequired`
+    (→ `422`) **avant** que la contrainte base ne rejette l'`INSERT`.
+    """
+
+    if payment_method == PaymentMethod.MOBILE_MONEY_MANUAL.value and reference is None:
+        raise MobileMoneyReferenceRequired(
+            "Le numéro de transaction Mobile Money est requis."
         )
 
 
@@ -210,11 +252,12 @@ class PaymentToCreate:
     amount: decimal.Decimal
     payment_method: str
     recorded_by: uuid.UUID
-    appointment_id: uuid.UUID | None = None
     service_id: uuid.UUID | None = None
+    queue_ticket_id: uuid.UUID | None = None
     client_id: uuid.UUID | None = None
     currency: str = DEFAULT_CURRENCY
     reference: str | None = None
+    mobile_money_phone: str | None = None
     status: str = PaymentStatus.VALIDATED.value
 
 
@@ -234,10 +277,11 @@ class Payment:
     payment_method: str
     status: str
     recorded_by: uuid.UUID
-    appointment_id: uuid.UUID | None
     service_id: uuid.UUID | None
+    queue_ticket_id: uuid.UUID | None
     client_id: uuid.UUID | None
     reference: str | None
+    mobile_money_phone: str | None
     created_at: datetime.datetime
 
 
@@ -246,6 +290,7 @@ __all__ = [
     "AMOUNT_MAX",
     "DEFAULT_CURRENCY",
     "REFERENCE_MAX_LENGTH",
+    "MOBILE_MONEY_PHONE_MAX_LENGTH",
     "PAYMENT_METHOD_VALUES",
     "validate_amount",
     "expected_amount_for_prices",
@@ -254,6 +299,8 @@ __all__ = [
     "validate_currency",
     "normalize_reference",
     "require_reference_present",
+    "validate_mobile_money_phone",
+    "require_mobile_money_reference",
     "PaymentToCreate",
     "Payment",
 ]

@@ -6,14 +6,27 @@ Utilise les fakes de `conftest.py` (aucune I/O, aucun réseau) : miroir
 Couvre :
 - `JoinQueue` : numérotation séquentielle par salon+jour, anonymat, fiche hors
   salon, prestation vide/hors salon, formule ETA (file vide, file non vide, 0
-  coiffeuses actives, repli sur durées propres).
+  coiffeuses actives, repli sur durées propres), `people_ahead_count` (file
+  vide, ticket `waiting` déjà présent, tickets non-`waiting` exclus, indépendant
+  par salon).
 - `StartQueueTicket` : ticket hors salon/inexistant, ticket non-`waiting`, coiffeuse
   hors salon, succès, audit `QUEUE_TICKET_STARTED` exactement une fois avec
   `metadata={}`.
 - `CompleteQueueTicket` : ticket non-`in_progress`, ticket hors salon, succès, audit
   `QUEUE_TICKET_COMPLETED`.
-- `ListSalonQueueTickets` : retourne uniquement les tickets actifs du salon/jour,
-  triés `ticket_number` ; exclut `expired` et les tickets d'autres salons/jours.
+- `CancelQueueTicket` : motif absent/blanc/hors bornes → `InvalidQueueTicketCancellationReason`
+  **avant** toute I/O dépôt, ticket introuvable/hors salon, ticket `in_progress`/
+  `done`/`expired` → `InvalidQueueTicketTransition`, succès depuis `waiting`/
+  `called`, audit `QUEUE_TICKET_CANCELLED` exactement une fois avec `metadata={}`.
+- `UpdateQueueTicketServices` (#161) : ticket introuvable/hors salon, ticket
+  `done`/`expired`, prestation vide/inactive/hors salon, succès sur `waiting` et
+  `in_progress`, audit `QUEUE_TICKET_SERVICES_UPDATED`.
+- `ListSalonQueueTickets` : retourne les tickets actifs du salon/jour (y compris
+  `expired`), triés `ticket_number` ; exclut les tickets d'autres salons/jours.
+- `GetAssignedTicketCustomer` : nom complet renvoyé seulement si le ticket est
+  `in_progress` **et** assigné au coiffeur appelant ; sinon (hors salon, autre
+  coiffeuse, pas encore pris en charge, ticket anonyme, fiche introuvable) →
+  `QueueTicketNotFound`, un seul motif indiscernable.
 """
 
 from __future__ import annotations
@@ -24,15 +37,19 @@ import uuid
 import pytest
 
 from coiflink_api.application.queue_ticket import (
+    CancelQueueTicket,
     CompleteQueueTicket,
+    GetAssignedTicketCustomer,
     JoinQueue,
     JoinQueueCommand,
     ListSalonQueueTickets,
     StartQueueTicket,
+    UpdateQueueTicketServices,
 )
 from coiflink_api.domain.audit import AuditAction, ENTITY_TYPE_QUEUE_TICKET
 from coiflink_api.domain.errors import (
     HairdresserNotInSalon,
+    InvalidQueueTicketCancellationReason,
     InvalidQueueTicketServices,
     InvalidQueueTicketTransition,
     QueueTicketNotFound,
@@ -110,6 +127,7 @@ def _make_ticket(
     status: str = "waiting",
     hairdresser_id: uuid.UUID | None = None,
     issued_date: datetime.date = _DAY,
+    customer_profile_id: uuid.UUID | None = None,
 ) -> QueueTicket:
     """Construit un `QueueTicket` en mémoire directement dans le fake."""
 
@@ -119,7 +137,7 @@ def _make_ticket(
         salon_id=salon_id,
         ticket_number=1,
         issued_date=issued_date,
-        customer_profile_id=None,
+        customer_profile_id=customer_profile_id,
         service_ids=(uuid.uuid4(),),
         status=status,
         hairdresser_id=hairdresser_id,
@@ -128,6 +146,7 @@ def _make_ticket(
         called_at=None,
         started_at=_CREATED_AT if status in ("in_progress", "done") else None,
         completed_at=_CREATED_AT if status == "done" else None,
+        cancellation_reason="Cliente absente" if status == "expired" else None,
     )
 
 
@@ -156,7 +175,7 @@ class TestJoinQueue:
         svc = _service(salon_id=_SALON_A)
         uc = JoinQueue(tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock)
         result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
-        assert result.ticket_number == 1
+        assert result.ticket.ticket_number == 1
 
     def test_second_ticket_same_salon_same_day_increments(self) -> None:
         tickets = FakeQueueTicketRepository()
@@ -165,7 +184,7 @@ class TestJoinQueue:
         cmd = JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
         first = uc.execute(_SALON_A, cmd)
         second = uc.execute(_SALON_A, cmd)
-        assert second.ticket_number == first.ticket_number + 1
+        assert second.ticket.ticket_number == first.ticket.ticket_number + 1
 
     def test_two_salons_have_independent_counters(self) -> None:
         tickets = FakeQueueTicketRepository()
@@ -178,15 +197,15 @@ class TestJoinQueue:
         t_a = uc_a.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_a.id,)))
         t_b = uc_b.execute(_SALON_B, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_b.id,)))
         # Chaque salon démarre à 1 indépendamment.
-        assert t_a.ticket_number == 1
-        assert t_b.ticket_number == 1
+        assert t_a.ticket.ticket_number == 1
+        assert t_b.ticket.ticket_number == 1
 
     def test_anonymous_ticket_is_accepted(self) -> None:
         svc = _service(salon_id=_SALON_A)
         uc = self._usecase(catalog=_catalog_with_service(svc))
         result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
-        assert result.customer_profile_id is None
-        assert result.status == "waiting"
+        assert result.ticket.customer_profile_id is None
+        assert result.ticket.status == "waiting"
 
     def test_customer_profile_from_other_salon_raises_not_found(self) -> None:
         customers = FakeCustomerRepository()
@@ -248,7 +267,7 @@ class TestJoinQueue:
         catalog = _catalog_with_service(svc)
         uc = JoinQueue(FakeQueueTicketRepository(), catalog, FakeCustomerRepository(), clock=_fixed_clock)
         result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
-        assert result.estimated_wait_minutes == 0
+        assert result.ticket.estimated_wait_minutes == 0
 
     def test_eta_uses_fallback_constant_when_no_active_hairdresser(self) -> None:
         svc = _service(salon_id=_SALON_A, duration_minutes=30)
@@ -263,7 +282,7 @@ class TestJoinQueue:
         tickets.seed(existing)
         uc = JoinQueue(tickets, catalog, FakeCustomerRepository(), clock=_fixed_clock)
         result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
-        assert result.estimated_wait_minutes == DEFAULT_WAIT_MINUTES_NO_STAFF
+        assert result.ticket.estimated_wait_minutes == DEFAULT_WAIT_MINUTES_NO_STAFF
 
     def test_eta_uses_own_duration_when_queue_is_empty_and_hairdresser_exists(self) -> None:
         # Aucun ticket actif → `average_requested_duration_minutes` retourne `None` →
@@ -274,7 +293,7 @@ class TestJoinQueue:
         uc = JoinQueue(tickets, catalog, FakeCustomerRepository(), clock=_fixed_clock)
         # File vide : position=0 → ETA=0 même avec durée=30.
         result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
-        assert result.estimated_wait_minutes == 0
+        assert result.ticket.estimated_wait_minutes == 0
 
     def test_eta_computed_from_waiting_position_and_average(self) -> None:
         # Position=2, durée moyenne=30, 2 coiffeuses → 30 min.
@@ -298,25 +317,69 @@ class TestJoinQueue:
         uc = JoinQueue(tickets, catalog, FakeCustomerRepository(), clock=_fixed_clock)
         result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
         # 2 × 30 / 2 = 30
-        assert result.estimated_wait_minutes == 30
+        assert result.ticket.estimated_wait_minutes == 30
 
     def test_ticket_status_is_waiting_on_creation(self) -> None:
         svc = _service(salon_id=_SALON_A)
         uc = self._usecase(catalog=_catalog_with_service(svc))
         result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
-        assert result.status == "waiting"
+        assert result.ticket.status == "waiting"
 
     def test_ticket_salon_matches_requested_salon(self) -> None:
         svc = _service(salon_id=_SALON_A)
         uc = self._usecase(catalog=_catalog_with_service(svc))
         result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
-        assert result.salon_id == _SALON_A
+        assert result.ticket.salon_id == _SALON_A
 
     def test_service_ids_stored_in_ticket(self) -> None:
         svc = _service(salon_id=_SALON_A)
         uc = self._usecase(catalog=_catalog_with_service(svc))
         result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
-        assert svc.id in result.service_ids
+        assert svc.id in result.ticket.service_ids
+
+    def test_people_ahead_count_is_zero_for_first_ticket_in_empty_queue(self) -> None:
+        svc = _service(salon_id=_SALON_A)
+        uc = self._usecase(catalog=_catalog_with_service(svc))
+        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        assert result.people_ahead_count == 0
+
+    def test_people_ahead_count_is_one_when_first_ticket_still_waiting(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        svc = _service(salon_id=_SALON_A)
+        uc = JoinQueue(tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock)
+        cmd = JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        first = uc.execute(_SALON_A, cmd)
+        second = uc.execute(_SALON_A, cmd)
+        assert first.people_ahead_count == 0
+        assert second.ticket.ticket_number == first.ticket.ticket_number + 1
+        assert second.people_ahead_count == 1
+
+    def test_people_ahead_count_ignores_tickets_no_longer_waiting(self) -> None:
+        # Un ticket déjà `in_progress` (numéro < celui du nouveau) ne compte pas :
+        # seul le statut `waiting` alimente `people_ahead_count`.
+        tickets = FakeQueueTicketRepository()
+        existing = _make_ticket(salon_id=_SALON_A, status="in_progress")
+        tickets.seed(existing)
+        svc = _service(salon_id=_SALON_A)
+        uc = JoinQueue(tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock)
+        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        assert result.ticket.ticket_number > existing.ticket_number
+        assert result.people_ahead_count == 0
+
+    def test_people_ahead_count_independent_per_salon(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        svc_a = _service(salon_id=_SALON_A)
+        svc_b = _service(salon_id=_SALON_B)
+        catalog_a = _catalog_with_service(svc_a)
+        catalog_b = _catalog_with_service(svc_b)
+        uc_a = JoinQueue(tickets, catalog_a, FakeCustomerRepository(), clock=_fixed_clock)
+        uc_b = JoinQueue(tickets, catalog_b, FakeCustomerRepository(), clock=_fixed_clock)
+        # Deux tickets `waiting` sur le salon A avant le premier ticket du salon B.
+        uc_a.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_a.id,)))
+        uc_a.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_a.id,)))
+        t_b = uc_b.execute(_SALON_B, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_b.id,)))
+        # Le compteur du salon B est indépendant : aucun ticket devant lui.
+        assert t_b.people_ahead_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +639,313 @@ class TestCompleteQueueTicket:
 
 
 # ---------------------------------------------------------------------------
+# CancelQueueTicket
+# ---------------------------------------------------------------------------
+
+
+class TestCancelQueueTicket:
+    _REASON = "Cliente absente au moment de l'appel"
+
+    def _usecase(
+        self,
+        tickets: FakeQueueTicketRepository | None = None,
+        audit: FakeAuditLog | None = None,
+    ) -> tuple[CancelQueueTicket, FakeAuditLog]:
+        log = audit or FakeAuditLog()
+        uc = CancelQueueTicket(
+            queue_ticket_repository=tickets or FakeQueueTicketRepository(),
+            audit_log=log,
+            clock=_fixed_clock,
+        )
+        return uc, log
+
+    def test_unknown_ticket_raises_not_found(self) -> None:
+        uc, _ = self._usecase()
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, uuid.uuid4(), self._REASON, _ACTOR_ID)
+
+    def test_ticket_from_other_salon_raises_not_found(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_B, status="waiting")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+
+    def test_in_progress_ticket_raises_invalid_transition(self) -> None:
+        """Cœur de la règle métier : un ticket déjà pris en charge n'est plus annulable."""
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="in_progress")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        with pytest.raises(InvalidQueueTicketTransition):
+            uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+
+    def test_in_progress_ticket_causes_no_repository_mutation(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="in_progress")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        with pytest.raises(InvalidQueueTicketTransition):
+            uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+        assert tickets.get(_SALON_A, ticket.id).status == "in_progress"
+
+    def test_done_ticket_raises_invalid_transition(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="done")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        with pytest.raises(InvalidQueueTicketTransition):
+            uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+
+    def test_already_expired_ticket_raises_invalid_transition(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="expired")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        with pytest.raises(InvalidQueueTicketTransition):
+            uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+
+    def test_empty_reason_raises_before_repository_lookup(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        with pytest.raises(InvalidQueueTicketCancellationReason):
+            uc.execute(_SALON_A, ticket.id, "", _ACTOR_ID)
+        # Aucun changement d'état : la validation pure a lieu avant toute I/O.
+        assert tickets.get(_SALON_A, ticket.id).status == "waiting"
+
+    def test_missing_reason_raises_before_repository_lookup(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        with pytest.raises(InvalidQueueTicketCancellationReason):
+            uc.execute(_SALON_A, ticket.id, None, _ACTOR_ID)  # type: ignore[arg-type]
+        assert tickets.get(_SALON_A, ticket.id).status == "waiting"
+
+    def test_whitespace_reason_raises_invalid_reason(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        with pytest.raises(InvalidQueueTicketCancellationReason):
+            uc.execute(_SALON_A, ticket.id, "   ", _ACTOR_ID)
+
+    def test_success_from_waiting_returns_expired_ticket(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        result = uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+        assert result.status == "expired"
+
+    def test_success_from_called_returns_expired_ticket(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="called")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        result = uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+        assert result.status == "expired"
+
+    def test_success_carries_trimmed_reason(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        result = uc.execute(_SALON_A, ticket.id, f"  {self._REASON}  ", _ACTOR_ID)
+        assert result.cancellation_reason == self._REASON
+
+    def test_audit_recorded_exactly_once(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        uc, log = self._usecase(tickets=tickets)
+        uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+        assert len(log.recorded) == 1
+
+    def test_audit_action_is_queue_ticket_cancelled(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        uc, log = self._usecase(tickets=tickets)
+        uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+        assert log.recorded[0].action == AuditAction.QUEUE_TICKET_CANCELLED.value
+
+    def test_audit_metadata_is_empty(self) -> None:
+        """Le motif, libre et potentiellement identifiant, n'entre jamais au journal."""
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        uc, log = self._usecase(tickets=tickets)
+        uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+        assert log.recorded[0].metadata == {}
+
+    def test_no_audit_on_not_found(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        uc, log = self._usecase(tickets=tickets)
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, uuid.uuid4(), self._REASON, _ACTOR_ID)
+        assert log.recorded == []
+
+    def test_no_audit_on_invalid_transition(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="in_progress")
+        tickets.seed(ticket)
+        uc, log = self._usecase(tickets=tickets)
+        with pytest.raises(InvalidQueueTicketTransition):
+            uc.execute(_SALON_A, ticket.id, self._REASON, _ACTOR_ID)
+        assert log.recorded == []
+
+    def test_no_audit_on_invalid_reason(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        uc, log = self._usecase(tickets=tickets)
+        with pytest.raises(InvalidQueueTicketCancellationReason):
+            uc.execute(_SALON_A, ticket.id, "", _ACTOR_ID)
+        assert log.recorded == []
+
+
+# ---------------------------------------------------------------------------
+# UpdateQueueTicketServices
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateQueueTicketServices:
+    def _usecase(
+        self,
+        tickets: FakeQueueTicketRepository | None = None,
+        catalog: FakeSalonCatalogRepository | None = None,
+        audit: FakeAuditLog | None = None,
+    ) -> tuple[UpdateQueueTicketServices, FakeAuditLog]:
+        svc = _service(salon_id=_SALON_A)
+        log = audit or FakeAuditLog()
+        uc = UpdateQueueTicketServices(
+            queue_ticket_repository=tickets or FakeQueueTicketRepository(),
+            catalog_repository=catalog or _catalog_with_service(svc),
+            audit_log=log,
+        )
+        return uc, log
+
+    def test_unknown_ticket_raises_not_found(self) -> None:
+        svc = _service(salon_id=_SALON_A)
+        uc, _ = self._usecase(catalog=_catalog_with_service(svc))
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, uuid.uuid4(), (svc.id,), _ACTOR_ID)
+
+    def test_ticket_from_other_salon_raises_not_found(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_B, status="waiting")
+        tickets.seed(ticket)
+        svc = _service(salon_id=_SALON_A)
+        uc, _ = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
+
+    def test_done_ticket_raises_invalid_transition(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="done")
+        tickets.seed(ticket)
+        svc = _service(salon_id=_SALON_A)
+        uc, _ = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
+        with pytest.raises(InvalidQueueTicketTransition):
+            uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
+
+    def test_expired_ticket_raises_invalid_transition(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="expired")
+        tickets.seed(ticket)
+        svc = _service(salon_id=_SALON_A)
+        uc, _ = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
+        with pytest.raises(InvalidQueueTicketTransition):
+            uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
+
+    def test_empty_service_ids_raises_invalid_services(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        uc, _ = self._usecase(tickets=tickets)
+        with pytest.raises(InvalidQueueTicketServices):
+            uc.execute(_SALON_A, ticket.id, (), _ACTOR_ID)
+
+    def test_inactive_service_raises_invalid_services(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        svc = _service(salon_id=_SALON_A, is_active=False)
+        uc, _ = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
+        with pytest.raises(InvalidQueueTicketServices):
+            uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
+
+    def test_service_from_other_salon_raises_invalid_services(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        svc_a = _service(salon_id=_SALON_A)
+        svc_other_salon = _service(salon_id=_SALON_B)
+        uc, _ = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc_a))
+        with pytest.raises(InvalidQueueTicketServices):
+            uc.execute(_SALON_A, ticket.id, (svc_other_salon.id,), _ACTOR_ID)
+
+    def test_success_on_waiting_ticket_replaces_services(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        svc = _service(salon_id=_SALON_A)
+        uc, _ = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
+        result = uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
+        assert result.service_ids == (svc.id,)
+
+    def test_success_on_in_progress_ticket_replaces_services(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="in_progress")
+        tickets.seed(ticket)
+        svc = _service(salon_id=_SALON_A)
+        uc, _ = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
+        result = uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
+        assert result.service_ids == (svc.id,)
+
+    def test_audit_recorded_exactly_once(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        svc = _service(salon_id=_SALON_A)
+        uc, log = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
+        uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
+        assert len(log.recorded) == 1
+
+    def test_audit_action_is_queue_ticket_services_updated(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        svc = _service(salon_id=_SALON_A)
+        uc, log = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
+        uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
+        assert log.recorded[0].action == AuditAction.QUEUE_TICKET_SERVICES_UPDATED.value
+
+    def test_audit_metadata_is_empty(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(ticket)
+        svc = _service(salon_id=_SALON_A)
+        uc, log = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
+        uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
+        assert log.recorded[0].metadata == {}
+
+    def test_no_audit_on_error(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(salon_id=_SALON_A, status="done")
+        tickets.seed(ticket)
+        svc = _service(salon_id=_SALON_A)
+        uc, log = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
+        with pytest.raises(InvalidQueueTicketTransition):
+            uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
+        assert log.recorded == []
+
+
+# ---------------------------------------------------------------------------
 # ListSalonQueueTickets
 # ---------------------------------------------------------------------------
 
@@ -602,7 +972,9 @@ class TestListSalonQueueTickets:
         assert t_a.id in ticket_ids
         assert t_b.id not in ticket_ids
 
-    def test_excludes_expired_tickets(self) -> None:
+    def test_includes_expired_tickets(self) -> None:
+        """Élargissement délibéré (annulation manuelle) : `expired` reste visible,
+        contrairement à l'ancien comportement où il en était exclu."""
         tickets = FakeQueueTicketRepository()
         t_waiting = _make_ticket(salon_id=_SALON_A, status="waiting")
         t_expired = _make_ticket(salon_id=_SALON_A, status="expired")
@@ -610,9 +982,11 @@ class TestListSalonQueueTickets:
         tickets.seed(t_expired)
         uc = self._usecase(tickets)
         result = uc.execute(_SALON_A, _DAY)
-        ticket_ids = {e.ticket_id for e in result}
-        assert t_waiting.id in ticket_ids
-        assert t_expired.id not in ticket_ids
+        by_id = {e.ticket_id: e for e in result}
+        assert t_waiting.id in by_id
+        assert t_expired.id in by_id
+        assert by_id[t_expired.id].status == "expired"
+        assert by_id[t_expired.id].cancellation_reason == t_expired.cancellation_reason
 
     def test_includes_done_tickets(self) -> None:
         tickets = FakeQueueTicketRepository()
@@ -656,3 +1030,124 @@ class TestListSalonQueueTickets:
         uc = self._usecase(tickets)
         result = uc.execute(_SALON_A, _DAY)
         assert result[0].status == "in_progress"
+
+
+# ---------------------------------------------------------------------------
+# GetAssignedTicketCustomer
+# ---------------------------------------------------------------------------
+
+
+class TestGetAssignedTicketCustomer:
+    def _customer(self, customers: FakeCustomerRepository, *, salon_id=_SALON_A, full_name="Awa Koné"):  # type: ignore[no-untyped-def]
+        return customers.create(
+            type(
+                "C",
+                (),
+                {
+                    "salon_id": salon_id,
+                    "full_name": full_name,
+                    "phone": None,
+                    "gender": None,
+                    "notes": None,
+                },
+            )()
+        )
+
+    def test_returns_full_name_for_own_in_progress_ticket(self) -> None:
+        customers = FakeCustomerRepository()
+        customer = self._customer(customers, full_name="Awa Koné")
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(
+            status="in_progress",
+            hairdresser_id=_HAIRDRESSER_ID,
+            customer_profile_id=customer.id,
+        )
+        tickets.seed(ticket)
+        uc = GetAssignedTicketCustomer(tickets, customers)
+        result = uc.execute(_SALON_A, ticket.id, _HAIRDRESSER_ID)
+        assert result == "Awa Koné"
+
+    def test_unknown_ticket_raises_not_found(self) -> None:
+        uc = GetAssignedTicketCustomer(FakeQueueTicketRepository(), FakeCustomerRepository())
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, uuid.uuid4(), _HAIRDRESSER_ID)
+
+    def test_ticket_from_other_salon_raises_not_found(self) -> None:
+        customers = FakeCustomerRepository()
+        customer = self._customer(customers, salon_id=_SALON_B)
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(
+            salon_id=_SALON_B,
+            status="in_progress",
+            hairdresser_id=_HAIRDRESSER_ID,
+            customer_profile_id=customer.id,
+        )
+        tickets.seed(ticket)
+        uc = GetAssignedTicketCustomer(tickets, customers)
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, ticket.id, _HAIRDRESSER_ID)
+
+    def test_ticket_assigned_to_another_hairdresser_raises_not_found(self) -> None:
+        """Une coiffeuse ne voit jamais le nom de la cliente d'une collègue."""
+        customers = FakeCustomerRepository()
+        customer = self._customer(customers)
+        other_hairdresser_id = uuid.uuid4()
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(
+            status="in_progress",
+            hairdresser_id=other_hairdresser_id,
+            customer_profile_id=customer.id,
+        )
+        tickets.seed(ticket)
+        uc = GetAssignedTicketCustomer(tickets, customers)
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, ticket.id, _HAIRDRESSER_ID)
+
+    def test_unassigned_ticket_raises_not_found(self) -> None:
+        customers = FakeCustomerRepository()
+        customer = self._customer(customers)
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(
+            status="in_progress", hairdresser_id=None, customer_profile_id=customer.id
+        )
+        tickets.seed(ticket)
+        uc = GetAssignedTicketCustomer(tickets, customers)
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, ticket.id, _HAIRDRESSER_ID)
+
+    @pytest.mark.parametrize("status", ["waiting", "called", "done", "expired"])
+    def test_non_in_progress_ticket_raises_not_found(self, status: str) -> None:
+        """Tant que le ticket n'est pas pris en charge, la file reste au prénom seul."""
+        customers = FakeCustomerRepository()
+        customer = self._customer(customers)
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(
+            status=status, hairdresser_id=_HAIRDRESSER_ID, customer_profile_id=customer.id
+        )
+        tickets.seed(ticket)
+        uc = GetAssignedTicketCustomer(tickets, customers)
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, ticket.id, _HAIRDRESSER_ID)
+
+    def test_anonymous_ticket_raises_not_found(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(
+            status="in_progress", hairdresser_id=_HAIRDRESSER_ID, customer_profile_id=None
+        )
+        tickets.seed(ticket)
+        uc = GetAssignedTicketCustomer(tickets, FakeCustomerRepository())
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, ticket.id, _HAIRDRESSER_ID)
+
+    def test_customer_profile_not_found_raises_not_found(self) -> None:
+        """Fiche référencée mais introuvable (cas dégénéré) — même erreur, aucun oracle."""
+        tickets = FakeQueueTicketRepository()
+        ticket = _make_ticket(
+            status="in_progress",
+            hairdresser_id=_HAIRDRESSER_ID,
+            customer_profile_id=uuid.uuid4(),
+        )
+        tickets.seed(ticket)
+        uc = GetAssignedTicketCustomer(tickets, FakeCustomerRepository())
+        with pytest.raises(QueueTicketNotFound):
+            uc.execute(_SALON_A, ticket.id, _HAIRDRESSER_ID)

@@ -25,25 +25,27 @@ const FAKE_PAYMENT_PAYLOAD = {
   payment_method: "CASH",
   status: "VALIDATED",
   recorded_by: "manager-uuid",
-  appointment_id: null,
+  queue_ticket_id: null,
   service_id: "service-uuid",
   client_id: null,
   reference: null,
+  mobile_money_phone: null,
   created_at: "2026-01-01T00:00:00Z",
 };
 
 const VALID_DRAFT: PaymentDraft = {
   amount: "5000.00",
   paymentMethod: "CASH",
-  appointmentId: null,
+  queueTicketId: null,
   serviceId: "service-uuid",
   clientId: null,
   reference: null,
+  mobileMoneyPhone: null,
 };
 
 // Messages métier neutres du backend (parité `domain/errors.py`) — aucune valeur.
 const AMOUNT_MISMATCH_DETAIL = "Le montant ne correspond pas à la prestation.";
-const REFERENCE_NOT_FOUND_DETAIL = "Prestation ou rendez-vous introuvable pour ce salon.";
+const REFERENCE_NOT_FOUND_DETAIL = "Prestation ou ticket introuvable pour ce salon.";
 
 function stubFetch(status: number, body: unknown): ReturnType<typeof vi.fn> {
   const mock = vi.fn().mockResolvedValue({ status, json: async () => body });
@@ -141,7 +143,7 @@ describe("createHttpPaymentGateway().record() — codes de statut", () => {
       expect(p.status).toBe("VALIDATED");
       expect(p.recordedBy).toBe("manager-uuid");
       expect(p.serviceId).toBe("service-uuid");
-      expect(p.appointmentId).toBeNull();
+      expect(p.queueTicketId).toBeNull();
       expect(p.clientId).toBeNull();
       expect(p.reference).toBeNull();
     }
@@ -193,6 +195,17 @@ describe("createHttpPaymentGateway().record() — codes de statut", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("unavailable");
+  });
+
+  it("409 ticket déjà encaissé → already-paid", async () => {
+    stubFetch(409, { detail: "Ce ticket a déjà été encaissé." });
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).record(
+      SALON_ID,
+      VALID_DRAFT,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "already-paid" });
   });
 
   it("erreur réseau → unavailable", async () => {
@@ -321,12 +334,13 @@ const FAKE_PAGE_PAYLOAD = {
       payment_method: "MOBILE_MONEY_MANUAL",
       status: "VALIDATED",
       recorded_by: "manager-uuid",
-      appointment_id: null,
+      queue_ticket_id: null,
       service_id: "service-uuid",
       client_id: "client-uuid",
       reference: null,
       created_at: "2026-03-15T10:00:00Z",
       client_name: "Awa Koné",
+      ticket_number: null,
     },
   ],
   total: 42,
@@ -397,8 +411,9 @@ describe("createHttpPaymentGateway().listTransactions() — codes de statut", ()
       expect(item.recordedBy).toBe("manager-uuid");
       expect(item.serviceId).toBe("service-uuid");
       expect(item.clientId).toBe("client-uuid");
-      expect(item.appointmentId).toBeNull();
+      expect(item.queueTicketId).toBeNull();
       expect(item.clientName).toBe("Awa Koné");
+      expect(item.ticketNumber).toBeNull();
     }
   });
 
@@ -416,6 +431,24 @@ describe("createHttpPaymentGateway().listTransactions() — codes de statut", ()
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.page.items[0].clientName).toBeNull();
+    }
+  });
+
+  it("200 → ticket_number projeté (paiement lié à un ticket)", async () => {
+    stubFetch(200, {
+      ...FAKE_PAGE_PAYLOAD,
+      items: [{ ...FAKE_PAGE_PAYLOAD.items[0], client_name: "Cliente Walk-in", ticket_number: 4 }],
+    });
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).listTransactions(
+      SALON_ID,
+      {},
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.page.items[0].clientName).toBe("Cliente Walk-in");
+      expect(result.page.items[0].ticketNumber).toBe(4);
     }
   });
 
@@ -532,6 +565,7 @@ const FAKE_RECEIPT_PAYLOAD = {
   payment_id: PAYMENT_ID,
   salon_id: SALON_ID,
   salon_name: "Salon Élégance",
+  ticket_number: null,
   client_name: "Awa Koné",
   client_phone: "+2250700000001",
   amount: "5000.00",
@@ -576,6 +610,21 @@ describe("createHttpPaymentGateway().getReceipt() — codes de statut", () => {
       expect(result.receipt.lines).toEqual([
         { serviceName: "Coupe homme", amount: "5000.00" },
       ]);
+      expect(result.receipt.ticketNumber).toBeNull();
+    }
+  });
+
+  it("200 → ticket_number projeté (paiement lié à un ticket)", async () => {
+    stubFetch(200, { ...FAKE_RECEIPT_PAYLOAD, ticket_number: 4 });
+
+    const result = await createHttpPaymentGateway({ accessToken: TOKEN }).getReceipt(
+      SALON_ID,
+      PAYMENT_ID,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.receipt.ticketNumber).toBe(4);
     }
   });
 

@@ -349,18 +349,30 @@ class QueueTicketHairdresserRequired(DomainError):
     """
 
 
-class InvalidKioskDeviceLabel(DomainError):
-    """Le libellé d'une borne kiosque est vide ou hors bornes (US-8.1, #155).
+class InvalidQueueTicketCancellationReason(DomainError):
+    """Le motif d'annulation d'un ticket de passage est absent ou hors bornes (US-8.3).
 
-    Levée par `domain/kiosk_device.py::validate_device_label` quand le libellé —
+    Levée par `domain/queue_ticket.py::validate_cancellation_reason` quand le
+    motif — **obligatoire** pour annuler un ticket (client absent, no-show) —
+    est vide après `strip()` ou dépasse `CANCELLATION_REASON_MAX_LENGTH`
+    (colonne `TEXT`, borne applicative, miroir `InvalidEmployeeSpecialties`).
+    Message **neutre** — il ne reprend jamais le motif soumis (§11.3). L'adapter
+    entrant la traduit en `422`.
+    """
+
+
+class InvalidTerminalDeviceLabel(DomainError):
+    """Le libellé d'une borne terminal est vide ou hors bornes (US-8.1, #155).
+
+    Levée par `domain/terminal_device.py::validate_device_label` quand le libellé —
     **composé par le gérant** (ex. « Borne entrée ») — est vide après `strip()`
     ou dépasse `DEVICE_LABEL_MAX_LENGTH` (aligné `users.full_name`, `String(255)`).
     Message **neutre** — l'adapter entrant la traduit en `422`.
     """
 
 
-class KioskDeviceNotFound(DomainError):
-    """La borne kiosque visée n'existe pas pour ce salon (US-8.1, #155).
+class TerminalDeviceNotFound(DomainError):
+    """La borne terminal visée n'existe pas pour ce salon (US-8.1, #155).
 
     N'est traduite en `404` **qu'après** validation de la portée : une borne hors
     périmètre a déjà reçu un `403` générique (aucun oracle d'existence, §11.2). Une
@@ -368,13 +380,23 @@ class KioskDeviceNotFound(DomainError):
     """
 
 
-class KioskDeviceRevoked(DomainError):
-    """La borne kiosque visée a été révoquée (compte de service suspendu, US-8.1, #155).
+class TerminalDeviceRevoked(DomainError):
+    """La borne terminal visée a été révoquée (compte de service suspendu, US-8.1, #155).
 
     Une borne révoquée (`users.status = SUSPENDED`, `salon_members.status =
     INACTIVE`) perd tout accès à la requête suivante (relecture du statut,
     `get_current_principal`). Message **neutre** — jamais exposé par
-    `/auth/kiosk/login` (qui répond un `401` générique constant, sans oracle).
+    `/auth/terminal/login` (qui répond un `401` générique constant, sans oracle).
+    """
+
+
+class InvalidActivationCode(DomainError):
+    """Le code d'activation de borne est invalide, expiré, déjà consommé ou inconnu (US-8.1, #155).
+
+    Levée par `ActivateTerminalDevice` pour **tout** motif d'échec (code inconnu,
+    expiré, trop d'essais, déjà consommé) — message générique constant, aucun
+    oracle sur l'existence d'un code ou l'état d'une borne (même posture que
+    `InvalidOtp`/`InvalidCredentials`). L'adapter entrant la traduit en `400`.
     """
 
 
@@ -397,11 +419,11 @@ class InvalidPaymentMethod(DomainError):
 
 
 class PaymentReferenceRequired(DomainError):
-    """Un paiement doit référencer une prestation **ou** un rendez-vous (§8.2, US-5.1).
+    """Un paiement doit référencer une prestation **ou** un ticket (§8.2, US-5.1).
 
-    Miroir du `CHECK (appointment_id IS NOT NULL OR service_id IS NOT NULL)` de la
-    table `payments` : un encaissement sans lien métier est refusé. Message neutre —
-    l'adapter entrant la traduit en `422`.
+    Miroir du `CHECK ref_present (service_id IS NOT NULL OR queue_ticket_id IS NOT
+    NULL)` de la table `payments` : un encaissement sans lien métier est refusé.
+    Message neutre — l'adapter entrant la traduit en `422`.
     """
 
 
@@ -418,18 +440,39 @@ class PaymentAmountMismatch(DomainError):
     """Le montant du paiement ne correspond pas à la prestation liée (§5.3/§8.2, US-5.1).
 
     Cœur de #33 : le PRD impose que « le système vérifie que le montant correspond
-    à la prestation ». Le montant attendu est la **somme des `price_at_booking`** des
-    lignes d'un RDV lié, ou le `Service.price` d'une prestation active liée. Levée
+    à la prestation ». Le montant attendu est la **somme des `Service.price`**
+    actuels des prestations d'un ticket walk-in lié (résolution en direct, aucun gel
+    de prix), ou le `Service.price` d'une prestation active liée seule. Levée
     lorsque le montant saisi diffère (égalité stricte au centime, MVP). Message
     **neutre** — il ne reprend **jamais** ni le montant saisi ni le prix attendu
     (§11.3). L'adapter entrant la traduit en `422`.
     """
 
 
-class PaymentReferenceNotFound(DomainError):
-    """La prestation/le RDV lié au paiement est introuvable pour ce salon (§11.2, US-5.1).
+class MobileMoneyPhoneRequired(DomainError):
+    """Le numéro de téléphone Mobile Money est absent (US-5.1, mode `MOBILE_MONEY_MANUAL`).
 
-    Levée quand `appointment_id`/`service_id` n'existe pas **ou** appartient à un
+    Miroir du `CHECK mobile_money_details_present` de `payments` (migration 0019) :
+    ce mode de paiement exige le téléphone utilisé pour la transaction (par défaut
+    celui du client, ajustable côté formulaire). Message neutre — l'adapter entrant
+    la traduit en `422`.
+    """
+
+
+class MobileMoneyReferenceRequired(DomainError):
+    """Le numéro de transaction Mobile Money est absent (US-5.1, mode `MOBILE_MONEY_MANUAL`).
+
+    Miroir du `CHECK mobile_money_details_present` de `payments` (migration 0019) :
+    `reference` (numéro de transaction), optionnelle pour les autres modes, devient
+    **obligatoire** pour Mobile Money. Message neutre — l'adapter entrant la
+    traduit en `422`.
+    """
+
+
+class PaymentReferenceNotFound(DomainError):
+    """La prestation/le ticket lié au paiement est introuvable pour ce salon (§11.2, US-5.1).
+
+    Levée quand `queue_ticket_id`/`service_id` n'existe pas **ou** appartient à un
     autre salon : les deux cas sont **indiscernables** (aucun oracle d'existence
     inter-salons). Le montant attendu ne pouvant être résolu, le paiement est refusé
     **avant** toute écriture. Message **neutre**. L'adapter entrant la traduit en
@@ -457,6 +500,17 @@ class PaymentNotAdjustable(DomainError):
     """
 
 
+class QueueTicketAlreadyPaid(DomainError):
+    """Le ticket vise est déjà couvert par un paiement `VALIDATED`/`ADJUSTED` (§8.2).
+
+    Un ticket walk-in ne peut être encaissé qu'une seule fois : dès qu'un paiement
+    `VALIDATED` ou `ADJUSTED` lui est déjà rattaché (`PAID_PAYMENT_STATUSES`, même
+    notion que `domain/discrepancy.py`), toute nouvelle tentative d'encaissement
+    sur ce même ticket est refusée. Message **neutre** (ni montant, ni mode).
+    L'adapter entrant la traduit en `409 Conflict`.
+    """
+
+
 class InvalidAdjustment(DomainError):
     """Le delta de correction est nul ou hors bornes (US-5.3, #34, §8.2).
 
@@ -478,6 +532,16 @@ class InvalidTransactionFilter(DomainError):
     borne de montant est mal formée (négative, non finie, hors borne, plus de deux
     décimales). Message **neutre** — il ne reprend **jamais** la valeur saisie
     (§11.3). L'adapter entrant la traduit en `422`.
+    """
+
+
+class InvalidAuditLogFilter(DomainError):
+    """Un critère de filtrage du journal d'audit est invalide (page gérante « Journal d'audit »).
+
+    Levée par `domain/audit.py::validate_audit_log_filter` quand une plage est
+    incohérente (`date_from > date_to`) ou qu'une catégorie n'appartient pas à
+    l'énumération fermée `AUDIT_CATEGORIES`. Message **neutre** — il ne reprend
+    **jamais** la valeur saisie (§11.3). L'adapter entrant la traduit en `422`.
     """
 
 
@@ -666,17 +730,22 @@ __all__ = [
     "QueueTicketNotFound",
     "InvalidQueueTicketTransition",
     "QueueTicketHairdresserRequired",
-    "InvalidKioskDeviceLabel",
-    "KioskDeviceNotFound",
-    "KioskDeviceRevoked",
+    "InvalidQueueTicketCancellationReason",
+    "InvalidTerminalDeviceLabel",
+    "TerminalDeviceNotFound",
+    "TerminalDeviceRevoked",
+    "InvalidActivationCode",
     "InvalidPaymentAmount",
     "InvalidPaymentMethod",
     "InvalidPaymentCurrency",
     "PaymentReferenceRequired",
     "PaymentAmountMismatch",
+    "MobileMoneyPhoneRequired",
+    "MobileMoneyReferenceRequired",
     "PaymentReferenceNotFound",
     "PaymentNotFound",
     "PaymentNotAdjustable",
+    "QueueTicketAlreadyPaid",
     "InvalidAdjustment",
     "InvalidTransactionFilter",
     "InvalidDiscrepancyFilter",

@@ -34,7 +34,7 @@ export default async function CoiffeurLayout({ children }: { children: ReactNode
               Impossible de vérifier votre session pour le moment. Veuillez réessayer plus tard.
             </p>
             <a
-              href="/coiffeur/planning"
+              href="/coiffeur/tickets"
               className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium transition hover:bg-foreground/5"
             >
               Réessayer

@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.inbound.security import (
+    get_salon_scope_repository,
     require_any_permission,
     require_permission,
     require_salon_scope,
@@ -49,6 +50,7 @@ from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.application.ports.audit_log import AuditLog
 from coiflink_api.application.ports.media_storage import MediaStorage
 from coiflink_api.application.ports.salon_repository import SalonRepository
+from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
 from coiflink_api.application.salons import (
     AddSalonPhoto,
     AttachSalonLogo,
@@ -57,6 +59,7 @@ from coiflink_api.application.salons import (
     GetSalon,
     IssueMediaUploadUrl,
     ListOwnSalons,
+    ListSalonsForHairdresser,
     RemoveSalonPhoto,
     SalonView,
     SetOpeningHours,
@@ -65,6 +68,7 @@ from coiflink_api.application.salons import (
 )
 from coiflink_api.config import DEFAULT_MEDIA_MAX_PHOTOS
 from coiflink_api.domain.access import SalonScope
+from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
     InvalidLocation,
     InvalidMediaType,
@@ -345,7 +349,7 @@ def create_salon(
 @router.get(
     "",
     response_model=list[SalonResponse],
-    summary="Lister les salons du gérant authentifié",
+    summary="Lister les salons rattachés au principal authentifié (gérant ou coiffeur)",
     responses={
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant"},
@@ -354,13 +358,30 @@ def create_salon(
 def list_salons(
     repository: Annotated[SalonRepository, Depends(get_salon_repository)],
     storage: Annotated[MediaStorage | None, Depends(get_optional_media_storage)],
+    scope_repository: Annotated[
+        SalonScopeRepository, Depends(get_salon_scope_repository)
+    ],
     principal: Annotated[
         Principal, Depends(require_permission(Permission.SALON_READ_OWN))
     ],
 ) -> list[SalonResponse]:
-    """Retourne les salons rattachés au principal (portée implicite : ses salons)."""
+    """Retourne les salons rattachés au principal (portée implicite : les siens).
 
-    views = ListOwnSalons(repository, storage).execute(principal.id)
+    `SALON_READ_OWN` est détenue à la fois par `MANAGER` et `HAIRDRESSER` (§4.1),
+    mais leur rattachement diffère : un gérant est **propriétaire**
+    (`salons.owner_id`), un coiffeur est **membre `ACTIVE`** (`salon_members`,
+    #13/ADR-0016) — jamais propriétaire. Brancher sur `principal.role` évite de
+    renvoyer systématiquement une liste vide pour un coiffeur (la zone coiffeur,
+    « Mes tickets », résout son salon via cette route, comme le fait la zone
+    gérant).
+    """
+
+    if principal.role == Role.HAIRDRESSER.value:
+        views = ListSalonsForHairdresser(repository, scope_repository, storage).execute(
+            principal.id
+        )
+    else:
+        views = ListOwnSalons(repository, storage).execute(principal.id)
     return [_salon_response(view) for view in views]
 
 

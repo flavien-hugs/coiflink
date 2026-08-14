@@ -28,13 +28,14 @@ from coiflink_api.adapters.outbound.persistence.salon_repository import (
     _to_domain,
 )
 from coiflink_api.adapters.outbound.persistence.service_repository import (
+    _photo_to_domain as _service_photo_to_domain,
     _to_domain as _service_to_domain,
 )
 from coiflink_api.application.ports.salon_catalog_repository import SalonSearchQuery
 from coiflink_api.domain.employee import Employee
 from coiflink_api.domain.enums import Role, SalonStatus, UserStatus
 from coiflink_api.domain.salon import Salon, SalonPhoto
-from coiflink_api.domain.service import Service
+from coiflink_api.domain.service import Service, ServicePhoto
 
 # Caractère d'échappement des métacaractères `LIKE` (`%`, `_`). Il est déclaré à
 # SQLAlchemy via `escape=` afin que la recherche traite un `%` saisi comme un
@@ -129,6 +130,22 @@ class SqlSalonCatalogRepository:
         )
         return tuple(
             _photo_to_domain(row) for row in self._session.scalars(stmt).all()
+        )
+
+    def list_service_photos(self, salon_id: uuid.UUID) -> tuple[ServicePhoto, ...]:
+        """Photos de toutes les prestations du salon, une seule requête (anti N+1)."""
+
+        stmt = (
+            select(models.ServicePhoto)
+            .where(models.ServicePhoto.salon_id == salon_id)
+            .order_by(
+                models.ServicePhoto.service_id.asc(),
+                models.ServicePhoto.position.asc(),
+                models.ServicePhoto.created_at.asc(),
+            )
+        )
+        return tuple(
+            _service_photo_to_domain(row) for row in self._session.scalars(stmt).all()
         )
 
     def _active_filtered(self, query: SalonSearchQuery):

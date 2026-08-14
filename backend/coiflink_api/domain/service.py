@@ -193,13 +193,11 @@ class ServiceUpdate:
 class Service:
     """Prestation persistée, rattachée à un salon (PRD §9.3).
 
-    `image_object_key` est la clé d'objet S3-compatible de l'illustration
-    (ADR-0005), jamais une URL — l'URL signée est résolue par l'adapter entrant
-    à la lecture (miroir `Salon.logo_object_key`). `None` = aucune illustration
-    (état normal, pas une erreur). Attachée via `AttachServiceImage`, jamais via
-    `CreateService`/`UpdateService` (décision de conception : le binaire
-    n'existe pas encore à la création, l'attachement est une action dédiée,
-    miroir exact de `AttachSalonLogo`).
+    L'illustration d'une prestation n'est plus un champ scalaire : elle vit
+    dans une galerie ordonnée (`ServicePhoto`, table `service_photos`), miroir
+    de `SalonPhoto`/`salon_photos` — la position 0 sert de couverture pour
+    l'affichage catalogue. Gérée via `AddServicePhoto`/`RemoveServicePhoto`,
+    jamais via `CreateService`/`UpdateService`.
     """
 
     id: uuid.UUID
@@ -210,9 +208,25 @@ class Service:
     duration_minutes: int
     category: str | None
     is_active: bool
-    image_object_key: str | None
     created_at: datetime.datetime
     updated_at: datetime.datetime
+
+
+@dataclass(frozen=True)
+class ServicePhoto:
+    """Photo d'une prestation (galerie ordonnée, `position` 0 = couverture).
+
+    Miroir `domain.salon.SalonPhoto`. `object_key` est une clé d'objet
+    S3-compatible (jamais une URL) : l'URL signée est résolue à la lecture par
+    l'adapter entrant (ADR-0005).
+    """
+
+    id: uuid.UUID
+    salon_id: uuid.UUID
+    service_id: uuid.UUID
+    object_key: str
+    position: int
+    created_at: datetime.datetime
 
 
 @dataclass(frozen=True)
@@ -324,6 +338,7 @@ __all__ = [
     "ServiceToCreate",
     "ServiceUpdate",
     "Service",
+    "ServicePhoto",
     "ServiceFilter",
     "validate_service_filter",
 ]

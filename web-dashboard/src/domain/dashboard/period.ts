@@ -11,7 +11,7 @@
 // choix incohérent (`custom` sans/mauvaises bornes) **retombe** sur `today` (jamais un
 // filtrage en mémoire, jamais une borne devinée). Aucune PII.
 
-import { isValidIsoDate } from "@/src/domain/appointment/planning-view";
+import { isValidIsoDate } from "@/src/domain/shared/date";
 
 export const DASHBOARD_PERIOD_KINDS = [
   "today",

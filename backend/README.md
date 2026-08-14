@@ -72,6 +72,15 @@ Comptes créés (mot de passe commun `CoifLink#2026`) :
 | Awa Bamba | `0701121314` | HAIRDRESSER | ACTIVE | refus de rôle sur `/gerant` |
 | Mariam Sanogo | `0705161718` | CLIENT | ACTIVE | refus de rôle sur `/gerant` |
 
+Provisionne et **active** aussi une borne terminal pour le salon d'Aïcha (jalon
+M7, #155/#156/#157) via le contrat réel (`POST .../terminal-devices` →
+`POST /auth/terminal/activate` → `POST /auth/terminal/login`), puis crée deux
+fiches walk-in et deux tickets de file d'attente à travers elle. Le
+`device_id`/`secret` de la borne ne sont **jamais relisibles** après coup
+(§11.3) : ils ne s'affichent qu'à la première exécution (recherchez « Borne
+(terminal) » dans la sortie du script) — à réinjecter côté `app-mobile` via
+l'écran d'activation.
+
 ## Build & test
 
 | Action | Commande |
@@ -269,9 +278,9 @@ implicite** — ses droits de supervision sont listés, donc auditables.
 | --- | --- |
 | `CLIENT` | Consulter salons et prestations, réserver, lire **ses** rendez-vous, consulter **ses** reçus de paiement (`PAYMENT_READ_OWN`) |
 | `HAIRDRESSER` | Lire **son** salon et les RDV qui lui sont **assignés**, mettre à jour leur statut |
-| `MANAGER` | Gérer **son** salon : prestations, employés, RDV, fiches clients, caisse, statistiques, **provisionner les bornes kiosque** (`KIOSK_PROVISION`, #155) |
+| `MANAGER` | Gérer **son** salon : prestations, employés, RDV, fiches clients, caisse, statistiques, **provisionner les bornes terminal** (`TERMINAL_PROVISION`, #155) |
 | `ADMIN` | Supervision plateforme : lire tous les salons, les (dés)activer, gérer les comptes, KPI globaux |
-| `KIOSK` | **Borne kiosque** (compte de service, #155) : **exactement** `CUSTOMER_LOOKUP_KIOSK` + `CUSTOMER_CREATE_WALKIN` + `QUEUE_TICKET_CREATE` — **jamais** `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK` |
+| `TERMINAL` | **Borne terminal** (compte de service, #155) : **exactement** `CUSTOMER_LOOKUP_TERMINAL` + `CUSTOMER_CREATE_WALKIN` + `QUEUE_TICKET_CREATE` — **jamais** `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK` |
 
 La **permission** dit *ce que* le rôle peut faire ; la **portée** (`domain/access.py`, PRD §11.2) dit
 *sur quelles données* : un gérant n'accède qu'aux salons dont il est **propriétaire**, un coiffeur
@@ -399,85 +408,85 @@ pilote via les deux routes ci-dessous, jamais ici.
 - Les deux journalisent respectivement `EMPLOYEE_DEACTIVATED`/`EMPLOYEE_REACTIVATED` (métadonnées
   vides, aucune valeur sensible).
 
-## Borne kiosque — rôle, provisioning & authentification (US-8.1, #155 — [ADR-0041](../docs/adr/0041-authentification-borne-kiosque.md))
+## Borne terminal — rôle, provisioning & authentification (US-8.1, #155 — [ADR-0041](../docs/adr/0041-authentification-borne-terminal.md))
 
-Une **borne kiosque** (terminal public en salon, jalon M7) s'authentifie **en son nom propre**, sans
-qu'aucun humain ne s'y connecte. Elle est un **compte de service** au rôle `KIOSK` (cinquième membre de
+Une **borne terminal** (terminal public en salon, jalon M7) s'authentifie **en son nom propre**, sans
+qu'aucun humain ne s'y connecte. Elle est un **compte de service** au rôle `TERMINAL` (cinquième membre de
 l'énumération fermée `Role`), scopé à **un** salon, détenant **exactement** trois permissions dédiées
-(`CUSTOMER_LOOKUP_KIOSK`, `CUSTOMER_CREATE_WALKIN`, `QUEUE_TICKET_CREATE`) — **jamais** `CUSTOMER_MANAGE`
+(`CUSTOMER_LOOKUP_TERMINAL`, `CUSTOMER_CREATE_WALKIN`, `QUEUE_TICKET_CREATE`) — **jamais** `CUSTOMER_MANAGE`
 ni `APPOINTMENT_BOOK` (moindre privilège strict). La lecture du catalogue passe par les routes
 **publiques** `/catalog/...` (aucune permission dédiée).
 
 | Méthode | Chemin | Garde | Réponses |
 | --- | --- | --- | --- |
-| `POST` | `/salons/{salon_id}/kiosk-devices` | `KIOSK_PROVISION` + portée salon | `201` device **+ secret (une fois)** · `401` · `403` · `422` |
-| `GET` | `/salons/{salon_id}/kiosk-devices` | `KIOSK_PROVISION` + portée salon | `200` liste (sans secret) · `401` · `403` |
-| `DELETE` | `/salons/{salon_id}/kiosk-devices/{device_id}` | `KIOSK_PROVISION` + portée salon | `200` device révoqué · `401` · `403` · `404` |
-| `POST` | `/auth/kiosk/login` | **publique-listée**, rate-limitée | `200` paire JWT + `salon_id` · `401` générique · `429` |
+| `POST` | `/salons/{salon_id}/terminal-devices` | `TERMINAL_PROVISION` + portée salon | `201` device **+ secret (une fois)** · `401` · `403` · `422` |
+| `GET` | `/salons/{salon_id}/terminal-devices` | `TERMINAL_PROVISION` + portée salon | `200` liste (sans secret) · `401` · `403` |
+| `DELETE` | `/salons/{salon_id}/terminal-devices/{device_id}` | `TERMINAL_PROVISION` + portée salon | `200` device révoqué · `401` · `403` · `404` |
+| `POST` | `/auth/terminal/login` | **publique-listée**, rate-limitée | `200` paire JWT + `salon_id` · `401` générique · `429` |
 
-**Provisioning** (gérant, `KIOSK_PROVISION` — seul le `MANAGER`) : crée un compte de service `KIOSK`
+**Provisioning** (gérant, `TERMINAL_PROVISION` — seul le `MANAGER`) : crée un compte de service `TERMINAL`
 (ligne `users` + rattachement `salon_members`, écritures atomiques) et **génère** un secret aléatoire
 (`secrets.token_urlsafe(32)`, 256 bits). ⚠ **Le secret n'est affiché qu'une fois** (réponse `201`) — il
 n'est stocké que **haché** (argon2id), jamais journalisé, jamais relisible. Provisioning et révocation
-sont journalisés (`KIOSK_DEVICE_PROVISIONED` / `KIOSK_DEVICE_REVOKED`, `metadata` vide).
+sont journalisés (`TERMINAL_DEVICE_PROVISIONED` / `TERMINAL_DEVICE_REVOKED`, `metadata` vide).
 
 ```bash
 # Provisionner une borne (gérant authentifié) — le secret n'est présent que dans cette réponse.
-curl -sS -X POST "$API/salons/$SALON_ID/kiosk-devices" \
+curl -sS -X POST "$API/salons/$SALON_ID/terminal-devices" \
   -H "Authorization: Bearer $MANAGER_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"label":"Borne entrée"}'
 # → 201 {"id":"…","salon_id":"…","label":"Borne entrée","status":"ACTIVE","created_at":"…","secret":"k7Yw…Qc"}
 
 # La borne échange (device_id, secret) contre une paire JWT courte + son salon_id.
-curl -sS -X POST "$API/auth/kiosk/login" \
+curl -sS -X POST "$API/auth/terminal/login" \
   -H "Content-Type: application/json" \
   -d '{"device_id":"<id>","secret":"k7Yw…Qc"}'
 # → 200 {"access_token":"…","refresh_token":"…","token_type":"bearer","expires_in":900,"salon_id":"…"}
 
 # Lister les bornes du salon (jamais de secret) ; révoquer une borne (effet immédiat).
-curl -sS "$API/salons/$SALON_ID/kiosk-devices" -H "Authorization: Bearer $MANAGER_ACCESS_TOKEN"
-curl -sS -X DELETE "$API/salons/$SALON_ID/kiosk-devices/<id>" -H "Authorization: Bearer $MANAGER_ACCESS_TOKEN"
+curl -sS "$API/salons/$SALON_ID/terminal-devices" -H "Authorization: Bearer $MANAGER_ACCESS_TOKEN"
+curl -sS -X DELETE "$API/salons/$SALON_ID/terminal-devices/<id>" -H "Authorization: Bearer $MANAGER_ACCESS_TOKEN"
 ```
 
 **Cycle de vie d'un device** : *provisionné* (`users.status = ACTIVE`, `salon_members.status = ACTIVE`)
 → *actif* (échange son secret contre des JWT courts, portée = son salon) → *révoqué* (`DELETE` :
 `users.status = SUSPENDED` **et** `salon_members.status = INACTIVE`). La révocation est **logique**
 (jamais une suppression, traçabilité §11.4) et à **effet immédiat** : la relecture du statut par requête
-(`get_current_principal`) coupe l'accès dès la requête suivante, et `/auth/kiosk/login` répond alors le
+(`get_current_principal`) coupe l'accès dès la requête suivante, et `/auth/terminal/login` répond alors le
 `401` générique. **Ce qui est long est révocable, ce qui est porteur est court** : le secret de device
 (stocké côté borne, #159/#161) est durable et révocable ; les JWT émis restent courts (accès 15 min).
-Tout échec de `/auth/kiosk/login` (device inconnu, secret faux, device révoqué) renvoie le **même** `401`
+Tout échec de `/auth/terminal/login` (device inconnu, secret faux, device révoqué) renvoie le **même** `401`
 générique — aucun oracle sur l'existence ou l'état d'une borne.
 
-## Borne — identification téléphone & création walk-in (US-8.2, #156 — [ADR-0041](../docs/adr/0041-authentification-borne-kiosque.md), [ADR-0026](../docs/adr/0026-fiche-client-portee-salon.md))
+## Borne — identification téléphone & création walk-in (US-8.2, #156 — [ADR-0041](../docs/adr/0041-authentification-borne-terminal.md), [ADR-0026](../docs/adr/0026-fiche-client-portee-salon.md))
 
 Le parcours « client sans rendez-vous » de la borne (PRD §17) répond d'abord à **qui se présente ?** Deux
-routes **réservées au rôle `KIOSK`** (compte de service d'un device, #155), montées sous
-`/salons/{salon_id}/kiosk/customers[...]` — imbriquées sous le salon pour hériter de `require_salon_scope`
+routes **réservées au rôle `TERMINAL`** (compte de service d'un device, #155), montées sous
+`/salons/{salon_id}/terminal/customers[...]` — imbriquées sous le salon pour hériter de `require_salon_scope`
 (isolation §11.2) — et **jamais publiques** (rien n'entre dans `PUBLIC_ROUTE_PATHS`) :
 
 | Méthode | Chemin | Garde | Réponses |
 | --- | --- | --- | --- |
-| `POST` | `/salons/{salon_id}/kiosk/customers/lookup` | portée salon + `CUSTOMER_LOOKUP_KIOSK` | `200` `{customer_id, first_name}` · `404` neutre · `422` téléphone invalide · `429` + `Retry-After` · `401`/`403` |
-| `POST` | `/salons/{salon_id}/kiosk/customers` | portée salon + `CUSTOMER_CREATE_WALKIN` | `201` `{customer_id, first_name}` · `409` doublon · `422` champ invalide · `401`/`403` |
+| `POST` | `/salons/{salon_id}/terminal/customers/lookup` | portée salon + `CUSTOMER_LOOKUP_TERMINAL` | `200` `{customer_id, first_name}` · `404` neutre · `422` téléphone invalide · `429` + `Retry-After` · `401`/`403` |
+| `POST` | `/salons/{salon_id}/terminal/customers` | portée salon + `CUSTOMER_CREATE_WALKIN` | `201` `{customer_id, first_name}` · `409` doublon · `422` champ invalide · `401`/`403` |
 
-Les deux permissions sont **dédiées au rôle `KIOSK`** et déjà livrées par #155 : #156 **ne modifie pas**
+Les deux permissions sont **dédiées au rôle `TERMINAL`** et déjà livrées par #155 : #156 **ne modifie pas**
 `ROLE_PERMISSIONS`. `CUSTOMER_MANAGE` reste **MANAGER-seul** ; un JWT `CLIENT`/`MANAGER`/`HAIRDRESSER`/
-`ADMIN` est refusé (`403` générique) sur ces routes, et un credential `KIOSK` reste incapable d'atteindre
+`ADMIN` est refusé (`403` générique) sur ces routes, et un credential `TERMINAL` reste incapable d'atteindre
 `CUSTOMER_MANAGE` ou `APPOINTMENT_BOOK` (moindre privilège, ADR-0041).
 
 ```bash
 # Recherche par téléphone (le numéro voyage en CORPS, jamais en query string).
-curl -sS -X POST "$API/salons/$SALON_ID/kiosk/customers/lookup" \
-  -H "Authorization: Bearer $KIOSK_ACCESS_TOKEN" -H 'Content-Type: application/json' \
+curl -sS -X POST "$API/salons/$SALON_ID/terminal/customers/lookup" \
+  -H "Authorization: Bearer $TERMINAL_ACCESS_TOKEN" -H 'Content-Type: application/json' \
   -d '{"phone":"07 00 00 00 00"}'
 # → 200 {"customer_id":"…","first_name":"Awa"}   (trouvée — prénom seul)
 # → 404 {"detail":"Aucune fiche pour ce numéro dans ce salon."}   (absente, sans écho du numéro)
 
 # Création walk-in (les 3 champs requis ; ni mot de passe, ni user_id, ni genre/notes).
-curl -sS -X POST "$API/salons/$SALON_ID/kiosk/customers" \
-  -H "Authorization: Bearer $KIOSK_ACCESS_TOKEN" -H 'Content-Type: application/json' \
+curl -sS -X POST "$API/salons/$SALON_ID/terminal/customers" \
+  -H "Authorization: Bearer $TERMINAL_ACCESS_TOKEN" -H 'Content-Type: application/json' \
   -d '{"first_name":"Awa","last_name":"Koné","phone":"0700000000"}'
 # → 201 {"customer_id":"…","first_name":"Awa"}   (téléphone stocké +2250700000000, user_id = NULL)
 # → 409 {"detail":"Une fiche existe déjà pour ce numéro dans ce salon."}   (la borne relance le lookup)
@@ -496,7 +505,7 @@ d'existence de **compte** que l'ADR-0026 protège). Défenses : **prénom seul**
 téléphone, ni genre, ni notes, ni compteurs) ; **isolation par salon** (`require_salon_scope` + refiltre
 SQL `salon_id`) — l'énumération cross-salons est structurellement impossible ; **limitation de débit** des
 échecs (`404`/`422`) par **device + IP** (réutilise `LoginRateLimiter`/`InMemoryLoginRateLimiter`, seuils
-`KIOSK_LOOKUP_*`, défaut 10 échecs / 5 min, verrou 10 min) → `429` + `Retry-After` ; **aucune PII** dans les
+`TERMINAL_LOOKUP_*`, défaut 10 échecs / 5 min, verrou 10 min) → `429` + `Retry-After` ; **aucune PII** dans les
 logs, l'audit ou les erreurs (messages neutres, clé de débit opaque, création journalisée `CUSTOMER_CREATED`
 avec `metadata` vide, lookups **non audités**). **Aucune migration** : la table `customer_profiles`, l'index
 unique partiel `uq_customer_profiles_salon_phone` (qui sert aussi la recherche par égalité) et la validation
@@ -513,7 +522,7 @@ existante modifiée.
 
 | Méthode | Chemin | Garde | Réponses |
 | --- | --- | --- | --- |
-| `POST` | `/salons/{salon_id}/queue/tickets` | portée salon + `QUEUE_TICKET_CREATE` (rôle `KIOSK`, #155) | `201` ticket · `404` fiche hors salon · `422` prestation(s) invalide(s) · `401`/`403` |
+| `POST` | `/salons/{salon_id}/queue/tickets` | portée salon + `QUEUE_TICKET_CREATE` (rôle `TERMINAL`, #155) | `201` ticket · `404` fiche hors salon · `422` prestation(s) invalide(s) · `401`/`403` |
 | `POST` | `/salons/{salon_id}/queue/tickets/{ticket_id}/start` | portée salon + `APPOINTMENT_UPDATE_STATUS` (coiffeuse/gérant) | `200` ticket · `404` ticket/coiffeuse hors salon · `409` transition invalide · `401`/`403` |
 | `POST` | `/salons/{salon_id}/queue/tickets/{ticket_id}/complete` | portée salon + `APPOINTMENT_UPDATE_STATUS` | `200` ticket · `404` · `409` · `401`/`403` |
 | `GET` | `/salons/{salon_id}/queue` | portée salon + `APPOINTMENT_READ_SALON` | `200` `{appointments, walk_in_tickets}` · `422` jour invalide · `401`/`403` |
@@ -532,9 +541,9 @@ documentée (`30 min`, jamais de division par zéro) ; **file vide** → repli s
 **de ce ticket** ; **aucune durée** → `0`.
 
 ```bash
-# Rejoindre la file (borne KIOSK) — customer_profile_id optionnel (null = ticket anonyme).
+# Rejoindre la file (borne TERMINAL) — customer_profile_id optionnel (null = ticket anonyme).
 curl -sS -X POST "$API/salons/$SALON_ID/queue/tickets" \
-  -H "Authorization: Bearer $KIOSK_ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TERMINAL_ACCESS_TOKEN" -H 'Content-Type: application/json' \
   -d '{"customer_profile_id":"…","service_ids":["…"]}'
 # → 201 {"id":"…","ticket_number":7,"issued_date":"2026-08-11","status":"waiting",
 #        "estimated_wait_minutes":18,"created_at":"…","service_ids":["…"]}
@@ -1994,9 +2003,9 @@ les **secrets réels** (DSN base/Redis, `JWT_SECRET`, etc.) sont injectés **hor
 | `PASSWORD_RESET_MAX_ATTEMPTS` | *(= `LOGIN_MAX_ATTEMPTS`)* | Réinitialisation (#11, optionnel) : demandes avant verrou anti-flood. |
 | `PASSWORD_RESET_WINDOW_SECONDS` | *(= `LOGIN_WINDOW_SECONDS`)* | Réinitialisation (#11, optionnel) : fenêtre glissante de l'anti-flood, en secondes. |
 | `PASSWORD_RESET_LOCKOUT_SECONDS` | *(= `LOGIN_LOCKOUT_SECONDS`)* | Réinitialisation (#11, optionnel) : durée du verrou anti-flood, en secondes. |
-| `KIOSK_LOOKUP_MAX_ATTEMPTS` | `10` | Borne — anti-énumération lookup (#156, optionnel) : échecs par device + IP avant verrou. Plus permissif que `LOGIN_*` (saisie tactile fréquente, terminal physiquement surveillable). |
-| `KIOSK_LOOKUP_WINDOW_SECONDS` | `300` | Borne — anti-énumération lookup (#156, optionnel) : fenêtre glissante des échecs, en secondes (5 min). |
-| `KIOSK_LOOKUP_LOCKOUT_SECONDS` | `600` | Borne — anti-énumération lookup (#156, optionnel) : durée du verrou après seuil, en secondes (10 min). Distinct de `LOGIN_LOCKOUT_SECONDS` (verrouiller les recherches ne verrouille ni le login ni la connexion humaine). |
+| `TERMINAL_LOOKUP_MAX_ATTEMPTS` | `10` | Borne — anti-énumération lookup (#156, optionnel) : échecs par device + IP avant verrou. Plus permissif que `LOGIN_*` (saisie tactile fréquente, terminal physiquement surveillable). |
+| `TERMINAL_LOOKUP_WINDOW_SECONDS` | `300` | Borne — anti-énumération lookup (#156, optionnel) : fenêtre glissante des échecs, en secondes (5 min). |
+| `TERMINAL_LOOKUP_LOCKOUT_SECONDS` | `600` | Borne — anti-énumération lookup (#156, optionnel) : durée du verrou après seuil, en secondes (10 min). Distinct de `LOGIN_LOCKOUT_SECONDS` (verrouiller les recherches ne verrouille ni le login ni la connexion humaine). |
 | `S3_ENDPOINT_URL` | *(vide)* | Stockage objet médias (#15, ADR-0005) : endpoint S3-compatible (MinIO en local, fournisseur en prod). Vide ⇒ AWS S3 « pur ». |
 | `S3_BUCKET` | *(vide)* | Bucket **privé** des médias. Absent ⇒ `media_storage=None` ⇒ routes médias en `503`. |
 | `S3_REGION` | `us-east-1` | Région du bucket. |

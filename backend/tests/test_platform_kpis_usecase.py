@@ -75,8 +75,8 @@ def _make_zero_counts() -> PlatformKpiCounts:
         salons_total=0,
         salons_active=0,
         clients_total=0,
-        appointments_total=0,
-        appointments_this_month=0,
+        tickets_total=0,
+        tickets_this_month=0,
         revenue_total=decimal.Decimal("0.00"),
         revenue_this_month=decimal.Decimal("0.00"),
     )
@@ -87,8 +87,8 @@ def _make_counts(**kwargs) -> PlatformKpiCounts:
         salons_total=5,
         salons_active=3,
         clients_total=100,
-        appointments_total=300,
-        appointments_this_month=25,
+        tickets_total=300,
+        tickets_this_month=25,
         revenue_total=decimal.Decimal("750000.00"),
         revenue_this_month=decimal.Decimal("62500.00"),
     )
@@ -182,13 +182,13 @@ class TestComputePlatformKpisSnapshot:
         snap = self._execute(_make_counts(clients_total=5421))
         assert snap.clients_total == 5421
 
-    def test_appointments_total_propagated(self) -> None:
-        snap = self._execute(_make_counts(appointments_total=18342))
-        assert snap.appointments_total == 18342
+    def test_tickets_total_propagated(self) -> None:
+        snap = self._execute(_make_counts(tickets_total=18342))
+        assert snap.tickets_total == 18342
 
-    def test_appointments_this_month_propagated(self) -> None:
-        snap = self._execute(_make_counts(appointments_this_month=1204))
-        assert snap.appointments_this_month == 1204
+    def test_tickets_this_month_propagated(self) -> None:
+        snap = self._execute(_make_counts(tickets_this_month=1204))
+        assert snap.tickets_this_month == 1204
 
     def test_revenue_total_propagated(self) -> None:
         snap = self._execute(_make_counts(revenue_total=decimal.Decimal("12500000.00")))
@@ -239,7 +239,7 @@ class TestComputePlatformKpisSnapshot:
         """Plateforme vide : compteurs et revenus à zéro — état initial légitime."""
         snap = self._execute(_make_zero_counts())
         assert snap.salons_total == 0
-        assert snap.appointments_total == 0
+        assert snap.tickets_total == 0
         assert snap.revenue_total == decimal.Decimal("0.00")
         assert snap.revenue_this_month == decimal.Decimal("0.00")
 

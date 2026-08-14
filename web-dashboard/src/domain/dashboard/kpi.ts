@@ -41,12 +41,17 @@ export interface DashboardPeriod {
 
 // Les 4 KPI du tableau de bord d'activité (miroir de `DashboardKpisResponse`).
 // `inProgress` est un **instantané** (nombre actuel), sans évolution.
+// `attendanceToday`/`revenueThisWeek` sont des évolutions à **bornes fixes**
+// (jour/semaine glissants), indépendantes de `period` — cartes « À surveiller »
+// du tableau de bord (« Fréquentation & équipe », « Chiffre d'affaires »).
 export interface DashboardKpis {
   period: DashboardPeriod;
   waitingClients: CountEvolution;
   inProgress: number;
   revenue: MoneyEvolution;
   clientsCount: CountEvolution;
+  attendanceToday: CountEvolution;
+  revenueThisWeek: MoneyEvolution;
 }
 
 // Glyphe d'évolution par sens (↑ hausse, ↓ baisse, → stable). Présentation seule.

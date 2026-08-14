@@ -742,6 +742,165 @@ class TestRecordPaymentE2E:
         assert resp.status_code == 401
 
 
+@pytest.mark.skipif(not _DATABASE_URL, reason="PostgreSQL requis — définissez DATABASE_URL.")
+class TestMobileMoneyPaymentE2E:
+    """Mobile Money exige un téléphone ET un numéro de transaction (§8.2, migration 0019).
+
+    Validation **applicative uniquement** (`domain/payment.py`, appelée par
+    `RecordPayment.execute` avant toute écriture) — délibérément aucun `CHECK`
+    base (voir la migration 0019 pour le raisonnement : un tel `CHECK`
+    bloquerait indéfiniment la correction des paiements Mobile Money
+    antérieurs à cette exigence). Chemin SQL réel non couvert par les suites
+    unitaires/API (adossées à `FakePaymentRepository`, qui ne connaît aucune
+    contrainte base).
+    """
+
+    def test_phone_and_reference_present_returns_201(self, _e2e_client: TestClient) -> None:
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        resp = _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "MOBILE_MONEY_MANUAL",
+                "service_id": service_id,
+                "reference": "MM-TX-0001",
+                "mobile_money_phone": "0700000000",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["reference"] == "MM-TX-0001"
+        # Normalisé en E.164 (même forme canonique que `domain/phone.py`).
+        assert body["mobile_money_phone"] == "+2250700000000"
+
+    def test_missing_phone_returns_422(self, _e2e_client: TestClient) -> None:
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        resp = _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "MOBILE_MONEY_MANUAL",
+                "service_id": service_id,
+                "reference": "MM-TX-0002",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422
+        assert _count_payments(salon_id) == 0
+
+    def test_missing_reference_returns_422(self, _e2e_client: TestClient) -> None:
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        resp = _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "MOBILE_MONEY_MANUAL",
+                "service_id": service_id,
+                "mobile_money_phone": "0700000000",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422
+        assert _count_payments(salon_id) == 0
+
+    def test_malformed_phone_returns_422(self, _e2e_client: TestClient) -> None:
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        resp = _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "MOBILE_MONEY_MANUAL",
+                "service_id": service_id,
+                "reference": "MM-TX-0003",
+                "mobile_money_phone": "abc",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422
+        assert _count_payments(salon_id) == 0
+
+    def test_cash_payment_ignores_a_provided_phone(self, _e2e_client: TestClient) -> None:
+        """Un téléphone fourni hors Mobile Money est silencieusement ignoré (jamais persisté)."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        resp = _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "CASH",
+                "service_id": service_id,
+                "mobile_money_phone": "0700000000",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["mobile_money_phone"] is None
+
+    def test_adjusting_a_historical_mobile_money_payment_without_phone_succeeds(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """Régression : corriger un paiement Mobile Money antérieur à cette
+        exigence (donc sans téléphone/référence — impossible à créer via
+        l'API aujourd'hui, simulé par un `INSERT` direct) doit rester possible
+        (US-5.3/#34). C'est précisément pour préserver ceci qu'aucun `CHECK`
+        base n'impose téléphone+référence pour `MOBILE_MONEY_MANUAL` : un tel
+        `CHECK` s'appliquerait aussi à l'`UPDATE status` de `mark_adjusted`, qui
+        ne touche pourtant ni l'un ni l'autre champ (voir migration 0019)."""
+        manager_id = _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        payment_id = uuid.uuid4()
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO payments "
+                    "(id, salon_id, service_id, amount, payment_method, status, "
+                    "recorded_by, receipt_number) "
+                    "VALUES (:id, :salon_id, :service_id, :amount, "
+                    "'MOBILE_MONEY_MANUAL', 'VALIDATED', :recorded_by, 999)"
+                ),
+                {
+                    "id": payment_id,
+                    "salon_id": salon_id,
+                    "service_id": service_id,
+                    "amount": _SERVICE_PRICE,
+                    "recorded_by": manager_id,
+                },
+            )
+            conn.commit()
+
+        resp = _e2e_client.post(
+            f"/salons/{salon_id}/payments/{payment_id}/adjustments",
+            json={"amount": "-500.00", "description": "Erreur de saisie"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["payment"]["status"] == "ADJUSTED"
+
+
 # ─── Groupe e2e : historique des transactions filtrable (PostgreSQL requis) ──
 
 

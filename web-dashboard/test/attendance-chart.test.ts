@@ -46,7 +46,7 @@ describe("AttendanceChart — échec de lecture (series null)", () => {
 describe("AttendanceChart — série tout-à-zéro (état vide)", () => {
   it("affiche l'état vide explicite, pas de graphique", () => {
     const html = render(ALL_ZERO);
-    expect(html).toContain("Aucun rendez-vous sur la période");
+    expect(html).toContain("Aucun ticket sur la période");
     expect(html).not.toContain("<svg");
   });
 });

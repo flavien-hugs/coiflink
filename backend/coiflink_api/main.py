@@ -18,17 +18,17 @@ import secrets
 from fastapi import Depends, FastAPI
 
 from coiflink_api.adapters.inbound.admin import router as admin_router
-from coiflink_api.adapters.inbound.appointments import router as appointments_router
+from coiflink_api.adapters.inbound.audit_logs import router as audit_logs_router
 from coiflink_api.adapters.inbound.auth import router as auth_router
 from coiflink_api.adapters.inbound.campaigns import router as campaigns_router
 from coiflink_api.adapters.inbound.catalog import router as catalog_router
 from coiflink_api.adapters.inbound.customers import router as customers_router
 from coiflink_api.adapters.inbound.employees import router as employees_router
 from coiflink_api.adapters.inbound.health import router as health_router
-from coiflink_api.adapters.inbound.kiosk_customers import (
-    router as kiosk_customers_router,
+from coiflink_api.adapters.inbound.terminal_customers import (
+    router as terminal_customers_router,
 )
-from coiflink_api.adapters.inbound.kiosk_devices import router as kiosk_devices_router
+from coiflink_api.adapters.inbound.terminal_devices import router as terminal_devices_router
 from coiflink_api.adapters.inbound.payments import router as payments_router
 from coiflink_api.adapters.inbound.queue_tickets import (
     router as queue_tickets_router,
@@ -100,15 +100,15 @@ app.state.login_rate_limiter = InMemoryLoginRateLimiter(
 )
 app.state.login_dummy_hash = Argon2Hasher().hash(secrets.token_urlsafe(32))
 
-# Recherche téléphone à la borne kiosque (#156, US-8.2) : limiteur anti-énumération
+# Recherche téléphone à la borne terminal (#156, US-8.2) : limiteur anti-énumération
 # **dédié** (singleton `app.state`), distinct des limiteurs de connexion (#10) et de
-# login kiosque (#155) — verrouiller les recherches d'une borne ne verrouille ni son
+# login terminal (#155) — verrouiller les recherches d'une borne ne verrouille ni son
 # login ni les connexions humaines. Réutilise le même port/adaptateur (spec §D) avec
 # des seuils propres au lookup (plus permissifs : erreur de saisie tactile fréquente).
-app.state.kiosk_lookup_rate_limiter = InMemoryLoginRateLimiter(
-    max_attempts=_auth_config.kiosk_lookup_max_attempts,
-    window=_auth_config.kiosk_lookup_window,
-    lockout=_auth_config.kiosk_lookup_lockout,
+app.state.terminal_lookup_rate_limiter = InMemoryLoginRateLimiter(
+    max_attempts=_auth_config.terminal_lookup_max_attempts,
+    window=_auth_config.terminal_lookup_window,
+    lockout=_auth_config.terminal_lookup_lockout,
 )
 if _auth_config.jwt_secret:
     app.state.token_service = JwtTokenService(
@@ -140,16 +140,16 @@ app.include_router(auth_router)
 # Gestion des employés (#13) : route protégée par RBAC (EMPLOYEE_MANAGE + portée
 # salon) — le use case est assemblé par DI dans l'adapter (mêmes patrons que `auth`).
 app.include_router(employees_router)
-# Bornes kiosque (#155, US-8.1) : provisioning/liste/révocation sous
-# /salons/{id}/kiosk-devices. Routes protégées par RBAC (KIOSK_PROVISION, détenue
+# Bornes terminal (#155, US-8.1) : provisioning/liste/révocation sous
+# /salons/{id}/terminal-devices. Routes protégées par RBAC (TERMINAL_PROVISION, détenue
 # par le seul MANAGER + portée salon §11.2) ; provisioning/révocation journalisés
-# (KIOSK_DEVICE_PROVISIONED/REVOKED, metadata vide) dans la même unité de travail.
-# Le compte de service KIOSK (role fixé serveur) ne détient jamais CUSTOMER_MANAGE
-# ni APPOINTMENT_BOOK (moindre privilège, ADR-0041). L'authentification du device
-# (POST /auth/kiosk/login) est portée par le routeur `auth` (publique-listée) ; rien
+# (TERMINAL_DEVICE_PROVISIONED/REVOKED, metadata vide) dans la même unité de travail.
+# Le compte de service TERMINAL (role fixé serveur) ne détient jamais CUSTOMER_MANAGE
+# (moindre privilège, ADR-0041). L'authentification du device
+# (POST /auth/terminal/login) est portée par le routeur `auth` (publique-listée) ; rien
 # ici n'est ajouté à `security.PUBLIC_ROUTE_PATHS` (une borne n'est jamais
 # provisionnable publiquement).
-app.include_router(kiosk_devices_router)
+app.include_router(terminal_devices_router)
 # Gestion des salons (#15) : création rattachée au gérant + consultation + médias.
 # Routes protégées par RBAC (SALON_CREATE/READ/UPDATE + portée salon).
 app.include_router(salons_router)
@@ -162,12 +162,6 @@ app.include_router(services_router)
 # projection de vitrine sans owner_id/PII. La route est publique-listée dans
 # `security.PUBLIC_ROUTE_PATHS` (décision de sécurité revue, ADR-0015).
 app.include_router(catalog_router)
-# Disponibilité & réservation (#21, US-3.7) : GET /catalog/salons/{id}/availability
-# (créneaux libres — public, patron catalogue) et POST /salons/{id}/appointments
-# (réservation client APPOINTMENT_BOOK). L'anti double-réservation est garanti par
-# la contrainte d'exclusion base ex_appointments_hairdresser_slot (schéma #3) ; la
-# disponibilité est publique-listée dans `security.PUBLIC_ROUTE_PATHS` (ADR-0023).
-app.include_router(appointments_router)
 # Fiches clients (#28, US-4.1) : création + lectures sous /salons/{id}/customers.
 # Première mise en service de la permission CUSTOMER_MANAGE (§4.1, détenue par le
 # seul MANAGER) ; portée salon obligatoire (isolation §11.2). La création est
@@ -175,28 +169,26 @@ app.include_router(appointments_router)
 # collecte de PII au sens §11.3, entrée d'audit **neutre**. Rien n'est ajouté à
 # `security.PUBLIC_ROUTE_PATHS` : une fiche client n'est jamais publique.
 app.include_router(customers_router)
-# Borne kiosque — identité walk-in (#156, US-8.2) : recherche par téléphone et
-# création de fiche walk-in sous /salons/{id}/kiosk/customers[...]. Réservées au
-# rôle KIOSK via les permissions **dédiées** déjà livrées par #155
-# (CUSTOMER_LOOKUP_KIOSK / CUSTOMER_CREATE_WALKIN) + portée salon (isolation §11.2) ;
+# Borne terminal — identité walk-in (#156, US-8.2) : recherche par téléphone et
+# création de fiche walk-in sous /salons/{id}/terminal/customers[...]. Réservées au
+# rôle TERMINAL via les permissions **dédiées** déjà livrées par #155
+# (CUSTOMER_LOOKUP_TERMINAL / CUSTOMER_CREATE_WALKIN) + portée salon (isolation §11.2) ;
 # la matrice ROLE_PERMISSIONS n'est PAS modifiée (CUSTOMER_MANAGE reste MANAGER-seul).
 # Recherche exclusivement sur customer_profiles (jamais la table users — anti-oracle
 # ADR-0026), réponse minimale (prénom seul), téléphone en corps (jamais en URL),
 # lookups rate-limités (device + IP) et non audités ; la création journalise
 # CUSTOMER_CREATED (metadata vide) dans la même unité de travail. Rien n'est ajouté à
-# `security.PUBLIC_ROUTE_PATHS` : « réservé au rôle KIOSK » ≠ public.
-app.include_router(kiosk_customers_router)
+# `security.PUBLIC_ROUTE_PATHS` : « réservé au rôle TERMINAL » ≠ public.
+app.include_router(terminal_customers_router)
 # File d'attente walk-in — tickets de passage (#157, US-8.3, ADR-0042) : trois
 # routes sous /salons/{id}/queue/tickets[...]. « Rejoindre la file » est réservée
-# au rôle KIOSK via la permission **dédiée** QUEUE_TICKET_CREATE (déjà livrée par
-# #155) ; start/complete réutilisent APPOINTMENT_UPDATE_STATUS (mêmes acteurs que
-# le démarrage d'un RDV : coiffeuse + gérant) — la matrice ROLE_PERMISSIONS n'est
-# PAS modifiée. Toutes salon-scopées (isolation §11.2). Le ticket est INDÉPENDANT
-# d'Appointment : numéro séquentiel par salon+jour (verrou consultatif, patron
-# ADR-0040), estimation d'attente V1 figée à l'émission, aucune ligne appointments
-# écrite. start/complete journalisent QUEUE_TICKET_STARTED/COMPLETED (metadata
-# vide) ; l'émission n'est pas auditée. Rien n'est ajouté à
-# `security.PUBLIC_ROUTE_PATHS` : « réservé au rôle KIOSK » ≠ public.
+# au rôle TERMINAL via la permission **dédiée** QUEUE_TICKET_CREATE (déjà livrée par
+# #155) ; start/complete utilisent QUEUE_TICKET_UPDATE_STATUS (coiffeuse + gérant).
+# Toutes salon-scopées (isolation §11.2). Numéro de ticket séquentiel par
+# salon+jour (verrou consultatif, patron ADR-0040), estimation d'attente V1 figée
+# à l'émission. start/complete journalisent QUEUE_TICKET_STARTED/COMPLETED
+# (metadata vide) ; l'émission n'est pas auditée. Rien n'est ajouté à
+# `security.PUBLIC_ROUTE_PATHS` : « réservé au rôle TERMINAL » ≠ public.
 app.include_router(queue_tickets_router)
 # Campagnes/messages aux clients (#49, US-7.5) : création + liste sous
 # /salons/{id}/campaigns. Réutilise la permission CUSTOMER_MANAGE (§4.1, MANAGER
@@ -225,14 +217,22 @@ app.include_router(payments_router)
 # n'envoie rien. Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS` : un reçu
 # financier n'est jamais public.
 app.include_router(receipts_router)
+# Journal d'audit (page gérante « Journal d'audit », réorganisation du tableau de
+# bord) : GET /salons/{id}/audit-logs, lecture paginée/filtrable (plage de dates +
+# catégorie) garde AUDIT_LOG_READ (MANAGER uniquement). Le journal lui-même est
+# écrit par les autres routers (AuditLog.record, §11.4) ; ce router n'écrit
+# jamais, il ne fait qu'exposer la lecture manquante depuis #17. Rien n'est
+# ajouté à `security.PUBLIC_ROUTE_PATHS` : un journal d'audit n'est jamais public.
+app.include_router(audit_logs_router)
 # Supervision plateforme admin (#37, US-5.6 ; #44, US-6.6) : router plateforme (non
 # salon-scopé) réservé à l'ADMIN (STATS_READ_PLATFORM). Deux endpoints :
 #   - GET /admin/transactions/summary — agrégats de transactions **par salon**
 #     (compteurs + montant NET via le journal de caisse #34) **sans PII de paiement** ;
 #   - GET /admin/kpis — KPI **globaux** consolidés de la plateforme (US-6.6, #44) :
-#     salons inscrits/actifs, clients inscrits, RDV (total + mois courant), revenus
-#     plateforme (net cumulé + mois courant via cash_journal). Instantané unique de
-#     scalaires globaux, **aucune** identité d'entité (§11.3, plus fort que #37) ;
+#     salons inscrits/actifs, clients inscrits, tickets walk-in (total + mois
+#     courant), revenus plateforme (net cumulé + mois courant via cash_journal).
+#     Instantané unique de scalaires globaux, **aucune** identité d'entité (§11.3,
+#     plus fort que #37) ;
 #     KPI « abonnements » volontairement absent (aucun modèle SaaS, ADR-0032).
 # STATS_READ_PLATFORM a donc **deux** consommateurs (#37 supervision, #44 KPI globaux).
 # La garde de permission suffit (l'admin voit tous les salons), pas de
@@ -246,18 +246,18 @@ app.include_router(admin_router)
 #     (jour/semaine/mois) ; le CA dérive du **montant net** du journal de caisse (#34 :
 #     somme signée PAYMENT/ADJUSTMENT), « annulés exclus » (§8.1) par construction ;
 #   - GET /salons/{id}/service-demand — prestations les plus demandées, classées par
-#     volume (RDV COMPLETED) et par revenu (somme des price_at_booking figés) ;
-#   - GET /salons/{id}/hairdresser-performance — performance par coiffeur : prestations
-#     réalisées + taux d'annulation (planning), CA généré (caisse nette **attribuée**
-#     via payments → appointments.hairdresser_id). Seul endpoint stats **nominatif**
-#     (nom d'affichage employé, jamais son contact) ;
+#     volume (tickets file d'attente) et par revenu (somme `services.price` courant) ;
+#   - GET /salons/{id}/hairdresser-performance — performance par coiffeur : tickets
+#     réalisés + taux d'annulation walk-in (`expired`), CA généré (caisse nette
+#     **attribuée** via queue_tickets.hairdresser_id). Seul endpoint stats
+#     **nominatif** (nom d'affichage employé, jamais son contact) ;
 #   - GET /salons/{id}/dashboard/{kpis,revenue-series,attendance-series,in-progress,
 #     activity,alerts} — Dashboard Manager · activité du salon (§7.2, #148) : 4 KPI +
 #     évolution, deux graphiques (séries CA/fréquentation), prestations en cours (noms
 #     d'affichage), timeline des faits horodatés et alertes dérivées. Filtre de période
-#     unifié résolu serveur ; « en cours » dérivé (CONFIRMED ∩ slot @> now), « en
-#     attente » = PENDING — aucun statut ni migration nouveaux.
-# STATS_READ_SALON a donc six consommateurs (#39 RDV du jour, #40 CA, #41 demande,
+#     unifié résolu serveur ; « en cours » = tickets `in_progress`, « en attente » =
+#     tickets `waiting` — aucun statut ni migration nouveaux.
+# STATS_READ_SALON a donc cinq consommateurs (#40 CA, #41 demande,
 # #42 clients actifs, #43 performance des coiffeurs, #148 dashboard d'activité). Lecture
 # pure : aucune écriture, aucun audit, aucune PII counts-only / nom d'affichage maîtrisé
 # sur les vues opérationnelles (§11.3). Rien n'est ajouté à `security.PUBLIC_ROUTE_PATHS`

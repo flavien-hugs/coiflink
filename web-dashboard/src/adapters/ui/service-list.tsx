@@ -83,7 +83,6 @@ export interface ServiceListProps {
   services: Service[];
   // Valeurs courantes (lues des `searchParams` côté serveur), pré-remplies.
   q: string;
-  category: string;
   createdFrom: string;
   createdTo: string;
 }
@@ -92,7 +91,6 @@ export function ServiceList({
   salonId,
   services,
   q,
-  category,
   createdFrom,
   createdTo,
 }: ServiceListProps) {
@@ -102,16 +100,16 @@ export function ServiceList({
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
-  const [values, setValues] = useState({ q, category, createdFrom, createdTo });
+  const [values, setValues] = useState({ q, createdFrom, createdTo });
 
   const sorted = sortServicesByCreatedAt(services, sortDirection);
   const pagination = useClientPagination(
     sorted,
-    `${q}|${category}|${createdFrom}|${createdTo}|${sortDirection}`,
+    `${q}|${createdFrom}|${createdTo}|${sortDirection}`,
   );
   const dateRangeInvalid = hasInvalidServiceDateRange(values.createdFrom, values.createdTo);
   const hasActiveFilters =
-    q.trim().length > 0 || category.trim().length > 0 || createdFrom !== "" || createdTo !== "";
+    q.trim().length > 0 || createdFrom !== "" || createdTo !== "";
 
   const activeCount = services.filter((service) => service.isActive).length;
   const inactiveCount = services.length - activeCount;
@@ -124,7 +122,6 @@ export function ServiceList({
     event.preventDefault();
     const params = new URLSearchParams();
     if (values.q.trim()) params.set("q", values.q.trim());
-    if (values.category.trim()) params.set("category", values.category.trim());
     if (values.createdFrom) params.set("created_from", values.createdFrom);
     if (values.createdTo) params.set("created_to", values.createdTo);
     const query = params.toString();
@@ -132,7 +129,7 @@ export function ServiceList({
   }
 
   function onReset() {
-    setValues({ q: "", category: "", createdFrom: "", createdTo: "" });
+    setValues({ q: "", createdFrom: "", createdTo: "" });
     router.push(PRESTATIONS_BASE_PATH);
   }
 
@@ -216,15 +213,6 @@ export function ServiceList({
                 placeholder="Nom de la prestation"
               />
             </div>
-
-            <input
-              type="text"
-              aria-label="Filtrer par catégorie"
-              className={`${COMPACT_INPUT_CLASS} w-full sm:w-44`}
-              value={values.category}
-              onChange={(event) => set("category", event.target.value)}
-              placeholder="Catégorie"
-            />
 
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
               <input

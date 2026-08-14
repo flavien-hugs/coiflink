@@ -23,14 +23,19 @@ SQL — impossible de lire/muter le ticket d'un autre salon même si l'`id` est 
 from __future__ import annotations
 
 import datetime
+import decimal
 import uuid
+from collections.abc import Mapping
 
-from sqlalchemy import func, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy import case, delete, func, select, text
+from sqlalchemy.orm import Session, aliased
 
 from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.customer import walk_in_first_name
+from coiflink_api.domain.dashboard import InProgressService
+from coiflink_api.domain.discrepancy import PAID_PAYMENT_STATUSES
 from coiflink_api.domain.errors import InvalidQueueTicketTransition
+from coiflink_api.domain.hairdresser_performance import HairdresserActivityCounts
 from coiflink_api.domain.queue_ticket import (
     QUEUE_TICKET_ACTIVE_STATUSES,
     QUEUE_TICKET_PENDING_STATUSES,
@@ -38,6 +43,9 @@ from coiflink_api.domain.queue_ticket import (
     QueueTicketEntry,
     QueueTicketToCreate,
 )
+from coiflink_api.domain.service_demand import ServiceDemand
+
+_AMOUNT_QUANTUM = decimal.Decimal("0.01")
 
 
 class SqlQueueTicketRepository:
@@ -120,6 +128,23 @@ class SqlQueueTicketRepository:
         )
         return int(self._session.scalar(stmt) or 0)
 
+    def count_waiting_ahead(
+        self, salon_id: uuid.UUID, ticket_number: int, *, issued_date: datetime.date
+    ) -> int:
+        """Tickets `waiting` du salon/jour dont `ticket_number` < `ticket_number` donné."""
+
+        stmt = (
+            select(func.count())
+            .select_from(models.QueueTicket)
+            .where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.issued_date == issued_date,
+                models.QueueTicket.status == "waiting",
+                models.QueueTicket.ticket_number < ticket_number,
+            )
+        )
+        return int(self._session.scalar(stmt) or 0)
+
     def average_requested_duration_minutes(
         self, salon_id: uuid.UUID, *, issued_date: datetime.date
     ) -> float | None:
@@ -148,19 +173,41 @@ class SqlQueueTicketRepository:
     def list_active_for_salon(
         self, salon_id: uuid.UUID, *, issued_date: datetime.date
     ) -> tuple[QueueTicketEntry, ...]:
-        """Tickets actifs du jour (hors `expired`), noms résolus, triés `ticket_number`.
+        """Tickets actifs du jour (**y compris** `expired`), noms résolus, triés
+        `ticket_number`.
 
         Le prénom du client est **dérivé** de `customer_profiles.full_name`
         (`walk_in_first_name`, projection minimale §11.3, miroir #156) ; les noms de
-        prestations et de coiffeuse sont résolus par jointure (jamais un
-        `customer_profile_id` ni un téléphone à l'écran).
+        prestations et de coiffeuse sont résolus par jointure. `customer_profile_id`/
+        `service_ids` (UUID **opaques**) sont portés en plus des noms résolus —
+        consommés par le **détail** du ticket côté gérant (jamais un nom complet ni
+        un téléphone dans cette ligne elle-même). `payment_id` est résolu par une
+        sous-requête **scalaire** (jamais un join, qui multiplierait les lignes du
+        ticket si plusieurs paiements matchaient) — le paiement `VALIDATED`/
+        `ADJUSTED` le plus récent du ticket, ou `None` (même notion « payé » que
+        `PAID_PAYMENT_STATUSES` de `domain/discrepancy.py`). `cancellation_reason`
+        (non `None` uniquement pour un `expired` issu d'une annulation manuelle)
+        permet à la file gérant d'afficher « Annulée » + le motif sans disparaître.
         """
 
+        payment_id_subquery = (
+            select(models.Payment.id)
+            .where(
+                models.Payment.salon_id == models.QueueTicket.salon_id,
+                models.Payment.queue_ticket_id == models.QueueTicket.id,
+                models.Payment.status.in_(PAID_PAYMENT_STATUSES),
+            )
+            .order_by(models.Payment.created_at.desc())
+            .limit(1)
+            .correlate(models.QueueTicket)
+            .scalar_subquery()
+        )
         rows = self._session.execute(
             select(
                 models.QueueTicket,
                 models.CustomerProfile.full_name,
                 models.User.full_name,
+                payment_id_subquery.label("payment_id"),
             )
             .outerjoin(
                 models.CustomerProfile,
@@ -177,18 +224,20 @@ class SqlQueueTicketRepository:
             .order_by(models.QueueTicket.ticket_number.asc())
         ).all()
 
-        names_by_ticket = self._service_names_by_ticket(
-            [row[0].id for row in rows]
-        )
+        ticket_ids = [row[0].id for row in rows]
+        names_by_ticket = self._service_names_by_ticket(ticket_ids)
+        ids_by_ticket = self._service_ids_by_ticket(ticket_ids)
         return tuple(
             QueueTicketEntry(
                 ticket_id=ticket.id,
                 ticket_number=ticket.ticket_number,
+                customer_profile_id=ticket.customer_profile_id,
                 customer_first_name=(
                     walk_in_first_name(customer_name)
                     if customer_name is not None
                     else None
                 ),
+                service_ids=ids_by_ticket.get(ticket.id, ()),
                 service_names=names_by_ticket.get(ticket.id, ()),
                 hairdresser_id=ticket.hairdresser_id,
                 hairdresser_name=hairdresser_name,
@@ -197,8 +246,10 @@ class SqlQueueTicketRepository:
                 created_at=ticket.created_at,
                 started_at=ticket.started_at,
                 completed_at=ticket.completed_at,
+                payment_id=payment_id,
+                cancellation_reason=ticket.cancellation_reason,
             )
-            for ticket, customer_name, hairdresser_name in rows
+            for ticket, customer_name, hairdresser_name, payment_id in rows
         )
 
     def start(
@@ -258,6 +309,350 @@ class SqlQueueTicketRepository:
         self._session.refresh(row)
         return _to_domain(row, self._load_service_ids(ticket_id))
 
+    def cancel(
+        self,
+        salon_id: uuid.UUID,
+        ticket_id: uuid.UUID,
+        reason: str,
+        *,
+        now: datetime.datetime,
+    ) -> QueueTicket:
+        """Passe `waiting`/`called` → `expired` (annulation manuelle, no-show).
+
+        Chargement **conditionnel** `status IN ('waiting', 'called')` (garde
+        TOCTOU, miroir `start`/`complete`) : un ticket déjà `in_progress` — ou
+        `done`/`expired` — lève `InvalidQueueTicketTransition`, ce qui
+        ré-affirme au niveau du dépôt la règle métier centrale « impossible
+        d'annuler un ticket déjà pris en charge ». `now` n'est pas persisté
+        (aucun horodatage dédié à l'annulation, `updated_at` en tient lieu si un
+        jour introduit) — paramètre gardé pour la symétrie de signature avec
+        `start`/`complete`.
+        """
+
+        row = self._session.scalar(
+            select(models.QueueTicket).where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.id == ticket_id,
+                models.QueueTicket.status.in_(("waiting", "called")),
+            )
+        )
+        if row is None:
+            raise InvalidQueueTicketTransition(
+                "Ce ticket ne peut pas être annulé dans cet état."
+            )
+        row.status = "expired"
+        row.cancellation_reason = reason
+        self._session.flush()
+        self._session.refresh(row)
+        return _to_domain(row, self._load_service_ids(ticket_id))
+
+    def update_services(
+        self,
+        salon_id: uuid.UUID,
+        ticket_id: uuid.UUID,
+        service_ids: tuple[uuid.UUID, ...],
+    ) -> QueueTicket:
+        """Remplace les prestations d'un ticket `waiting`/`in_progress` (#161).
+
+        Chargement **conditionnel** `status IN ('waiting', 'in_progress')` (garde
+        TOCTOU, miroir `start`/`complete`) : un ticket qui n'est plus dans un état
+        éditable (déjà servi, expiré) lève `InvalidQueueTicketTransition`. La
+        jonction `queue_ticket_services` est intégralement remplacée (delete puis
+        insert, même patron que `create`).
+        """
+
+        row = self._session.scalar(
+            select(models.QueueTicket).where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.id == ticket_id,
+                models.QueueTicket.status.in_(QUEUE_TICKET_PENDING_STATUSES),
+            )
+        )
+        if row is None:
+            raise InvalidQueueTicketTransition(
+                "Ce ticket ne peut plus être modifié dans cet état."
+            )
+        self._session.execute(
+            delete(models.QueueTicketService).where(
+                models.QueueTicketService.queue_ticket_id == ticket_id
+            )
+        )
+        for service_id in service_ids:
+            self._session.add(
+                models.QueueTicketService(
+                    queue_ticket_id=ticket_id,
+                    service_id=service_id,
+                    salon_id=salon_id,
+                )
+            )
+        self._session.flush()
+        self._session.refresh(row)
+        return _to_domain(row, tuple(service_ids))
+
+    def count_by_status_in_range(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        statuses: tuple[str, ...],
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> Mapping[str, int]:
+        """`GROUP BY status` des tickets du salon sur `[date_from, date_to]` (#148)."""
+
+        stmt = (
+            select(models.QueueTicket.status, func.count())
+            .where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.status.in_(statuses),
+                models.QueueTicket.issued_date >= date_from,
+                models.QueueTicket.issued_date <= date_to,
+            )
+            .group_by(models.QueueTicket.status)
+        )
+        return {status: int(count) for status, count in self._session.execute(stmt).all()}
+
+    def count_distinct_completed_clients(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> int:
+        """`COUNT(DISTINCT customer_profile_id)` des tickets `done` sur la période (#148).
+
+        Un ticket anonyme (`customer_profile_id IS NULL`) n'est jamais compté.
+        """
+
+        stmt = select(
+            func.count(func.distinct(models.QueueTicket.customer_profile_id))
+        ).where(
+            models.QueueTicket.salon_id == salon_id,
+            models.QueueTicket.status == "done",
+            models.QueueTicket.customer_profile_id.is_not(None),
+            models.QueueTicket.issued_date >= date_from,
+            models.QueueTicket.issued_date <= date_to,
+        )
+        return int(self._session.scalar(stmt) or 0)
+
+    def attendance_series(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+    ) -> Mapping[datetime.date, int]:
+        """Fréquentation (tous statuts) **par jour civil** (`GROUP BY issued_date`, #148)."""
+
+        stmt = (
+            select(models.QueueTicket.issued_date, func.count())
+            .where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.issued_date >= date_from,
+                models.QueueTicket.issued_date <= date_to,
+            )
+            .group_by(models.QueueTicket.issued_date)
+        )
+        return {day: int(count) for day, count in self._session.execute(stmt).all()}
+
+    def count_in_progress(self, salon_id: uuid.UUID) -> int:
+        """Nombre de tickets `in_progress` **maintenant** — décompte direct (#148)."""
+
+        stmt = (
+            select(func.count())
+            .select_from(models.QueueTicket)
+            .where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.status == "in_progress",
+            )
+        )
+        return int(self._session.scalar(stmt) or 0)
+
+    def count_waiting_beyond_estimate(
+        self, salon_id: uuid.UUID, *, now: datetime.datetime
+    ) -> int:
+        """Tickets `waiting` dont l'attente réelle dépasse `estimated_wait_minutes` (#148)."""
+
+        now_ts = now
+        elapsed_minutes = func.extract(
+            "epoch", now_ts - models.QueueTicket.created_at
+        ) / 60
+        stmt = (
+            select(func.count())
+            .select_from(models.QueueTicket)
+            .where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.status == "waiting",
+                elapsed_minutes > models.QueueTicket.estimated_wait_minutes,
+            )
+        )
+        return int(self._session.scalar(stmt) or 0)
+
+    def list_in_progress_details(
+        self, salon_id: uuid.UUID
+    ) -> tuple[InProgressService, ...]:
+        """Tickets `in_progress`, enrichis des noms d'affichage (#148).
+
+        Décompte **direct** sur `status = 'in_progress'` (contrairement à l'ancien
+        RDV, aucune arithmétique de créneau n'est nécessaire — le statut du ticket
+        encode déjà « en cours »).
+        """
+
+        customer = aliased(models.CustomerProfile)
+        hairdresser = aliased(models.User)
+        rows = self._session.execute(
+            select(
+                models.QueueTicket.id,
+                customer.full_name.label("client_name"),
+                hairdresser.full_name.label("hairdresser_name"),
+                models.QueueTicket.started_at,
+                models.QueueTicket.status,
+            )
+            .outerjoin(
+                customer, customer.id == models.QueueTicket.customer_profile_id
+            )
+            .outerjoin(
+                hairdresser, hairdresser.id == models.QueueTicket.hairdresser_id
+            )
+            .where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.status == "in_progress",
+            )
+            .order_by(
+                models.QueueTicket.started_at.asc(),
+                models.QueueTicket.id.asc(),
+            )
+        ).all()
+        if not rows:
+            return ()
+
+        names_by_ticket = self._service_names_by_ticket([row.id for row in rows])
+        return tuple(
+            InProgressService(
+                queue_ticket_id=str(row.id),
+                client_name=row.client_name,
+                service_names=names_by_ticket.get(row.id, ()),
+                hairdresser_name=row.hairdresser_name,
+                started_at=row.started_at,
+                status=row.status,
+            )
+            for row in rows
+        )
+
+    def demand_by_service(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        statuses: tuple[str, ...],
+        date_from: datetime.date | None = None,
+        date_to: datetime.date | None = None,
+    ) -> tuple[ServiceDemand, ...]:
+        stmt = (
+            select(
+                models.QueueTicketService.service_id,
+                models.Service.name,
+                func.count().label("volume"),
+                func.coalesce(func.sum(models.Service.price), 0).label("revenue"),
+            )
+            .join(
+                models.QueueTicket,
+                models.QueueTicket.id == models.QueueTicketService.queue_ticket_id,
+            )
+            .join(
+                models.Service,
+                (models.Service.id == models.QueueTicketService.service_id)
+                & (models.Service.salon_id == models.QueueTicketService.salon_id),
+            )
+            .where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.status.in_(statuses),
+            )
+            .group_by(models.QueueTicketService.service_id, models.Service.name)
+        )
+        if date_from is not None:
+            stmt = stmt.where(models.QueueTicket.issued_date >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(models.QueueTicket.issued_date <= date_to)
+
+        rows = self._session.execute(stmt).all()
+        return tuple(
+            ServiceDemand(
+                service_id=row.service_id,
+                name=row.name,
+                volume=int(row.volume),
+                revenue=decimal.Decimal(row.revenue or 0).quantize(_AMOUNT_QUANTUM),
+            )
+            for row in rows
+        )
+
+    def performance_by_hairdresser(
+        self,
+        salon_id: uuid.UUID,
+        *,
+        date_from: datetime.date,
+        date_to: datetime.date,
+        completed_statuses: tuple[str, ...],
+        cancelled_statuses: tuple[str, ...],
+    ) -> tuple[HairdresserActivityCounts, ...]:
+        cancelled = func.sum(
+            case(
+                (models.QueueTicket.status.in_(cancelled_statuses), 1),
+                else_=0,
+            )
+        )
+        counts_stmt = (
+            select(
+                models.QueueTicket.hairdresser_id,
+                models.User.full_name,
+                func.count().label("total_count"),
+                func.coalesce(cancelled, 0).label("cancelled_count"),
+            )
+            .join(models.User, models.User.id == models.QueueTicket.hairdresser_id)
+            .where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.hairdresser_id.is_not(None),
+                models.QueueTicket.issued_date.between(date_from, date_to),
+            )
+            .group_by(models.QueueTicket.hairdresser_id, models.User.full_name)
+        )
+
+        # `services_completed` = occurrences de prestations réalisées (lignes
+        # `queue_ticket_services` des tickets `done`) — comptées **séparément** pour ne
+        # pas gonfler les comptes de tickets via le join un-à-plusieurs.
+        services_stmt = (
+            select(
+                models.QueueTicket.hairdresser_id,
+                func.count().label("services_completed"),
+            )
+            .join(
+                models.QueueTicketService,
+                models.QueueTicketService.queue_ticket_id == models.QueueTicket.id,
+            )
+            .where(
+                models.QueueTicket.salon_id == salon_id,
+                models.QueueTicket.hairdresser_id.is_not(None),
+                models.QueueTicket.status.in_(completed_statuses),
+                models.QueueTicket.issued_date.between(date_from, date_to),
+            )
+            .group_by(models.QueueTicket.hairdresser_id)
+        )
+        services_by_hairdresser = {
+            row.hairdresser_id: int(row.services_completed)
+            for row in self._session.execute(services_stmt).all()
+        }
+
+        return tuple(
+            HairdresserActivityCounts(
+                hairdresser_id=row.hairdresser_id,
+                name=row.full_name,
+                services_completed=services_by_hairdresser.get(
+                    row.hairdresser_id, 0
+                ),
+                cancelled_count=int(row.cancelled_count),
+                total_count=int(row.total_count),
+            )
+            for row in self._session.execute(counts_stmt).all()
+        )
+
     # ----------------------------------------------------------------------- #
     # Helpers privés.
     # ----------------------------------------------------------------------- #
@@ -302,6 +697,29 @@ class SqlQueueTicketRepository:
             grouped.setdefault(ticket_id, []).append(name)
         return {ticket_id: tuple(names) for ticket_id, names in grouped.items()}
 
+    def _service_ids_by_ticket(
+        self, ticket_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, tuple[uuid.UUID, ...]]:
+        """Ids de prestations groupés par ticket (bulk, pas de N+1) — miroir des noms.
+
+        UUID **opaques** (non-PII) : consommés par le détail du ticket côté gérant
+        pour résoudre prix/durée depuis le catalogue déjà chargé, sans dupliquer ces
+        champs ici.
+        """
+
+        if not ticket_ids:
+            return {}
+        rows = self._session.execute(
+            select(
+                models.QueueTicketService.queue_ticket_id,
+                models.QueueTicketService.service_id,
+            ).where(models.QueueTicketService.queue_ticket_id.in_(ticket_ids))
+        ).all()
+        grouped: dict[uuid.UUID, list[uuid.UUID]] = {}
+        for ticket_id, service_id in rows:
+            grouped.setdefault(ticket_id, []).append(service_id)
+        return {ticket_id: tuple(ids) for ticket_id, ids in grouped.items()}
+
 
 def _to_domain(
     row: models.QueueTicket, service_ids: tuple[uuid.UUID, ...]
@@ -320,6 +738,7 @@ def _to_domain(
         called_at=row.called_at,
         started_at=row.started_at,
         completed_at=row.completed_at,
+        cancellation_reason=row.cancellation_reason,
     )
 
 

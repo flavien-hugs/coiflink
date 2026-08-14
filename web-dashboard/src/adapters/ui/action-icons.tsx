@@ -216,3 +216,31 @@ export function ImageIcon({ className = "" }: IconProps) {
     </svg>
   );
 }
+
+export function EyeIcon({ className = "" }: IconProps) {
+  return (
+    <svg {...ICON_PROPS} className={`size-4 ${className}`}>
+      <path d="M2 10s2.8-5.5 8-5.5S18 10 18 10s-2.8 5.5-8 5.5S2 10 2 10Z" strokeLinejoin="round" />
+      <circle cx="10" cy="10" r="2.3" />
+    </svg>
+  );
+}
+
+export function EyeOffIcon({ className = "" }: IconProps) {
+  return (
+    <svg {...ICON_PROPS} className={`size-4 ${className}`}>
+      <path d="M2 10s2.8-5.5 8-5.5S18 10 18 10s-2.8 5.5-8 5.5S2 10 2 10Z" strokeLinejoin="round" />
+      <path d="M3 3l14 14" />
+    </svg>
+  );
+}
+
+export function LockIcon({ className = "" }: IconProps) {
+  return (
+    <svg {...ICON_PROPS} className={`size-4 ${className}`}>
+      <rect x="5" y="9" width="10" height="8" rx="1.5" />
+      <path d="M7 9V6.5a3 3 0 0 1 6 0V9" />
+      <circle cx="10" cy="12.5" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}

@@ -7,16 +7,15 @@ base, jamais déduite d'un paramètre de requête.
 Rattachements exploités (schéma existant) :
 
 - `MANAGER` → `salons.owner_id` : rattachement **réel** du gérant à ses salons ;
-- `HAIRDRESSER` / `KIOSK` →
+- `HAIRDRESSER` / `TERMINAL` →
   `salon_members.salon_id WHERE user_id = … AND status = 'ACTIVE'`.
   Depuis #13 (ADR-0016), la portée d'un coiffeur est lue depuis la table
   d'**appartenance** employé↔salon (`salon_members`), et non plus dérivée des
   rendez-vous qui lui sont assignés : un coiffeur fraîchement créé « voit » son
   salon dès sa création, sans dépendre d'un RDV. **Depuis #155 (ADR-0041)**, une
-  **borne kiosque** (`KIOSK`) lit sa portée par le **même** rattachement
+  **borne terminal** (`TERMINAL`) lit sa portée par le **même** rattachement
   d'appartenance — mono-salon, figé au provisioning : une borne révoquée
-  (`salon_members.status = INACTIVE`) perd sa portée par le même filtre. L'assignation
-  d'un RDV reste gérée séparément par `can_access_appointment` (inchangé). Le port et
+  (`salon_members.status = INACTIVE`) perd sa portée par le même filtre. Le port et
   les gardes restent identiques (ADR-0015 : « seule la requête change »).
 - `CLIENT` / rôle inconnu → portée vide (deny-by-default).
 """
@@ -43,8 +42,8 @@ class SqlSalonScopeRepository:
 
         if role == Role.MANAGER.value:
             stmt = select(models.Salon.id).where(models.Salon.owner_id == principal_id)
-        elif role in (Role.HAIRDRESSER.value, Role.KIOSK.value):
-            # `HAIRDRESSER` (#13) **et** `KIOSK` (borne kiosque, #155) : la portée est
+        elif role in (Role.HAIRDRESSER.value, Role.TERMINAL.value):
+            # `HAIRDRESSER` (#13) **et** `TERMINAL` (borne terminal, #155) : la portée est
             # le rattachement d'appartenance `salon_members` `ACTIVE`. Une borne
             # révoquée (`status = INACTIVE`) perd sa portée par ce même filtre.
             stmt = select(models.SalonMember.salon_id).where(

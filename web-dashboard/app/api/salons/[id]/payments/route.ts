@@ -102,11 +102,13 @@ export async function POST(
     amount: typeof payload.amount === "string" ? payload.amount : "",
     paymentMethod:
       typeof payload.paymentMethod === "string" ? payload.paymentMethod : "",
-    appointmentId:
-      typeof payload.appointmentId === "string" ? payload.appointmentId : null,
+    queueTicketId:
+      typeof payload.queueTicketId === "string" ? payload.queueTicketId : null,
     serviceId: typeof payload.serviceId === "string" ? payload.serviceId : null,
     clientId: typeof payload.clientId === "string" ? payload.clientId : null,
     reference: typeof payload.reference === "string" ? payload.reference : null,
+    mobileMoneyPhone:
+      typeof payload.mobileMoneyPhone === "string" ? payload.mobileMoneyPhone : null,
   });
   if (!validated.ok) {
     return NextResponse.json({ error: "Paiement invalide." }, { status: 422 });
@@ -132,11 +134,16 @@ export async function POST(
       );
     case "reference-not-found":
       return NextResponse.json(
-        { error: "Prestation ou rendez-vous introuvable pour ce salon." },
+        { error: "Prestation ou ticket introuvable pour ce salon." },
         { status: 422 },
       );
     case "invalid":
       return NextResponse.json({ error: "Paiement invalide." }, { status: 422 });
+    case "already-paid":
+      return NextResponse.json(
+        { error: "Ce ticket a déjà été encaissé." },
+        { status: 409 },
+      );
     case "forbidden":
       return NextResponse.json(
         { error: "Action non autorisée sur ce salon." },

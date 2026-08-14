@@ -3,30 +3,32 @@
 Groupe `TestCashDiscrepanciesE2E` (PostgreSQL requis) :
     exerce le **chemin SQL réel** de `SqlPaymentRepository.list_completed_without_payment`
     / `count_completed_without_payment` — la requête `NOT EXISTS` sur
-    `payments.appointment_id`, le `LEFT JOIN appointment_services` + `GROUP BY` pour le
-    **montant attendu**, la résolution `users.full_name`, les bornes de dates sur
-    `appointment_date`, l'isolation `salon_id`, le tri et la pagination. Aucune suite
-    unitaire/API (adossées à `FakePaymentRepository`) ne couvre ce SQL : c'est le seul
-    code qui satisfait réellement le critère d'acceptation #36 *« un RDV terminé sans
-    paiement est signalé comme écart »*.
+    `payments.queue_ticket_id`, le `LEFT JOIN queue_ticket_services → services` pour le
+    **montant attendu** (résolution en direct, aucun prix figé côté ticket), la
+    résolution `customer_profiles.full_name`, les bornes de dates sur `issued_date`,
+    l'isolation `salon_id`, le tri et la pagination. Aucune suite unitaire/API
+    (adossées à `FakePaymentRepository`) ne couvre ce SQL : c'est le seul code qui
+    satisfait réellement le critère d'acceptation #36 *« un ticket walk-in terminé
+    sans paiement est signalé comme écart »*.
 
-Scénarios (spec `specs/detection-ecarts-de-caisse.md`, section Testing Plan) :
-    - RDV `COMPLETED` **sans** paiement → **signalé**, `expected_amount` correct ;
-    - RDV `COMPLETED` **avec** paiement `VALIDATED` → **absent** ;
-    - RDV `COMPLETED` dont le paiement est `ADJUSTED` (corrigé) → **absent** ;
-    - RDV `COMPLETED` dont le seul paiement est `CANCELLED` → **signalé** ;
-    - RDV `PENDING`/`CONFIRMED`/`CANCELLED`/`NO_SHOW` → **jamais** signalé ;
-    - isolation §11.2 : RDV d'un autre salon absent ; un paiement d'un autre salon ne
-      couvre jamais un RDV ;
-    - `expected_amount` = somme des `price_at_booking` (plusieurs lignes) ;
-    - résolution `client_name` = `users.full_name` ;
+Scénarios (miroir de la spec RDV d'origine, `specs/detection-ecarts-de-caisse.md`,
+adapté au pivot walk-in exclusif) :
+    - ticket `done` **sans** paiement → **signalé**, `expected_amount` correct ;
+    - ticket `done` **avec** paiement `VALIDATED` → **absent** ;
+    - ticket `done` dont le paiement est `ADJUSTED` (corrigé) → **absent** ;
+    - ticket `done` dont le seul paiement est `CANCELLED` → **signalé** ;
+    - ticket `waiting`/`called`/`in_progress`/`expired` → **jamais** signalé ;
+    - isolation §11.2 : ticket d'un autre salon absent ; un paiement d'un autre salon
+      ne couvre jamais un ticket ;
+    - `expected_amount` = somme des `Service.price` **actuels** (plusieurs lignes) ;
+    - résolution `client_name` = `customer_profiles.full_name` ;
     - bornes de dates `date_from`/`date_to` inclusives ; hors plage → exclu ;
-    - pagination (`limit`/`offset`/`total`) et tri `appointment_date DESC, start_time DESC` ;
+    - pagination (`limit`/`offset`/`total`) et tri `issued_date DESC, ticket_number DESC` ;
     - `401` sans jeton, `403` inter-salons (pile complète).
 
-Les RDV, lignes de prestation et paiements sont insérés **directement en base** (bypass
-des gardes HTTP) pour contrôler statuts, `price_at_booking` et l'absence/présence de
-paiement — ce que les API de réservation/encaissement ne permettent pas.
+Les tickets, lignes de prestation et paiements sont insérés **directement en base**
+(bypass des gardes HTTP) pour contrôler statuts et l'absence/présence de paiement —
+ce que les API de la borne/de l'encaissement ne permettent pas.
 
 Prérequis :
     cd backend
@@ -67,14 +69,13 @@ _TEST_JWT_SECRET = "test-only-discrepancies-e2e-jwt-secret-not-for-production"
 _E2E_PHONE_PREFIX = "+225076998"
 _PHONE_A_LOCAL = "0769980001"   # gérant A — parcours principal
 _PHONE_B_LOCAL = "0769980002"   # gérant B — isolation inter-salons
-_PHONE_CLIENT_LOCAL = "0769980003"   # client — résolution client_name
 _PASSWORD = "discrepancies-e2e-strong-password-2024"
 
 _SALON_NAME_A = "e2e-salon-discrepancies-a"
 _SALON_NAME_B = "e2e-salon-discrepancies-b"
 
 _SERVICE_PRICE = "5000.00"
-_CLIENT_NAME = "Client E2E Écarts"
+_CUSTOMER_NAME = "Client E2E Écarts"
 
 
 # ─── Nettoyage ────────────────────────────────────────────────────────────────
@@ -83,9 +84,10 @@ _CLIENT_NAME = "Client E2E Écarts"
 def _wipe_test_data() -> None:
     """Supprime les données de test dans l'ordre des contraintes FK.
 
-    Ordre : payments → cash_journal → appointment_services → appointments →
-    audit_logs → services → salon_members → salons → users. Toutes les données
-    sont rattachées à un salon dont le propriétaire porte le préfixe réservé.
+    Ordre : payments → cash_journal → queue_ticket_services → queue_tickets →
+    customer_profiles → audit_logs → services → salon_members → salons → users.
+    Toutes les données sont rattachées à un salon dont le propriétaire porte le
+    préfixe réservé.
     """
     engine = get_engine()
     salons_of_prefix = (
@@ -103,12 +105,16 @@ def _wipe_test_data() -> None:
         )
         conn.execute(
             text(
-                f"DELETE FROM appointment_services WHERE salon_id IN ({salons_of_prefix})"
+                f"DELETE FROM queue_ticket_services WHERE salon_id IN ({salons_of_prefix})"
             ),
             params,
         )
         conn.execute(
-            text(f"DELETE FROM appointments WHERE salon_id IN ({salons_of_prefix})"),
+            text(f"DELETE FROM queue_tickets WHERE salon_id IN ({salons_of_prefix})"),
+            params,
+        )
+        conn.execute(
+            text(f"DELETE FROM customer_profiles WHERE salon_id IN ({salons_of_prefix})"),
             params,
         )
         conn.execute(
@@ -193,15 +199,6 @@ def _register_manager(client: TestClient, *, phone: str = _PHONE_A_LOCAL) -> str
     return resp.json()["id"]
 
 
-def _register_client(client: TestClient, *, phone: str = _PHONE_CLIENT_LOCAL) -> str:
-    resp = client.post(
-        "/auth/register",
-        json={"full_name": _CLIENT_NAME, "phone": phone, "password": _PASSWORD},
-    )
-    assert resp.status_code == 201, f"Inscription client échouée : {resp.text}"
-    return resp.json()["id"]
-
-
 def _login(client: TestClient, *, phone: str = _PHONE_A_LOCAL) -> str:
     resp = client.post("/auth/login", json={"identifier": phone, "password": _PASSWORD})
     assert resp.status_code == 200, f"Connexion échouée : {resp.text}"
@@ -233,61 +230,71 @@ def _create_service(
 # ─── Helpers SQL (insertion directe — bypass des gardes HTTP) ─────────────────
 
 
-def _insert_appointment(
-    *,
-    salon_id: str,
-    client_id: str,
-    appointment_date: datetime.date,
-    start_time: str = "09:00",
-    end_time: str = "10:00",
-    status: str = "COMPLETED",
-) -> str:
-    """Insère un RDV directement en base pour contrôler son statut.
-
-    `slot` est une colonne générée (COMPUTED) — pas d'insertion manuelle.
-    `hairdresser_id` est laissé NULL (non pertinent pour la détection d'écart).
-    """
-    appt_id = str(uuid.uuid4())
+def _insert_customer_profile(*, salon_id: str, full_name: str = _CUSTOMER_NAME) -> str:
+    """Insère une fiche client walk-in directement en base."""
+    profile_id = str(uuid.uuid4())
     engine = get_engine()
     with engine.connect() as conn:
         conn.execute(
             text(
-                "INSERT INTO appointments "
-                "(id, salon_id, client_id, appointment_date, start_time, end_time, status) "
-                "VALUES (:id, :salon_id, :client_id, :date, :start, :end, :status)"
+                "INSERT INTO customer_profiles (id, salon_id, full_name) "
+                "VALUES (:id, :salon_id, :full_name)"
+            ),
+            {"id": profile_id, "salon_id": salon_id, "full_name": full_name},
+        )
+        conn.commit()
+    return profile_id
+
+
+def _insert_queue_ticket(
+    *,
+    salon_id: str,
+    customer_profile_id: str | None,
+    issued_date: datetime.date,
+    ticket_number: int,
+    status: str = "done",
+) -> str:
+    """Insère un ticket de passage directement en base pour contrôler son statut."""
+    ticket_id = str(uuid.uuid4())
+    completed_at = (
+        datetime.datetime.now(datetime.timezone.utc) if status == "done" else None
+    )
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO queue_tickets "
+                "(id, salon_id, customer_profile_id, issued_date, ticket_number, "
+                "status, estimated_wait_minutes, completed_at) "
+                "VALUES (:id, :salon_id, :customer, :date, :number, :status, 0, "
+                ":completed_at)"
             ),
             {
-                "id": appt_id,
+                "id": ticket_id,
                 "salon_id": salon_id,
-                "client_id": client_id,
-                "date": appointment_date,
-                "start": start_time,
-                "end": end_time,
+                "customer": customer_profile_id,
+                "date": issued_date,
+                "number": ticket_number,
                 "status": status,
+                "completed_at": completed_at,
             },
         )
         conn.commit()
-    return appt_id
+    return ticket_id
 
 
-def _insert_appointment_service(
-    *, salon_id: str, appointment_id: str, service_id: str, price: str
+def _insert_queue_ticket_service(
+    *, salon_id: str, queue_ticket_id: str, service_id: str
 ) -> None:
-    """Rattache une prestation (prix figé `price_at_booking`) à un RDV."""
+    """Rattache une prestation à un ticket (aucun prix figé — résolution en direct)."""
     engine = get_engine()
     with engine.connect() as conn:
         conn.execute(
             text(
-                "INSERT INTO appointment_services "
-                "(appointment_id, service_id, salon_id, price_at_booking) "
-                "VALUES (:appt, :service, :salon, :price)"
+                "INSERT INTO queue_ticket_services (queue_ticket_id, service_id, salon_id) "
+                "VALUES (:ticket, :service, :salon)"
             ),
-            {
-                "appt": appointment_id,
-                "service": service_id,
-                "salon": salon_id,
-                "price": decimal.Decimal(price),
-            },
+            {"ticket": queue_ticket_id, "service": service_id, "salon": salon_id},
         )
         conn.commit()
 
@@ -295,29 +302,29 @@ def _insert_appointment_service(
 def _insert_payment(
     *,
     salon_id: str,
-    appointment_id: str,
+    queue_ticket_id: str,
     recorded_by: str,
     amount: str = _SERVICE_PRICE,
     status: str = "VALIDATED",
     payment_method: str = "CASH",
 ) -> str:
-    """Insère un paiement rattaché à un RDV avec un statut choisi (VALIDATED/ADJUSTED/…)."""
+    """Insère un paiement rattaché à un ticket avec un statut choisi (VALIDATED/ADJUSTED/…)."""
     payment_id = str(uuid.uuid4())
     engine = get_engine()
     with engine.connect() as conn:
         conn.execute(
             text(
                 "INSERT INTO payments "
-                "(id, salon_id, appointment_id, amount, currency, payment_method, "
+                "(id, salon_id, queue_ticket_id, amount, currency, payment_method, "
                 "status, recorded_by, receipt_number) "
-                "VALUES (:id, :salon_id, :appt, :amount, 'XOF', :method, :status, :by, "
+                "VALUES (:id, :salon_id, :ticket, :amount, 'XOF', :method, :status, :by, "
                 "(SELECT COALESCE(MAX(receipt_number), 0) + 1 FROM payments "
                 "WHERE salon_id = :salon_id))"
             ),
             {
                 "id": payment_id,
                 "salon_id": salon_id,
-                "appt": appointment_id,
+                "ticket": queue_ticket_id,
                 "amount": decimal.Decimal(amount),
                 "method": payment_method,
                 "status": status,
@@ -344,17 +351,20 @@ def _list_discrepancies(
     return resp.json()
 
 
-# ─── Décor commun (gérant A + salon A + prestation + client) ──────────────────
+# ─── Décor commun (gérant A + salon A + prestation + fiche client) ────────────
 
 
-def _setup_salon_a(client: TestClient) -> tuple[str, str, str, str]:
-    """Monte gérant A, salon A, une prestation et un client. Retourne (token, salon, service, client)."""
+def _setup_salon_a(client: TestClient) -> tuple[str, str, str, str, str]:
+    """Monte gérant A, salon A, une prestation et une fiche client walk-in.
+
+    Retourne (token, salon_id, service_id, customer_profile_id, manager_id).
+    """
     manager_id = _register_manager(client)
-    client_id = _register_client(client)
     token = _login(client)
     salon_id = _create_salon(client, token)
     service_id = _create_service(client, token, salon_id)
-    return token, salon_id, service_id, client_id, manager_id  # type: ignore[return-value]
+    customer_profile_id = _insert_customer_profile(salon_id=salon_id)
+    return token, salon_id, service_id, customer_profile_id, manager_id
 
 
 # ─── Tests ────────────────────────────────────────────────────────────────────
@@ -366,36 +376,38 @@ class TestCashDiscrepanciesE2E:
 
     _DATE = datetime.date(2026, 6, 15)
 
-    # ── Cœur du critère #36 : RDV terminé sans paiement ──────────────────────
+    # ── Cœur du critère #36 : ticket terminé sans paiement ───────────────────
 
     def test_completed_without_payment_is_flagged(self, _e2e_client: TestClient) -> None:
-        """Un RDV `COMPLETED` sans paiement est signalé comme écart (critère #36)."""
-        token, salon_id, service_id, client_id, _ = _setup_salon_a(_e2e_client)
-        appt_id = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=self._DATE
+        """Un ticket `done` sans paiement est signalé comme écart (critère #36)."""
+        token, salon_id, service_id, customer_id, _ = _setup_salon_a(_e2e_client)
+        ticket_id = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=self._DATE, ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=appt_id, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_id
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id)
         assert page["total"] == 1
         assert len(page["items"]) == 1
         item = page["items"][0]
-        assert item["appointment_id"] == appt_id
+        assert item["queue_ticket_id"] == ticket_id
         assert item["expected_amount"] == _SERVICE_PRICE
 
     def test_completed_with_validated_payment_is_absent(self, _e2e_client: TestClient) -> None:
-        """Un RDV `COMPLETED` couvert par un paiement `VALIDATED` n'est pas un écart."""
-        token, salon_id, service_id, client_id, manager_id = _setup_salon_a(_e2e_client)
-        appt_id = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=self._DATE
+        """Un ticket `done` couvert par un paiement `VALIDATED` n'est pas un écart."""
+        token, salon_id, service_id, customer_id, manager_id = _setup_salon_a(_e2e_client)
+        ticket_id = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=self._DATE, ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=appt_id, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_id
         )
         _insert_payment(
-            salon_id=salon_id, appointment_id=appt_id, recorded_by=manager_id, status="VALIDATED"
+            salon_id=salon_id, queue_ticket_id=ticket_id, recorded_by=manager_id, status="VALIDATED"
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id)
@@ -403,188 +415,217 @@ class TestCashDiscrepanciesE2E:
         assert page["items"] == []
 
     def test_completed_with_adjusted_payment_is_absent(self, _e2e_client: TestClient) -> None:
-        """Un RDV `COMPLETED` dont le paiement a été corrigé (`ADJUSTED`) reste couvert."""
-        token, salon_id, service_id, client_id, manager_id = _setup_salon_a(_e2e_client)
-        appt_id = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=self._DATE
+        """Un ticket `done` dont le paiement a été corrigé (`ADJUSTED`) reste couvert."""
+        token, salon_id, service_id, customer_id, manager_id = _setup_salon_a(_e2e_client)
+        ticket_id = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=self._DATE, ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=appt_id, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_id
         )
         _insert_payment(
-            salon_id=salon_id, appointment_id=appt_id, recorded_by=manager_id, status="ADJUSTED"
+            salon_id=salon_id, queue_ticket_id=ticket_id, recorded_by=manager_id, status="ADJUSTED"
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id)
         assert page["total"] == 0
 
     def test_completed_with_only_cancelled_payment_is_flagged(self, _e2e_client: TestClient) -> None:
-        """Un RDV `COMPLETED` dont le seul paiement est `CANCELLED` est un écart (non encaissé)."""
-        token, salon_id, service_id, client_id, manager_id = _setup_salon_a(_e2e_client)
-        appt_id = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=self._DATE
+        """Un ticket `done` dont le seul paiement est `CANCELLED` est un écart (non encaissé)."""
+        token, salon_id, service_id, customer_id, manager_id = _setup_salon_a(_e2e_client)
+        ticket_id = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=self._DATE, ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=appt_id, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_id
         )
         _insert_payment(
-            salon_id=salon_id, appointment_id=appt_id, recorded_by=manager_id, status="CANCELLED"
+            salon_id=salon_id, queue_ticket_id=ticket_id, recorded_by=manager_id, status="CANCELLED"
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id)
         assert page["total"] == 1
-        assert page["items"][0]["appointment_id"] == appt_id
+        assert page["items"][0]["queue_ticket_id"] == ticket_id
 
-    # ── Statuts de RDV : seul COMPLETED compte ───────────────────────────────
+    # ── Statuts de ticket : seul `done` compte ────────────────────────────────
 
-    @pytest.mark.parametrize("status", ["PENDING", "CONFIRMED", "CANCELLED", "NO_SHOW"])
-    def test_non_completed_status_never_flagged(
+    @pytest.mark.parametrize("status", ["waiting", "called", "in_progress", "expired"])
+    def test_non_done_status_never_flagged(
         self, _e2e_client: TestClient, status: str
     ) -> None:
-        """Un RDV `PENDING`/`CONFIRMED`/`CANCELLED`/`NO_SHOW` n'est jamais un écart."""
-        token, salon_id, service_id, client_id, _ = _setup_salon_a(_e2e_client)
-        appt_id = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=self._DATE, status=status
+        """Un ticket `waiting`/`called`/`in_progress`/`expired` n'est jamais un écart."""
+        token, salon_id, service_id, customer_id, _ = _setup_salon_a(_e2e_client)
+        ticket_id = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=self._DATE, ticket_number=1, status=status,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=appt_id, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_id
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id)
         assert page["total"] == 0
 
-    # ── Montant attendu : somme des price_at_booking ─────────────────────────
+    # ── Montant attendu : somme des Service.price actuels ────────────────────
 
     def test_expected_amount_sums_multiple_services(self, _e2e_client: TestClient) -> None:
-        """`expected_amount` est la somme des `price_at_booking` des lignes du RDV."""
-        token, salon_id, _, client_id, _ = _setup_salon_a(_e2e_client)
+        """`expected_amount` est la somme des `Service.price` actuels des lignes du ticket."""
+        token, salon_id, _, customer_id, _ = _setup_salon_a(_e2e_client)
         service_one = _create_service(_e2e_client, token, salon_id, price="2000.00")
         service_two = _create_service(_e2e_client, token, salon_id, price="3500.00")
-        appt_id = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=self._DATE
+        ticket_id = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=self._DATE, ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=appt_id, service_id=service_one, price="2000.00"
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_one
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=appt_id, service_id=service_two, price="3500.00"
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_two
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id)
         assert page["total"] == 1
         assert page["items"][0]["expected_amount"] == "5500.00"
 
-    # ── Résolution du client_name (jointure users, §11.3) ────────────────────
+    # ── Résolution du client_name (jointure customer_profiles, §11.3) ────────
 
     def test_client_name_resolved_via_join(self, _e2e_client: TestClient) -> None:
-        """`client_name` reflète `users.full_name` via la jointure."""
-        token, salon_id, service_id, client_id, _ = _setup_salon_a(_e2e_client)
-        appt_id = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=self._DATE
+        """`client_name` reflète `customer_profiles.full_name` via la jointure."""
+        token, salon_id, service_id, customer_id, _ = _setup_salon_a(_e2e_client)
+        ticket_id = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=self._DATE, ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=appt_id, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_id
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id)
-        assert page["items"][0]["client_name"] == _CLIENT_NAME
+        assert page["items"][0]["client_name"] == _CUSTOMER_NAME
+
+    def test_anonymous_ticket_has_null_client_name(self, _e2e_client: TestClient) -> None:
+        """Un ticket anonyme (`customer_profile_id = NULL`) n'a pas de nom de client."""
+        token, salon_id, service_id, _, _ = _setup_salon_a(_e2e_client)
+        ticket_id = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=None,
+            issued_date=self._DATE, ticket_number=1,
+        )
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_id
+        )
+
+        page = _list_discrepancies(_e2e_client, token, salon_id)
+        assert page["total"] == 1
+        assert page["items"][0]["client_name"] is None
+        assert page["items"][0]["customer_profile_id"] is None
 
     # ── Isolation inter-salons (§11.2) ───────────────────────────────────────
 
     def test_other_salon_discrepancy_absent(self, _e2e_client: TestClient) -> None:
-        """Un RDV `COMPLETED` non payé du salon B n'apparaît jamais dans le salon A."""
-        token_a, salon_a_id, _, client_id, _ = _setup_salon_a(_e2e_client)
+        """Un ticket `done` non payé du salon B n'apparaît jamais dans le salon A."""
+        token_a, salon_a_id, _, customer_id, _ = _setup_salon_a(_e2e_client)
         _register_manager(_e2e_client, phone=_PHONE_B_LOCAL)
         token_b = _login(_e2e_client, phone=_PHONE_B_LOCAL)
         salon_b_id = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
         service_b_id = _create_service(_e2e_client, token_b, salon_b_id)
-        appt_b_id = _insert_appointment(
-            salon_id=salon_b_id, client_id=client_id, appointment_date=self._DATE
+        ticket_b_id = _insert_queue_ticket(
+            salon_id=salon_b_id, customer_profile_id=None,
+            issued_date=self._DATE, ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_b_id, appointment_id=appt_b_id, service_id=service_b_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_b_id, queue_ticket_id=ticket_b_id, service_id=service_b_id
         )
 
         page = _list_discrepancies(_e2e_client, token_a, salon_a_id)
         assert page["total"] == 0
 
-    def test_payment_in_same_salon_only_covers_appointment(self, _e2e_client: TestClient) -> None:
+    def test_payment_in_same_salon_only_covers_ticket(self, _e2e_client: TestClient) -> None:
         """Le rapprochement `NOT EXISTS` est salon-scopé : le paiement porte le bon `salon_id`.
 
-        Un RDV du salon A payé (VALIDATED) est couvert ; un RDV du salon A **non** payé
-        reste un écart — les deux dans la même liste salon-scopée.
+        Un ticket du salon A payé (VALIDATED) est couvert ; un ticket du salon A **non**
+        payé reste un écart — les deux dans la même liste salon-scopée.
         """
-        token, salon_id, service_id, client_id, manager_id = _setup_salon_a(_e2e_client)
-        paid_appt = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=self._DATE, start_time="09:00", end_time="10:00"
+        token, salon_id, service_id, customer_id, manager_id = _setup_salon_a(_e2e_client)
+        paid_ticket = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=self._DATE, ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=paid_appt, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=paid_ticket, service_id=service_id
         )
         _insert_payment(
-            salon_id=salon_id, appointment_id=paid_appt, recorded_by=manager_id, status="VALIDATED"
+            salon_id=salon_id, queue_ticket_id=paid_ticket, recorded_by=manager_id, status="VALIDATED"
         )
-        unpaid_appt = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=self._DATE, start_time="11:00", end_time="12:00"
+        unpaid_ticket = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=self._DATE, ticket_number=2,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=unpaid_appt, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=unpaid_ticket, service_id=service_id
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id)
         assert page["total"] == 1
-        assert page["items"][0]["appointment_id"] == unpaid_appt
+        assert page["items"][0]["queue_ticket_id"] == unpaid_ticket
 
-    # ── Filtre de dates (bornes inclusives sur appointment_date) ─────────────
+    # ── Filtre de dates (bornes inclusives sur issued_date) ──────────────────
 
     def test_date_from_excludes_older(self, _e2e_client: TestClient) -> None:
-        """`date_from` exclut les RDV antérieurs à la borne."""
-        token, salon_id, service_id, client_id, _ = _setup_salon_a(_e2e_client)
-        old_appt = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=datetime.date(2026, 6, 1)
+        """`date_from` exclut les tickets antérieurs à la borne."""
+        token, salon_id, service_id, customer_id, _ = _setup_salon_a(_e2e_client)
+        old_ticket = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 1), ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=old_appt, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=old_ticket, service_id=service_id
         )
-        new_appt = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=datetime.date(2026, 6, 30)
+        new_ticket = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 30), ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=new_appt, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=new_ticket, service_id=service_id
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id, date_from="2026-06-15")
         assert page["total"] == 1
-        assert page["items"][0]["appointment_id"] == new_appt
+        assert page["items"][0]["queue_ticket_id"] == new_ticket
 
     def test_date_to_excludes_newer(self, _e2e_client: TestClient) -> None:
-        """`date_to` exclut les RDV postérieurs à la borne."""
-        token, salon_id, service_id, client_id, _ = _setup_salon_a(_e2e_client)
-        old_appt = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=datetime.date(2026, 6, 1)
+        """`date_to` exclut les tickets postérieurs à la borne."""
+        token, salon_id, service_id, customer_id, _ = _setup_salon_a(_e2e_client)
+        old_ticket = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 1), ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=old_appt, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=old_ticket, service_id=service_id
         )
-        new_appt = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=datetime.date(2026, 6, 30)
+        new_ticket = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 30), ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=new_appt, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=new_ticket, service_id=service_id
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id, date_to="2026-06-15")
         assert page["total"] == 1
-        assert page["items"][0]["appointment_id"] == old_appt
+        assert page["items"][0]["queue_ticket_id"] == old_ticket
 
     def test_date_bounds_are_inclusive(self, _e2e_client: TestClient) -> None:
-        """Un RDV exactement sur la borne est inclus (bornes inclusives des deux côtés)."""
-        token, salon_id, service_id, client_id, _ = _setup_salon_a(_e2e_client)
-        appt_id = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=self._DATE
+        """Un ticket exactement sur la borne est inclus (bornes inclusives des deux côtés)."""
+        token, salon_id, service_id, customer_id, _ = _setup_salon_a(_e2e_client)
+        ticket_id = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=self._DATE, ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=appt_id, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_id
         )
 
         page = _list_discrepancies(
@@ -592,41 +633,44 @@ class TestCashDiscrepanciesE2E:
         )
         assert page["total"] == 1
 
-    # ── Tri (appointment_date DESC, start_time DESC) ─────────────────────────
+    # ── Tri (issued_date DESC, ticket_number DESC) ───────────────────────────
 
     def test_orders_most_recent_first(self, _e2e_client: TestClient) -> None:
-        """Les écarts sont triés du plus récent au plus ancien (`appointment_date DESC`)."""
-        token, salon_id, service_id, client_id, _ = _setup_salon_a(_e2e_client)
-        older = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=datetime.date(2026, 6, 10)
+        """Les écarts sont triés du plus récent au plus ancien (`issued_date DESC`)."""
+        token, salon_id, service_id, customer_id, _ = _setup_salon_a(_e2e_client)
+        older = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 10), ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=older, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=older, service_id=service_id
         )
-        newer = _insert_appointment(
-            salon_id=salon_id, client_id=client_id, appointment_date=datetime.date(2026, 6, 20)
+        newer = _insert_queue_ticket(
+            salon_id=salon_id, customer_profile_id=customer_id,
+            issued_date=datetime.date(2026, 6, 20), ticket_number=1,
         )
-        _insert_appointment_service(
-            salon_id=salon_id, appointment_id=newer, service_id=service_id, price=_SERVICE_PRICE
+        _insert_queue_ticket_service(
+            salon_id=salon_id, queue_ticket_id=newer, service_id=service_id
         )
 
         page = _list_discrepancies(_e2e_client, token, salon_id)
-        ids = [item["appointment_id"] for item in page["items"]]
+        ids = [item["queue_ticket_id"] for item in page["items"]]
         assert ids.index(newer) < ids.index(older)
 
     # ── Pagination (limit/offset/total sous le même filtre) ──────────────────
 
     def test_pagination_total_reflects_all_matches(self, _e2e_client: TestClient) -> None:
         """`total` compte tous les écarts du filtre, indépendamment de `limit`."""
-        token, salon_id, service_id, client_id, _ = _setup_salon_a(_e2e_client)
+        token, salon_id, service_id, customer_id, _ = _setup_salon_a(_e2e_client)
         for day in (10, 11, 12):
-            appt_id = _insert_appointment(
+            ticket_id = _insert_queue_ticket(
                 salon_id=salon_id,
-                client_id=client_id,
-                appointment_date=datetime.date(2026, 6, day),
+                customer_profile_id=customer_id,
+                issued_date=datetime.date(2026, 6, day),
+                ticket_number=day,
             )
-            _insert_appointment_service(
-                salon_id=salon_id, appointment_id=appt_id, service_id=service_id, price=_SERVICE_PRICE
+            _insert_queue_ticket_service(
+                salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_id
             )
 
         page = _list_discrepancies(_e2e_client, token, salon_id, limit=1, offset=0)
@@ -635,24 +679,25 @@ class TestCashDiscrepanciesE2E:
 
     def test_pagination_offset_skips_items(self, _e2e_client: TestClient) -> None:
         """`offset` avance dans la page sans changer `total` (tri plus-récent-d'abord)."""
-        token, salon_id, service_id, client_id, _ = _setup_salon_a(_e2e_client)
-        appt_ids = []
+        token, salon_id, service_id, customer_id, _ = _setup_salon_a(_e2e_client)
+        ticket_ids = []
         for day in (10, 11, 12):
-            appt_id = _insert_appointment(
+            ticket_id = _insert_queue_ticket(
                 salon_id=salon_id,
-                client_id=client_id,
-                appointment_date=datetime.date(2026, 6, day),
+                customer_profile_id=customer_id,
+                issued_date=datetime.date(2026, 6, day),
+                ticket_number=day,
             )
-            _insert_appointment_service(
-                salon_id=salon_id, appointment_id=appt_id, service_id=service_id, price=_SERVICE_PRICE
+            _insert_queue_ticket_service(
+                salon_id=salon_id, queue_ticket_id=ticket_id, service_id=service_id
             )
-            appt_ids.append(appt_id)
+            ticket_ids.append(ticket_id)
 
         page_first = _list_discrepancies(_e2e_client, token, salon_id, limit=1, offset=0)
         page_second = _list_discrepancies(_e2e_client, token, salon_id, limit=1, offset=1)
-        assert page_first["items"][0]["appointment_id"] != page_second["items"][0]["appointment_id"]
+        assert page_first["items"][0]["queue_ticket_id"] != page_second["items"][0]["queue_ticket_id"]
         # Le plus récent (dernier jour) arrive en premier ; offset=0 → 2026-06-12.
-        assert page_first["items"][0]["appointment_id"] == appt_ids[-1]
+        assert page_first["items"][0]["queue_ticket_id"] == ticket_ids[-1]
 
     # ── Sécurité (pile complète) ─────────────────────────────────────────────
 

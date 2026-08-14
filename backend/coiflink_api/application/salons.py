@@ -29,7 +29,9 @@ from dataclasses import dataclass
 from coiflink_api.application.ports.audit_log import AuditLog
 from coiflink_api.application.ports.media_storage import MediaStorage, PresignedUpload
 from coiflink_api.application.ports.salon_repository import SalonRepository
+from coiflink_api.application.ports.salon_scope_repository import SalonScopeRepository
 from coiflink_api.domain.audit import ENTITY_TYPE_SALON, AuditAction, AuditEntry
+from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
     MediaKeyMismatch,
     PhotoLimitExceeded,
@@ -336,6 +338,38 @@ class ListOwnSalons(_SalonReader):
         )
 
 
+class ListSalonsForHairdresser(_SalonReader):
+    """Liste le(s) salon(s) où ce coiffeur est membre `ACTIVE` (US-8.3, zone coiffeur).
+
+    Miroir de `ListOwnSalons`, mais la portée n'est pas `salons.owner_id` (un
+    coiffeur n'est jamais propriétaire) — c'est le rattachement d'appartenance
+    `salon_members` lu via `SalonScopeRepository.salon_ids_for` (même source que
+    l'autorisation `require_salon_scope`, #13/ADR-0016). Un coiffeur salarié n'a
+    en pratique qu'un seul salon, mais le tuple couvre le cas général sans le
+    supposer.
+    """
+
+    def __init__(
+        self,
+        repository: SalonRepository,
+        scope_repository: SalonScopeRepository,
+        media_storage: MediaStorage | None = None,
+    ) -> None:
+        super().__init__(repository, media_storage)
+        self._scope_repository = scope_repository
+
+    def execute(self, hairdresser_id: uuid.UUID) -> tuple[SalonView, ...]:
+        salon_ids = self._scope_repository.salon_ids_for(
+            hairdresser_id, Role.HAIRDRESSER.value
+        )
+        salons = tuple(
+            salon
+            for salon_id in salon_ids
+            if (salon := self._repository.find_by_id(salon_id)) is not None
+        )
+        return tuple(self._view(salon) for salon in salons)
+
+
 # --------------------------------------------------------------------------- #
 # Médias : émission d'URL, attachement du logo, ajout/retrait de photo.
 # --------------------------------------------------------------------------- #
@@ -433,6 +467,7 @@ __all__ = [
     "SetOpeningHours",
     "GetSalon",
     "ListOwnSalons",
+    "ListSalonsForHairdresser",
     "IssueMediaUploadUrl",
     "AttachSalonLogo",
     "AddSalonPhoto",

@@ -34,7 +34,6 @@ _PAYMENT_1 = uuid.UUID("11111111-0000-0000-0000-000000000001")
 _PAYMENT_2 = uuid.UUID("22222222-0000-0000-0000-000000000002")
 _PAYMENT_3 = uuid.UUID("33333333-0000-0000-0000-000000000003")
 _SALON_ID = uuid.UUID("cccccccc-0000-0000-0000-000000000001")
-_APPT_ID = uuid.UUID("dddddddd-0000-0000-0000-000000000001")
 
 _PAID_AT_RECENT = datetime.datetime(2026, 7, 30, 12, 0, 0, tzinfo=datetime.timezone.utc)
 _PAID_AT_OLDER = datetime.datetime(2026, 7, 1, 8, 0, 0, tzinfo=datetime.timezone.utc)
@@ -45,7 +44,6 @@ def _make_receipt(
     *,
     salon_name: str = "Salon Test",
     amount: decimal.Decimal = decimal.Decimal("5000.00"),
-    appointment_id: uuid.UUID | None = None,
     lines: tuple[ReceiptLine, ...] = (),
     paid_at: datetime.datetime = _PAID_AT_RECENT,
     reference: str | None = None,
@@ -62,7 +60,6 @@ def _make_receipt(
         status="VALIDATED",
         reference=reference,
         paid_at=paid_at,
-        appointment_id=appointment_id,
         lines=lines,
     )
 
@@ -170,7 +167,6 @@ class TestListMyReceiptsContent:
             _PAYMENT_1,
             salon_name="Salon Élégance",
             amount=decimal.Decimal("3000.00"),
-            appointment_id=_APPT_ID,
             lines=lines,
             reference="REF-001",
         )
@@ -180,7 +176,6 @@ class TestListMyReceiptsContent:
         assert receipt.payment_id == _PAYMENT_1
         assert receipt.salon_name == "Salon Élégance"
         assert receipt.amount == decimal.Decimal("3000.00")
-        assert receipt.appointment_id == _APPT_ID
         assert receipt.reference == "REF-001"
         assert len(receipt.lines) == 1
         assert receipt.lines[0].service_name == "Coupe"
@@ -254,7 +249,7 @@ class TestGetMyReceiptContent:
             ReceiptLine(service_name="Coupe homme", amount=decimal.Decimal("3000.00")),
             ReceiptLine(service_name="Barbe", amount=decimal.Decimal("2000.00")),
         )
-        r = _make_receipt(_PAYMENT_1, appointment_id=_APPT_ID, lines=lines)
+        r = _make_receipt(_PAYMENT_1, lines=lines)
         repo = FakeReceiptRepository(receipts_by_client={_CLIENT_A: (r,)})
         result = GetMyReceipt(repo).execute(_CLIENT_A, _PAYMENT_1)
         assert result is not None
@@ -262,11 +257,10 @@ class TestGetMyReceiptContent:
 
     def test_single_service_receipt(self) -> None:
         line = ReceiptLine(service_name="Soin", amount=decimal.Decimal("4500.00"))
-        r = _make_receipt(_PAYMENT_1, lines=(line,), appointment_id=None)
+        r = _make_receipt(_PAYMENT_1, lines=(line,))
         repo = FakeReceiptRepository(receipts_by_client={_CLIENT_A: (r,)})
         result = GetMyReceipt(repo).execute(_CLIENT_A, _PAYMENT_1)
         assert result is not None
-        assert result.appointment_id is None
         assert result.lines[0].service_name == "Soin"
 
 

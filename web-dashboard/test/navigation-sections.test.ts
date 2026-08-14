@@ -10,7 +10,7 @@ import {
 } from "../src/domain/navigation/sections";
 
 describe("DASHBOARD_SECTIONS", () => {
-  it("contient les 8 sections du §7.2 (+ file d'attente, #150)", () => {
+  it("contient les 8 sections (7 initiales + Journal d'audit, réorganisation du tableau de bord)", () => {
     expect(DASHBOARD_SECTIONS).toHaveLength(8);
   });
 
@@ -32,13 +32,21 @@ describe("DASHBOARD_SECTIONS", () => {
   it("contient toutes les clés attendues", () => {
     const keys = DASHBOARD_SECTIONS.map((s) => s.key);
     expect(keys).toContain("dashboard");
-    expect(keys).toContain("planning");
     expect(keys).toContain("clients");
     expect(keys).toContain("prestations");
     expect(keys).toContain("encaissements");
     expect(keys).toContain("employes");
     expect(keys).toContain("file-attente");
     expect(keys).toContain("parametres");
+  });
+
+  it("place 'file-attente' avant 'clients' dans la catégorie 'operations'", () => {
+    const operationsKeys = DASHBOARD_SECTIONS.filter(
+      (s) => s.category === "operations",
+    ).map((s) => s.key);
+    expect(operationsKeys.indexOf("file-attente")).toBeLessThan(
+      operationsKeys.indexOf("clients"),
+    );
   });
 
   it("marque /gerant comme 'available'", () => {
@@ -57,12 +65,6 @@ describe("DASHBOARD_SECTIONS", () => {
     const prestations = DASHBOARD_SECTIONS.find((s) => s.key === "prestations");
     expect(prestations).toBeDefined();
     expect(prestations?.status).toBe("available");
-  });
-
-  it("marque 'planning' comme 'available' (vue calendrier, #26)", () => {
-    const planning = DASHBOARD_SECTIONS.find((s) => s.key === "planning");
-    expect(planning).toBeDefined();
-    expect(planning?.status).toBe("available");
   });
 
   it("marque 'clients' comme 'available' (création de fiche client, #28)", () => {
@@ -90,6 +92,15 @@ describe("DASHBOARD_SECTIONS", () => {
     expect(fileAttente).toBeDefined();
     expect(fileAttente?.status).toBe("available");
     expect(fileAttente?.href).toBe("/gerant/file-attente");
+  });
+
+  it("marque 'audit' comme 'available' dans la catégorie 'salon' (réorganisation du tableau de bord)", () => {
+    const audit = DASHBOARD_SECTIONS.find((s) => s.key === "audit");
+    expect(audit).toBeDefined();
+    expect(audit?.status).toBe("available");
+    expect(audit?.href).toBe("/gerant/audit");
+    expect(audit?.category).toBe("salon");
+    expect(audit?.label).toBe("Journal d'audit");
   });
 
   it("ne marque plus aucune section 'coming-soon' (M1 complet)", () => {
