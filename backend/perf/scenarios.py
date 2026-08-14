@@ -12,16 +12,16 @@ comme **erreur**, jamais mêlé aux latences « utiles ».
 
 Mesure :
 - `salon_search` / `api_general` : un appel → la latence de cet appel.
-- `appointment_create` : **parcours** fiche → disponibilités → POST création ; la
-  latence retenue est la **somme** (le budget §12.1 « création RDV » couvre le chemin
-  de réservation, disponibilités comprises).
+- `ticket_create` : **parcours** borne — fiche walk-in → émission de ticket ; la
+  latence retenue est la **somme** (le budget §12.1 « émission de ticket » couvre le
+  chemin complet, création de fiche comprise). Contrairement à l'ancien RDV, aucun
+  état « complet »/indisponible à gérer : un ticket peut toujours être émis.
 - `dashboard` : les **quatre** lectures du tableau de bord en séquence ; la latence
   retenue est l'**agrégat** (somme des temps serveur), confronté au budget « < 3 s ».
 """
 
 from __future__ import annotations
 
-import datetime
 import random
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -34,10 +34,11 @@ from . import config
 
 @dataclass
 class SalonFixture:
-    """Un salon seedé, réservable, avec ses prestations et coiffeurs (aucune PII)."""
+    """Un salon seedé, walk-in, avec ses prestations, coiffeurs et sa borne (aucune PII)."""
 
     salon_id: str
     manager_token: str  # jeton gérant (jamais tracé)
+    terminal_token: str  # jeton borne (jamais tracé) — émission de tickets/fiches walk-in
     service_ids: list[str]
     hairdresser_ids: list[str]
     name: str
@@ -135,78 +136,66 @@ def run_salon_search(http: TimedHttp, ctx: SeedContext, rng: random.Random) -> S
     )
 
 
-# ─── Scénario 2 — Création de rendez-vous (< 3 s) ─────────────────────────────
+# ─── Scénario 2 — Émission d'un ticket walk-in (< 3 s) ────────────────────────
 
 
-def run_appointment_create(
-    http: TimedHttp, ctx: SeedContext, rng: random.Random
-) -> ScenarioSample:
-    """Parcours réservation : fiche → disponibilités → POST création (créneau futur libre).
+def run_ticket_create(http: TimedHttp, ctx: SeedContext, rng: random.Random) -> ScenarioSample:
+    """Parcours borne : création d'une fiche walk-in → émission d'un ticket de passage.
 
-    ⚠ La création **écrit** (RDV + notifications #45/#46/#47) : bornée à la plage
-    réservée, nettoyée au teardown. Sous concurrence, un `409` (double-réservation) est
-    compté comme **erreur** (garanti par la contrainte d'exclusion PostgreSQL, #21).
+    ⚠ La création **écrit** (fiche + ticket) : bornée à la plage réservée, nettoyée
+    au teardown. La fiche est **salon-scopée** (`customer_profiles.phone` unique par
+    salon) : un doublon de téléphone sous concurrence (`409`) est compté comme
+    **erreur**, jamais mêlé aux latences « utiles » — aucune contrainte d'exclusion
+    de créneau ici (contrairement à l'ancien RDV, un ticket est toujours émissible).
     """
 
     salon = rng.choice(ctx.salons)
     service_id = rng.choice(salon.service_ids)
-    token = rng.choice(ctx.client_tokens)
-    date = _future_slot_date(rng)
-
     total = 0.0
     requests = 0
 
-    detail = http.send(
-        "GET",
-        "/catalog/salons/{id}",
-        f"/catalog/salons/{salon.salon_id}",
-    )
-    total += detail.elapsed_ms
-    requests += 1
-    if not _ok(detail.status):
-        return ScenarioSample(
-            config.BUDGET_APPOINTMENT_CREATE, "POST /salons/{id}/appointments", total, False, requests
-        )
-
-    availability = http.send(
-        "GET",
-        "/catalog/salons/{id}/availability",
-        f"/catalog/salons/{salon.salon_id}/availability",
-        params={"date": date, "service_id": service_id},
-    )
-    total += availability.elapsed_ms
-    requests += 1
-    slots = (availability.json or {}).get("slots") if _ok(availability.status) else None
-    if not slots:
-        # Journée pleine / indisponible : pas de création possible → erreur mesurée.
-        return ScenarioSample(
-            config.BUDGET_APPOINTMENT_CREATE, "POST /salons/{id}/appointments", total, False, requests
-        )
-
-    start_time = rng.choice(slots)["start"]
-    booking = http.send(
+    customer = http.send(
         "POST",
-        "/salons/{id}/appointments",
-        f"/salons/{salon.salon_id}/appointments",
-        json={"date": date, "start_time": start_time, "service_ids": [service_id]},
-        token=token,
+        "/salons/{id}/terminal/customers",
+        f"/salons/{salon.salon_id}/terminal/customers",
+        json={
+            "first_name": "Perf",
+            "last_name": f"WalkIn{rng.randint(0, 999_999)}",
+            "phone": config.local_phone(rng.randint(0, 9999)),
+        },
+        token=salon.terminal_token,
     )
-    total += booking.elapsed_ms
+    total += customer.elapsed_ms
+    requests += 1
+    if not _ok(customer.status):
+        return ScenarioSample(
+            config.BUDGET_TICKET_CREATE, "POST /salons/{id}/queue/tickets", total, False, requests
+        )
+    customer_profile_id = (customer.json or {}).get("customer_id")
+
+    ticket = http.send(
+        "POST",
+        "/salons/{id}/queue/tickets",
+        f"/salons/{salon.salon_id}/queue/tickets",
+        json={"customer_profile_id": customer_profile_id, "service_ids": [service_id]},
+        token=salon.terminal_token,
+    )
+    total += ticket.elapsed_ms
     requests += 1
     return ScenarioSample(
-        config.BUDGET_APPOINTMENT_CREATE,
-        "POST /salons/{id}/appointments",
+        config.BUDGET_TICKET_CREATE,
+        "POST /salons/{id}/queue/tickets",
         total,
-        _ok(booking.status),
+        _ok(ticket.status),
         requests,
     )
 
 
 # ─── Scénario 3 — Dashboard gérant (agrégat < 3 s) ────────────────────────────
 
-#: Les quatre lectures qui composent le tableau de bord gérant (#39–#41, #43).
+#: Les quatre lectures qui composent le tableau de bord gérant (#40/#41/#43/#148).
 _DASHBOARD_READS: tuple[tuple[str, str], ...] = (
-    ("/salons/{id}/appointments/daily-summary", "/salons/{sid}/appointments/daily-summary"),
+    ("/salons/{id}/dashboard/kpis", "/salons/{sid}/dashboard/kpis"),
     ("/salons/{id}/revenue/summary", "/salons/{sid}/revenue/summary"),
     ("/salons/{id}/service-demand", "/salons/{sid}/service-demand"),
     ("/salons/{id}/hairdresser-performance", "/salons/{sid}/hairdresser-performance"),
@@ -239,22 +228,14 @@ def run_api_general(http: TimedHttp, ctx: SeedContext, rng: random.Random) -> Sc
 
     salon = rng.choice(ctx.salons)
     client_token = rng.choice(ctx.client_tokens)
-    # Le planning gérant `GET /salons/{id}/appointments` exige une plage **bornée**
-    # (≤ 42 j, garde de coût §12) : sans elle, l'API répond 422 (mesure faussée).
-    today = datetime.date.today()
-    planning: dict[str, Any] = {
-        "date_from": today.isoformat(),
-        "date_to": (today + datetime.timedelta(days=30)).isoformat(),
-    }
     choices: list[tuple[str, str, str, str, dict[str, Any] | None]] = [
-        ("GET", "/appointments/history", "/appointments/history", client_token, None),
         ("GET", "/me/receipts", "/me/receipts", client_token, None),
         (
             "GET",
-            "/salons/{id}/appointments",
-            f"/salons/{salon.salon_id}/appointments",
+            "/salons/{id}/queue/tickets",
+            f"/salons/{salon.salon_id}/queue/tickets",
             salon.manager_token,
-            planning,
+            None,
         ),
         (
             "GET",
@@ -271,12 +252,12 @@ def run_api_general(http: TimedHttp, ctx: SeedContext, rng: random.Random) -> Sc
 
 # ─── Pondération réaliste du trafic ───────────────────────────────────────────
 #
-# Beaucoup de lectures catalogue, moins de créations de RDV (écriture) — profil
+# Beaucoup de lectures catalogue, moins d'émissions de tickets (écriture) — profil
 # proche d'un trafic client réel. Poids relatifs (révisables).
 
 SCENARIOS: dict[str, Any] = {
     config.BUDGET_SALON_SEARCH: run_salon_search,
-    config.BUDGET_APPOINTMENT_CREATE: run_appointment_create,
+    config.BUDGET_TICKET_CREATE: run_ticket_create,
     config.BUDGET_DASHBOARD: run_manager_dashboard,
     config.BUDGET_API_GENERAL: run_api_general,
 }
@@ -285,7 +266,7 @@ SCENARIO_WEIGHTS: dict[str, int] = {
     config.BUDGET_SALON_SEARCH: 5,
     config.BUDGET_API_GENERAL: 3,
     config.BUDGET_DASHBOARD: 2,
-    config.BUDGET_APPOINTMENT_CREATE: 1,
+    config.BUDGET_TICKET_CREATE: 1,
 }
 
 
@@ -298,19 +279,6 @@ def weighted_groups() -> list[str]:
     return plan
 
 
-def _future_slot_date(rng: random.Random) -> str:
-    """Un **lundi futur** (jour typiquement ouvré) au format ISO, pour un créneau libre.
-
-    Étaler sur plusieurs semaines réduit les collisions de créneaux entre VUs
-    (déterminisme relatif ; la contrainte d'exclusion #21 tranche les rares collisions).
-    """
-
-    today = datetime.date.today()
-    days_ahead = (7 - today.weekday()) % 7 or 7
-    next_monday = today + datetime.timedelta(days=days_ahead)
-    return (next_monday + datetime.timedelta(weeks=rng.randint(0, 8))).isoformat()
-
-
 __all__ = [
     "SalonFixture",
     "SeedContext",
@@ -318,7 +286,7 @@ __all__ = [
     "TimedHttp",
     "ScenarioSample",
     "run_salon_search",
-    "run_appointment_create",
+    "run_ticket_create",
     "run_manager_dashboard",
     "run_api_general",
     "SCENARIOS",

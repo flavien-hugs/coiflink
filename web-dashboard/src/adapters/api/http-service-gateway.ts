@@ -9,15 +9,23 @@
 // pour autoriser.
 
 import type {
+  AddServicePhotoResult,
   DeactivateServiceResult,
   IssueImageUploadUrlResult,
   ListServicesResult,
   MutateServiceResult,
+  RemoveServicePhotoResult,
   ServiceGateway,
   ServiceListOptions,
 } from "@/src/application/ports/service-gateway";
 import type { Service, ServiceInput } from "@/src/domain/service/service";
 import { resolveApiBaseUrl } from "./config";
+
+// Forme d'une photo dans `ServiceResponse.photos` (#17 bis).
+interface ServicePhotoResponsePayload {
+  id: string;
+  url: string | null;
+}
 
 // Forme du corps `ServiceResponse` renvoyé par le backend (#17).
 interface ServiceResponsePayload {
@@ -30,6 +38,7 @@ interface ServiceResponsePayload {
   category: string | null;
   is_active: boolean;
   image_url: string | null;
+  photos: ServicePhotoResponsePayload[];
   created_at: string;
   updated_at: string;
 }
@@ -56,6 +65,7 @@ function toService(payload: ServiceResponsePayload): Service {
     durationMinutes: payload.duration_minutes,
     category: payload.category,
     isActive: payload.is_active,
+    photos: payload.photos.map((photo) => ({ id: photo.id, url: photo.url })),
     imageUrl: payload.image_url,
     createdAt: payload.created_at,
     updatedAt: payload.updated_at,
@@ -305,19 +315,19 @@ export function createHttpServiceGateway(
       return { ok: false, reason: "unavailable" };
     },
 
-    async attachImage(
+    async addPhoto(
       salonId: string,
       serviceId: string,
-      objectKey: string | null,
-    ): Promise<MutateServiceResult> {
+      objectKey: string,
+    ): Promise<AddServicePhotoResult> {
       if (!deps.accessToken) {
         return { ok: false, reason: "unauthenticated" };
       }
 
       let response: Response;
       try {
-        response = await fetch(`${serviceUrl(salonId, serviceId)}/image`, {
-          method: "PUT",
+        response = await fetch(`${serviceUrl(salonId, serviceId)}/photos`, {
+          method: "POST",
           headers: { "Content-Type": "application/json", ...authHeader() },
           body: JSON.stringify({ object_key: objectKey }),
           cache: "no-store",
@@ -326,7 +336,7 @@ export function createHttpServiceGateway(
         return { ok: false, reason: "unavailable" };
       }
 
-      if (response.status === 200) {
+      if (response.status === 201) {
         const payload = (await response.json()) as ServiceResponsePayload;
         return { ok: true, service: toService(payload) };
       }
@@ -339,8 +349,49 @@ export function createHttpServiceGateway(
       if (response.status === 404) {
         return { ok: false, reason: "not-found" };
       }
+      if (response.status === 409) {
+        return { ok: false, reason: "conflict" };
+      }
       if (response.status === 422) {
         return { ok: false, reason: "invalid" };
+      }
+      return { ok: false, reason: "unavailable" };
+    },
+
+    async removePhoto(
+      salonId: string,
+      serviceId: string,
+      photoId: string,
+    ): Promise<RemoveServicePhotoResult> {
+      if (!deps.accessToken) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(
+          `${serviceUrl(salonId, serviceId)}/photos/${encodeURIComponent(photoId)}`,
+          {
+            method: "DELETE",
+            headers: { ...authHeader() },
+            cache: "no-store",
+          },
+        );
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+
+      if (response.status === 204) {
+        return { ok: true };
+      }
+      if (response.status === 401) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+      if (response.status === 403) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (response.status === 404) {
+        return { ok: false, reason: "not-found" };
       }
       return { ok: false, reason: "unavailable" };
     },

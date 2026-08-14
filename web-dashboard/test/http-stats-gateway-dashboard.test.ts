@@ -57,6 +57,14 @@ const KPIS_PAYLOAD = {
     currency: "XOF",
   },
   clients_count: { current: 20, previous: 25, delta: -5, direction: "down" },
+  attendance_today: { current: 8, previous: 6, delta: 2, direction: "up" },
+  revenue_this_week: {
+    current: "210000.00",
+    previous: "178000.00",
+    delta: "32000.00",
+    direction: "up",
+    currency: "XOF",
+  },
 };
 
 const REVENUE_SERIES_PAYLOAD = {
@@ -82,21 +90,19 @@ const IN_PROGRESS_PAYLOAD = {
   as_of: "2026-08-09T10:00:00Z",
   items: [
     {
-      appointment_id: "apt-1",
+      queue_ticket_id: "ticket-1",
       client_name: "Awa K.",
       service_names: ["Tresses", "Soin"],
       hairdresser_name: "Fatou",
-      start_time: "14:00:00",
-      end_time: "15:30:00",
+      started_at: "14:00:00",
       status: "CONFIRMED",
     },
     {
-      appointment_id: "apt-2",
+      queue_ticket_id: "ticket-2",
       client_name: null,
       service_names: [],
       hairdresser_name: null,
-      start_time: "15:00:00",
-      end_time: "16:00:00",
+      started_at: "15:00:00",
       status: "CONFIRMED",
     },
   ],
@@ -112,6 +118,7 @@ const ACTIVITY_PAYLOAD = {
       client_name: "Awa K.",
       currency: "XOF",
     },
+    // Genre inconnu (ancien genre RDV notamment) → filtré défensivement.
     {
       occurred_at: "2026-08-09T09:00:00Z",
       kind: "new_booking",
@@ -120,7 +127,6 @@ const ACTIVITY_PAYLOAD = {
       client_name: null,
       currency: null,
     },
-    // Genre inconnu → filtré défensivement.
     {
       occurred_at: "2026-08-09T08:00:00Z",
       kind: "client_arrival",
@@ -134,9 +140,10 @@ const ACTIVITY_PAYLOAD = {
 
 const ALERTS_PAYLOAD = {
   items: [
-    { kind: "late", severity: "warning", count: 2 },
     { kind: "payment_anomaly", severity: "critical", count: 1 },
-    // Genre inconnu → filtré défensivement.
+    { kind: "prolonged_wait", severity: "warning", count: 2 },
+    // Genres inconnus (dont l'ancien genre RDV "late") → filtrés défensivement.
+    { kind: "late", severity: "warning", count: 5 },
     { kind: "stock_low", severity: "info", count: 9 },
   ],
 };
@@ -429,7 +436,7 @@ describe("inProgress — 200 OK", () => {
     if (!result.ok) throw new Error("guard");
     expect(result.inProgress.asOf).toBe("2026-08-09T10:00:00Z");
     expect(result.inProgress.items).toHaveLength(2);
-    expect(result.inProgress.items[0].appointmentId).toBe("apt-1");
+    expect(result.inProgress.items[0].queueTicketId).toBe("ticket-1");
     expect(result.inProgress.items[0].clientName).toBe("Awa K.");
     expect(result.inProgress.items[0].serviceNames).toEqual(["Tresses", "Soin"]);
     expect(result.inProgress.items[0].hairdresserName).toBe("Fatou");
@@ -458,23 +465,21 @@ describe("inProgress — 200 OK", () => {
 // ---------------------------------------------------------------------------
 
 describe("activity — 200 OK", () => {
-  it("mappe les évènements connus et filtre les genres inconnus (défensif)", async () => {
+  it("mappe le seul genre connu (payment) et filtre les genres inconnus/RDV (défensif)", async () => {
     stubFetch(200, ACTIVITY_PAYLOAD);
     const result = await createHttpStatsGateway({ accessToken: TOKEN }).activity(SALON_ID);
     if (!result.ok) throw new Error("guard");
-    // 3 lignes en entrée, 1 genre inconnu filtré → 2 évènements.
-    expect(result.feed.items).toHaveLength(2);
-    expect(result.feed.items.map((e) => e.kind)).toEqual(["payment", "new_booking"]);
+    // 3 lignes en entrée, 2 genres inconnus (dont l'ancien genre RDV) filtrés → 1 évènement.
+    expect(result.feed.items).toHaveLength(1);
+    expect(result.feed.items.map((e) => e.kind)).toEqual(["payment"]);
   });
 
-  it("montant du paiement coercé en chaîne ; non-paiements sans montant/nom", async () => {
+  it("montant du paiement coercé en chaîne, avec le nom d'affichage du client", async () => {
     stubFetch(200, ACTIVITY_PAYLOAD);
     const result = await createHttpStatsGateway({ accessToken: TOKEN }).activity(SALON_ID);
     if (!result.ok) throw new Error("guard");
     expect(result.feed.items[0].amount).toBe("5000");
     expect(result.feed.items[0].clientName).toBe("Awa K.");
-    expect(result.feed.items[1].amount).toBeNull();
-    expect(result.feed.items[1].clientName).toBeNull();
   });
 
   it("limit fourni → paramètre limit dans l'URL", async () => {
@@ -497,19 +502,21 @@ describe("activity — 200 OK", () => {
 // ---------------------------------------------------------------------------
 
 describe("alerts — 200 OK", () => {
-  it("mappe les alertes connues et filtre les genres inconnus (défensif)", async () => {
+  it("mappe les alertes connues et filtre les genres inconnus/RDV (défensif)", async () => {
     stubFetch(200, ALERTS_PAYLOAD);
     const result = await createHttpStatsGateway({ accessToken: TOKEN }).alerts(SALON_ID);
     if (!result.ok) throw new Error("guard");
+    // 4 lignes en entrée, 2 genres inconnus (dont l'ancien genre RDV "late") filtrés → 2.
     expect(result.alerts.items).toHaveLength(2);
-    expect(result.alerts.items[0].kind).toBe("late");
-    expect(result.alerts.items[0].severity).toBe("warning");
-    expect(result.alerts.items[0].count).toBe(2);
-    expect(result.alerts.items[1].severity).toBe("critical");
+    expect(result.alerts.items[0].kind).toBe("payment_anomaly");
+    expect(result.alerts.items[0].severity).toBe("critical");
+    expect(result.alerts.items[0].count).toBe(1);
+    expect(result.alerts.items[1].kind).toBe("prolonged_wait");
+    expect(result.alerts.items[1].severity).toBe("warning");
   });
 
   it("sévérité inconnue retombe sur warning (défensif)", async () => {
-    stubFetch(200, { items: [{ kind: "late", severity: "boom", count: 1 }] });
+    stubFetch(200, { items: [{ kind: "prolonged_wait", severity: "boom", count: 1 }] });
     const result = await createHttpStatsGateway({ accessToken: TOKEN }).alerts(SALON_ID);
     expect(result.ok && result.alerts.items[0].severity).toBe("warning");
   });

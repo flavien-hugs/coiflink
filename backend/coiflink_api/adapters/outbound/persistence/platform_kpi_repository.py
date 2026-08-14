@@ -1,7 +1,7 @@
 """Adapter sortant : **KPI globaux** de la plateforme (SQLAlchemy, US-6.6, #44).
 
 Implémente le port `PlatformKpiRepository` sur une `Session` SQLAlchemy 2.0 et les
-modèles ORM `models.Salon` / `models.User` / `models.Appointment` /
+modèles ORM `models.Salon` / `models.User` / `models.QueueTicket` /
 `models.CashJournal`. Seul cet adapter connaît SQLAlchemy ; il calcule **en base**
 une poignée de scalaires globaux et les projette en `PlatformKpiCounts` (domaine pur,
 sans PII).
@@ -17,8 +17,8 @@ mémoire.** Aucune écriture, aucun `flush`, aucun commit.
 net (parité #37/#40). C'est le flux net encaissé par les salons, **pas** un revenu de
 facturation SaaS (qui n'existe pas — cf. `domain/platform_kpis.py`, ADR-0032).
 
-**Interprétation temporelle.** Les rendez-vous du mois se comparent **directement** à
-`appointment_date` (déjà un jour civil `Africa/Abidjan`) sur les bornes de
+**Interprétation temporelle.** Les tickets du mois se comparent **directement** à
+`issued_date` (déjà un jour civil `Africa/Abidjan`) sur les bornes de
 `month_bounds`. Le revenu du mois se compare à `created_at` (timezone-aware) sur les
 bornes de mois **déjà converties en UTC** par le cas d'usage.
 
@@ -26,8 +26,8 @@ bornes de mois **déjà converties en UTC** par le cas d'usage.
 **aucune** identité d'entité (ni `salon_id`, ni `client_id`, ni `owner_id`, ni ligne
 individuelle).
 
-**Index.** `ix_salons_status` couvre `salons_active` ; `ix_appointments_salon_id
-(salon_id, appointment_date)` couvre partiellement le filtre de mois ;
+**Index.** `ix_salons_status` couvre `salons_active` ; `ix_queue_tickets_salon_id
+(salon_id, issued_date)` couvre partiellement le filtre de mois ;
 `ix_cash_journal_salon_id (salon_id, created_at)` couvre le filtre de revenu. Les
 `COUNT(*)` globaux non filtrés font un balayage borné acceptable au MVP (volumétrie
 pilote, PRD §14) — aucun nouvel index requis.
@@ -70,8 +70,9 @@ class SqlPlatformKpiRepository:
     ) -> PlatformKpiCounts:
         """Calcule les scalaires globaux **en SQL** (US-6.6, #44) — lecture seule.
 
-        Sept `SELECT` scalaires indépendants (compteurs `COUNT`, sommes `SUM` nettes) ;
-        chacun est borné et couvert par un index existant. Le revenu est quantifié au
+        Sept `SELECT` scalaires indépendants (compteurs `COUNT`, sommes `SUM` nettes),
+        rebranchés sur `queue_tickets` avec le pivot walk-in exclusif (#148) ; chacun
+        est borné et couvert par un index existant. Le revenu est quantifié au
         centime en `Decimal`. Aucune écriture, aucune PII.
         """
 
@@ -87,15 +88,15 @@ class SqlPlatformKpiRepository:
                 .select_from(models.User)
                 .where(models.User.role == _CLIENT_ROLE)
             ),
-            appointments_total=self._count(
-                select(func.count()).select_from(models.Appointment)
+            tickets_total=self._count(
+                select(func.count()).select_from(models.QueueTicket)
             ),
-            appointments_this_month=self._count(
+            tickets_this_month=self._count(
                 select(func.count())
-                .select_from(models.Appointment)
+                .select_from(models.QueueTicket)
                 .where(
-                    models.Appointment.appointment_date >= month_from,
-                    models.Appointment.appointment_date <= month_to,
+                    models.QueueTicket.issued_date >= month_from,
+                    models.QueueTicket.issued_date <= month_to,
                 )
             ),
             revenue_total=self._net_revenue(

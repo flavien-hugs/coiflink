@@ -26,8 +26,9 @@ from dataclasses import dataclass
 from coiflink_api.application.ports.audit_log import AuditLog
 from coiflink_api.application.ports.media_storage import MediaStorage, PresignedUpload
 from coiflink_api.application.ports.service_repository import ServiceRepository
+from coiflink_api.config import DEFAULT_MEDIA_MAX_PHOTOS
 from coiflink_api.domain.audit import ENTITY_TYPE_SERVICE, AuditAction, AuditEntry
-from coiflink_api.domain.errors import MediaKeyMismatch, ServiceNotFound
+from coiflink_api.domain.errors import MediaKeyMismatch, PhotoLimitExceeded, ServiceNotFound
 from coiflink_api.domain.salon import validate_content_type
 from coiflink_api.domain.service import (
     Service,
@@ -345,17 +346,71 @@ class IssueServiceImageUploadUrl:
         return self._media_storage.presign_upload(object_key, content_type)
 
 
-class AttachServiceImage:
-    """Attache une clé d'objet **revalidée** comme image de la prestation.
+class AddServicePhoto:
+    """Ajoute une photo (clé revalidée) sous la limite `MEDIA_MAX_PHOTOS` (galerie).
 
-    Miroir `application/salons.py::AttachSalonLogo` : la clé est revalidée
-    contre le préfixe du salon (`_ensure_image_key_prefix`, sinon
-    `MediaKeyMismatch` → 422) avant d'atteindre le dépôt — sans quoi
-    l'isolation §11.2 serait contournable *par les médias* (référencer l'objet
-    d'un autre salon). `object_key=None` **efface** l'illustration. Contrairement
-    à `AttachSalonLogo` (non journalisé), cette action journalise
-    `SERVICE_UPDATED` (§11.4) : #17 pose « modification journalisée » comme
-    critère d'acceptation pour toute mutation de prestation, images incluses.
+    Miroir `application/salons.py::AddSalonPhoto`, avec une différence
+    délibérée : contrairement à `AddSalonPhoto` (non journalisé), cette action
+    journalise `SERVICE_UPDATED` (§11.4) — #17 pose « modification journalisée »
+    comme critère d'acceptation pour toute mutation de prestation, photos
+    incluses. La clé est revalidée contre le préfixe du salon
+    (`_ensure_image_key_prefix`, sinon `MediaKeyMismatch` → 422) avant
+    d'atteindre le dépôt — sans quoi l'isolation §11.2 serait contournable *par
+    les médias* (référencer l'objet d'un autre salon).
+    """
+
+    def __init__(
+        self,
+        repository: ServiceRepository,
+        audit_log: AuditLog,
+        *,
+        max_photos: int = DEFAULT_MEDIA_MAX_PHOTOS,
+    ) -> None:
+        self._repository = repository
+        self._audit_log = audit_log
+        self._max_photos = max_photos
+
+    def execute(
+        self,
+        salon_id: uuid.UUID,
+        service_id: uuid.UUID,
+        object_key: str,
+        *,
+        actor_user_id: uuid.UUID,
+    ) -> Service:
+        key = _ensure_image_key_prefix(salon_id, object_key)
+
+        service = self._repository.find_by_id(salon_id, service_id)
+        if service is None:
+            raise ServiceNotFound("Prestation introuvable.")
+        if self._repository.count_photos(salon_id, service_id) >= self._max_photos:
+            raise PhotoLimitExceeded(
+                "Le nombre maximal de photos pour cette prestation est atteint."
+            )
+
+        self._repository.add_photo(salon_id, service_id, key)
+        self._audit_log.record(
+            AuditEntry(
+                action=AuditAction.SERVICE_UPDATED.value,
+                actor_user_id=actor_user_id,
+                salon_id=salon_id,
+                entity_type=ENTITY_TYPE_SERVICE,
+                entity_id=service_id,
+                metadata={"changed": ["photos"]},
+            )
+        )
+        # La ligne `services` n'a pas changé (seule la galerie a bougé) : `service`,
+        # déjà chargé pour la vérification d'existence, reste à jour — évite une
+        # seconde lecture.
+        return service
+
+
+class RemoveServicePhoto:
+    """Retire une photo de la prestation et supprime l'objet (best-effort).
+
+    Miroir `application/salons.py::RemoveSalonPhoto`, même différence
+    d'audit que `AddServicePhoto` (journalise `SERVICE_UPDATED`, contrairement
+    à `RemoveSalonPhoto`).
     """
 
     def __init__(
@@ -372,24 +427,15 @@ class AttachServiceImage:
         self,
         salon_id: uuid.UUID,
         service_id: uuid.UUID,
-        object_key: str | None,
+        photo_id: uuid.UUID,
         *,
         actor_user_id: uuid.UUID,
-    ) -> Service:
-        key = _ensure_image_key_prefix(salon_id, object_key) if object_key else None
-
-        previous = self._repository.find_by_id(salon_id, service_id)
-        if previous is None:
-            raise ServiceNotFound("Prestation introuvable.")
-
-        service = self._repository.set_image(salon_id, service_id, key)
-        # Nettoyage best-effort de l'ancienne image remplacée (jamais bloquant).
-        if (
-            previous.image_object_key
-            and previous.image_object_key != key
-            and self._media_storage is not None
-        ):
-            self._media_storage.delete(previous.image_object_key)
+    ) -> None:
+        object_key = self._repository.delete_photo(salon_id, service_id, photo_id)
+        if object_key is None:
+            raise ServiceNotFound("Photo introuvable.")
+        if self._media_storage is not None:
+            self._media_storage.delete(object_key)
 
         self._audit_log.record(
             AuditEntry(
@@ -398,10 +444,9 @@ class AttachServiceImage:
                 salon_id=salon_id,
                 entity_type=ENTITY_TYPE_SERVICE,
                 entity_id=service_id,
-                metadata={"changed": ["image_object_key"]},
+                metadata={"changed": ["photos"]},
             )
         )
-        return service
 
 
 __all__ = [
@@ -413,5 +458,6 @@ __all__ = [
     "DeactivateService",
     "ReactivateService",
     "IssueServiceImageUploadUrl",
-    "AttachServiceImage",
+    "AddServicePhoto",
+    "RemoveServicePhoto",
 ]

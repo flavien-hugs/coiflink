@@ -59,6 +59,27 @@ export type IssueImageUploadUrlResult =
       reason: "invalid" | "forbidden" | "unauthenticated" | "unavailable";
     };
 
+// `conflict` = `409` (nombre maximal de photos atteint, `MEDIA_MAX_PHOTOS`).
+export type AddServicePhotoResult =
+  | { ok: true; service: Service }
+  | {
+      ok: false;
+      reason:
+        | "invalid"
+        | "forbidden"
+        | "unauthenticated"
+        | "not-found"
+        | "conflict"
+        | "unavailable";
+    };
+
+export type RemoveServicePhotoResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "forbidden" | "unauthenticated" | "not-found" | "unavailable";
+    };
+
 export interface ServiceGateway {
   // Proxifie `GET /salons/{id}/services` (actives et désactivées, vue gérant),
   // filtrable via `options` (`q`/`category`/`createdFrom`/`createdTo`).
@@ -82,11 +103,17 @@ export interface ServiceGateway {
     salonId: string,
     contentType: string,
   ): Promise<IssueImageUploadUrlResult>;
-  // Proxifie `PUT /salons/{id}/services/{serviceId}/image` : attache la clé
-  // **préalablement téléversée** (ou `null` pour effacer l'illustration).
-  attachImage(
+  // Proxifie `POST /salons/{id}/services/{serviceId}/photos` : ajoute la clé
+  // **préalablement téléversée** à la galerie ; renvoie la prestation à jour.
+  addPhoto(
     salonId: string,
     serviceId: string,
-    objectKey: string | null,
-  ): Promise<MutateServiceResult>;
+    objectKey: string,
+  ): Promise<AddServicePhotoResult>;
+  // Proxifie `DELETE /salons/{id}/services/{serviceId}/photos/{photoId}`.
+  removePhoto(
+    salonId: string,
+    serviceId: string,
+    photoId: string,
+  ): Promise<RemoveServicePhotoResult>;
 }

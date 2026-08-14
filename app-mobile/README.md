@@ -1,6 +1,6 @@
 # app-mobile/ — CoifLink Borne (Flutter)
 
-Application **kiosque libre-service** de CoifLink : le parcours walk-in d'une borne tactile en salon
+Application **terminal libre-service** de CoifLink : le parcours walk-in d'une borne tactile en salon
 (jalon **M7**, PRD §17, US-8.5 / #159). Conforme à
 **[ADR-0001](../docs/adr/0001-app-mobile-flutter.md)** (Flutter · Dart · **Android prioritaire**, iOS
 conservé). Un client se présente sans rendez-vous, s'identifie par téléphone, choisit une ou plusieurs
@@ -17,7 +17,7 @@ lib/
   domain/         # entités & règles métier (Dart pur)
   application/    # cas d'usage + ports
   adapters/
-    ui/kiosk/     # écrans Flutter du parcours borne (kiosk_app.dart → KioskApp)
+    ui/terminal/     # écrans Flutter du parcours borne (terminal_app.dart → TerminalApp)
     data/         # API backend (driven)
   main.dart       # composition root, point d'entrée unique
 ```
@@ -57,8 +57,8 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 flutter build apk --dart-define=API_BASE_URL=https://api.coiflink.example
 
 # Override de dev local uniquement (prévisualiser l'écran d'accueil sans activation) :
-# salon figé en dur, aucune route réservée au rôle KIOSK ne fonctionne (identification/ticket échouent).
-flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000 --dart-define=KIOSK_SALON_ID=<uuid>
+# salon figé en dur, aucune route réservée au rôle TERMINAL ne fonctionne (identification/ticket échouent).
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000 --dart-define=TERMINAL_SALON_ID=<uuid>
 ```
 
 | Action | Commande |
@@ -69,65 +69,65 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000 --dart-define=KIOSK_
 ## Activation (une seule fois) puis authentification silencieuse
 
 L'APK borne est **unique pour toutes les bornes** : il ne contient aucun secret ni identifiant de device.
-Au tout premier lancement, `KioskBootstrap` constate l'absence de credential stocké
-(`KioskCredentialStore.read()` renvoie `null`) et affiche `KioskActivationScreen` — un pavé numérique
+Au tout premier lancement, `TerminalBootstrap` constate l'absence de credential stocké
+(`TerminalCredentialStore.read()` renvoie `null`) et affiche `TerminalActivationScreen` — un pavé numérique
 interne (jamais le clavier natif) pour saisir le **code d'activation à 6 chiffres** remis par le gérant
-(lu sur la réponse de provisioning côté backend, `POST /salons/{id}/kiosk-devices`, hors périmètre de ce
+(lu sur la réponse de provisioning côté backend, `POST /salons/{id}/terminal-devices`, hors périmètre de ce
 paquet). Ce code s'échange **une seule fois** contre le credential longue durée de la borne
-(`KioskActivationGateway.activate`, `POST /auth/kiosk/activate`, route publique comme `/auth/kiosk/login`)
-puis se persiste localement (`SecureKioskCredentialStore`, Android Keystore / iOS Keychain via
+(`TerminalActivationGateway.activate`, `POST /auth/terminal/activate`, route publique comme `/auth/terminal/login`)
+puis se persiste localement (`SecureTerminalCredentialStore`, Android Keystore / iOS Keychain via
 `flutter_secure_storage`) — la borne ne redemandera plus jamais ce code, y compris après redémarrage.
 
 À chaque lancement suivant (credential déjà stocké), la borne s'authentifie **silencieusement**, sans
-interaction utilisateur : `KioskDeviceSession` échange le credential persisté contre un jeton via
-`POST /auth/kiosk/login`. Ce credential appartient au **terminal**, jamais à un client de passage ; il
+interaction utilisateur : `TerminalDeviceSession` échange le credential persisté contre un jeton via
+`POST /auth/terminal/login`. Ce credential appartient au **terminal**, jamais à un client de passage ; il
 n'existe **aucune notion de session personnelle** dans ce binaire (garantie structurelle : aucun écran de
 connexion, aucun formulaire de mot de passe visible du client).
 
 - Credential refusé (`401`, borne révoquée) → credential **effacé** localement, retour à
-  `KioskActivationScreen` (rien d'autre à réparer depuis l'écran : la borne doit être réactivée avec un
+  `TerminalActivationScreen` (rien d'autre à réparer depuis l'écran : la borne doit être réactivée avec un
   nouveau code).
-- Échec réseau/serveur → `KioskUnavailableScreen` (message neutre, bouton Réessayer) ; le credential
+- Échec réseau/serveur → `TerminalUnavailableScreen` (message neutre, bouton Réessayer) ; le credential
   stocké est **conservé** (il est peut-être toujours valide, c'est le serveur qui est momentanément
   indisponible).
 - Succès → le `salon_id` de la borne provient de la réponse du login (aucune valeur de salon compilée en
   dur) → écran d'accueil.
 
-Voir `adapters/ui/kiosk/kiosk_bootstrap.dart` (widget public, testable directement, machine à 4 états :
-chargement / activation / indisponible / prêt), `adapters/ui/kiosk/kiosk_activation_screen.dart` et
-`application/kiosk_device_session.dart`.
+Voir `adapters/ui/terminal/terminal_bootstrap.dart` (widget public, testable directement, machine à 4 états :
+chargement / activation / indisponible / prêt), `adapters/ui/terminal/terminal_activation_screen.dart` et
+`application/terminal_device_session.dart`.
 
-## Parcours borne (`lib/adapters/ui/kiosk/`)
+## Parcours borne (`lib/adapters/ui/terminal/`)
 
-`kiosk_app.dart` (composition root) → `kiosk_bootstrap.dart` (activation puis amorçage, ci-dessus) puis,
+`terminal_app.dart` (composition root) → `terminal_bootstrap.dart` (activation puis amorçage, ci-dessus) puis,
 huit écrans :
 
-1. **Accueil** (`kiosk_home_screen.dart`) — logo/nom du salon (repli sur
-   `assets/images/kiosk_logo_fallback.png`), CTA « Commencer ». Appui long caché sur le logo = geste de
-   sortie (`kiosk_exit_gate.dart`).
-2. **Identification par téléphone** (`kiosk_phone_identification_screen.dart` +
-   `kiosk_numeric_keypad.dart`, #156) — pavé numérique interne (jamais le clavier natif, §11.3).
+1. **Accueil** (`terminal_home_screen.dart`) — logo/nom du salon (repli sur
+   `assets/images/terminal_logo_fallback.png`), CTA « Commencer ». Appui long caché sur le logo = geste de
+   sortie (`terminal_exit_gate.dart`).
+2. **Identification par téléphone** (`terminal_phone_identification_screen.dart` +
+   `terminal_numeric_keypad.dart`, #156) — pavé numérique interne (jamais le clavier natif, §11.3).
    Fiche trouvée → affiche **le prénom seul** puis enchaîne **automatiquement** (aucune confirmation
    manuelle) ; fiche absente → création ; erreur réseau → réessai, **toujours en direct** (décision n°9).
-3. **Création de fiche** (`kiosk_create_customer_screen.dart`, #156) — prénom/nom/téléphone, **sans mot
+3. **Création de fiche** (`terminal_create_customer_screen.dart`, #156) — prénom/nom/téléphone, **sans mot
    de passe**.
-4. **Choix des prestations** (`kiosk_service_selection_screen.dart` + `kiosk_service_card.dart`, #158) —
+4. **Choix des prestations** (`terminal_service_selection_screen.dart` + `terminal_service_card.dart`, #158) —
    grille **2 colonnes fixes**, photo, sélection **multiple** (`service_ids` au pluriel, #157).
-5. **Vérification** (`kiosk_confirm_screen.dart`) — récapitulatif client + prestations avant tout appel
+5. **Vérification** (`terminal_confirm_screen.dart`) — récapitulatif client + prestations avant tout appel
    réseau ; « Confirmer » crée le ticket (`POST /salons/{id}/queue/tickets`, #157), « Modifier mon choix »
    revient au choix de prestations sans rien avoir créé.
-6. **Numéro de passage** (`kiosk_ticket_number_screen.dart`) — numéro géant, heure, attente estimée ;
+6. **Numéro de passage** (`terminal_ticket_number_screen.dart`) — numéro géant, heure, attente estimée ;
    écran de lecture pure, enchaîne seul vers l'impression après un court délai.
-7. **Impression** (`kiosk_print_screen.dart`, #160) — aperçu imprimable (`ticket_preview.dart`, bordure
+7. **Impression** (`terminal_print_screen.dart`, #160) — aperçu imprimable (`ticket_preview.dart`, bordure
    pointillée), séquence d'impression encadrée par le minuteur d'inactivité, message neutre par type
    d'échec (`PrinterNotConnected`/`OutOfPaper`/`WriteFailed`) — un échec d'impression **n'interrompt
    jamais** le parcours, le numéro reste affiché. « Terminer » revient à l'accueil.
 
-`kiosk_unavailable_screen.dart` couvre tout échec réseau bloquant (amorçage, catalogue) ;
-`kiosk_exit_gate.dart` pose le geste caché de sortie (PIN gérant, vérification non tranchée, §H — geste
+`terminal_unavailable_screen.dart` couvre tout échec réseau bloquant (amorçage, catalogue) ;
+`terminal_exit_gate.dart` pose le geste caché de sortie (PIN gérant, vérification non tranchée, §H — geste
 **inerte** tant que la vérification n'est pas prête).
 
-## Minuteur d'inactivité (`kiosk_inactivity_guard.dart`, décision n°7)
+## Minuteur d'inactivité (`terminal_inactivity_guard.dart`, décision n°7)
 
 Posé **une seule fois** via `MaterialApp.builder`, au-dessus du `Navigator` : 60 s sans interaction →
 retour à l'accueil (`popUntil(isFirst)`), remise à zéro sur **toute** interaction (`Listener` translucide,
@@ -137,13 +137,13 @@ saisie du PIN gérant (`pauseForModal`).
 
 ## Ports & adaptateurs (hexagonal, [ADR-0008](../docs/adr/0008-architecture-hexagonale.md))
 
-`application/ports/{kiosk_activation,kiosk_auth,kiosk_identity,kiosk_queue,salon_catalog,ticket_printer}_gateway.dart`
-+ `application/ports/kiosk_credential_store.dart`, implémentés respectivement par
-`adapters/data/http_{kiosk_activation,kiosk_auth,kiosk_identity,kiosk_queue,salon_catalog}_gateway.dart`,
+`application/ports/{terminal_activation,terminal_auth,terminal_identity,terminal_queue,salon_catalog,ticket_printer}_gateway.dart`
++ `application/ports/terminal_credential_store.dart`, implémentés respectivement par
+`adapters/data/http_{terminal_activation,terminal_auth,terminal_identity,terminal_queue,salon_catalog}_gateway.dart`,
 `adapters/data/noop_ticket_printer_gateway.dart` (place-tenant jusqu'à l'adaptateur ESC/POS de #160) et
-`adapters/data/secure_kiosk_credential_store.dart` (routes réservées au rôle **KIOSK**, en-tête
+`adapters/data/secure_terminal_credential_store.dart` (routes réservées au rôle **TERMINAL**, en-tête
 `Authorization: Bearer` du device, jamais un jeton personnel — retry unique après ré-authentification sur
-`401`, `adapters/data/kiosk_http_retry.dart`). `application/kiosk_device_session.dart` échange le
+`401`, `adapters/data/terminal_http_retry.dart`). `application/terminal_device_session.dart` échange le
 credential contre une session device et expose le `salon_id`.
 
 ## Garde-fous (§11)

@@ -14,14 +14,15 @@ Conformément à l'hexagonal (ADR-0008), le module ne connaît ni FastAPI ni
 SQLAlchemy. Les indicateurs viennent de **deux sources distinctes mais chacune
 autoritaire** :
 
-- **le planning** (`appointments` assignés — même source que #26/#27/#39) pour les
-  **prestations réalisées** (occurrences des RDV `COMPLETED`) et le **taux
-  d'annulation** (RDV `CANCELLED` / RDV assignés) : l'adapter sortant
-  (`appointment_repository.py::performance_by_hairdresser`) fait l'**agrégat en
-  base** (`GROUP BY hairdresser_id`) et renvoie des `HairdresserActivityCounts` ;
+- **la file d'attente** (`queue_tickets` assignés) pour les **prestations
+  réalisées** (occurrences des tickets `done`) et le **taux d'annulation** (tickets
+  `expired` / tickets assignés — équivalent walk-in de l'ancien RDV `CANCELLED`) :
+  l'adapter sortant (`queue_ticket_repository.py::performance_by_hairdresser`) fait
+  l'**agrégat en base** (`GROUP BY hairdresser_id`) et renvoie des
+  `HairdresserActivityCounts` ;
 - **la caisse** (net `cash_journal` — même source que #40/#34) pour le **CA
-  généré**, attribué au coiffeur via `payments.appointment_id →
-  appointments.hairdresser_id` (`cash_journal_repository.py::
+  généré**, attribué au coiffeur via `payments.queue_ticket_id →
+  queue_tickets.hairdresser_id` (`cash_journal_repository.py::
   net_revenue_by_hairdresser`).
 
 Le cas d'usage (`application/hairdresser_performance.py`) **fusionne** les deux
@@ -29,10 +30,10 @@ sources par `hairdresser_id` en `HairdresserActivity`, puis applique
 `rank_hairdresser_performance` ; l'adapter entrant (`adapters/inbound/stats.py`)
 projette le résultat en JSON.
 
-**« Réalisé » = RDV `COMPLETED`** (prestations & CA), en cohérence avec l'invariant
-§8.1 (`REVENUE_STATUSES == (COMPLETED,)`) et avec #41/#42. Le **taux d'annulation**
-compte les `CANCELLED` (numérateur) sur le total assigné (dénominateur) — statuts
-**décidés côté serveur**, jamais soumis par l'appelant.
+**« Réalisé » = ticket `done`** (prestations & CA), en cohérence avec l'invariant
+§8.1. Le **taux d'annulation** compte les tickets `expired` (numérateur) sur le
+total assigné (dénominateur) — statuts **décidés côté serveur**, jamais soumis par
+l'appelant.
 
 **Décimal, pas de flottant.** Le CA est un `Decimal` quantifié au centime
 (`NUMERIC(12,2)`) et le taux un `Decimal` quantifié à quatre décimales, transportés
@@ -65,16 +66,17 @@ _AMOUNT_QUANTUM = decimal.Decimal("0.01")
 
 @dataclass(frozen=True)
 class HairdresserActivityCounts:
-    """Compteurs bruts de **planning** d'un coiffeur au salon (US-6.5, #43).
+    """Compteurs bruts de **file d'attente** d'un coiffeur au salon (US-6.5, #43).
 
-    Produit par le dépôt (`GROUP BY hairdresser_id` sur `appointments`) : porte
+    Produit par le dépôt (`GROUP BY hairdresser_id` sur `queue_tickets`) : porte
     l'identité **d'affichage** de l'employé (`hairdresser_id` + `name`, jamais
-    téléphone/e-mail, §11.3) et les grandeurs **du planning** — `services_completed`
-    = occurrences de prestations réalisées (lignes `appointment_services` des RDV
-    `COMPLETED`) ; `cancelled_count` = RDV `CANCELLED` du coiffeur sur la période ;
-    `total_count` = **tous** les RDV assignés au coiffeur sur la période (tous
-    statuts). **Sans le CA** : le cas d'usage y adjoint le CA de la caisse (net
-    `cash_journal` attribué). Objet-valeur **immuable** et **sans PII**.
+    téléphone/e-mail, §11.3) et les grandeurs **de la file d'attente** —
+    `services_completed` = occurrences de prestations réalisées (lignes
+    `queue_ticket_services` des tickets `done`) ; `cancelled_count` = tickets
+    `expired` du coiffeur sur la période ; `total_count` = **tous** les tickets
+    assignés au coiffeur sur la période (tous statuts). **Sans le CA** : le cas
+    d'usage y adjoint le CA de la caisse (net `cash_journal` attribué). Objet-valeur
+    **immuable** et **sans PII**.
     """
 
     hairdresser_id: uuid.UUID
@@ -88,12 +90,12 @@ class HairdresserActivityCounts:
 class HairdresserActivity:
     """Agrégats bruts d'un coiffeur au salon sur une période (US-6.5, #43).
 
-    Fusion des deux sources par `hairdresser_id` (planning + caisse) :
-    `services_completed` = occurrences de prestations réalisées (RDV `COMPLETED`) ;
+    Fusion des deux sources par `hairdresser_id` (file d'attente + caisse) :
+    `services_completed` = occurrences de prestations réalisées (tickets `done`) ;
     `revenue` = CA net **attribué** (caisse, `0.00` si le coiffeur n'a aucun paiement
-    attribué sur la période) ; `cancelled_count` / `total_count` = RDV annulés / total
-    assignés. `Decimal` de bout en bout pour le montant, jamais de flottant. Objet-
-    valeur **immuable** et **sans PII** (nom d'affichage employé seul).
+    attribué sur la période) ; `cancelled_count` / `total_count` = tickets `expired` /
+    total assignés. `Decimal` de bout en bout pour le montant, jamais de flottant.
+    Objet-valeur **immuable** et **sans PII** (nom d'affichage employé seul).
     """
 
     hairdresser_id: uuid.UUID
@@ -143,9 +145,10 @@ class HairdresserPerformanceReport:
 def _cancellation_rate(cancelled_count: int, total_count: int) -> decimal.Decimal:
     """Taux d'annulation quantifié (`Decimal`), `0` si `total_count == 0` (pur).
 
-    Division **protégée** : un coiffeur sans aucun RDV assigné (impossible ici — la
-    liste dérive du planning — mais défensif) donne `Decimal("0.0000")` plutôt qu'un
-    `ZeroDivisionError`. Le calcul reste en `Decimal` (jamais un flottant).
+    Division **protégée** : un coiffeur sans aucun ticket assigné (impossible ici —
+    la liste dérive de la file d'attente — mais défensif) donne `Decimal("0.0000")`
+    plutôt qu'un `ZeroDivisionError`. Le calcul reste en `Decimal` (jamais un
+    flottant).
     """
 
     if total_count <= 0:

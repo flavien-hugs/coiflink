@@ -1,4 +1,4 @@
-# ADR-0041 : Rôle & authentification de la borne kiosque — cinquième rôle `KIOSK`, compte de service par salon, credential de device longue durée
+# ADR-0041 : Rôle & authentification de la borne terminal — cinquième rôle `TERMINAL`, compte de service par salon, credential de device longue durée
 
 - **Statut** : Accepté
 - **Date** : 2026-08-10
@@ -35,23 +35,23 @@ d'authentifier un terminal** :
 
 #155 comble ce gap : **une identité de terminal** — rôle dédié, credential de device longue durée
 provisionné par le gérant, portée figée sur **un** salon, permissions minimales — sur laquelle #156
-(recherche téléphone + fiche walk-in), #157 (ticket de passage) et #159 (mode kiosque de l'app) poseront
+(recherche téléphone + fiche walk-in), #157 (ticket de passage) et #159 (mode terminal de l'app) poseront
 leurs gardes **sans jamais** accorder `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK`.
 
 ## Décision
 
-### 1. Un cinquième rôle `KIOSK`, le device étant un **compte de service** dans `users`
+### 1. Un cinquième rôle `TERMINAL`, le device étant un **compte de service** dans `users`
 
 Deux options ont été évaluées :
 
-- **Option 1 (retenue)** — étendre l'énumération fermée `Role` d'un membre `KIOSK`, la borne étant un
-  compte de service `users` (`role = 'KIOSK'`) + un rattachement `salon_members`. La borne devient un
+- **Option 1 (retenue)** — étendre l'énumération fermée `Role` d'un membre `TERMINAL`, la borne étant un
+  compte de service `users` (`role = 'TERMINAL'`) + un rattachement `salon_members`. La borne devient un
   `Principal` ordinaire : **toute** la chaîne existante est réutilisée sans duplication — émission JWT,
   garde globale, relecture base (`get_current_principal`), matrice `ROLE_PERMISSIONS`,
   `require_permission`, `require_salon_scope`, invariant `unprotected_routes`, audit
   (`actor_user_id` FK `users`).
 - **Option 2 (écartée)** — un mécanisme d'authentification de device entièrement parallèle (table
-  `kiosk_devices` autonome, clé API, famille de gardes `require_kiosk_device` distincte). Écartée car
+  `terminal_devices` autonome, clé API, famille de gardes `require_terminal_device` distincte). Écartée car
   chaque brique de sécurité **centralisée et testée** du dépôt devrait être **dupliquée puis re-prouvée**
   (marquage `_PRINCIPAL_GUARD_ATTR` d'une seconde famille de gardes sous peine de rendre
   `unprotected_routes` aveugle ; droits hors `ROLE_PERMISSIONS`, en contradiction avec « l'unique source
@@ -59,16 +59,16 @@ Deux options ont été évaluées :
   Le risque de divergence de deux systèmes d'autorisation parallèles dépasse le gain de pureté du modèle.
 
 Le compte de service `users` reste un **détail d'implémentation encapsulé** : le port
-`KioskDeviceRepository` cache que la borne vit dans `users` + `salon_members`, ce qui permettrait de
+`TerminalDeviceRepository` cache que la borne vit dans `users` + `salon_members`, ce qui permettrait de
 migrer plus tard vers une table propre sans toucher aux gardes ni aux cas d'usage.
 
-### 2. Permissions minimales et dédiées — `KIOSK` détient **exactement** trois droits
+### 2. Permissions minimales et dédiées — `TERMINAL` détient **exactement** trois droits
 
-`Permission` gagne quatre membres ; `ROLE_PERMISSIONS[Role.KIOSK]` détient **exactement**
-`CUSTOMER_LOOKUP_KIOSK` (recherche fiche par téléphone, restreinte au salon — #156),
+`Permission` gagne quatre membres ; `ROLE_PERMISSIONS[Role.TERMINAL]` détient **exactement**
+`CUSTOMER_LOOKUP_TERMINAL` (recherche fiche par téléphone, restreinte au salon — #156),
 `CUSTOMER_CREATE_WALKIN` (création de fiche nom/prénom/téléphone sans compte — #156) et
 `QUEUE_TICKET_CREATE` (ticket de passage — #157). **Ni** `CUSTOMER_MANAGE`, **ni** `APPOINTMENT_BOOK`,
-**ni** aucune lecture gérant. Le gérant gagne la seule permission `KIOSK_PROVISION` (aucun retrait,
+**ni** aucune lecture gérant. Le gérant gagne la seule permission `TERMINAL_PROVISION` (aucun retrait,
 aucun élargissement d'un droit existant). Ces deux permissions consommatrices restent inertes tant que
 #156/#157 ne posent pas leurs routes — comme `CUSTOMER_MANAGE` l'était avant #28.
 
@@ -79,15 +79,15 @@ incluses) — refusé au titre du moindre privilège.
 ### 3. Portée mono-salon lue en base, jamais d'un paramètre de requête
 
 La portée du device est son rattachement `salon_members` : `SqlSalonScopeRepository.salon_ids_for` et
-`can_access_salon` traitent `KIOSK` **exactement** comme `HAIRDRESSER` (lecture `salon_members` `ACTIVE`).
+`can_access_salon` traitent `TERMINAL` **exactement** comme `HAIRDRESSER` (lecture `salon_members` `ACTIVE`).
 Le `salon_id` est figé **une fois**, au provisioning ; aucune sélection de salon à l'écran de la borne.
 Un salon multi-bornes est supporté (plusieurs devices) ; une borne multi-salons ne l'est pas (assumé).
 
 ### 4. Identité du device : deux lignes atomiques + sentinelle `phone`
 
-Un device provisionné = une ligne `users` (`role = 'KIOSK'`, `status = 'ACTIVE'`, `full_name` = libellé,
+Un device provisionné = une ligne `users` (`role = 'TERMINAL'`, `status = 'ACTIVE'`, `full_name` = libellé,
 `password_hash` = argon2id(secret), `email = NULL`) + une ligne `salon_members`
-(`role = 'KIOSK'`, `status = 'ACTIVE'`), créées dans la **même `Session`** (patron `CreateEmployee`).
+(`role = 'TERMINAL'`, `status = 'ACTIVE'`), créées dans la **même `Session`** (patron `CreateEmployee`).
 
 `users.phone` est `NOT NULL UNIQUE` — un device n'a pas de téléphone. **Décision (Open Question tranchée)** :
 V1 utilise une **valeur sentinelle** `phone = id.hex` (32 caractères hexa, tient dans `String(32)`,
@@ -102,7 +102,7 @@ partiel, patron `uq_users_email`) reste un **suivi** documenté (plus propre, pl
 La borne détient durablement `(device_id, secret)`. Le secret est **généré** au provisioning
 (`secrets.token_urlsafe(32)`, 256 bits), affiché **une seule fois** (réponse `201`), stocké **uniquement**
 en argon2id, jamais journalisé, jamais relisible. Il s'échange contre une paire JWT **standard et
-courte** (accès 15 min, refresh 30 j — TTL applicatifs inchangés) via `POST /auth/kiosk/login`, route
+courte** (accès 15 min, refresh 30 j — TTL applicatifs inchangés) via `POST /auth/terminal/login`, route
 **publique-listée** (endpoint d'authentification), rate-limitée par `device_id`, réponse `401`
 **générique constante** pour tout échec (device inconnu, secret faux, device révoqué — aucun oracle).
 La réponse porte le `salon_id` du device (un APK unique pour toutes les bornes, #159 s'aligne).
@@ -113,16 +113,16 @@ révocable + jetons courts + relecture du statut par requête donne une **révoc
 
 ### 6. Provisioning gérant + révocation logique à effet immédiat
 
-Trois routes sous `POST/GET/DELETE /salons/{salon_id}/kiosk-devices`, gardées par `require_salon_scope`
-+ `require_permission(KIOSK_PROVISION)` — **jamais** publiques. La révocation (`DELETE`) est **logique** :
+Trois routes sous `POST/GET/DELETE /salons/{salon_id}/terminal-devices`, gardées par `require_salon_scope`
++ `require_permission(TERMINAL_PROVISION)` — **jamais** publiques. La révocation (`DELETE`) est **logique** :
 `users.status → SUSPENDED` (coupe l'accès à la requête suivante via `get_current_principal`) **et**
 `salon_members.status → INACTIVE` (vide la portée) — jamais une suppression physique (traçabilité).
-Provisioning et révocation sont **journalisés** (`KIOSK_DEVICE_PROVISIONED` / `KIOSK_DEVICE_REVOKED`,
+Provisioning et révocation sont **journalisés** (`TERMINAL_DEVICE_PROVISIONED` / `TERMINAL_DEVICE_REVOKED`,
 `metadata = {}` — ni secret, ni condensat, ni libellé).
 
 ### 7. Migration `0013` — aucune table, aucune colonne
 
-Régénération des `CHECK` `ck_users_role` et `ck_salon_members_role` pour accepter `'KIOSK'` (patron exact
+Régénération des `CHECK` `ck_users_role` et `ck_salon_members_role` pour accepter `'TERMINAL'` (patron exact
 de `0007`, downgrade symétrique, round-trip CI). C'est l'argument de poids de l'Option 1 : la borne
 réutilise le schéma existant.
 
@@ -132,12 +132,12 @@ réutilise le schéma existant.
   recherche téléphone restreinte, création de ticket walk-in) sans jamais obtenir `CUSTOMER_MANAGE` ni
   `APPOINTMENT_BOOK` ; le refus est **figé** par la matrice fermée, les jeux exacts
   (`test_domain_permissions.py`) et la matrice négative rôle × route (`test_security_authz_matrix.py`,
-  qui exerce mécaniquement `KIOSK` en `403`). Rayon d'explosion d'un credential volé borné à **un** salon.
+  qui exerce mécaniquement `TERMINAL` en `403`). Rayon d'explosion d'un credential volé borné à **un** salon.
 - **Positif.** Zéro duplication du socle de sécurité : émission JWT, deny-by-default, relecture base,
   audit et révocation immédiate sont réutilisés tels quels.
 - **Compromis assumé.** `users.phone = id.hex` est une valeur non-téléphone dans une colonne nommée
   `phone` (dette lisible, innocuité démontrée §4) — bascule `phone` nullable en suivi.
-- **Compromis assumé.** Deux des trois permissions `KIOSK` sont inertes jusqu'à #156/#157 (droit sans
+- **Compromis assumé.** Deux des trois permissions `TERMINAL` sont inertes jusqu'à #156/#157 (droit sans
   route = droit inerte, risque faible).
 - **Ce que #155 ne mitige pas (documenté).** Compromission physique du terminal (verrouillage Android +
   PIN gérant — #159/#161) ; **rotation périodique** du secret (un secret compromis se révoque et se

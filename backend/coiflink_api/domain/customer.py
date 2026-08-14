@@ -182,7 +182,7 @@ class Customer:
 
 
 # --------------------------------------------------------------------------- #
-# Borne kiosque — identité walk-in minimale (US-8.2, #156).
+# Borne terminal — identité walk-in minimale (US-8.2, #156).
 # --------------------------------------------------------------------------- #
 def walk_in_first_name(full_name: str) -> str:
     """Retourne le **prénom** (premier token) d'un `full_name` déjà validé.
@@ -203,7 +203,7 @@ def walk_in_first_name(full_name: str) -> str:
 
 @dataclass(frozen=True)
 class WalkInIdentity:
-    """Projection **minimale** d'une fiche franchissant la frontière HTTP kiosque.
+    """Projection **minimale** d'une fiche franchissant la frontière HTTP terminal.
 
     La **seule** donnée exposée à la borne : `customer_id` + `first_name`. Ni
     téléphone (même celui qui vient d'être saisi), ni nom complet, ni genre, ni
@@ -219,7 +219,7 @@ class WalkInIdentity:
 class WalkInCustomerCommand:
     """Champs saisis à la borne pour créer une fiche walk-in (US-8.2, #156).
 
-    Les **trois** champs de l'acceptation, tous **requis** au kiosque (contrairement
+    Les **trois** champs de l'acceptation, tous **requis** au terminal (contrairement
     au flux gérant #28 où le téléphone est optionnel : à la borne, le téléphone est
     la **clé d'identification** — une fiche sans numéro serait introuvable à la
     visite suivante). Aucun `gender`, `notes`, mot de passe ni `user_id` :

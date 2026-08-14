@@ -31,7 +31,7 @@ from coiflink_api.application.ports.salon_catalog_repository import (
 from coiflink_api.domain.employee import Employee
 from coiflink_api.domain.errors import SalonNotFound
 from coiflink_api.domain.salon import Salon
-from coiflink_api.domain.service import Service
+from coiflink_api.domain.service import Service, ServicePhoto
 
 
 @dataclass(frozen=True)
@@ -119,14 +119,26 @@ class SearchSalons:
 # Fiche salon publique (détail) — US-2.4, #19.
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
+class PublicServicePhotoView:
+    """Photo résolue de la galerie d'une prestation : clé d'objet remplacée par
+    une URL signée (miroir `PublicSalonPhotoView`)."""
+
+    id: object
+    url: str | None
+
+
+@dataclass(frozen=True)
 class PublicServiceView:
     """Prestation **de vitrine** : jamais `is_active`, `salon_id` ni timestamps.
 
     Seules les prestations `ACTIVE` remontent (filtre au dépôt) ; `salon_id` est
     déjà celui de la fiche — les exposer serait redondant ou révélerait l'état de
     gestion (spec §A.4). `price` reste un `Decimal` (jamais un flottant).
-    `image_url` est une **URL signée** de lecture (miroir `logo_url`, ADR-0005) ou
-    `None` (aucune illustration / stockage non configuré), jamais une clé d'objet.
+    `photos` est la galerie complète, ordonnée (position croissante, index 0 =
+    couverture) — le client (borne kiosque) parcourt toutes les photos, pas
+    seulement la couverture. `image_url` reste un champ de **commodité** dérivé
+    de `photos[0].url` (miroir `logo_url`, ADR-0005), `None` si aucune photo ou
+    stockage non configuré — jamais une clé d'objet brute.
     """
 
     id: object
@@ -136,6 +148,7 @@ class PublicServiceView:
     duration_minutes: int
     category: str | None
     image_url: str | None
+    photos: tuple[PublicServicePhotoView, ...]
 
 
 @dataclass(frozen=True)
@@ -221,6 +234,11 @@ class GetPublicSalon:
         services = self._repository.list_active_services(salon_id)
         photos = self._repository.list_photos(salon_id)
         hairdressers = self._repository.list_active_hairdressers(salon_id)
+        # Une seule requête pour TOUTES les prestations du salon (anti N+1),
+        # puis regroupement en mémoire par `service_id`.
+        service_photos_by_service_id: dict[uuid.UUID, list[ServicePhoto]] = {}
+        for photo in self._repository.list_service_photos(salon_id):
+            service_photos_by_service_id.setdefault(photo.service_id, []).append(photo)
         return PublicSalonDetailView(
             id=salon.id,
             name=salon.name,
@@ -237,14 +255,22 @@ class GetPublicSalon:
                 for photo in photos
             ),
             opening_hours=salon.opening_hours,
-            services=tuple(self._to_service_view(service) for service in services),
+            services=tuple(
+                self._to_service_view(
+                    service, tuple(service_photos_by_service_id.get(service.id, ()))
+                )
+                for service in services
+            ),
             hairdressers=tuple(
                 self._to_hairdresser_view(hairdresser) for hairdresser in hairdressers
             ),
             is_bookable=salon.is_bookable,
         )
 
-    def _to_service_view(self, service: Service) -> PublicServiceView:
+    def _to_service_view(
+        self, service: Service, photos: tuple[ServicePhoto, ...]
+    ) -> PublicServiceView:
+        cover = photos[0] if photos else None
         return PublicServiceView(
             id=service.id,
             name=service.name,
@@ -252,7 +278,11 @@ class GetPublicSalon:
             price=service.price,
             duration_minutes=service.duration_minutes,
             category=service.category,
-            image_url=self._sign(service.image_object_key),
+            image_url=self._sign(cover.object_key) if cover is not None else None,
+            photos=tuple(
+                PublicServicePhotoView(id=photo.id, url=self._sign(photo.object_key))
+                for photo in photos
+            ),
         )
 
     @staticmethod
@@ -276,6 +306,7 @@ __all__ = [
     "PublicSalonPage",
     "SearchSalons",
     "PublicServiceView",
+    "PublicServicePhotoView",
     "PublicHairdresserView",
     "PublicSalonPhotoView",
     "PublicSalonDetailView",

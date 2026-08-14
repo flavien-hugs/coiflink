@@ -2,7 +2,7 @@
 
 > Spécification de planification pour l'issue GitHub **#156 — US-8.2 : Identification téléphone &
 > création client walk-in** (`feature` · Must · Effort M · PRD §17 « Borne Intelligente d'Accueil »,
-> jalon **M7 — Borne client (kiosque libre-service)**, Épic 8).
+> jalon **M7 — Borne client (terminal libre-service)**, Épic 8).
 > **Dépend de : #155 (livrée), #28 (livrée).** **Cette spec ne produit pas de code** : elle décrit
 > l'approche à implémenter dans une phase ultérieure.
 >
@@ -12,7 +12,7 @@
 > **Aucune signature IA** dans le code, les commits ou la PR.
 >
 > **Note de révision (fondée sur lecture du code livré, commit `b9c5388`).** #155 (US-8.1) est
-> désormais **livrée** — pas seulement spécifiée. Le socle qu'elle apporte (rôle `KIOSK`,
+> désormais **livrée** — pas seulement spécifiée. Le socle qu'elle apporte (rôle `TERMINAL`,
 > permissions, compte de service device, portée salon, login device) **résout la plupart des
 > risques que la version précédente de cette spec listait comme ouverts** (coordination de la
 > matrice de permissions, garde de portée dédiée, acteur d'audit d'un device). La présente version
@@ -24,7 +24,7 @@
 Le jalon M7 promeut le parcours « client sans rendez-vous » (PRD §17) au rang de fonctionnalité
 livrable. Dans ce parcours, la borne doit répondre à une question avant toute délivrance de ticket :
 **qui se présente ?** L'issue #156 l'exprime ainsi : un nouveau `find_by_phone` (port + repository +
-endpoint) sur `CustomerProfile`, réservé au rôle `KIOSK`, **sans jamais interroger `users` par
+endpoint) sur `CustomerProfile`, réservé au rôle `TERMINAL`, **sans jamais interroger `users` par
 téléphone** (préserve l'anti-oracle ADR-0026), et une ouverture ciblée de la création de fiche
 client à ce même rôle. Critère d'acceptation : la borne retrouve une fiche existante par téléphone
 (salon de la borne uniquement) et n'affiche que le **prénom** du client ; si absente, crée une fiche
@@ -32,28 +32,28 @@ nom/prénom/téléphone **sans mot de passe** ; isolation par salon respectée (
 
 État du dépôt, vérifié par lecture directe du code livré :
 
-- **Le socle borne (#155) est en place.** `Role.KIOSK` existe (`domain/enums.py:48`) ; la borne est
-  un **compte de service** matérialisé par une ligne `users` (`role = 'KIOSK'`) + un rattachement
-  `salon_members` `ACTIVE` (ADR-0041 §4, `application/kiosk_devices.py`). Elle s'authentifie via
-  `POST /auth/kiosk/login` (route publique-listée, `security.py:119`) et obtient une paire JWT courte
-  au rôle `KIOSK` portant son `salon_id` (`application/kiosk_authentication.py`). Elle traverse
+- **Le socle borne (#155) est en place.** `Role.TERMINAL` existe (`domain/enums.py:48`) ; la borne est
+  un **compte de service** matérialisé par une ligne `users` (`role = 'TERMINAL'`) + un rattachement
+  `salon_members` `ACTIVE` (ADR-0041 §4, `application/terminal_devices.py`). Elle s'authentifie via
+  `POST /auth/terminal/login` (route publique-listée, `security.py:119`) et obtient une paire JWT courte
+  au rôle `TERMINAL` portant son `salon_id` (`application/terminal_authentication.py`). Elle traverse
   ensuite **toute la chaîne d'autorisation existante comme un `Principal` ordinaire**
   (`get_current_principal`, `security.py:390`).
-- **Les deux permissions dont #156 a besoin existent déjà et sont détenues par `KIOSK` seul.**
-  `Permission.CUSTOMER_LOOKUP_KIOSK` et `Permission.CUSTOMER_CREATE_WALKIN`
-  (`domain/permissions.py:77-78`) sont ajoutées par #155 et attribuées à `ROLE_PERMISSIONS[Role.KIOSK]`
-  (`permissions.py:150-156`), qui détient **exactement** `{CUSTOMER_LOOKUP_KIOSK,
+- **Les deux permissions dont #156 a besoin existent déjà et sont détenues par `TERMINAL` seul.**
+  `Permission.CUSTOMER_LOOKUP_TERMINAL` et `Permission.CUSTOMER_CREATE_WALKIN`
+  (`domain/permissions.py:77-78`) sont ajoutées par #155 et attribuées à `ROLE_PERMISSIONS[Role.TERMINAL]`
+  (`permissions.py:150-156`), qui détient **exactement** `{CUSTOMER_LOOKUP_TERMINAL,
   CUSTOMER_CREATE_WALKIN, QUEUE_TICKET_CREATE}` — **jamais** `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK`.
   **Conséquence majeure : #156 ne modifie pas `domain/permissions.py`.** La coordination de matrice
   que l'ancienne spec traitait comme un risque bloquant est **close**.
-- **La garde de portée salon dont #156 a besoin existe déjà et couvre `KIOSK`.**
+- **La garde de portée salon dont #156 a besoin existe déjà et couvre `TERMINAL`.**
   `require_salon_scope` (`security.py:488`) résout la portée via `AccessPolicy.require_salon` →
-  `can_access_salon`, qui traite `KIOSK` **exactement** comme `HAIRDRESSER`
+  `can_access_salon`, qui traite `TERMINAL` **exactement** comme `HAIRDRESSER`
   (`domain/access.py:98-103`) ; `SqlSalonScopeRepository.salon_ids_for` lit le rattachement
-  `salon_members` `ACTIVE` pour `KIOSK` (`salon_scope_repository.py:46-53`). **#156 réutilise donc la
+  `salon_members` `ACTIVE` pour `TERMINAL` (`salon_scope_repository.py:46-53`). **#156 réutilise donc la
   garde standard `require_salon_scope`** — aucune « garde de portée device→salon » dédiée n'est à
   écrire (l'ancienne spec en supposait une, livrée par #155 ; en réalité c'est la garde générique).
-  Le router de provisioning livré `adapters/inbound/kiosk_devices.py:168-171` en est le patron exact
+  Le router de provisioning livré `adapters/inbound/terminal_devices.py:168-171` en est le patron exact
   (`require_salon_scope` + `require_permission(...)`).
 - **L'acteur d'audit d'un device est résolu.** Le device étant une ligne `users`,
   `AuditEntry.actor_user_id` (`uuid.UUID` NOT NULL, FK `users.id` `RESTRICT`, `models.py:715,731`)
@@ -73,7 +73,7 @@ nom/prénom/téléphone **sans mot de passe** ; isolation par salon respectée (
   `POST /salons/{salon_id}/customers` (`adapters/inbound/customers.py:436-484`) exige
   `require_salon_scope` **et** `require_permission(Permission.CUSTOMER_MANAGE)`
   (`customers.py:453-456`), détenue par le **seul** `MANAGER` (`permissions.py:136`). #156 ouvre une
-  **route sœur dédiée** au rôle `KIOSK`, sans jamais élargir `CUSTOMER_MANAGE`.
+  **route sœur dédiée** au rôle `TERMINAL`, sans jamais élargir `CUSTOMER_MANAGE`.
 - **L'anti-oracle ADR-0026 est une règle documentée dans le code.**
   `application/customers.py:21-24` : le cas d'usage n'interroge **jamais** la table `users` par
   téléphone — ce serait offrir un **oracle d'existence de compte** (§11.1/§11.3). Le `find_by_phone`
@@ -93,8 +93,8 @@ nom/prénom/téléphone **sans mot de passe** ; isolation par salon respectée (
 - **Un limiteur anti-bruteforce générique et réutilisable existe.** Le port `LoginRateLimiter`
   (`application/ports/login_rate_limiter.py`) et l'adapter fenêtre glissante `InMemoryLoginRateLimiter`
   (`adapters/outbound/security/login_rate_limiter_memory.py`, seuils/horloge injectables) sont déjà
-  **réutilisés par #155** pour `/auth/kiosk/login` : `main`/`auth.py` monte un **second** singleton
-  `app.state.kiosk_login_rate_limiter` (`auth.py:467-485`), clé `device_id|ip`, mapping
+  **réutilisés par #155** pour `/auth/terminal/login` : `main`/`auth.py` monte un **second** singleton
+  `app.state.terminal_login_rate_limiter` (`auth.py:467-485`), clé `device_id|ip`, mapping
   `TooManyLoginAttempts → 429 + Retry-After` (`auth.py:538-540`), IP extraite par `_client_ip`
   (`auth.py:356`). #156 réutilise **le même** port et le même adapter (voir §D).
 - **Le RBAC est deny-by-default et mécaniquement vérifié.** `require_authenticated` est une
@@ -116,7 +116,7 @@ nom/prénom/téléphone **sans mot de passe** ; isolation par salon respectée (
   le fixe.
 
 Le gap que #156 comble : **(1)** un `find_by_phone` salon-scopé sur le port `CustomerRepository` et
-son implémentation SQL ; **(2)** deux endpoints dédiés au rôle `KIOSK` — recherche par téléphone à
+son implémentation SQL ; **(2)** deux endpoints dédiés au rôle `TERMINAL` — recherche par téléphone à
 réponse **minimale** (prénom seul) et création de fiche walk-in sans mot de passe — en **réutilisant**
 les permissions, la garde de portée, l'audit et le limiteur **déjà livrés**, sans jamais élargir
 `CUSTOMER_MANAGE` ni toucher la table `users`.
@@ -129,11 +129,11 @@ les permissions, la garde de portée, l'audit et le limiteur **déjà livrés**,
   filtre `(salon_id, phone)` **inconditionnel** — jamais de recherche cross-salon, une fiche d'un
   autre salon est **indiscernable d'une fiche inexistante** (miroir des invariants du port,
   `customer_repository.py:8-12`).
-- **Recherche kiosque à exposition minimale.** Nouvel endpoint réservé au rôle `KIOSK` : soumission
+- **Recherche terminal à exposition minimale.** Nouvel endpoint réservé au rôle `TERMINAL` : soumission
   du téléphone en **corps de requête** (jamais en query string — pas de PII dans les URL/logs
   d'accès), réponse limitée à `{customer_id, first_name}` — **jamais** le nom complet, le téléphone,
   le genre, les notes ni les compteurs de visites.
-- **Création de fiche walk-in depuis la borne, sans mot de passe.** Nouvel endpoint `KIOSK` créant
+- **Création de fiche walk-in depuis la borne, sans mot de passe.** Nouvel endpoint `TERMINAL` créant
   une `CustomerProfile` à partir de **prénom + nom + téléphone** uniquement (`user_id = NULL`, aucun
   compte, aucun mot de passe) — réutilise la validation domaine de #28 (`validate_customer_name`,
   `normalize_phone`) et l'unicité `(salon_id, phone)` existante.
@@ -145,13 +145,13 @@ les permissions, la garde de portée, l'audit et le limiteur **déjà livrés**,
   limitation de débit des tentatives par device/IP (réutilise `LoginRateLimiter` +
   `InMemoryLoginRateLimiter`), messages d'erreur neutres, journalisation applicative **sans aucun
   numéro soumis**.
-- **Isolation §11.2 en profondeur.** `require_salon_scope` (existant, couvre `KIOSK`) sur chaque
+- **Isolation §11.2 en profondeur.** `require_salon_scope` (existant, couvre `TERMINAL`) sur chaque
   route **et** refiltre `salon_id` en SQL dans le dépôt (défense en profondeur, patron existant du
   module clients).
 - **Aucun élargissement des rôles existants ni de la matrice.** `CUSTOMER_MANAGE` reste MANAGER-seul ;
-  les nouvelles routes portent les permissions `KIOSK` **déjà** dédiées et minimales (livrées par
+  les nouvelles routes portent les permissions `TERMINAL` **déjà** dédiées et minimales (livrées par
   #155) ; tests RBAC négatifs ajoutés (un JWT `CLIENT`/`MANAGER`/`HAIRDRESSER`/`ADMIN` est refusé sur
-  les routes kiosque, un credential `KIOSK` reste refusé sur les routes gérant et la réservation).
+  les routes terminal, un credential `TERMINAL` reste refusé sur les routes gérant et la réservation).
 - **Aucune migration de schéma.** La table `customer_profiles`, ses index et sa validation couvrent
   déjà le besoin — #156 est purement additif côté code.
 
@@ -169,7 +169,7 @@ M7 :
 
 Hors périmètre de #156 en particulier :
 
-- **Le rôle `KIOSK`, son credential device, sa garde de portée, ses permissions et son provisioning**
+- **Le rôle `TERMINAL`, son credential device, sa garde de portée, ses permissions et son provisioning**
   sont **livrés** par #155 (ADR-0041) : #156 **consomme** ces briques sans les réimplémenter ni les
   modifier.
 - **Le ticket de passage et la file d'attente walk-in** (#157, non livrée) : #156 s'arrête à
@@ -197,24 +197,24 @@ Hors périmètre de #156 en particulier :
 
 ### Backend — socle borne livré par #155 (ADR-0041), que #156 consomme
 
-- **Rôle & permissions** : `Role.KIOSK` (`domain/enums.py:43-48`) ; `Permission.CUSTOMER_LOOKUP_KIOSK`
+- **Rôle & permissions** : `Role.TERMINAL` (`domain/enums.py:43-48`) ; `Permission.CUSTOMER_LOOKUP_TERMINAL`
   / `CUSTOMER_CREATE_WALKIN` / `QUEUE_TICKET_CREATE` (`domain/permissions.py:77-79`) ;
-  `ROLE_PERMISSIONS[Role.KIOSK]` = exactement ces trois (150-156). Matrice figée par
+  `ROLE_PERMISSIONS[Role.TERMINAL]` = exactement ces trois (150-156). Matrice figée par
   `tests/test_domain_permissions.py` (déjà mise à jour par #155).
 - **Portée salon** : `AccessPolicy.require_salon` (`application/authorization.py:68-79`) →
-  `can_access_salon` (`domain/access.py:81-104`, `KIOSK` traité comme `HAIRDRESSER`) →
+  `can_access_salon` (`domain/access.py:81-104`, `TERMINAL` traité comme `HAIRDRESSER`) →
   `SqlSalonScopeRepository.salon_ids_for` (`salon_scope_repository.py:41-59`, lecture `salon_members`
   `ACTIVE`). La garde HTTP `require_salon_scope` (`security.py:488-510`) est réutilisable telle
   quelle.
 - **Principal device** : `get_current_principal` (`security.py:390-421`) relit le compte en base —
   rôle et statut frais ; une révocation (`users.status → SUSPENDED`, `salon_members.status →
   INACTIVE`) coupe l'accès **à la requête suivante**.
-- **Router de provisioning (patron de garde)** : `adapters/inbound/kiosk_devices.py` — chaque route
+- **Router de provisioning (patron de garde)** : `adapters/inbound/terminal_devices.py` — chaque route
   déclare `require_salon_scope` + `require_permission(...)`, schémas Pydantic sans champ privilégié,
   `salon_id` lu du chemin (anti-élévation). C'est le gabarit exact des routes de #156.
-- **Login device** : `POST /auth/kiosk/login` (`adapters/inbound/auth.py:508-541`,
-  `application/kiosk_authentication.py`) — publique-listée, rate-limitée par
-  `app.state.kiosk_login_rate_limiter`, `401` générique. Modèle de réutilisation du limiteur.
+- **Login device** : `POST /auth/terminal/login` (`adapters/inbound/auth.py:508-541`,
+  `application/terminal_authentication.py`) — publique-listée, rate-limitée par
+  `app.state.terminal_login_rate_limiter`, `401` générique. Modèle de réutilisation du limiteur.
 
 ### Backend — module clients (#28/#32/#144), la fondation directe
 
@@ -244,7 +244,7 @@ Hors périmètre de #156 en particulier :
   d'oracle.
 - `application/ports/login_rate_limiter.py` (`check`/`record_failure`/`reset`, clé opaque) +
   `adapters/outbound/security/login_rate_limiter_memory.py` (fenêtre glissante, verrou, horloge
-  injectable) — **déjà réutilisés** par le login kiosque de #155. Erreur `TooManyLoginAttempts`
+  injectable) — **déjà réutilisés** par le login terminal de #155. Erreur `TooManyLoginAttempts`
   (`domain/errors.py:555-564`, `retry_after`) → `429` + `Retry-After`.
 - **Journal d'audit** : `CUSTOMER_CREATED` (`domain/audit.py:87`), `ENTITY_TYPE_CUSTOMER` (37) ;
   `actor_user_id` NOT NULL FK `users.id` (`models.py:715,731`) — satisfait par `principal.id` du
@@ -299,26 +299,26 @@ Dans `domain/customer.py` (pur, aucune dépendance) :
   garantie exacte pour les fiches **créées par la borne** (composition contrôlée, ci-dessous) et
   assumée heuristique pour les fiches historiques saisies par le gérant (voir *Risks*).
 - **`@dataclass(frozen=True) WalkInIdentity`** : `customer_id: uuid.UUID`, `first_name: str` — la
-  **seule** projection qui franchit la frontière HTTP kiosque. Ni téléphone, ni nom complet, ni
+  **seule** projection qui franchit la frontière HTTP terminal. Ni téléphone, ni nom complet, ni
   genre, ni notes, ni compteurs : l'entité `Customer` complète ne sort **jamais** vers la borne.
 - **`@dataclass(frozen=True) WalkInCustomerCommand`** : `first_name: str`, `last_name: str`,
-  `phone: str` — les trois champs de l'acceptation, tous **requis** au kiosque. Validation :
+  `phone: str` — les trois champs de l'acceptation, tous **requis** au terminal. Validation :
   1. `first_name` et `last_name` : trim, non vides (réutilise la mécanique de
      `validate_customer_name` — erreur `InvalidCustomerName`, messages neutres) ;
   2. composition **ordonnée** `full_name = f"{first_name} {last_name}"` puis
      `validate_customer_name(full_name)` (borne ≤ 255 respectée sur le résultat composé) — l'ordre
      « Prénom Nom » garantit `walk_in_first_name(full_name) == first_name` saisi ;
   3. `phone` : **requis** (contrairement au flux gérant #28 où il est optionnel) — c'est la clé
-     d'identification de la borne, une fiche kiosque sans téléphone serait introuvable à la prochaine
+     d'identification de la borne, une fiche terminal sans téléphone serait introuvable à la prochaine
      visite. Normalisation par `normalize_phone` (`domain/phone.py:36`) **directement** (sémantique
      « requis » : vide → `InvalidPhone`), pas par le wrapper optionnel `normalize_customer_phone`. La
      colonne reste nullable — aucune migration.
 
-**Aucune nouvelle erreur de domaine.** L'ancienne spec proposait un `TooManyKioskAttempts` : la
+**Aucune nouvelle erreur de domaine.** L'ancienne spec proposait un `TooManyTerminalAttempts` : la
 présente version **réutilise `TooManyLoginAttempts`** (§D), déjà mappée en `429 + Retry-After` et
-déjà employée par le login kiosque de #155 — un type d'erreur de moins à introduire et à mapper.
+déjà employée par le login terminal de #155 — un type d'erreur de moins à introduire et à mapper.
 
-### (C) Cas d'usage — `application/kiosk_customers.py` (nouveau module)
+### (C) Cas d'usage — `application/terminal_customers.py` (nouveau module)
 
 Module applicatif dédié (les cas d'usage gérant de `application/customers.py` restent inchangés),
 dépendant **uniquement** des ports `CustomerRepository`, `AuditLog` et `LoginRateLimiter` — et
@@ -354,8 +354,8 @@ exécutable de l'anti-oracle (docstring de module explicite, comme `application/
 ### (D) Limitation de débit — réutilisation directe du limiteur existant
 
 **Pas de nouveau port ni de nouvel adapter.** #156 réutilise le port `LoginRateLimiter` et l'adapter
-`InMemoryLoginRateLimiter` **exactement comme #155 l'a fait pour `/auth/kiosk/login`** : un
-**singleton dédié** est monté sur `app.state` (proposition : `kiosk_lookup_rate_limiter`) avec des
+`InMemoryLoginRateLimiter` **exactement comme #155 l'a fait pour `/auth/terminal/login`** : un
+**singleton dédié** est monté sur `app.state` (proposition : `terminal_lookup_rate_limiter`) avec des
 **seuils propres au lookup** (proposition de départ : 10 échecs / 5 min, verrou 10 min — un client
 légitime peut se tromper deux fois de numéro sans être bloqué, un énumérateur est freiné ; valeurs à
 ajuster en pilote, *Risks*). La clé est construite par l'adapter entrant : `principal device id + IP
@@ -364,8 +364,8 @@ fiche absente, `422` format invalide) ; une identification réussie réinitialis
 à fort trafic légitime n'est jamais pénalisé. L'implémentation mémoire est un choix MVP assumé
 (mono-process ; adapter Redis différé, parité ADR-0013).
 
-> *Alternative documentée (écartée par simplicité).* Un port `KioskLookupRateLimiter` + une erreur
-> `TooManyKioskAttempts` dédiés donneraient une sémantique plus fine, au prix d'un port, d'un adapter
+> *Alternative documentée (écartée par simplicité).* Un port `TerminalLookupRateLimiter` + une erreur
+> `TooManyTerminalAttempts` dédiés donneraient une sémantique plus fine, au prix d'un port, d'un adapter
 > et d'un mapping HTTP supplémentaires **strictement redondants** avec l'existant. Le message
 > `TooManyLoginAttempts` (« Trop de tentatives… ») étant déjà générique, la réutilisation est retenue.
 > L'implémenteur peut, s'il le souhaite, renommer le message à l'assemblage sans changer le type.
@@ -374,37 +374,37 @@ Faut-il limiter le lookup seul, ou aussi la création ? Le lookup est la surface
 *Security*) et **doit** être limité. La création est bornée par l'unicité `(salon_id, phone)` et
 n'énumère rien ; la limiter est **optionnel** (au choix de l'implémenteur, avec le même singleton).
 
-### (E) Adapter entrant — `adapters/inbound/kiosk_customers.py` (nouveau router)
+### (E) Adapter entrant — `adapters/inbound/terminal_customers.py` (nouveau router)
 
-Router `APIRouter(prefix="/salons", tags=["kiosk"])`, un fichier par ressource (convention du dépôt).
+Router `APIRouter(prefix="/salons", tags=["terminal"])`, un fichier par ressource (convention du dépôt).
 Deux routes, toutes deux **protégées** (jamais dans `PUBLIC_ROUTE_PATHS`) :
 
-- **`POST /salons/{salon_id}/kiosk/customers/lookup`** — recherche par téléphone. `POST` et non
+- **`POST /salons/{salon_id}/terminal/customers/lookup`** — recherche par téléphone. `POST` et non
   `GET` : le numéro voyagerait sinon en query string (PII dans les logs d'accès, l'historique des
   proxies, les URL de trace). Corps `{"phone": "..."}` (`extra="ignore"`). Réponses : `200`
   `{customer_id, first_name}` · `404` neutre (« Aucune fiche pour ce numéro dans ce salon. » — sans
   rappeler le numéro) · `422` `InvalidPhone` · `429` + `Retry-After` (`TooManyLoginAttempts`, patron
   `auth.py:538-540`) · `401`/`403` par les gardes.
-- **`POST /salons/{salon_id}/kiosk/customers`** — création walk-in. Corps
+- **`POST /salons/{salon_id}/terminal/customers`** — création walk-in. Corps
   `{"first_name", "last_name", "phone"}` (`extra="ignore"` : tout champ privilégié — `salon_id`,
   `user_id`, `notes`, `gender`, `total_visits` — est ignoré). Réponses : `201`
   `{customer_id, first_name}` · `409` doublon (le parcours borne ré-exécute alors le lookup : la
   fiche existe désormais, le flux continue — contrat documenté pour #159) · `422` champ invalide ·
   `401`/`403`.
 
-Gardes sur chaque route, dans le style `kiosk_devices.py:161-171` : la garde **existante**
+Gardes sur chaque route, dans le style `terminal_devices.py:161-171` : la garde **existante**
 `require_salon_scope` (le `salon_id` du chemin doit être dans la portée du device, résolue via
-`salon_members`) **et** `require_permission(Permission.CUSTOMER_LOOKUP_KIOSK)` /
+`salon_members`) **et** `require_permission(Permission.CUSTOMER_LOOKUP_TERMINAL)` /
 `(Permission.CUSTOMER_CREATE_WALKIN)`. Aucun rôle existant ne reçoit ces permissions : un JWT
-`MANAGER`/`CLIENT`/`HAIRDRESSER`/`ADMIN` est refusé (`403` générique) sur les routes kiosque ; un
-credential `KIOSK` reste incapable d'atteindre `CUSTOMER_MANAGE` ou `APPOINTMENT_BOOK`. Câblage
-`main.py` : `app.include_router(kiosk_customers_router)` + montage du singleton
-`app.state.kiosk_lookup_rate_limiter` (patron `main.py:77-90` / `auth.py:467-485`), avec le
+`MANAGER`/`CLIENT`/`HAIRDRESSER`/`ADMIN` est refusé (`403` générique) sur les routes terminal ; un
+credential `TERMINAL` reste incapable d'atteindre `CUSTOMER_MANAGE` ou `APPOINTMENT_BOOK`. Câblage
+`main.py` : `app.include_router(terminal_customers_router)` + montage du singleton
+`app.state.terminal_lookup_rate_limiter` (patron `main.py:77-90` / `auth.py:467-485`), avec le
 commentaire de garde habituel.
 
-Le router expose deux dépendances FastAPI (surchargeables en test) : `get_kiosk_lookup_rate_limiter`
+Le router expose deux dépendances FastAPI (surchargeables en test) : `get_terminal_lookup_rate_limiter`
 (lit `app.state`) et l'assemblage des cas d'usage (dépôt clients + audit + limiteur), sur le patron
-de `kiosk_devices.py:110-142`.
+de `terminal_devices.py:110-142`.
 
 ### (F) Mapping parcours borne → champs et validations existantes
 
@@ -429,9 +429,9 @@ débit (§D).
 
 | Fichier | Rôle |
 | --- | --- |
-| `coiflink_api/application/kiosk_customers.py` | cas d'usage `IdentifyWalkInCustomer`, `CreateWalkInCustomer` (aucun import `users`) |
-| `coiflink_api/adapters/inbound/kiosk_customers.py` | router `/salons/{salon_id}/kiosk/customers[...]` (deux routes `POST`) |
-| `tests/test_kiosk_customer_usecases.py`, `tests/test_kiosk_customer_api.py`, `tests/test_kiosk_customer_e2e.py` | tests (voir *Testing Plan*) |
+| `coiflink_api/application/terminal_customers.py` | cas d'usage `IdentifyWalkInCustomer`, `CreateWalkInCustomer` (aucun import `users`) |
+| `coiflink_api/adapters/inbound/terminal_customers.py` | router `/salons/{salon_id}/terminal/customers[...]` (deux routes `POST`) |
+| `tests/test_terminal_customer_usecases.py`, `tests/test_terminal_customer_api.py`, `tests/test_terminal_customer_e2e.py` | tests (voir *Testing Plan*) |
 
 ### Backend — à modifier
 
@@ -440,16 +440,16 @@ débit (§D).
 | `coiflink_api/application/ports/customer_repository.py` | méthode `find_by_phone` (docstring isolation §11.2 + forme canonique) |
 | `coiflink_api/adapters/outbound/persistence/customer_repository.py` | implémentation `find_by_phone` (lecture seule, gabarit `phone_exists:162-169`) |
 | `coiflink_api/domain/customer.py` | `walk_in_first_name`, `WalkInIdentity`, `WalkInCustomerCommand` + validation/composition ; exports |
-| `coiflink_api/main.py` | `include_router(kiosk_customers_router)` + `app.state.kiosk_lookup_rate_limiter = InMemoryLoginRateLimiter(...)` (seuils kiosque) |
+| `coiflink_api/main.py` | `include_router(terminal_customers_router)` + `app.state.terminal_lookup_rate_limiter = InMemoryLoginRateLimiter(...)` (seuils terminal) |
 | `tests/conftest.py` | `find_by_phone` sur `FakeCustomerRepository` (≈ ligne 1408) ; réutiliser `InMemoryLoginRateLimiter` (horloge injectable) pour les tests de débit |
 | `tests/test_domain_customer.py` | cas `walk_in_first_name` + `WalkInCustomerCommand` |
-| `tests/test_security_authz_matrix.py` | **deux** entrées `_Route` (lookup → `CUSTOMER_LOOKUP_KIOSK`, création → `CUSTOMER_CREATE_WALKIN`) pour exercer la matrice négative sur les nouvelles familles |
+| `tests/test_security_authz_matrix.py` | **deux** entrées `_Route` (lookup → `CUSTOMER_LOOKUP_TERMINAL`, création → `CUSTOMER_CREATE_WALKIN`) pour exercer la matrice négative sur les nouvelles familles |
 | `backend/README.md` | section « Borne — identification téléphone & création walk-in (US-8.2, #156) » |
 
 ### Non touchés (garde-fous)
 
 `coiflink_api/domain/permissions.py` (**la matrice est déjà à jour** depuis #155 — ne rien y ajouter),
-`coiflink_api/domain/enums.py` (`KIOSK` déjà présent), `coiflink_api/adapters/inbound/security.py`
+`coiflink_api/domain/enums.py` (`TERMINAL` déjà présent), `coiflink_api/adapters/inbound/security.py`
 (garde de portée existante réutilisée, `PUBLIC_ROUTE_PATHS` inchangé), `coiflink_api/domain/errors.py`
 (réutilise `TooManyLoginAttempts`/`InvalidPhone`/`CustomerAlreadyExists`),
 `application/ports/login_rate_limiter.py` + son adapter (réutilisés tels quels), `app-mobile/` (#159),
@@ -460,17 +460,17 @@ débit (§D).
 ## API / Interface Changes
 
 Deux **nouveaux** endpoints, tous deux **protégés** (`require_salon_scope` existant + permission
-`KIOSK` dédiée déjà livrée) ; aucune route existante ne change ; rien n'entre dans
-`PUBLIC_ROUTE_PATHS` (« réservé au rôle KIOSK » signifie *atteignable par un device provisionné*, pas
+`TERMINAL` dédiée déjà livrée) ; aucune route existante ne change ; rien n'entre dans
+`PUBLIC_ROUTE_PATHS` (« réservé au rôle TERMINAL » signifie *atteignable par un device provisionné*, pas
 *public*). Pas de préfixe `/v1` : routes strictement additives, cohérent avec tout le dépôt.
 
 | Méthode | Chemin | Garde | Réponses |
 | --- | --- | --- | --- |
-| `POST` | `/salons/{salon_id}/kiosk/customers/lookup` | `require_salon_scope` + `CUSTOMER_LOOKUP_KIOSK` | `200` identité · `404` neutre · `422` téléphone invalide · `429` + `Retry-After` · `401`/`403` |
-| `POST` | `/salons/{salon_id}/kiosk/customers` | `require_salon_scope` + `CUSTOMER_CREATE_WALKIN` | `201` identité · `409` doublon · `422` champ invalide · `401`/`403` |
+| `POST` | `/salons/{salon_id}/terminal/customers/lookup` | `require_salon_scope` + `CUSTOMER_LOOKUP_TERMINAL` | `200` identité · `404` neutre · `422` téléphone invalide · `429` + `Retry-After` · `401`/`403` |
+| `POST` | `/salons/{salon_id}/terminal/customers` | `require_salon_scope` + `CUSTOMER_CREATE_WALKIN` | `201` identité · `409` doublon · `422` champ invalide · `401`/`403` |
 
 ```jsonc
-// POST /salons/{salon_id}/kiosk/customers/lookup — corps
+// POST /salons/{salon_id}/terminal/customers/lookup — corps
 { "phone": "07 00 00 00 00" }        // tout format toléré par normalize_phone ; jamais en query string
 
 // 200 — trouvé (projection MINIMALE : jamais nom complet, téléphone, genre, notes, visites)
@@ -481,7 +481,7 @@ Deux **nouveaux** endpoints, tous deux **protégés** (`require_salon_scope` exi
 ```
 
 ```jsonc
-// POST /salons/{salon_id}/kiosk/customers — corps (extra="ignore")
+// POST /salons/{salon_id}/terminal/customers — corps (extra="ignore")
 { "first_name": "Awa", "last_name": "Koné", "phone": "0700000000" }   // les 3 champs requis
 
 // 201 — créé (user_id = NULL en base, jamais exposé ; téléphone stocké +2250700000000)
@@ -508,7 +508,7 @@ inter-paquet existant.
 - la forme canonique E.164 stockée depuis #28 rend l'égalité stricte correcte (pas de `LIKE`).
 
 Le socle borne (#155) a déjà appliqué sa migration `0013` (régénération des `CHECK` `role` pour
-`'KIOSK'`, aucune table/colonne) : #156 n'en dépend pas au niveau du schéma.
+`'TERMINAL'`, aucune table/colonne) : #156 n'en dépend pas au niveau du schéma.
 
 ## Security & Privacy Considerations
 
@@ -524,7 +524,7 @@ différent il crée.** L'analyse tient en trois points :
    credential (il n'y en a pas).
 2. **Le fait divulgué reste dans la frontière de données du salon (§11.2).** `find_by_phone` révèle
    « ce numéro a une fiche dans **ce** salon » — une information que le salon possède déjà (son
-   `MANAGER` liste toutes ses fiches via `CUSTOMER_MANAGE`, #28). Le device `KIOSK` est un agent du
+   `MANAGER` liste toutes ses fiches via `CUSTOMER_MANAGE`, #28). Le device `TERMINAL` est un agent du
    même salon, borné au même périmètre. La nouveauté n'est pas ce que le salon apprend, mais **qui
    d'autre** pourrait l'apprendre : la personne devant l'écran, ou un porteur du credential device
    volé.
@@ -535,7 +535,7 @@ différent il crée.** L'analyse tient en trois points :
 - **Prénom seul, projection minimale par construction.** `WalkInIdentity` ne porte que `customer_id`
   + `first_name` : nom complet, téléphone (même celui qui vient d'être saisi), genre, notes (données
   potentiellement de santé, US-4.5) et compteurs de visites ne franchissent **jamais** la frontière
-  HTTP kiosque. Cohérent avec #157 qui n'affiche que `customer_first_name`.
+  HTTP terminal. Cohérent avec #157 qui n'affiche que `customer_first_name`.
 - **Limitation de débit par device + IP** (§D, réutilise `InMemoryLoginRateLimiter`) : fenêtre
   glissante sur les échecs (`404`/`422`), verrou temporisé, `429` + `Retry-After` — l'énumération
   d'un annuaire devient impraticable au rythme d'un terminal.
@@ -554,7 +554,7 @@ différent il crée.** L'analyse tient en trois points :
 - **Téléphone en corps de requête, jamais en URL** : pas de PII dans les logs d'accès, les proxies
   ou les traces.
 - **Deny-by-default intact** : aucune entrée `PUBLIC_ROUTE_PATHS`, invariant `unprotected_routes` au
-  vert ; permissions **déjà** dédiées au rôle `KIOSK`, aucun élargissement de `CUSTOMER_MANAGE`
+  vert ; permissions **déjà** dédiées au rôle `TERMINAL`, aucun élargissement de `CUSTOMER_MANAGE`
   (MANAGER-seul, `permissions.py:136`) ni d'`APPOINTMENT_BOOK` (CLIENT-seul) ; tests RBAC négatifs
   bidirectionnels.
 - **Collecte minimale (§11.3)** : prénom, nom, téléphone — rien d'autre (`extra="ignore"`). Pas de
@@ -574,12 +574,12 @@ différent il crée.** L'analyse tient en trois points :
 - `walk_in_first_name` : `"Awa Koné"` → `"Awa"` ; nom simple sans espace → lui-même ; espaces
   multiples/trim.
 - `WalkInCustomerCommand` : prénom ou nom vide/blanc → `InvalidCustomerName` ; téléphone absent/vide
-  → `InvalidPhone` (requis au kiosque, contrairement à #28) ; composition « Prénom Nom » →
+  → `InvalidPhone` (requis au terminal, contrairement à #28) ; composition « Prénom Nom » →
   `walk_in_first_name` restitue exactement le prénom saisi ; composé > 255 → `InvalidCustomerName` ;
   formats de saisie borne (`"07 00 00 00 00"`, `"+225 07-00-00-00-00"`, `"0022507…"`) → même forme
   canonique `+2250700000000` (idempotence incluse).
 
-### Cas d'usage (fakes de `conftest.py`) — `tests/test_kiosk_customer_usecases.py`
+### Cas d'usage (fakes de `conftest.py`) — `tests/test_terminal_customer_usecases.py`
 
 - **Lookup** : normalisation **avant** l'appel dépôt (le fake reçoit la forme canonique quel que soit
   le format soumis) ; fiche trouvée → `WalkInIdentity` au prénom seul, `reset` appelé ; absente →
@@ -592,10 +592,10 @@ différent il crée.** L'analyse tient en trois points :
   `principal.id` device ; doublon → `CustomerAlreadyExists` sans écriture ni audit ; validation
   invalide → aucune écriture, aucun audit ; même téléphone dans un **autre** salon → accepté
   (cloisonnement §11.2).
-- **Anti-oracle structurel** : le module `application/kiosk_customers.py` n'importe aucun port
+- **Anti-oracle structurel** : le module `application/terminal_customers.py` n'importe aucun port
   `users` (assertion d'import, dans l'esprit des tests d'invariant du dépôt).
 
-### API (`TestClient` + `app.dependency_overrides`) — `tests/test_kiosk_customer_api.py`
+### API (`TestClient` + `app.dependency_overrides`) — `tests/test_terminal_customer_api.py`
 
 - `200` lookup : corps **exactement** `{customer_id, first_name}` — assertions d'**absence** de
   `full_name`, `phone`, `gender`, `notes`, `user_id`, `total_visits` ; `404` neutre (sans écho du
@@ -604,35 +604,35 @@ différent il crée.** L'analyse tient en trois points :
 - `201` création : corps minimal, champs privilégiés du corps (`salon_id`, `user_id`, `notes`,
   `gender`) **ignorés** ; `409` doublon ; `422` par champ manquant/invalide.
 - **RBAC négatif** : `401` sans credential sur les deux routes ; `403` pour un JWT `CLIENT`,
-  `MANAGER`, `HAIRDRESSER`, `ADMIN` sur les routes kiosque ; le principal `KIOSK` est refusé (`403`
+  `MANAGER`, `HAIRDRESSER`, `ADMIN` sur les routes terminal ; le principal `TERMINAL` est refusé (`403`
   constant) sur `GET/POST /salons/{salon_id}/customers` (`CUSTOMER_MANAGE`) et sur
   `POST /salons/{salon_id}/appointments` (`APPOINTMENT_BOOK`) ; device du salon X → `403` sur le
   salon Y (portée). Ces deux derniers sens sont **partiellement déjà couverts** par
   `test_security_authz_matrix.py` une fois les deux `_Route` ajoutées.
 - `tests/test_security_guards.py` : `unprotected_routes(app) == []` couvre mécaniquement les nouvelles
-  routes ; vérifier qu'aucun chemin `kiosk/customers` n'entre dans `PUBLIC_ROUTE_PATHS`.
+  routes ; vérifier qu'aucun chemin `terminal/customers` n'entre dans `PUBLIC_ROUTE_PATHS`.
 
-### e2e (PostgreSQL réel, sauté sans `DATABASE_URL`) — `tests/test_kiosk_customer_e2e.py`
+### e2e (PostgreSQL réel, sauté sans `DATABASE_URL`) — `tests/test_terminal_customer_e2e.py`
 
 Patron `test_customer_e2e.py` (plage de téléphones réservée, nettoyage avant/après — **purger les
 `notifications` avant `appointments`/`users`/`salons`**, contrainte connue du dépôt) :
 
 1. **Parcours nominal cross-canal** : gérant crée une fiche au dashboard (#28, numéro au format
-   local) → lookup kiosque du même numéro **dans un autre format de saisie** → `200`, prénom attendu ;
+   local) → lookup terminal du même numéro **dans un autre format de saisie** → `200`, prénom attendu ;
 2. **Création borne** : lookup `404` → création `201` → second lookup `200` avec le même
    `customer_id` → la fiche apparaît dans la liste gérant #28 (`user_id` absent de la réponse,
    `gender`/`notes` `NULL`) ;
 3. **Isolation §11.2** : fiche du salon A introuvable (`404`) depuis le device du salon B ; même
    numéro fiché dans A et B → chaque device retrouve **sa** fiche ;
 4. **Anti-oracle `users`** : créer un compte `CLIENT` (table `users`) avec un téléphone sans fiche
-   dans le salon → lookup kiosque de ce numéro → `404`, indiscernable d'un numéro inconnu de la
+   dans le salon → lookup terminal de ce numéro → `404`, indiscernable d'un numéro inconnu de la
    plateforme ;
 5. **Traçabilité** : la création borne écrit une ligne `audit_logs` `CUSTOMER_CREATED` avec l'acteur
    device et `metadata` vide (assertion explicite) ; aucun lookup n'écrit d'audit ;
 6. **Concurrence** : deux créations simultanées du même numéro → un `201` + un `409` (index unique
    partiel, retraduction existante) ;
 7. **Révocation (intégration #155)** : après révocation du device (`DELETE
-   /salons/{id}/kiosk-devices/{device_id}`), une requête kiosque suivante est refusée (`403`,
+   /salons/{id}/terminal-devices/{device_id}`), une requête terminal suivante est refusée (`403`,
    portée vidée) — vérifie que #156 hérite bien de la révocation immédiate.
 
 ### Non-régression
@@ -669,14 +669,14 @@ choix restant à valider.
 
 **Résolus par #155 (livrée) — plus d'action requise :**
 
-- ~~Acteur d'audit d'un device~~ : **clos.** Le device est une ligne `users` (`role=KIOSK`) ;
+- ~~Acteur d'audit d'un device~~ : **clos.** Le device est une ligne `users` (`role=TERMINAL`) ;
   `actor_user_id = principal.id` satisfait la FK NOT NULL. `CUSTOMER_CREATED`/`ENTITY_TYPE_CUSTOMER`
   réutilisés sans changement (`domain/audit.py`).
-- ~~Nommage et propriété des permissions `KIOSK`~~ : **clos.** `CUSTOMER_LOOKUP_KIOSK` et
-  `CUSTOMER_CREATE_WALKIN` existent et sont attribuées à `Role.KIOSK` (`permissions.py:150-156`) ;
+- ~~Nommage et propriété des permissions `TERMINAL`~~ : **clos.** `CUSTOMER_LOOKUP_TERMINAL` et
+  `CUSTOMER_CREATE_WALKIN` existent et sont attribuées à `Role.TERMINAL` (`permissions.py:150-156`) ;
   la matrice est déjà figée par `test_domain_permissions.py`. #156 **ne modifie pas** la matrice — il
   n'y a plus d'ordre de merge à coordonner.
-- ~~Garde de portée device→salon dédiée~~ : **clos.** `require_salon_scope` couvre `KIOSK` via
+- ~~Garde de portée device→salon dédiée~~ : **clos.** `require_salon_scope` couvre `TERMINAL` via
   `salon_members` (`salon_scope_repository.py:46-53`, `access.py:98-103`). #156 réutilise la garde
   générique — aucune garde spéciale à écrire.
 
@@ -698,7 +698,7 @@ choix restant à valider.
    tactile est fréquente et la borne est physiquement surveillable. **À ajuster en pilote** (2-3
    salons).
 5. **Réutilisation de `TooManyLoginAttempts` / `LoginRateLimiter` plutôt qu'un port et une erreur
-   dédiés.** Retenu pour éviter une duplication stricte de l'existant (parité avec le login kiosque
+   dédiés.** Retenu pour éviter une duplication stricte de l'existant (parité avec le login terminal
    #155). Résidu : un nom d'erreur « login » pour un lookup — le message reste générique. **À
    valider** (l'alternative dédiée reste possible si un jour la sémantique doit diverger).
 6. **Téléphone partagé (compromis ADR-0026 décision 6).** L'unicité `(salon_id, phone)` interdit
@@ -718,14 +718,14 @@ choix restant à valider.
 ## Implementation Checklist
 
 1. **Confirmer les points de contrat #155 par lecture rapide** (déjà vérifiés dans cette spec) :
-   `Role.KIOSK` + permissions dans `ROLE_PERMISSIONS`, `require_salon_scope`/`can_access_salon`
-   couvrant `KIOSK`, device = ligne `users` (acteur d'audit), patron du limiteur kiosque
+   `Role.TERMINAL` + permissions dans `ROLE_PERMISSIONS`, `require_salon_scope`/`can_access_salon`
+   couvrant `TERMINAL`, device = ligne `users` (acteur d'audit), patron du limiteur terminal
    (`auth.py:467-541`). Trancher les questions ouvertes 1-6 avec le porteur produit.
-2. **Lire** pour s'imprégner des patrons : `adapters/inbound/kiosk_devices.py`,
+2. **Lire** pour s'imprégner des patrons : `adapters/inbound/terminal_devices.py`,
    `adapters/inbound/customers.py`, `application/customers.py`, `domain/customer.py`,
    `domain/phone.py`, `adapters/outbound/persistence/customer_repository.py`,
-   `adapters/inbound/security.py`, `application/kiosk_authentication.py` + `adapters/inbound/auth.py`
-   (montage du limiteur kiosque), et les specs sœurs #157/#159.
+   `adapters/inbound/security.py`, `application/terminal_authentication.py` + `adapters/inbound/auth.py`
+   (montage du limiteur terminal), et les specs sœurs #157/#159.
 3. **Domaine** : `walk_in_first_name`, `WalkInIdentity`, `WalkInCustomerCommand` (+ validation et
    composition « Prénom Nom ») dans `domain/customer.py` (+ exports) ; étendre
    `tests/test_domain_customer.py` (formats de saisie borne inclus). **Aucune** nouvelle erreur de
@@ -733,20 +733,20 @@ choix restant à valider.
 4. **Port & dépôt** : `find_by_phone` sur `application/ports/customer_repository.py` (docstring §11.2
    + forme canonique) et `SqlCustomerRepository` (lecture seule, gabarit `phone_exists`) ;
    `find_by_phone` sur le `FakeCustomerRepository` de `tests/conftest.py`.
-5. **Cas d'usage** : `application/kiosk_customers.py` (`IdentifyWalkInCustomer`,
+5. **Cas d'usage** : `application/terminal_customers.py` (`IdentifyWalkInCustomer`,
    `CreateWalkInCustomer` — aucun import `users`, docstring anti-oracle, réutilise `LoginRateLimiter`,
-   `CustomerRepository`, `AuditLog`) ; `tests/test_kiosk_customer_usecases.py` (normalisation avant
+   `CustomerRepository`, `AuditLog`) ; `tests/test_terminal_customer_usecases.py` (normalisation avant
    dépôt, prénom seul, audit `metadata={}`, limiteur, cloisonnement).
-6. **Adapter entrant** : `adapters/inbound/kiosk_customers.py` (deux routes `POST`, téléphone en
+6. **Adapter entrant** : `adapters/inbound/terminal_customers.py` (deux routes `POST`, téléphone en
    corps, `extra="ignore"`, gardes `require_salon_scope` + `require_permission(...)`, mapping
    `404`/`409`/`422`/`429 + Retry-After`, messages neutres) ; **ne pas** toucher `PUBLIC_ROUTE_PATHS`.
-7. **Câblage** : `include_router(kiosk_customers_router)` + montage de
-   `app.state.kiosk_lookup_rate_limiter = InMemoryLoginRateLimiter(...)` (seuils kiosque) dans
+7. **Câblage** : `include_router(terminal_customers_router)` + montage de
+   `app.state.terminal_lookup_rate_limiter = InMemoryLoginRateLimiter(...)` (seuils terminal) dans
    `main.py`, commentaire de garde dans le style existant ; partager/réutiliser `_client_ip`.
 8. **Matrice négative** : ajouter deux `_Route` à `tests/test_security_authz_matrix.py` (lookup →
-   `CUSTOMER_LOOKUP_KIOSK`, création → `CUSTOMER_CREATE_WALKIN`).
-9. **Tests API & e2e** : `tests/test_kiosk_customer_api.py` (projection minimale par assertions
-   d'absence, RBAC négatif bidirectionnel, `429`) puis `tests/test_kiosk_customer_e2e.py`
+   `CUSTOMER_LOOKUP_TERMINAL`, création → `CUSTOMER_CREATE_WALKIN`).
+9. **Tests API & e2e** : `tests/test_terminal_customer_api.py` (projection minimale par assertions
+   d'absence, RBAC négatif bidirectionnel, `429`) puis `tests/test_terminal_customer_e2e.py`
    (canonisation croisée, isolation inter-salons, anti-oracle `users` §4, traçabilité, concurrence,
    révocation) — purge `notifications` avant `appointments`/`users`/`salons` au nettoyage.
 10. **Documentation** : section `backend/README.md` ; OpenAPI relue sur `/docs`.

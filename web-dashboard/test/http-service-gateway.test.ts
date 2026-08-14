@@ -24,6 +24,7 @@ const FAKE_SERVICE_PAYLOAD = {
   category: "Coupe",
   is_active: true,
   image_url: null,
+  photos: [] as { id: string; url: string | null }[],
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };
@@ -813,15 +814,15 @@ describe("createHttpServiceGateway().issueImageUploadUrl() — codes de statut",
 });
 
 // ---------------------------------------------------------------------------
-// attachImage — sans jeton
+// addPhoto — sans jeton
 // ---------------------------------------------------------------------------
 
-describe("createHttpServiceGateway().attachImage() — sans jeton", () => {
+describe("createHttpServiceGateway().addPhoto() — sans jeton", () => {
   it("accessToken null → unauthenticated sans appel réseau", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await createHttpServiceGateway({ accessToken: null }).attachImage(
+    const result = await createHttpServiceGateway({ accessToken: null }).addPhoto(
       SALON_ID,
       SERVICE_ID,
       "services/salon-uuid-123/abc.png",
@@ -833,17 +834,18 @@ describe("createHttpServiceGateway().attachImage() — sans jeton", () => {
 });
 
 // ---------------------------------------------------------------------------
-// attachImage — codes de statut
+// addPhoto — codes de statut
 // ---------------------------------------------------------------------------
 
-describe("createHttpServiceGateway().attachImage() — codes de statut", () => {
-  it("200 → ok:true avec la prestation (image_url incluse)", async () => {
-    stubFetch(200, {
+describe("createHttpServiceGateway().addPhoto() — codes de statut", () => {
+  it("201 → ok:true avec la prestation (galerie incluse)", async () => {
+    stubFetch(201, {
       ...FAKE_SERVICE_PAYLOAD,
       image_url: "https://fake-bucket.local/download/abc.png?sig=fake",
+      photos: [{ id: "photo-1", url: "https://fake-bucket.local/download/abc.png?sig=fake" }],
     });
 
-    const result = await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).addPhoto(
       SALON_ID,
       SERVICE_ID,
       "services/salon-uuid-123/abc.png",
@@ -851,29 +853,29 @@ describe("createHttpServiceGateway().attachImage() — codes de statut", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.service.imageUrl).toBe(
-        "https://fake-bucket.local/download/abc.png?sig=fake",
-      );
+      expect(result.service.photos).toEqual([
+        { id: "photo-1", url: "https://fake-bucket.local/download/abc.png?sig=fake" },
+      ]);
     }
   });
 
-  it("objectKey null envoyé tel quel (efface l'illustration)", async () => {
-    const fetchMock = stubFetch(200, FAKE_SERVICE_PAYLOAD);
+  it("le corps envoyé porte object_key", async () => {
+    const fetchMock = stubFetch(201, FAKE_SERVICE_PAYLOAD);
 
-    await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+    await createHttpServiceGateway({ accessToken: TOKEN }).addPhoto(
       SALON_ID,
       SERVICE_ID,
-      null,
+      "services/salon-uuid-123/abc.png",
     );
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const sentBody = JSON.parse(init.body as string);
-    expect(sentBody).toEqual({ object_key: null });
+    expect(sentBody).toEqual({ object_key: "services/salon-uuid-123/abc.png" });
   });
 
   it("401 → unauthenticated", async () => {
     stubFetch(401, {});
-    const result = await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).addPhoto(
       SALON_ID,
       SERVICE_ID,
       "k",
@@ -883,7 +885,7 @@ describe("createHttpServiceGateway().attachImage() — codes de statut", () => {
 
   it("403 → forbidden", async () => {
     stubFetch(403, {});
-    const result = await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).addPhoto(
       SALON_ID,
       SERVICE_ID,
       "k",
@@ -893,7 +895,7 @@ describe("createHttpServiceGateway().attachImage() — codes de statut", () => {
 
   it("404 → not-found", async () => {
     stubFetch(404, {});
-    const result = await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).addPhoto(
       SALON_ID,
       SERVICE_ID,
       "k",
@@ -901,9 +903,19 @@ describe("createHttpServiceGateway().attachImage() — codes de statut", () => {
     expect(result).toEqual({ ok: false, reason: "not-found" });
   });
 
+  it("409 → conflict (limite atteinte)", async () => {
+    stubFetch(409, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).addPhoto(
+      SALON_ID,
+      SERVICE_ID,
+      "k",
+    );
+    expect(result).toEqual({ ok: false, reason: "conflict" });
+  });
+
   it("422 → invalid (clé hors préfixe du salon)", async () => {
     stubFetch(422, {});
-    const result = await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).addPhoto(
       SALON_ID,
       SERVICE_ID,
       "services/other-salon/abc.png",
@@ -911,10 +923,10 @@ describe("createHttpServiceGateway().attachImage() — codes de statut", () => {
     expect(result).toEqual({ ok: false, reason: "invalid" });
   });
 
-  it("l'URL cible .../services/{serviceId}/image", async () => {
-    const fetchMock = stubFetch(200, FAKE_SERVICE_PAYLOAD);
+  it("l'URL cible .../services/{serviceId}/photos", async () => {
+    const fetchMock = stubFetch(201, FAKE_SERVICE_PAYLOAD);
 
-    await createHttpServiceGateway({ accessToken: TOKEN }).attachImage(
+    await createHttpServiceGateway({ accessToken: TOKEN }).addPhoto(
       "my-salon",
       "my-service",
       "k",
@@ -923,17 +935,98 @@ describe("createHttpServiceGateway().attachImage() — codes de statut", () => {
     const url = fetchMock.mock.calls[0][0] as string;
     expect(url).toContain("my-salon");
     expect(url).toContain("my-service");
-    expect(url.endsWith("/image")).toBe(true);
+    expect(url.endsWith("/photos")).toBe(true);
   });
 
   it("le jeton ne figure pas dans le résultat", async () => {
-    stubFetch(200, FAKE_SERVICE_PAYLOAD);
+    stubFetch(201, FAKE_SERVICE_PAYLOAD);
     const secretToken = "super-secret-token-xyz";
-    const result = await createHttpServiceGateway({ accessToken: secretToken }).attachImage(
+    const result = await createHttpServiceGateway({ accessToken: secretToken }).addPhoto(
       SALON_ID,
       SERVICE_ID,
       "k",
     );
     expect(JSON.stringify(result)).not.toContain(secretToken);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// removePhoto — sans jeton
+// ---------------------------------------------------------------------------
+
+describe("createHttpServiceGateway().removePhoto() — sans jeton", () => {
+  it("accessToken null → unauthenticated sans appel réseau", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createHttpServiceGateway({ accessToken: null }).removePhoto(
+      SALON_ID,
+      SERVICE_ID,
+      "photo-1",
+    );
+
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// removePhoto — codes de statut
+// ---------------------------------------------------------------------------
+
+describe("createHttpServiceGateway().removePhoto() — codes de statut", () => {
+  it("204 → ok:true", async () => {
+    stubFetch(204, null);
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).removePhoto(
+      SALON_ID,
+      SERVICE_ID,
+      "photo-1",
+    );
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("401 → unauthenticated", async () => {
+    stubFetch(401, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).removePhoto(
+      SALON_ID,
+      SERVICE_ID,
+      "photo-1",
+    );
+    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
+  });
+
+  it("403 → forbidden", async () => {
+    stubFetch(403, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).removePhoto(
+      SALON_ID,
+      SERVICE_ID,
+      "photo-1",
+    );
+    expect(result).toEqual({ ok: false, reason: "forbidden" });
+  });
+
+  it("404 → not-found", async () => {
+    stubFetch(404, {});
+    const result = await createHttpServiceGateway({ accessToken: TOKEN }).removePhoto(
+      SALON_ID,
+      SERVICE_ID,
+      "photo-1",
+    );
+    expect(result).toEqual({ ok: false, reason: "not-found" });
+  });
+
+  it("l'URL cible .../services/{serviceId}/photos/{photoId}", async () => {
+    const fetchMock = stubFetch(204, null);
+
+    await createHttpServiceGateway({ accessToken: TOKEN }).removePhoto(
+      "my-salon",
+      "my-service",
+      "my-photo",
+    );
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("my-salon");
+    expect(url).toContain("my-service");
+    expect(url.endsWith("/photos/my-photo")).toBe(true);
   });
 });

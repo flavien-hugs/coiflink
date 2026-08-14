@@ -30,6 +30,18 @@ export function isAllowedServiceImageType(contentType: string): boolean {
 export const PRICE_MAX = 99999999.99;
 // Robustesse : une prestation ne dure pas plus d'une journée (budget PRD §12).
 export const DURATION_MAX_MINUTES = 24 * 60;
+// Indicatif d'UI seulement (défaut backend `MEDIA_MAX_PHOTOS` — config.py) : le
+// backend reste l'autorité (409 au-delà), cette borne n'est là que pour
+// désactiver le bouton d'ajout avant l'aller-retour réseau.
+export const SERVICE_PHOTO_MAX_COUNT = 10;
+
+// Photo résolue de la galerie d'une prestation : `url` est une URL **signée**
+// de lecture (ou `null` si stockage non configuré) — jamais une clé d'objet
+// brute (ADR-0005).
+export interface ServicePhoto {
+  id: string;
+  url: string | null;
+}
 
 export interface Service {
   id: string;
@@ -41,9 +53,11 @@ export interface Service {
   durationMinutes: number;
   category: string | null;
   isActive: boolean;
-  // URL **signée** de lecture de l'illustration (ou `null` si aucune image ou
-  // stockage non configuré) — jamais la clé d'objet brute (ADR-0005). Attachée
-  // séparément (`ServiceGateway.attachImage`), jamais via `create`/`update`.
+  // Galerie ordonnée (index 0 = couverture), gérée séparément
+  // (`ServiceGateway.addPhoto`/`removePhoto`), jamais via `create`/`update`.
+  photos: ServicePhoto[];
+  // Commodité dérivée de `photos[0]?.url` (miroir backend) — pratique pour un
+  // simple affichage de vignette sans consommer la galerie complète.
   imageUrl: string | null;
   createdAt: string;
   updatedAt: string;

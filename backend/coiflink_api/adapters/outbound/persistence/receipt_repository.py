@@ -1,7 +1,7 @@
 """Adapter sortant : lecture des **reçus numériques** (SQLAlchemy, US-5.5, #38).
 
 Implémente le port `ReceiptRepository` sur une `Session` SQLAlchemy 2.0 et les
-modèles ORM `Payment`/`Salon`/`AppointmentService`/`Service` (schéma `0001`). Seul
+modèles ORM `Payment`/`Salon`/`Service`/`QueueTicket` (schéma `0001`/`0014`). Seul
 cet adapter connaît SQLAlchemy ; il mappe les lignes ↔ projections de domaine.
 
 **Lecture seule.** Aucune méthode n'écrit : le reçu est **dérivé** de tables
@@ -11,12 +11,15 @@ existantes, jamais persisté. Aucune migration côté paiement.
 un filtre **inconditionnel** de toutes les requêtes — un paiement d'un autre client
 (ou sans `client_id`) est indiscernable d'un paiement inexistant (non-oracle §11.3).
 
-Les **lignes** de prestation sont résolues par paiement :
+`ticket_number` est résolu via `payments.queue_ticket_id → queue_tickets.ticket_number`
+(`outerjoin`, `None` pour un paiement lié à une prestation seule).
 
-- paiement lié à un **RDV** (`appointment_id`) → `appointment_services` jointes à
-  `services` pour le libellé courant + `price_at_booking` **figé** ;
-- paiement lié à une **prestation seule** (`service_id`) → `services.name` +
-  `Service.price`.
+Les **lignes** de prestation sont résolues **soit** par paiement lié à une
+**prestation seule** (`service_id`) → `services.name` + `Service.price`, **soit**
+par paiement lié à un **ticket walk-in** (`queue_ticket_id`) → les prestations du
+ticket (`queue_ticket_services` → `services.name` + `Service.price` **actuels**,
+même résolution en direct que `payment._resolve_expected_amount`, aucun prix figé
+côté ticket).
 
 Le nombre de reçus d'une page étant borné (`RECEIPTS_LIMIT_MAX`), la résolution des
 lignes par paiement reste bornée ; seule `salons.name` est jointe pour l'identité
@@ -50,8 +53,12 @@ class SqlReceiptRepository:
         """Page des reçus du client, plus récents d'abord — filtre d'appartenance §11.2."""
 
         stmt = (
-            select(models.Payment, models.Salon.name)
+            select(models.Payment, models.Salon.name, models.QueueTicket.ticket_number)
             .join(models.Salon, models.Salon.id == models.Payment.salon_id)
+            .outerjoin(
+                models.QueueTicket,
+                models.QueueTicket.id == models.Payment.queue_ticket_id,
+            )
             .where(models.Payment.client_id == client_id)
             .order_by(models.Payment.created_at.desc(), models.Payment.id.desc())
             .limit(limit)
@@ -59,7 +66,8 @@ class SqlReceiptRepository:
         )
         rows = self._session.execute(stmt).all()
         return tuple(
-            self._to_receipt(payment, salon_name) for payment, salon_name in rows
+            self._to_receipt(payment, salon_name, ticket_number=ticket_number)
+            for payment, salon_name, ticket_number in rows
         )
 
     def count_receipts_for_client(self, client_id: uuid.UUID) -> int:
@@ -78,8 +86,12 @@ class SqlReceiptRepository:
         """Reçu `(client_id, payment_id)` ou `None` (non-oracle §11.3)."""
 
         stmt = (
-            select(models.Payment, models.Salon.name)
+            select(models.Payment, models.Salon.name, models.QueueTicket.ticket_number)
             .join(models.Salon, models.Salon.id == models.Payment.salon_id)
+            .outerjoin(
+                models.QueueTicket,
+                models.QueueTicket.id == models.Payment.queue_ticket_id,
+            )
             .where(
                 models.Payment.client_id == client_id,
                 models.Payment.id == payment_id,
@@ -88,8 +100,8 @@ class SqlReceiptRepository:
         row = self._session.execute(stmt).first()
         if row is None:
             return None
-        payment, salon_name = row
-        return self._to_receipt(payment, salon_name)
+        payment, salon_name, ticket_number = row
+        return self._to_receipt(payment, salon_name, ticket_number=ticket_number)
 
     def get_receipt_for_salon(
         self, salon_id: uuid.UUID, payment_id: uuid.UUID
@@ -104,9 +116,19 @@ class SqlReceiptRepository:
         """
 
         stmt = (
-            select(models.Payment, models.Salon.name, models.User.full_name, models.User.phone)
+            select(
+                models.Payment,
+                models.Salon.name,
+                models.User.full_name,
+                models.User.phone,
+                models.QueueTicket.ticket_number,
+            )
             .join(models.Salon, models.Salon.id == models.Payment.salon_id)
             .outerjoin(models.User, models.User.id == models.Payment.client_id)
+            .outerjoin(
+                models.QueueTicket,
+                models.QueueTicket.id == models.Payment.queue_ticket_id,
+            )
             .where(
                 models.Payment.salon_id == salon_id,
                 models.Payment.id == payment_id,
@@ -115,9 +137,13 @@ class SqlReceiptRepository:
         row = self._session.execute(stmt).first()
         if row is None:
             return None
-        payment, salon_name, client_name, client_phone = row
+        payment, salon_name, client_name, client_phone, ticket_number = row
         return self._to_receipt(
-            payment, salon_name, client_name=client_name, client_phone=client_phone
+            payment,
+            salon_name,
+            client_name=client_name,
+            client_phone=client_phone,
+            ticket_number=ticket_number,
         )
 
     def _to_receipt(
@@ -127,6 +153,7 @@ class SqlReceiptRepository:
         *,
         client_name: str | None = None,
         client_phone: str | None = None,
+        ticket_number: int | None = None,
     ) -> Receipt:
         return Receipt(
             receipt_number=format_receipt_number(payment.receipt_number),
@@ -139,8 +166,8 @@ class SqlReceiptRepository:
             status=payment.status,
             reference=payment.reference,
             paid_at=payment.created_at,
-            appointment_id=payment.appointment_id,
             lines=self._lines_for_payment(payment),
+            ticket_number=ticket_number,
             client_name=client_name,
             client_phone=client_phone,
         )
@@ -148,29 +175,7 @@ class SqlReceiptRepository:
     def _lines_for_payment(
         self, payment: models.Payment
     ) -> tuple[ReceiptLine, ...]:
-        """Lignes de prestation d'un reçu : RDV (`price_at_booking`) ou prestation seule."""
-
-        if payment.appointment_id is not None:
-            stmt = (
-                select(
-                    models.Service.name,
-                    models.AppointmentService.price_at_booking,
-                )
-                .join(
-                    models.Service,
-                    (models.Service.salon_id == models.AppointmentService.salon_id)
-                    & (models.Service.id == models.AppointmentService.service_id),
-                )
-                .where(
-                    models.AppointmentService.salon_id == payment.salon_id,
-                    models.AppointmentService.appointment_id == payment.appointment_id,
-                )
-                .order_by(models.Service.name)
-            )
-            return tuple(
-                ReceiptLine(service_name=name, amount=price)
-                for name, price in self._session.execute(stmt).all()
-            )
+        """Lignes de prestation d'un reçu : la prestation seule **ou** les prestations du ticket."""
 
         if payment.service_id is not None:
             stmt = select(models.Service.name, models.Service.price).where(
@@ -182,6 +187,25 @@ class SqlReceiptRepository:
                 return ()
             name, price = row
             return (ReceiptLine(service_name=name, amount=price),)
+
+        if payment.queue_ticket_id is not None:
+            stmt = (
+                select(models.Service.name, models.Service.price)
+                .join(
+                    models.QueueTicketService,
+                    (models.QueueTicketService.salon_id == models.Service.salon_id)
+                    & (models.QueueTicketService.service_id == models.Service.id),
+                )
+                .where(
+                    models.QueueTicketService.salon_id == payment.salon_id,
+                    models.QueueTicketService.queue_ticket_id == payment.queue_ticket_id,
+                )
+                .order_by(models.Service.name)
+            )
+            rows = self._session.execute(stmt).all()
+            return tuple(
+                ReceiptLine(service_name=name, amount=price) for name, price in rows
+            )
 
         return ()
 

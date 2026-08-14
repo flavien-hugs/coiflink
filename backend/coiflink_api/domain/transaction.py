@@ -61,13 +61,18 @@ class Transaction:
     Projection de **lecture** de la liste filtrable (#35). Le paiement est la
     transaction telle qu'enregistrée (montant brut + statut : un paiement corrigé
     porte `ADJUSTED`, cohérent avec le journal #34). `client_name` résout, en
-    lecture, `payments.client_id → users.full_name` (colonne non sensible
-    **uniquement**, §11.3) pour l'affichage ; `None` quand aucun client n'est lié
-    ou que le nom n'est pas résolu.
+    lecture, **soit** `payments.client_id → users.full_name` (compte client
+    enregistré), **soit** — pour un paiement lié à un ticket walk-in
+    (`queue_ticket_id`) sans compte client — `queue_tickets.customer_profile_id
+    → customer_profiles.full_name` (le client de la fiche qui a pris le ticket) ;
+    `None` si ni l'un ni l'autre n'est résoluble (paiement comptoir anonyme).
+    `ticket_number` accompagne ce nom pour le ticket lié (`None` pour un paiement
+    lié à une prestation seule).
     """
 
     payment: Payment
     client_name: str | None = None
+    ticket_number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -179,8 +184,10 @@ def validate_transaction_filter(
     - **montants** bornés `[0, AMOUNT_MAX]`, ≤ 2 décimales, en `Decimal` (jamais
       un flottant) ;
     - **mode de paiement** dans l'énumération fermée `PaymentMethod` ;
-    - **recherche texte** (`q`) : sous-chaîne du **nom client** (`ILIKE`, §11.3
-      aucune autre colonne PII n'est recherchée) ;
+    - **recherche texte** (`q`) : sous-chaîne du **nom client** — compte client
+      enregistré (`users.full_name`) **ou** client d'un ticket walk-in lié
+      (`customer_profiles.full_name`) — même paire de colonnes que `client_name`
+      (`ILIKE`, §11.3 aucune autre colonne PII n'est recherchée) ;
     - `None` (ou chaîne vide de mode/texte) = **pas de contrainte**.
 
     Les bornes de date sont converties du jour civil `Africa/Abidjan` (UTC+0) vers

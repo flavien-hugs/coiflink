@@ -3,17 +3,22 @@
 // Historique des visites d'un client — adapter UI (hexagonal, ADR-0008). Rendu
 // **pur** (pas d'état, pas de fetch) : reçoit un `VisitHistory` déjà chargé côté
 // serveur (jeton du cookie httpOnly, invariant #14) et affiche un résumé (nombre
-// de visites, dernière visite, total) puis le détail des visites (date, créneau,
-// prestations nommées + prix figé, montant total).
+// de visites, dernière visite, total) puis le détail des visites (horodatage de
+// clôture, prestations nommées + prix courant, montant total).
+//
+// Modèle walk-in : un ticket n'a pas de créneau réservé (pas de `startTime`/
+// `endTime`) — la colonne « Date » affiche l'horodatage réel de clôture de la
+// prestation (`completedAt`), plus parlant pour le gérant que la seule date
+// d'émission du ticket.
 //
 // Le backend reste **l'autorité des montants** : ce composant **formate** seulement
 // (FCFA, fuseau d'Abidjan). Une fiche walk-in ou sans visite réalisée affiche un
-// **état vide explicite** (« Aucune visite terminée ») — pas une erreur (US-4.2 #29).
+// **état vide explicite** (« Aucune visite terminée »).
 
 import {
   formatAmountXof,
   formatVisitDate,
-  formatVisitTime,
+  formatVisitDateTime,
   type CustomerVisit,
   type VisitHistory,
 } from "@/src/domain/customer/visit";
@@ -67,7 +72,7 @@ function EmptyState() {
 function VisitTable({ visits }: { visits: CustomerVisit[] }) {
   const pagination = useClientPagination(
     visits,
-    visits.map((visit) => visit.appointmentId).join("|"),
+    visits.map((visit) => visit.queueTicketId).join("|"),
   );
 
   return (
@@ -78,22 +83,18 @@ function VisitTable({ visits }: { visits: CustomerVisit[] }) {
             <tr>
               <th className="w-12 px-4 py-3">#</th>
               <th className="px-4 py-3">Date</th>
-              <th className="px-4 py-3">Créneau</th>
               <th className="px-4 py-3">Prestations</th>
               <th className="px-4 py-3 text-right">Montant</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border bg-surface">
             {pagination.items.map((visit, index) => (
-              <tr key={visit.appointmentId} className="align-top">
+              <tr key={visit.queueTicketId} className="align-top">
                 <td className="px-4 py-3 font-medium text-muted">
                   {pagination.offset + index + 1}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 font-medium">
-                  {formatVisitDate(visit.date)}
-                </td>
-                <td className="whitespace-nowrap px-4 py-3 text-muted">
-                  {formatVisitTime(visit.startTime)} – {formatVisitTime(visit.endTime)}
+                  {formatVisitDateTime(visit.completedAt)}
                 </td>
                 <td className="px-4 py-3">
                   <ul className="flex flex-col gap-1">
@@ -104,7 +105,7 @@ function VisitTable({ visits }: { visits: CustomerVisit[] }) {
                       >
                         <span>{service.name}</span>
                         <span className="text-muted">
-                          {formatAmountXof(service.priceAtBooking)}
+                          {formatAmountXof(service.price)}
                         </span>
                       </li>
                     ))}

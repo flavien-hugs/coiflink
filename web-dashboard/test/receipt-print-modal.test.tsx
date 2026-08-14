@@ -21,6 +21,7 @@ const FAKE_RECEIPT_BODY = {
     paymentId: PAYMENT_ID,
     salonId: SALON_ID,
     salonName: "Salon Élégance",
+    ticketNumber: null,
     clientName: "Awa Koné",
     clientPhone: "+2250700000001",
     amount: "5000.00",
@@ -112,6 +113,26 @@ describe("ReceiptPrintModal — prêt", () => {
     expect(screen.getByText(/Awa Koné/)).toBeInTheDocument();
     expect(screen.getByText("Coupe homme")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Imprimer/ })).toBeInTheDocument();
+  });
+
+  it("paiement lié à un ticket : affiche le numéro de ticket formaté", async () => {
+    stubFetch(200, {
+      receipt: { ...FAKE_RECEIPT_BODY.receipt, ticketNumber: 4 },
+    });
+
+    render(<ReceiptPrintModal salonId={SALON_ID} paymentId={PAYMENT_ID} onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText("Salon Élégance")).toBeInTheDocument());
+    expect(screen.getByText("N° 004")).toBeInTheDocument();
+  });
+
+  it("prestation seule (pas de ticket) : aucun numéro de ticket affiché", async () => {
+    stubFetch(200, FAKE_RECEIPT_BODY);
+
+    render(<ReceiptPrintModal salonId={SALON_ID} paymentId={PAYMENT_ID} onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText("Salon Élégance")).toBeInTheDocument());
+    expect(screen.queryByText(/^N° /)).not.toBeInTheDocument();
   });
 
   it("paiement comptoir (client null) : aucune ligne 'Cliente'", async () => {

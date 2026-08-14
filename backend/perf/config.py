@@ -24,24 +24,24 @@ from dataclasses import dataclass
 # §12.1 (cf. tableau de la spec).
 
 BUDGET_SALON_SEARCH = "salon_search"
-BUDGET_APPOINTMENT_CREATE = "appointment_create"
+BUDGET_TICKET_CREATE = "ticket_create"
 BUDGET_DASHBOARD = "dashboard"
 BUDGET_API_GENERAL = "api_general"
 
 #: Budgets §12.1 par groupe, en millisecondes. **Ne pas** modifier à la baisse pour
 #: « faire passer » un run : la suite compare au budget, elle ne le redéfinit pas.
 BUDGETS_MS: dict[str, int] = {
-    BUDGET_SALON_SEARCH: 2000,       # Recherche salon  — §12.1 « < 2 s »
-    BUDGET_APPOINTMENT_CREATE: 3000,  # Création RDV     — §12.1 « < 3 s »
-    BUDGET_DASHBOARD: 3000,           # Dashboard gérant — §12.1 « < 3 s »
-    BUDGET_API_GENERAL: 3000,         # API générale     — §12.1 « < 3 s »
+    BUDGET_SALON_SEARCH: 2000,     # Recherche salon    — §12.1 « < 2 s »
+    BUDGET_TICKET_CREATE: 3000,    # Émission de ticket — §12.1 « < 3 s »
+    BUDGET_DASHBOARD: 3000,        # Dashboard gérant   — §12.1 « < 3 s »
+    BUDGET_API_GENERAL: 3000,      # API générale       — §12.1 « < 3 s »
 }
 
 #: Libellé humain de chaque groupe (rapport lisible). Aucune PII.
 BUDGET_LABELS: dict[str, str] = {
     BUDGET_SALON_SEARCH: "Recherche salon (GET /catalog/salons)",
-    BUDGET_APPOINTMENT_CREATE: "Création de rendez-vous (POST /salons/{id}/appointments)",
-    BUDGET_DASHBOARD: "Dashboard gérant (5 lectures agrégées)",
+    BUDGET_TICKET_CREATE: "Émission d'un ticket walk-in (POST /salons/{id}/queue/tickets)",
+    BUDGET_DASHBOARD: "Dashboard gérant (4 lectures agrégées)",
     BUDGET_API_GENERAL: "API générale (échantillon de lectures protégées)",
 }
 
@@ -132,8 +132,8 @@ class DatasetProfile:
     services_per_salon: int = 6
     hairdressers_per_salon: int = 3
     clients: int = 100
-    completed_appointments: int = 200  # RDV COMPLETED + paiement associé
-    token_clients: int = 20            # clients pour lesquels un jeton est pré-émis
+    completed_tickets: int = 200  # tickets `done` + paiement associé
+    token_clients: int = 20       # clients pour lesquels un jeton est pré-émis
 
 
 def dataset_profile_from_env(env: dict[str, str] | None = None) -> DatasetProfile:
@@ -156,7 +156,7 @@ def dataset_profile_from_env(env: dict[str, str] | None = None) -> DatasetProfil
         services_per_salon=_int("PERF_SERVICES_PER_SALON", base.services_per_salon),
         hairdressers_per_salon=_int("PERF_HAIRDRESSERS_PER_SALON", base.hairdressers_per_salon),
         clients=_int("PERF_CLIENTS", base.clients),
-        completed_appointments=_int("PERF_COMPLETED_APPOINTMENTS", base.completed_appointments),
+        completed_tickets=_int("PERF_COMPLETED_TICKETS", base.completed_tickets),
         token_clients=_int("PERF_TOKEN_CLIENTS", base.token_clients),
     )
 
@@ -198,7 +198,7 @@ def local_phone(index: int) -> str:
 
 __all__ = [
     "BUDGET_SALON_SEARCH",
-    "BUDGET_APPOINTMENT_CREATE",
+    "BUDGET_TICKET_CREATE",
     "BUDGET_DASHBOARD",
     "BUDGET_API_GENERAL",
     "BUDGETS_MS",

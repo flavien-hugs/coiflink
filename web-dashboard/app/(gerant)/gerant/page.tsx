@@ -4,39 +4,48 @@
 // gérant puis les lectures de l'écran d'activité, filtrées par le **sélecteur de
 // période** (`searchParams`, résolu côté serveur) :
 //   - aucun salon → invite à créer d'abord le salon (Paramètres, #15) ;
-//   - un salon    → écran d'activité en haut (4 KPI + évolution, graphiques CA &
-//                   fréquentation, prestations en cours, timeline, alertes), puis le
-//                   socle analytique détaillé (RDV du jour #39, CA #40, prestations #41,
-//                   performance coiffeurs #43).
-// Le décompte du jour (#39) et le CA (#40) restent des **socles requis** (un échec →
-// panneau d'erreur maîtrisé) ; le reste se charge **en parallèle** (`Promise.all`,
+//   - un salon    → indicateurs toujours visibles (4 KPI + prestations en cours),
+//                   puis une grille de **cartes « À surveiller »** (`InsightCards`)
+//                   cliquables, chacune menant à son détail complet **ancré**
+//                   juste en dessous.
+//
+// **Réorganisation** (2e passe, après le premier groupe d'onglets) :
+//   - « Dernières activités » a été **retirée** (l'onglet, puis la page dédiée
+//     `/gerant/activites`, ont tous deux été supprimés) ;
+//   - « Alertes importantes », « Analyse détaillée » (renommée « Fréquentation
+//     & équipe »), « Chiffre d'affaires » et « Prestations les plus demandées »
+//     deviennent des **cartes** dans la grille des indicateurs clés plutôt que
+//     des onglets cachés derrière un clic — `InsightCards` gère l'état
+//     d'expansion (une carte à la fois) et rend les panneaux existants
+//     (`AlertsPanel`/`AttendanceChart`/`HairdresserPerformancePanel`/
+//     `RevenueTiles`/`RevenueChart`/`ServiceDemandPanel`) **inchangés**, juste
+//     sortis de l'ancien `<Tabs>`.
+// La carte « Prestations les plus demandées » headline le **top de la semaine**
+// (nouvelle requête `service-demand` bornée lundi→dimanche, `weekBounds` — même
+// semaine que la tuile CA) ; son détail complet (`ServiceDemandPanel`, bascule
+// volume/revenu) reste **non borné** (tout l'historique), comme avant.
+//
+// Le CA (#40) reste un **socle requis** (un échec → panneau d'erreur maîtrisé) ; le
+// reste se charge **en parallèle** (`Promise.all`,
 // budget « dashboard < 3 s » §12.1) et **dégrade localement** panneau par panneau
-// (message neutre, patron #41) sans casser le tableau de bord. Toutes les données
-// proviennent des **APIs backend réelles** (aucun mock). L'écran s'**actualise
-// automatiquement** (`<AutoRefresh>` : `router.refresh()` visibility-aware — le jeton
-// reste côté serveur). Aucune PII : compteurs, montants (chaînes décimales), noms
-// d'affichage maîtrisés.
+// (message neutre, patron #41) sans casser le tableau de bord. Toutes les
+// données proviennent des **APIs backend réelles** (aucun mock). L'écran
+// s'**actualise automatiquement** (`<AutoRefresh>` : `router.refresh()`
+// visibility-aware — le jeton reste côté serveur). Aucune PII : compteurs, montants
+// (chaînes décimales), noms d'affichage maîtrisés.
 
 import Link from "next/link";
 
 import { createCookieSessionStore } from "@/src/adapters/api/cookie-session-store";
-import { createHttpAppointmentGateway } from "@/src/adapters/api/http-appointment-gateway";
 import { createHttpSalonGateway } from "@/src/adapters/api/http-salon-gateway";
 import { createHttpStatsGateway } from "@/src/adapters/api/http-stats-gateway";
-import { ActivityTimeline } from "@/src/adapters/ui/activity-timeline";
-import { AlertsPanel } from "@/src/adapters/ui/alerts-panel";
-import { AttendanceChart } from "@/src/adapters/ui/attendance-chart";
 import { AutoRefresh } from "@/src/adapters/ui/auto-refresh";
-import { DailySummaryTiles } from "@/src/adapters/ui/daily-summary-tiles";
 import { DashboardKpiCards } from "@/src/adapters/ui/dashboard-kpi-cards";
-import { HairdresserPerformancePanel } from "@/src/adapters/ui/hairdresser-performance-panel";
 import { InProgressListPanel } from "@/src/adapters/ui/in-progress-list";
+import { InsightCards } from "@/src/adapters/ui/insight-cards";
 import { PeriodFilter } from "@/src/adapters/ui/period-filter";
-import { RevenueChart } from "@/src/adapters/ui/revenue-chart";
-import { RevenueTiles } from "@/src/adapters/ui/revenue-tiles";
-import { ServiceDemandPanel } from "@/src/adapters/ui/service-demand-panel";
-import { todayIso } from "@/src/domain/appointment/planning-view";
 import { periodQuery, readPeriodSelection } from "@/src/domain/dashboard/period";
+import { todayIso, weekBounds } from "@/src/domain/shared/date";
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -82,19 +91,9 @@ export default async function GerantDashboardPage({
   }
 
   const statsGateway = createHttpStatsGateway({ accessToken });
-  const appointmentGateway = createHttpAppointmentGateway({ accessToken });
 
-  // Socle requis (#39/#40) : sans le décompte du jour ni le CA, l'écran n'a pas de base
-  // fiable — un échec bascule sur un panneau d'erreur maîtrisé (§H « erreur globale »).
-  const daily = await appointmentGateway.dailySummary(salon.id, today);
-  if (!daily.ok) {
-    return (
-      <section className="flex flex-col gap-6">
-        <Header />
-        <ErrorPanel />
-      </section>
-    );
-  }
+  // Socle requis (#40) : sans le CA, l'écran n'a pas de base fiable — un échec
+  // bascule sur un panneau d'erreur maîtrisé (§H « erreur globale »).
   const revenue = await statsGateway.revenueSummary(salon.id, today);
   if (!revenue.ok) {
     return (
@@ -105,27 +104,31 @@ export default async function GerantDashboardPage({
     );
   }
 
+  // Semaine civile lundi→dimanche de référence (même semaine que la tuile CA)
+  // — headline de la carte « Prestations les plus demandées ».
+  const [weekFrom, weekTo] = weekBounds(today);
+
   // Écran d'activité (#148) + analytique détaillé (#41/#43), **en parallèle**. Le
   // filtre de période pilote les KPI et les deux séries ; chaque panneau dégrade
   // localement en cas de panne (patron #41).
   const query = periodQuery(selection);
   const [
     demand,
+    demandThisWeek,
     performance,
     kpis,
     revenueSeries,
     attendanceSeries,
     inProgress,
-    activity,
     alerts,
   ] = await Promise.all([
     statsGateway.serviceDemand(salon.id),
+    statsGateway.serviceDemand(salon.id, weekFrom, weekTo),
     statsGateway.hairdresserPerformance(salon.id),
     statsGateway.dashboardKpis(salon.id, query),
     statsGateway.revenueSeries(salon.id, query),
     statsGateway.attendanceSeries(salon.id, query),
     statsGateway.inProgress(salon.id),
-    statsGateway.activity(salon.id),
     statsGateway.alerts(salon.id),
   ]);
 
@@ -136,29 +139,20 @@ export default async function GerantDashboardPage({
 
       <DashboardKpiCards kpis={kpis.ok ? kpis.kpis : null} />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <RevenueChart series={revenueSeries.ok ? revenueSeries.series : null} />
-        <AttendanceChart
-          series={attendanceSeries.ok ? attendanceSeries.series : null}
-        />
-      </div>
-
       <InProgressListPanel
         inProgress={inProgress.ok ? inProgress.inProgress : null}
       />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <ActivityTimeline feed={activity.ok ? activity.feed : null} />
-        <AlertsPanel alerts={alerts.ok ? alerts.alerts : null} />
-      </div>
-
-      <SectionDivider label="Analyse détaillée" />
-
-      <DailySummaryTiles summary={daily.summary} />
-      <RevenueTiles summary={revenue.summary} />
-      <ServiceDemandPanel ranking={demand.ok ? demand.ranking : null} />
-      <HairdresserPerformancePanel
-        report={performance.ok ? performance.report : null}
+      <InsightCards
+        alerts={alerts.ok ? alerts.alerts : null}
+        attendanceToday={kpis.ok ? kpis.kpis.attendanceToday : null}
+        attendanceSeries={attendanceSeries.ok ? attendanceSeries.series : null}
+        hairdresserReport={performance.ok ? performance.report : null}
+        revenueThisWeek={kpis.ok ? kpis.kpis.revenueThisWeek : null}
+        revenueSummary={revenue.summary}
+        revenueSeries={revenueSeries.ok ? revenueSeries.series : null}
+        serviceDemandThisWeek={demandThisWeek.ok ? demandThisWeek.ranking : null}
+        serviceDemandRanking={demand.ok ? demand.ranking : null}
       />
     </section>
   );
@@ -176,17 +170,6 @@ function Header({ autoRefresh = false }: { autoRefresh?: boolean }) {
         </p>
       </div>
       {autoRefresh ? <AutoRefresh /> : null}
-    </div>
-  );
-}
-
-function SectionDivider({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-3 pt-2">
-      <span className="text-sm font-semibold tracking-[0.14em] text-muted uppercase">
-        {label}
-      </span>
-      <span className="h-px flex-1 bg-border" aria-hidden="true" />
     </div>
   );
 }

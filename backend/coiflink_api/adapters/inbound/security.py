@@ -32,12 +32,12 @@ Sécurité (PRD §11.1/§11.2/§11.4) :
 
 Comment protéger une nouvelle route (mode d'emploi des issues M2–M5) :
 
-    @router.get("/salons/{salon_id}/appointments")
-    def list_appointments(
+    @router.get("/salons/{salon_id}/queue/tickets")
+    def list_queue_tickets(
         salon_id: uuid.UUID,
         scope: Annotated[SalonScope, Depends(require_salon_scope)],
         principal: Annotated[
-            Principal, Depends(require_permission(Permission.APPOINTMENT_READ_SALON))
+            Principal, Depends(require_permission(Permission.QUEUE_TICKET_READ_SALON))
         ],
     ): ...
 
@@ -108,26 +108,26 @@ PUBLIC_ROUTE_PATHS: frozenset[str] = frozenset(
         "/auth/register/manager",
         "/auth/login",
         "/auth/refresh",
-        # Authentification d'une borne kiosque (#155, US-8.1) — décision de sécurité
+        # Authentification d'une borne terminal (#155, US-8.1) — décision de sécurité
         # revue (spec §F, ADR-0041) : c'est un **endpoint d'authentification**, au
         # même titre que `/auth/login`. Il échange un credential de device
-        # `(device_id, secret)` contre une paire JWT courte au rôle `KIOSK` ; il est
+        # `(device_id, secret)` contre une paire JWT courte au rôle `TERMINAL` ; il est
         # rate-limité par `device_id` et répond un `401` **générique constant** pour
         # tout échec (device inconnu, secret faux, device révoqué) — aucun oracle.
-        # Les routes de **provisioning** (`/salons/{id}/kiosk-devices`) restent, elles,
-        # protégées (`KIOSK_PROVISION` + portée salon) — jamais publiques.
-        "/auth/kiosk/login",
-        # Activation d'une borne kiosque (#155, US-8.1) — décision de sécurité revue
+        # Les routes de **provisioning** (`/salons/{id}/terminal-devices`) restent, elles,
+        # protégées (`TERMINAL_PROVISION` + portée salon) — jamais publiques.
+        "/auth/terminal/login",
+        # Activation d'une borne terminal (#155, US-8.1) — décision de sécurité revue
         # (spec §F, ADR-0041) : c'est un **endpoint d'échange**, analogue à
-        # `/auth/kiosk/login` et `/auth/password/reset/confirm`. Une borne non encore
+        # `/auth/terminal/login` et `/auth/password/reset/confirm`. Une borne non encore
         # activée n'a **aucun** credential, donc aucun principal à présenter : elle
         # échange un code à 6 chiffres **à usage unique** (expirant, borné en essais)
         # contre son secret longue durée. Rate-limité **par IP** (le `device_id` est
         # inconnu tant que le code n'est pas résolu) et `400` **générique constant**
         # pour tout échec (code inconnu, expiré, déjà utilisé) — aucun oracle.
-        # Le **provisioning** (`/salons/{id}/kiosk-devices`), lui, reste protégé
-        # (`KIOSK_PROVISION` + portée salon) — jamais public.
-        "/auth/kiosk/activate",
+        # Le **provisioning** (`/salons/{id}/terminal-devices`), lui, reste protégé
+        # (`TERMINAL_PROVISION` + portée salon) — jamais public.
+        "/auth/terminal/activate",
         "/auth/password/reset/request",
         "/auth/password/reset/confirm",
         # Catalogue client (#18) — décision de sécurité revue (spec §A.2, ADR-0015) :

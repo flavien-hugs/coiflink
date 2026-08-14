@@ -46,22 +46,22 @@ _DATE_B = datetime.date(2026, 3, 31)
 
 class TestConstants:
     def test_completed_status_value(self) -> None:
-        """Seul `COMPLETED` est une prestation réalisée (jamais NO_SHOW/CANCELLED/…)."""
-        assert COMPLETED_STATUS == "COMPLETED"
+        """Seul `done` est une prestation réalisée (jamais waiting/called/in_progress/expired)."""
+        assert COMPLETED_STATUS == "done"
 
     def test_paid_statuses_contains_validated(self) -> None:
         assert "VALIDATED" in PAID_PAYMENT_STATUSES
 
     def test_paid_statuses_contains_adjusted(self) -> None:
-        """Un paiement corrigé (`ADJUSTED`) couvre toujours le RDV (ADR-0028)."""
+        """Un paiement corrigé (`ADJUSTED`) couvre toujours le ticket (ADR-0028)."""
         assert "ADJUSTED" in PAID_PAYMENT_STATUSES
 
     def test_paid_statuses_excludes_pending(self) -> None:
-        """Un paiement `PENDING` n'est pas acquis : le RDV reste un écart."""
+        """Un paiement `PENDING` n'est pas acquis : le ticket reste un écart."""
         assert "PENDING" not in PAID_PAYMENT_STATUSES
 
     def test_paid_statuses_excludes_cancelled(self) -> None:
-        """Un paiement `CANCELLED` ne couvre rien : le RDV reste un écart."""
+        """Un paiement `CANCELLED` ne couvre rien : le ticket reste un écart."""
         assert "CANCELLED" not in PAID_PAYMENT_STATUSES
 
     def test_paid_statuses_is_tuple(self) -> None:
@@ -224,11 +224,14 @@ class TestDiscrepancyFilter:
 class TestCashDiscrepancy:
     def _make(self, **kwargs) -> CashDiscrepancy:  # type: ignore[no-untyped-def]
         defaults = dict(
-            appointment_id=uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001"),
+            queue_ticket_id=uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001"),
             salon_id=uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001"),
-            appointment_date=datetime.date(2026, 3, 15),
-            start_time=datetime.time(10, 0),
-            client_id=uuid.UUID("cccccccc-0000-0000-0000-000000000001"),
+            ticket_number=14,
+            issued_date=datetime.date(2026, 3, 15),
+            completed_at=datetime.datetime(
+                2026, 3, 15, 10, 0, tzinfo=datetime.timezone.utc
+            ),
+            customer_profile_id=uuid.UUID("cccccccc-0000-0000-0000-000000000001"),
             expected_amount=decimal.Decimal("5000.00"),
         )
         defaults.update(kwargs)
@@ -246,6 +249,11 @@ class TestCashDiscrepancy:
         d = self._make(client_name="Awa Koné")
         assert d.client_name == "Awa Koné"
 
+    def test_customer_profile_id_nullable_for_anonymous_ticket(self) -> None:
+        """Un ticket anonyme (client refuse son identité) n'a pas de fiche liée."""
+        d = self._make(customer_profile_id=None)
+        assert d.customer_profile_id is None
+
     def test_frozen_cannot_mutate_expected_amount(self) -> None:
         """`CashDiscrepancy` est une projection de lecture immuable (frozen dataclass)."""
         d = self._make()
@@ -253,9 +261,9 @@ class TestCashDiscrepancy:
             d.expected_amount = decimal.Decimal("0.00")  # type: ignore[misc]
 
     def test_equality_by_value(self) -> None:
-        appt_id = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
-        d1 = self._make(appointment_id=appt_id)
-        d2 = self._make(appointment_id=appt_id)
+        ticket_id = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
+        d1 = self._make(queue_ticket_id=ticket_id)
+        d2 = self._make(queue_ticket_id=ticket_id)
         assert d1 == d2
 
     def test_expected_amount_is_decimal(self) -> None:

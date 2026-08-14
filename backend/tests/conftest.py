@@ -18,8 +18,6 @@ from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenSe
 from coiflink_api.domain.credentials import UserCredentials
 from coiflink_api.domain.enums import (
     NotificationChannel,
-    NotificationStatus,
-    NotificationType,
 )
 from coiflink_api.domain.employee import Employee
 from coiflink_api.domain.errors import EmployeeAlreadyInSalon, PhoneAlreadyInUse, TooManyLoginAttempts
@@ -687,6 +685,7 @@ class FakeServiceRepository:
 
     def __init__(self) -> None:
         self._services: dict[uuid.UUID, object] = {}
+        self._photos: dict[uuid.UUID, list] = {}
         self.created: list = []
 
     def create(self, service):  # type: ignore[no-untyped-def]
@@ -701,11 +700,11 @@ class FakeServiceRepository:
             duration_minutes=service.duration_minutes,
             category=service.category,
             is_active=True,
-            image_object_key=None,
             created_at=_CREATED_AT,
             updated_at=_CREATED_AT,
         )
         self._services[entity.id] = entity
+        self._photos[entity.id] = []
         self.created.append(service)
         return entity
 
@@ -770,19 +769,35 @@ class FakeServiceRepository:
         self._services[service_id] = updated
         return updated
 
-    def set_image(self, salon_id: uuid.UUID, service_id: uuid.UUID, image_object_key):  # type: ignore[no-untyped-def]
-        import dataclasses as _dc
+    def add_photo(self, salon_id: uuid.UUID, service_id: uuid.UUID, object_key: str):  # type: ignore[no-untyped-def]
+        from coiflink_api.domain.service import ServicePhoto
 
-        from coiflink_api.domain.errors import ServiceNotFound
-
-        service = self.find_by_id(salon_id, service_id)
-        if service is None:
-            raise ServiceNotFound("Prestation introuvable.")
-        updated = _dc.replace(
-            service, image_object_key=image_object_key, updated_at=_CREATED_AT
+        photo = ServicePhoto(
+            id=uuid.uuid4(),
+            salon_id=salon_id,
+            service_id=service_id,
+            object_key=object_key,
+            position=len(self._photos.get(service_id, [])),
+            created_at=_CREATED_AT,
         )
-        self._services[service_id] = updated
-        return updated
+        self._photos.setdefault(service_id, []).append(photo)
+        return photo
+
+    def list_photos(self, salon_id: uuid.UUID, service_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        return tuple(
+            p for p in self._photos.get(service_id, []) if p.salon_id == salon_id
+        )
+
+    def count_photos(self, salon_id: uuid.UUID, service_id: uuid.UUID) -> int:
+        return len(self.list_photos(salon_id, service_id))
+
+    def delete_photo(self, salon_id: uuid.UUID, service_id: uuid.UUID, photo_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        photos = self._photos.get(service_id, [])
+        for photo in photos:
+            if photo.id == photo_id and photo.salon_id == salon_id:
+                photos.remove(photo)
+                return photo.object_key
+        return None
 
 
 class FakeSalonCatalogRepository:
@@ -805,11 +820,18 @@ class FakeSalonCatalogRepository:
         services: dict | None = None,
         photos: dict | None = None,
         hairdressers: dict | None = None,
+        service_photos: dict | None = None,
     ) -> None:
         self._salons: list = list(salons or [])
         self._services: dict = dict(services or {})
         self._photos: dict = dict(photos or {})
         self._hairdressers: dict = dict(hairdressers or {})
+        # Clé = `service_id` (unique tous salons confondus dans les tests, comme
+        # `FakeServiceRepository._photos`) → liste de `ServicePhoto`.
+        self._service_photos: dict = dict(service_photos or {})
+        # Trace les appels (salon_id) — sert à prouver l'absence de N+1 dans
+        # GetPublicSalon (une seule requête groupée, jamais une par prestation).
+        self.list_service_photos_calls: list = []
 
     def _active_matching(self, query) -> list:  # type: ignore[no-untyped-def]
         active = [s for s in self._salons if s.status == "ACTIVE"]
@@ -846,6 +868,15 @@ class FakeSalonCatalogRepository:
     def list_photos(self, salon_id):  # type: ignore[no-untyped-def]
         return tuple(self._photos.get(salon_id, []))
 
+    def list_service_photos(self, salon_id):  # type: ignore[no-untyped-def]
+        self.list_service_photos_calls.append(salon_id)
+        return tuple(
+            p
+            for photos in self._service_photos.values()
+            for p in photos
+            if p.salon_id == salon_id
+        )
+
     def list_active_hairdressers(self, salon_id):  # type: ignore[no-untyped-def]
         hairdressers = [
             h for h in self._hairdressers.get(salon_id, []) if h.status == "ACTIVE"
@@ -864,523 +895,6 @@ class FakeAuditLog:
 
     def record(self, entry) -> None:  # type: ignore[no-untyped-def]
         self.recorded.append(entry)
-
-
-class FakeNotificationRepository:
-    """Dépôt de notifications en mémoire (US-7.1 #45, US-7.2 #46).
-
-    Implémente le port `NotificationRepository` sans I/O réelle. `enqueued` accumule
-    les `NotificationToCreate` émises pour vérifier qu'une confirmation part **à la
-    création** d'un RDV (et **aucune** en cas d'échec). `cancel_calls` enregistre
-    chaque appel à `cancel_pending_for_appointment` (vérifie qu'il a lieu **une** fois,
-    et pas sur les transitions qui ne doivent pas annuler de rappel) ; l'appel marque
-    aussi (en mémoire) les rappels `PENDING` du RDV concerné comme `CANCELLED` —
-    miroir de l'`UPDATE` ciblé de `SqlNotificationRepository`. N'expose **aucune**
-    lecture (pas d'endpoint client au périmètre #45/#46) et ne journalise **rien**
-    (ADR-0006).
-    """
-
-    def __init__(self) -> None:
-        self.enqueued: list = []
-        self.cancel_calls: list = []
-        # Notifications salon pré-chargées pour `list_for_salon` (#148).
-        self.salon_notifications: tuple = ()
-
-    def list_for_salon(self, salon_id, *, limit):  # type: ignore[no-untyped-def]
-        """Lecture salon des notifications (timeline d'activité, #148)."""
-        return tuple(self.salon_notifications[:limit])
-
-    def enqueue(self, notification) -> None:  # type: ignore[no-untyped-def]
-        self.enqueued.append(notification)
-
-    def cancel_pending_for_appointment(self, appointment_id) -> None:  # type: ignore[no-untyped-def]
-        self.cancel_calls.append(appointment_id)
-        self.enqueued = [
-            dataclasses.replace(n, status=NotificationStatus.CANCELLED.value)
-            if (
-                n.appointment_id == appointment_id
-                and n.type == NotificationType.REMINDER.value
-                and n.status == NotificationStatus.PENDING.value
-            )
-            else n
-            for n in self.enqueued
-        ]
-
-
-class FakeAppointmentRepository:
-    """Dépôt de rendez-vous en mémoire (US-3.7, #21 / US-3.2, #23).
-
-    Implémente le port `AppointmentRepository` sans I/O réelle. `booked` associe une
-    clé `(salon_id, hairdresser_id, date)` à des `SlotRange` déjà réservés (alimente
-    le moteur de disponibilité). `raise_conflict=True` simule la **course
-    concurrente** : `create`/`update` lèvent `SlotAlreadyBooked`. `raise_not_modifiable=True`
-    simule la garde TOCTOU : `update` lève `AppointmentNotModifiable`. `appointments`
-    pré-charge des `Appointment` (entités de lecture) pour `get_owned`/`update`/`list_for_client`.
-    `booked_slots_calls` enregistre chaque appel pour vérifier l'`exclude_appointment_id` (#23).
-    """
-
-    def __init__(
-        self,
-        booked: dict | None = None,
-        *,
-        raise_conflict: bool = False,
-        raise_not_modifiable: bool = False,
-        raise_not_cancellable: bool = False,
-        raise_invalid_transition: bool = False,
-        appointments: list | None = None,
-    ) -> None:
-        self._booked: dict = dict(booked or {})
-        self._raise_conflict = raise_conflict
-        self._raise_not_modifiable = raise_not_modifiable
-        self._raise_not_cancellable = raise_not_cancellable
-        self._raise_invalid_transition = raise_invalid_transition
-        self.created: list = []
-        self.updated: list = []
-        self.cancelled: list = []
-        # #25 — mémorise les transitions `(appointment_id, from, to, reason)` et les
-        # (dés)assignations `(appointment_id, hairdresser_id)` pour assertions.
-        self.status_changes: list = []
-        self.assignments: list = []
-        self.booked_slots_calls: list = []
-        # Résultats configurables pour `demand_by_service` (US-6.3 #41).
-        self.demand_results: tuple = ()
-        self.demand_by_service_calls: list[dict] = []
-        # Résultats configurables pour `performance_by_hairdresser` (US-6.5 #43).
-        self.performance_results: tuple = ()
-        self.performance_by_hairdresser_calls: list[dict] = []
-        # Résultats configurables pour `list_in_progress_details` (dashboard #148).
-        self.in_progress_details: tuple = ()
-        self.list_in_progress_details_calls: list[dict] = []
-        # Résultats configurables pour `list_queue_details` (file d'attente #150).
-        self.queue_details: tuple = ()
-        self.list_queue_details_calls: list[dict] = []
-        self._appointments: dict = {}
-        for appt in (appointments or []):
-            self._appointments[appt.id] = appt
-
-    def booked_slots(  # type: ignore[no-untyped-def]
-        self,
-        salon_id,
-        hairdresser_id,
-        date,
-        *,
-        exclude_appointment_id=None,
-    ):
-        self.booked_slots_calls.append({
-            "salon_id": salon_id,
-            "hairdresser_id": hairdresser_id,
-            "date": date,
-            "exclude_appointment_id": exclude_appointment_id,
-        })
-        return tuple(self._booked.get((salon_id, hairdresser_id, date), ()))
-
-    def create(self, appointment):  # type: ignore[no-untyped-def]
-        from coiflink_api.domain.appointment import Appointment
-        from coiflink_api.domain.errors import SlotAlreadyBooked
-
-        if self._raise_conflict:
-            raise SlotAlreadyBooked(
-                "Ce créneau vient d'être réservé pour ce coiffeur."
-            )
-        self.created.append(appointment)
-        entity = Appointment(
-            id=uuid.uuid4(),
-            salon_id=appointment.salon_id,
-            client_id=appointment.client_id,
-            hairdresser_id=appointment.hairdresser_id,
-            date=appointment.date,
-            start_time=appointment.start_time,
-            end_time=appointment.end_time,
-            status=appointment.status,
-            client_note=appointment.client_note,
-            created_at=_CREATED_AT,
-            services=appointment.services,
-        )
-        self._appointments[entity.id] = entity
-        return entity
-
-    def get_owned(self, appointment_id, client_id):  # type: ignore[no-untyped-def]
-        """Retourne le RDV si et seulement si `client_id` correspond (§11.2)."""
-        appt = self._appointments.get(appointment_id)
-        if appt is None or appt.client_id != client_id:
-            return None
-        return appt
-
-    def update(self, appointment_id, changes):  # type: ignore[no-untyped-def]
-        import dataclasses as _dc
-        from coiflink_api.domain.errors import AppointmentNotModifiable, SlotAlreadyBooked
-
-        if self._raise_not_modifiable:
-            raise AppointmentNotModifiable("Ce rendez-vous n'est plus modifiable.")
-        if self._raise_conflict:
-            raise SlotAlreadyBooked(
-                "Ce créneau vient d'être réservé pour ce coiffeur."
-            )
-        appt = self._appointments.get(appointment_id)
-        if appt is None:
-            raise AppointmentNotModifiable("Ce rendez-vous n'est plus modifiable.")
-        self.updated.append((appointment_id, changes))
-        updated = _dc.replace(
-            appt,
-            date=changes.date,
-            start_time=changes.start_time,
-            end_time=changes.end_time,
-            hairdresser_id=changes.hairdresser_id,
-            client_note=changes.client_note,
-            services=changes.services,
-        )
-        self._appointments[appointment_id] = updated
-        return updated
-
-    def cancel(self, appointment_id, *, reason):  # type: ignore[no-untyped-def]
-        """Annule le RDV (transition `CANCELLED`) et mémorise le motif transmis (#24).
-
-        `raise_not_cancellable=True` simule la garde TOCTOU (statut passé terminal
-        entre la lecture et l'écriture) : lève `AppointmentNotCancellable`. Un RDV
-        déjà terminal (hors `PENDING`/`CONFIRMED`) ou absent est refusé de la même
-        façon (miroir de l'UPDATE conditionnel base). `cancelled` enregistre chaque
-        `(appointment_id, reason)` reçu pour vérifier que le motif normalisé transite.
-        """
-        import dataclasses as _dc
-        from coiflink_api.domain.appointment import CLIENT_CANCELLABLE_STATUSES
-        from coiflink_api.domain.enums import AppointmentStatus
-        from coiflink_api.domain.errors import AppointmentNotCancellable
-
-        if self._raise_not_cancellable:
-            raise AppointmentNotCancellable(
-                "Ce rendez-vous ne peut plus être annulé."
-            )
-        appt = self._appointments.get(appointment_id)
-        if appt is None or appt.status not in CLIENT_CANCELLABLE_STATUSES:
-            raise AppointmentNotCancellable(
-                "Ce rendez-vous ne peut plus être annulé."
-            )
-        self.cancelled.append((appointment_id, reason))
-        updated = _dc.replace(
-            appt,
-            status=AppointmentStatus.CANCELLED.value,
-        )
-        self._appointments[appointment_id] = updated
-        return updated
-
-    def get_in_salon(self, appointment_id, salon_id):  # type: ignore[no-untyped-def]
-        """Retourne le RDV si et seulement si `salon_id` correspond (§11.2, #25)."""
-        appt = self._appointments.get(appointment_id)
-        if appt is None or appt.salon_id != salon_id:
-            return None
-        return appt
-
-    def set_status(  # type: ignore[no-untyped-def]
-        self,
-        appointment_id,
-        salon_id,
-        *,
-        expected_current,
-        target,
-        reason=None,
-    ):
-        """Transition de statut gérant (UPDATE conditionnel salon + statut, #25).
-
-        `raise_invalid_transition=True` simule la garde TOCTOU/hors-portée : lève
-        `InvalidAppointmentTransition`. Sinon, refuse (même erreur) un RDV disparu,
-        hors salon, ou dont le statut ne correspond pas à `expected_current` — miroir
-        du `WHERE id AND salon_id AND status = :expected` du SQL. `status_changes`
-        enregistre `(appointment_id, from, to, reason)`.
-        """
-        import dataclasses as _dc
-        from coiflink_api.domain.errors import InvalidAppointmentTransition
-
-        if self._raise_invalid_transition:
-            raise InvalidAppointmentTransition(
-                "Cette transition de statut n'est pas autorisée."
-            )
-        appt = self._appointments.get(appointment_id)
-        if (
-            appt is None
-            or appt.salon_id != salon_id
-            or appt.status != expected_current
-        ):
-            raise InvalidAppointmentTransition(
-                "Cette transition de statut n'est pas autorisée."
-            )
-        self.status_changes.append(
-            (appointment_id, expected_current, target, reason)
-        )
-        updated = _dc.replace(appt, status=target)
-        self._appointments[appointment_id] = updated
-        return updated
-
-    def assign_hairdresser(self, appointment_id, salon_id, *, hairdresser_id):  # type: ignore[no-untyped-def]
-        """(Dés)assigne un coiffeur à un RDV actif du salon (#25).
-
-        `raise_conflict=True` simule le conflit d'agenda (exclusion base) : lève
-        `SlotAlreadyBooked`. Refuse (via `InvalidAppointmentTransition`) un RDV
-        disparu, hors salon ou terminal — miroir du `WHERE ... status IN (actifs)`.
-        `assignments` enregistre `(appointment_id, hairdresser_id)`.
-        """
-        import dataclasses as _dc
-        from coiflink_api.domain.appointment import CLIENT_MODIFIABLE_STATUSES
-        from coiflink_api.domain.errors import (
-            InvalidAppointmentTransition,
-            SlotAlreadyBooked,
-        )
-
-        if self._raise_conflict:
-            raise SlotAlreadyBooked(
-                "Ce créneau vient d'être réservé pour ce coiffeur."
-            )
-        appt = self._appointments.get(appointment_id)
-        if (
-            appt is None
-            or appt.salon_id != salon_id
-            or appt.status not in CLIENT_MODIFIABLE_STATUSES
-        ):
-            raise InvalidAppointmentTransition(
-                "Ce rendez-vous n'accepte plus d'assignation de coiffeur."
-            )
-        self.assignments.append((appointment_id, hairdresser_id))
-        updated = _dc.replace(appt, hairdresser_id=hairdresser_id)
-        self._appointments[appointment_id] = updated
-        return updated
-
-    def mark_arrived(self, appointment_id, salon_id, *, now):  # type: ignore[no-untyped-def]
-        """Pose `arrived_at` sur un RDV `CONFIRMED` du salon — idempotent (#150).
-
-        Refuse (`InvalidAppointmentTransition`) un RDV disparu, hors salon, ou
-        non `CONFIRMED` — miroir du `WHERE ... status = 'CONFIRMED'` du SQL.
-        """
-        import dataclasses as _dc
-        from coiflink_api.domain.enums import AppointmentStatus
-        from coiflink_api.domain.errors import InvalidAppointmentTransition
-
-        appt = self._appointments.get(appointment_id)
-        if (
-            appt is None
-            or appt.salon_id != salon_id
-            or appt.status != AppointmentStatus.CONFIRMED.value
-        ):
-            raise InvalidAppointmentTransition(
-                "Cette prestation ne peut pas être pointée dans cet état."
-            )
-        if appt.arrived_at is None:
-            appt = _dc.replace(appt, arrived_at=now)
-            self._appointments[appointment_id] = appt
-        return appt
-
-    def mark_started(self, appointment_id, salon_id, *, now):  # type: ignore[no-untyped-def]
-        """Pose `started_at` sur un RDV `CONFIRMED` du salon — idempotent (#150).
-
-        Ne revalide **pas** les préconditions arrivée/coiffeuse (responsabilité
-        du cas d'usage `StartAppointmentService`) — miroir du dépôt réel.
-        """
-        import dataclasses as _dc
-        from coiflink_api.domain.enums import AppointmentStatus
-        from coiflink_api.domain.errors import InvalidAppointmentTransition
-
-        appt = self._appointments.get(appointment_id)
-        if (
-            appt is None
-            or appt.salon_id != salon_id
-            or appt.status != AppointmentStatus.CONFIRMED.value
-        ):
-            raise InvalidAppointmentTransition(
-                "Cette prestation ne peut pas être pointée dans cet état."
-            )
-        if appt.started_at is None:
-            appt = _dc.replace(appt, started_at=now)
-            self._appointments[appointment_id] = appt
-        return appt
-
-    def list_queue_details(self, salon_id, *, day):  # type: ignore[no-untyped-def]
-        """Retourne `queue_details` (préconfiguré) et enregistre l'appel (#150).
-
-        Comme `list_in_progress_details` : le fake ne ré-agrège pas depuis
-        `_appointments` — les tests configurent `queue_details` (tuple de
-        `QueueAppointmentRow`) directement. L'isolation SQL réelle et les joins
-        de noms sont testés en e2e.
-        """
-        self.list_queue_details_calls.append({"salon_id": salon_id, "day": day})
-        return self.queue_details
-
-    def list_for_client(  # type: ignore[no-untyped-def]
-        self, client_id, statuses=None, *, newest_first=False
-    ):
-        """Liste les RDV du `client_id`, filtrés par `statuses` si fourni.
-
-        `newest_first` inverse l'ordre (historique #30) ; par défaut, tri
-        chronologique croissant `(date, start_time)` — miroir du SQL.
-        """
-        result = [
-            a
-            for a in self._appointments.values()
-            if a.client_id == client_id
-            and (statuses is None or a.status in statuses)
-        ]
-        result.sort(
-            key=lambda a: (a.date, a.start_time), reverse=newest_first
-        )
-        return tuple(result)
-
-    def list_for_salon(  # type: ignore[no-untyped-def]
-        self, salon_id, date_from, date_to, statuses=None
-    ):
-        """RDV du salon dans `[date_from, date_to]`, filtrés par statut, triés (#26).
-
-        Refiltre `salon_id` (isolation §11.2) et applique la plage **inclusive** + le
-        filtre optionnel `statuses` ; tri `(date, start_time)` — miroir du SQL.
-        """
-        result = [
-            a
-            for a in self._appointments.values()
-            if a.salon_id == salon_id
-            and date_from <= a.date <= date_to
-            and (statuses is None or a.status in statuses)
-        ]
-        result.sort(key=lambda a: (a.date, a.start_time))
-        return tuple(result)
-
-    def list_for_hairdresser(  # type: ignore[no-untyped-def]
-        self, hairdresser_id, date_from, date_to, statuses=None
-    ):
-        """RDV assignés au coiffeur dans `[date_from, date_to]`, filtrés, triés (#27).
-
-        Refiltre `hairdresser_id` (isolation « son planning » §11.2) : un RDV d'un autre
-        coiffeur ou **non assigné** (`hairdresser_id is None`) est exclu par l'égalité.
-        Applique la plage **inclusive** + le filtre optionnel `statuses` ; tri
-        `(date, start_time)` — miroir du SQL.
-        """
-        result = [
-            a
-            for a in self._appointments.values()
-            if a.hairdresser_id == hairdresser_id
-            and date_from <= a.date <= date_to
-            and (statuses is None or a.status in statuses)
-        ]
-        result.sort(key=lambda a: (a.date, a.start_time))
-        return tuple(result)
-
-    def count_by_status_for_day(  # type: ignore[no-untyped-def]
-        self, salon_id, day
-    ):
-        """Décompte des RDV du salon pour `day`, groupés par statut (US-6.1 #39).
-
-        Refiltre `salon_id` et `date` (isolation §11.2) — miroir du `GROUP BY` SQL.
-        Retourne `{status: count}` ; un statut sans RDV du jour est absent de la map.
-        """
-        counts: dict = {}
-        for appt in self._appointments.values():
-            if appt.salon_id == salon_id and appt.date == day:
-                counts[appt.status] = counts.get(appt.status, 0) + 1
-        return counts
-
-    def count_by_status_in_range(  # type: ignore[no-untyped-def]
-        self, salon_id, *, statuses, date_from, date_to
-    ):
-        """Décompte des RDV du salon par statut sur une plage (dashboard #148).
-
-        Refiltre `salon_id` + plage + `statuses` (isolation §11.2) — miroir du SQL.
-        """
-        counts: dict = {}
-        for appt in self._appointments.values():
-            if (
-                appt.salon_id == salon_id
-                and date_from <= appt.date <= date_to
-                and appt.status in statuses
-            ):
-                counts[appt.status] = counts.get(appt.status, 0) + 1
-        return counts
-
-    def count_distinct_completed_clients(  # type: ignore[no-untyped-def]
-        self, salon_id, *, statuses, date_from, date_to
-    ):
-        """Comptes distincts avec un RDV réalisé sur la période (dashboard #148).
-
-        `client_id` est compté **jamais émis** — seul l'entier quitte le fake.
-        """
-        return len({
-            appt.client_id
-            for appt in self._appointments.values()
-            if (
-                appt.salon_id == salon_id
-                and date_from <= appt.date <= date_to
-                and appt.status in statuses
-            )
-        })
-
-    def attendance_series(  # type: ignore[no-untyped-def]
-        self, salon_id, *, date_from, date_to
-    ):
-        """Fréquentation par jour civil du salon (graphique, dashboard #148).
-
-        Retourne `{appointment_date: count}` — tous statuts, isolation §11.2.
-        """
-        counts: dict = {}
-        for appt in self._appointments.values():
-            if appt.salon_id == salon_id and date_from <= appt.date <= date_to:
-                counts[appt.date] = counts.get(appt.date, 0) + 1
-        return counts
-
-    def list_in_progress_details(  # type: ignore[no-untyped-def]
-        self, salon_id, *, now
-    ):
-        """Retourne `in_progress_details` (préconfiguré) et enregistre l'appel (#148).
-
-        Le fake ne ré-agrège pas depuis `_appointments` : les tests configurent
-        `in_progress_details` (tuple d'`InProgressService`) directement. L'isolation
-        SQL réelle et les joins de noms sont testés en e2e.
-        """
-        self.list_in_progress_details_calls.append(
-            {"salon_id": salon_id, "now": now}
-        )
-        return self.in_progress_details
-
-    def demand_by_service(  # type: ignore[no-untyped-def]
-        self, salon_id, *, statuses, date_from=None, date_to=None
-    ):
-        """Retourne `demand_results` (préconfiguré) et enregistre l'appel (#41).
-
-        Le fake ne ré-agrège pas depuis `_appointments` : les tests configurent
-        `demand_results` directement pour éviter de construire un dataset complet
-        d'`Appointment`/`BookedService`. L'isolation SQL réelle est testée en e2e.
-        Les arguments sont tracés dans `demand_by_service_calls` pour assertions.
-        """
-        self.demand_by_service_calls.append(
-            {
-                "salon_id": salon_id,
-                "statuses": statuses,
-                "date_from": date_from,
-                "date_to": date_to,
-            }
-        )
-        return self.demand_results
-
-    def performance_by_hairdresser(  # type: ignore[no-untyped-def]
-        self,
-        salon_id,
-        *,
-        date_from,
-        date_to,
-        completed_statuses,
-        cancelled_statuses,
-    ):
-        """Retourne `performance_results` (préconfiguré) et enregistre l'appel (#43).
-
-        Le fake ne ré-agrège pas depuis `_appointments` : les tests configurent
-        `performance_results` (tuple de `HairdresserActivityCounts`) directement.
-        L'isolation SQL réelle et le non-sur-comptage sont testés en e2e. Les arguments
-        (dont `completed_statuses`/`cancelled_statuses` imposés serveur) sont tracés
-        dans `performance_by_hairdresser_calls` pour assertions.
-        """
-        self.performance_by_hairdresser_calls.append(
-            {
-                "salon_id": salon_id,
-                "date_from": date_from,
-                "date_to": date_to,
-                "completed_statuses": completed_statuses,
-                "cancelled_statuses": cancelled_statuses,
-            }
-        )
-        return self.performance_results
 
 
 class FakeCustomerRepository:
@@ -1546,7 +1060,7 @@ class FakeCustomerRepository:
         self.last_visits_call = (salon_id, customer_id, statuses)
         customer = self._customers.get(customer_id)
         if customer is None or customer.salon_id != salon_id:  # type: ignore[union-attr]
-            # Fiche hors salon/inexistante : aucun RDV reliable (isolation §11.2).
+            # Fiche hors salon/inexistante : aucun ticket reliable (isolation §11.2).
             return ()
         visits = self._visits.get(customer_id, ())
         # Le dépôt SQL filtre le statut en base ; le fake reproduit ce filtre.
@@ -1634,16 +1148,6 @@ def fake_salon_catalog_repository() -> "FakeSalonCatalogRepository":
     return FakeSalonCatalogRepository()
 
 
-@pytest.fixture()
-def fake_appointment_repository() -> "FakeAppointmentRepository":
-    return FakeAppointmentRepository()
-
-
-@pytest.fixture()
-def fake_notification_repository() -> "FakeNotificationRepository":
-    return FakeNotificationRepository()
-
-
 class FakePaymentRepository:
     """Dépôt de paiements en mémoire (US-5.1/5.3, #33/#34).
 
@@ -1683,10 +1187,11 @@ class FakePaymentRepository:
             payment_method=payment.payment_method,
             status=payment.status,
             recorded_by=payment.recorded_by,
-            appointment_id=payment.appointment_id,
             service_id=payment.service_id,
+            queue_ticket_id=payment.queue_ticket_id,
             client_id=payment.client_id,
             reference=payment.reference,
+            mobile_money_phone=payment.mobile_money_phone,
             created_at=_CREATED_AT,
         )
         self._payments[entity.id] = entity
@@ -1732,26 +1237,6 @@ class FakePaymentRepository:
     def count_for_salon(self, salon_id, *, filter):  # type: ignore[no-untyped-def]
         return len(self._matching(salon_id, filter))
 
-    def list_paid_appointment_ids(self, salon_id, appointment_ids):  # type: ignore[no-untyped-def]
-        """Sous-ensemble d'`appointment_ids` couvert par un paiement (file d'attente, #150).
-
-        Filtre réellement `self._payments` (contrairement à `list_queue_details`
-        de `FakeAppointmentRepository`, préconfiguré) : les tests peuvent créer
-        des paiements via `create()` puis vérifier la dérivation `queue_status`.
-        """
-        from coiflink_api.domain.discrepancy import PAID_PAYMENT_STATUSES
-
-        if not appointment_ids:
-            return frozenset()
-        ids = set(appointment_ids)
-        return frozenset(
-            p.appointment_id  # type: ignore[union-attr]
-            for p in self._payments.values()
-            if p.salon_id == salon_id  # type: ignore[union-attr]
-            and p.appointment_id in ids  # type: ignore[union-attr]
-            and p.status in PAID_PAYMENT_STATUSES  # type: ignore[union-attr]
-        )
-
     def _matching(self, salon_id, filter):  # type: ignore[no-untyped-def]
         """Filtrage en mémoire **miroir** des clauses SQL (§35) : salon + critères ET."""
 
@@ -1778,6 +1263,19 @@ class FakePaymentRepository:
             result.append(p)
         return result
 
+    def has_paid_payment(self, salon_id: uuid.UUID, queue_ticket_id: uuid.UUID) -> bool:
+        """Miroir en mémoire de l'`EXISTS` SQL : salon + ticket + statut payé (§8.2)."""
+
+        from coiflink_api.domain.enums import PaymentStatus
+
+        paid_statuses = {PaymentStatus.VALIDATED.value, PaymentStatus.ADJUSTED.value}
+        return any(
+            p.salon_id == salon_id  # type: ignore[union-attr]
+            and p.queue_ticket_id == queue_ticket_id  # type: ignore[union-attr]
+            and p.status in paid_statuses  # type: ignore[union-attr]
+            for p in self._payments.values()
+        )
+
     def list_completed_without_payment(  # type: ignore[no-untyped-def]
         self, salon_id: uuid.UUID, *, filter, limit: int, offset: int
     ):
@@ -1796,14 +1294,14 @@ class FakePaymentRepository:
         for d in self._discrepancies:
             if d.salon_id != salon_id:
                 continue
-            if filter.date_from is not None and d.appointment_date < filter.date_from:
+            if filter.date_from is not None and d.issued_date < filter.date_from:
                 continue
-            if filter.date_to is not None and d.appointment_date > filter.date_to:
+            if filter.date_to is not None and d.issued_date > filter.date_to:
                 continue
             result.append(d)
-        # Tri déterministe : appointment_date DESC, start_time DESC, appointment_id DESC.
+        # Tri déterministe : issued_date DESC, ticket_number DESC, queue_ticket_id DESC.
         result.sort(
-            key=lambda d: (d.appointment_date, d.start_time, d.appointment_id),
+            key=lambda d: (d.issued_date, d.ticket_number, d.queue_ticket_id),
             reverse=True,
         )
         return result
@@ -1964,8 +1462,8 @@ class FakeQueueTicketRepository:
 
     Implémente le port `QueueTicketRepository` sans I/O réelle. **Isolation §11.2** :
     `get`/`count_waiting`/`average_requested_duration_minutes`/`list_active_for_salon`
-    /`start`/`complete` filtrent sur `salon_id` — un ticket d'un autre salon est
-    indiscernable d'un ticket inexistant. `create` reproduit la **numérotation
+    /`start`/`complete`/`cancel` filtrent sur `salon_id` — un ticket d'un autre
+    salon est indiscernable d'un ticket inexistant. `create` reproduit la **numérotation
     séquentielle par salon et par jour** (`MAX+1` en mémoire, sans course : la
     sérialisation par verrou est testée en e2e).
 
@@ -1980,6 +1478,22 @@ class FakeQueueTicketRepository:
         self._display: dict[uuid.UUID, dict] = {}
         self.created: list = []
         self.average_duration = average_duration
+        # Résultats configurables pour les méthodes du dashboard (#148) — même
+        # convention « préconfiguré + traceur d'appels » que les autres fakes.
+        self.status_counts: dict = {}
+        self.count_by_status_in_range_calls: list[dict] = []
+        self.distinct_completed_clients: int = 0
+        self.count_distinct_completed_clients_calls: list[dict] = []
+        self.attendance: dict = {}
+        self.attendance_series_calls: list[dict] = []
+        self.in_progress_count: int = 0
+        self.count_in_progress_calls: list[dict] = []
+        self.waiting_beyond_estimate: int = 0
+        self.count_waiting_beyond_estimate_calls: list[dict] = []
+        self.in_progress_details: tuple = ()
+        self.list_in_progress_details_calls: list[dict] = []
+        self.demand_results: tuple = ()
+        self.demand_by_service_calls: list[dict] = []
 
     def _next_number(self, salon_id: uuid.UUID, issued_date) -> int:  # type: ignore[no-untyped-def]
         existing = [
@@ -2020,6 +1534,7 @@ class FakeQueueTicketRepository:
             called_at=None,
             started_at=None,
             completed_at=None,
+            cancellation_reason=None,
         )
         self._tickets[entity.id] = entity
         self.created.append(ticket)
@@ -2038,6 +1553,16 @@ class FakeQueueTicketRepository:
             if t.salon_id == salon_id  # type: ignore[union-attr]
             and t.issued_date == issued_date  # type: ignore[union-attr]
             and t.status == "waiting"  # type: ignore[union-attr]
+        )
+
+    def count_waiting_ahead(self, salon_id: uuid.UUID, ticket_number: int, *, issued_date):  # type: ignore[no-untyped-def]
+        return sum(
+            1
+            for t in self._tickets.values()
+            if t.salon_id == salon_id  # type: ignore[union-attr]
+            and t.issued_date == issued_date  # type: ignore[union-attr]
+            and t.status == "waiting"  # type: ignore[union-attr]
+            and t.ticket_number < ticket_number  # type: ignore[union-attr]
         )
 
     def average_requested_duration_minutes(self, salon_id: uuid.UUID, *, issued_date):  # type: ignore[no-untyped-def]
@@ -2066,7 +1591,9 @@ class FakeQueueTicketRepository:
                 QueueTicketEntry(
                     ticket_id=t.id,  # type: ignore[union-attr]
                     ticket_number=t.ticket_number,  # type: ignore[union-attr]
+                    customer_profile_id=t.customer_profile_id,  # type: ignore[union-attr]
                     customer_first_name=display.get("customer_first_name"),
+                    service_ids=t.service_ids,  # type: ignore[union-attr]
                     service_names=display.get("service_names", ()),
                     hairdresser_id=t.hairdresser_id,  # type: ignore[union-attr]
                     hairdresser_name=display.get("hairdresser_name"),
@@ -2075,6 +1602,8 @@ class FakeQueueTicketRepository:
                     created_at=t.created_at,  # type: ignore[union-attr]
                     started_at=t.started_at,  # type: ignore[union-attr]
                     completed_at=t.completed_at,  # type: ignore[union-attr]
+                    payment_id=display.get("payment_id"),
+                    cancellation_reason=t.cancellation_reason,  # type: ignore[union-attr]
                 )
             )
         return tuple(entries)
@@ -2113,6 +1642,115 @@ class FakeQueueTicketRepository:
         )
         self._tickets[ticket_id] = updated
         return updated
+
+    def cancel(self, salon_id, ticket_id, reason, *, now):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.errors import InvalidQueueTicketTransition
+
+        ticket = self._tickets.get(ticket_id)
+        if (
+            ticket is None
+            or ticket.salon_id != salon_id  # type: ignore[union-attr]
+            or ticket.status not in ("waiting", "called")  # type: ignore[union-attr]
+        ):
+            raise InvalidQueueTicketTransition(
+                "Ce ticket ne peut pas être annulé dans cet état."
+            )
+        updated = _dc.replace(
+            ticket, status="expired", cancellation_reason=reason  # type: ignore[union-attr]
+        )
+        self._tickets[ticket_id] = updated
+        return updated
+
+    def update_services(self, salon_id, ticket_id, service_ids):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        from coiflink_api.domain.errors import InvalidQueueTicketTransition
+        from coiflink_api.domain.queue_ticket import QUEUE_TICKET_PENDING_STATUSES
+
+        ticket = self._tickets.get(ticket_id)
+        if (
+            ticket is None
+            or ticket.salon_id != salon_id  # type: ignore[union-attr]
+            or ticket.status not in QUEUE_TICKET_PENDING_STATUSES  # type: ignore[union-attr]
+        ):
+            raise InvalidQueueTicketTransition(
+                "Ce ticket ne peut plus être modifié dans cet état."
+            )
+        updated = _dc.replace(ticket, service_ids=tuple(service_ids))
+        self._tickets[ticket_id] = updated
+        return updated
+
+    def count_by_status_in_range(  # type: ignore[no-untyped-def]
+        self, salon_id, *, statuses, date_from, date_to
+    ):
+        """Retourne `status_counts` (préconfiguré) et enregistre l'appel (#148)."""
+
+        self.count_by_status_in_range_calls.append(
+            {
+                "salon_id": salon_id,
+                "statuses": statuses,
+                "date_from": date_from,
+                "date_to": date_to,
+            }
+        )
+        return self.status_counts
+
+    def count_distinct_completed_clients(  # type: ignore[no-untyped-def]
+        self, salon_id, *, date_from, date_to
+    ):
+        """Retourne `distinct_completed_clients` (préconfiguré) et enregistre l'appel."""
+
+        self.count_distinct_completed_clients_calls.append(
+            {"salon_id": salon_id, "date_from": date_from, "date_to": date_to}
+        )
+        return self.distinct_completed_clients
+
+    def attendance_series(  # type: ignore[no-untyped-def]
+        self, salon_id, *, date_from, date_to
+    ):
+        """Retourne `attendance` (préconfiguré) et enregistre l'appel (#148)."""
+
+        self.attendance_series_calls.append(
+            {"salon_id": salon_id, "date_from": date_from, "date_to": date_to}
+        )
+        return self.attendance
+
+    def count_in_progress(self, salon_id):  # type: ignore[no-untyped-def]
+        """Retourne `in_progress_count` (préconfiguré) et enregistre l'appel (#148)."""
+
+        self.count_in_progress_calls.append({"salon_id": salon_id})
+        return self.in_progress_count
+
+    def count_waiting_beyond_estimate(self, salon_id, *, now):  # type: ignore[no-untyped-def]
+        """Retourne `waiting_beyond_estimate` (préconfiguré) et enregistre l'appel (#148)."""
+
+        self.count_waiting_beyond_estimate_calls.append(
+            {"salon_id": salon_id, "now": now}
+        )
+        return self.waiting_beyond_estimate
+
+    def list_in_progress_details(self, salon_id):  # type: ignore[no-untyped-def]
+        """Retourne `in_progress_details` (préconfiguré) et enregistre l'appel (#148)."""
+
+        self.list_in_progress_details_calls.append({"salon_id": salon_id})
+        return self.in_progress_details
+
+    def demand_by_service(  # type: ignore[no-untyped-def]
+        self, salon_id, *, statuses, date_from=None, date_to=None
+    ):
+        """Retourne `demand_results` (préconfiguré) et enregistre l'appel (#41)."""
+
+        self.demand_by_service_calls.append(
+            {
+                "salon_id": salon_id,
+                "statuses": statuses,
+                "date_from": date_from,
+                "date_to": date_to,
+            }
+        )
+        return self.demand_results
 
 
 @pytest.fixture()

@@ -1,33 +1,43 @@
 // Types & helpers de domaine « historique des visites d'un client » — couche
 // domaine (hexagonal, ADR-0008), TypeScript pur, testable sans React. **Parité
-// stricte** avec le backend (`coiflink_api/domain/visit.py`, US-4.2 #29) : une
-// **visite** est un RDV terminé (`COMPLETED`) portant ses prestations nommées
-// (libellé + prix figé) et un montant total = somme des `price_at_booking`.
+// stricte** avec le backend (`GET /salons/{salon_id}/customers/{customer_id}/visits`) :
+// une **visite** est un ticket de file d'attente (walk-in) terminé (`done`)
+// portant ses prestations nommées (libellé + prix courant) et un montant total.
+//
+// Modèle walk-in (post-RDV) : un ticket n'a pas de créneau réservé à l'avance
+// (pas de `startTime`/`endTime`) — seule compte la date d'émission du ticket et
+// l'horodatage réel de clôture de la prestation. Le prix des prestations n'est
+// plus figé à la réservation : c'est un prix **courant**, résolu en direct par
+// le backend à chaque lecture.
 //
 // Le backend reste **l'autorité des montants** (`NUMERIC(12,2)` sérialisé en
 // chaîne décimale, devise XOF) : le front ne recalcule rien, il **formate**
 // seulement pour l'affichage. `client_id`/`user_id` ne sont jamais exposés par
 // l'API (anti-oracle ADR-0026) : ils n'apparaissent donc pas dans ces types.
+// Réutilise les formateurs déjà éprouvés du domaine paiements
+// (`domain/payments/transaction.ts`) plutôt que de les dupliquer.
 
-// Fuseau du marché (Côte d'Ivoire = UTC+0) : les dates/heures de visite sont
+export { formatTransactionDateTime as formatVisitDateTime } from "@/src/domain/payments/transaction";
+
+// Fuseau du marché (Côte d'Ivoire = UTC+0) : les dates de visite sont
 // affichées dans ce fuseau, sans décalage.
 const VISIT_TIME_ZONE = "Africa/Abidjan";
 
 export interface VisitService {
   serviceId: string;
   name: string;
-  // Prix figé à la réservation, chaîne décimale (jamais de flottant côté API).
-  priceAtBooking: string;
+  // Prix courant de la prestation, résolu en direct (pas de prix figé en
+  // modèle walk-in), chaîne décimale (jamais de flottant côté API).
+  price: string;
 }
 
 export interface CustomerVisit {
-  appointmentId: string;
-  date: string; // ISO date «YYYY-MM-DD»
-  startTime: string; // «HH:MM:SS»
-  endTime: string; // «HH:MM:SS»
-  status: string; // toujours COMPLETED dans ce périmètre
+  queueTicketId: string;
+  issuedDate: string; // ISO date «YYYY-MM-DD», jour d'émission du ticket
+  completedAt: string; // ISO datetime, horodatage réel de clôture de la prestation
+  status: string; // toujours "done" dans ce périmètre
   services: VisitService[];
-  totalAmount: string; // somme des priceAtBooking, chaîne décimale
+  totalAmount: string; // somme des price, chaîne décimale
 }
 
 export interface VisitHistory {
@@ -58,11 +68,4 @@ export function formatVisitDate(iso: string): string {
     dateStyle: "long",
     timeZone: VISIT_TIME_ZONE,
   }).format(date);
-}
-
-// Formate une heure «HH:MM:SS» en «HH:MM» (les secondes n'apportent rien à
-// l'affichage d'un créneau). Valeur inattendue rendue telle quelle.
-export function formatVisitTime(time: string): string {
-  const match = /^(\d{2}):(\d{2})/.exec(time);
-  return match ? `${match[1]}:${match[2]}` : time;
 }

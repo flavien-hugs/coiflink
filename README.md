@@ -483,20 +483,20 @@ introduit : `deploy/railway/*.json` restent inchangés, les secrets `production`
 **optionnel/différé** — non câblé, non impliqué. Le **provisionnement réel** de `production`, l'activation
 des sauvegardes et la configuration du monitoring sont des opérations d'exploitation à mener par un
 opérateur disposant de l'accès restreint (via `use-railway`/MCP `railway`).
-**M7 est amorcé** avec le **rôle et l'authentification de la borne kiosque** (#155, US-8.1, voir
-[ADR-0041](./docs/adr/0041-authentification-borne-kiosque.md)) : un cinquième rôle **`KIOSK`** (compte de
+**M7 est amorcé** avec le **rôle et l'authentification de la borne terminal** (#155, US-8.1, voir
+[ADR-0041](./docs/adr/0041-authentification-borne-kiosque.md)) : un cinquième rôle **`TERMINAL`** (compte de
 service scopé à un salon, migration `0013` régénérant les `CHECK` `role`) dote la **borne libre-service**
-(PRD §17) d'une identité de terminal dédiée — permissions **minimales** (`CUSTOMER_LOOKUP_KIOSK`,
+(PRD §17) d'une identité de terminal dédiée — permissions **minimales** (`CUSTOMER_LOOKUP_TERMINAL`,
 `CUSTOMER_CREATE_WALKIN`, `QUEUE_TICKET_CREATE`), **jamais** `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK`. Le
-gérant **provisionne** ses bornes (`POST /salons/{id}/kiosk-devices`, permission `KIOSK_PROVISION`,
+gérant **provisionne** ses bornes (`POST /salons/{id}/terminal-devices`, permission `TERMINAL_PROVISION`,
 `MANAGER` seul) : le backend crée un compte de service (`users` + `salon_members`) et retourne **une seule
 fois** un **secret de device** (256 bits, stocké **haché** argon2id, jamais relisible). La borne échange
-`(device_id, secret)` contre une paire **JWT courte** via `POST /auth/kiosk/login` (publique-listée,
+`(device_id, secret)` contre une paire **JWT courte** via `POST /auth/terminal/login` (publique-listée,
 rate-limitée, `401` générique) qui lui renvoie son `salon_id`. Ce qui est **long** est le secret
 révocable ; les jetons restent **courts** — la **révocation** (suspension du compte de service) coupe
 l'accès **à la requête suivante** (relecture du statut en base). L'**identification téléphone & création
-walk-in** (#156, US-8.2) est livrée : deux routes `KIOSK`-scopées (`POST /salons/{id}/kiosk/customers/lookup`,
-`POST /salons/{id}/kiosk/customers`) permettent à la borne d'identifier un client par numéro ou de créer
+walk-in** (#156, US-8.2) est livrée : deux routes `TERMINAL`-scopées (`POST /salons/{id}/terminal/customers/lookup`,
+`POST /salons/{id}/terminal/customers`) permettent à la borne d'identifier un client par numéro ou de créer
 une fiche minimale — réponse `{customer_id, first_name}`, PII minimisée (§11.3). Le **ticket de passage
 walk-in & estimation d'attente** (#157, US-8.3, voir
 [ADR-0042](./docs/adr/0042-file-attente-walkin-queue-ticket.md)) est livré : un domaine `QueueTicket`
@@ -560,7 +560,7 @@ scripts/run-issue.sh --help                  # liste complète des options
 | **M4** | 4 | Clients, encaissement & journal de caisse | #28–#38 |
 | **M5** | 5 | Tableau de bord & notifications | #39–#49 |
 | **M6** | 6 | Tests, durcissement, déploiement, pilote | #50–#55 |
-| **M7** | Post-MVP | Borne libre-service (kiosque walk-in) | #155–#161 |
+| **M7** | Post-MVP | Borne libre-service (terminal walk-in) | #155–#161 |
 
 Chemin critique : **M0 → M1 → M2 → M3 → M4/M5 → M6 → M7**.
 

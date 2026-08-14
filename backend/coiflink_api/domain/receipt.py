@@ -9,10 +9,10 @@ Un **reçu** est une **projection en lecture seule** dérivée d'un paiement dé
 persisté (#33) : montant, devise, mode, statut, référence et horodatage viennent
 tels quels du `payment` (source de vérité), l'identité **publique** du salon
 (`salons.name`) est résolue depuis `payment.salon_id`, et les **lignes** sont les
-prestations réglées — pour un paiement lié à un **RDV**, les `appointment_services`
-(nom courant + `price_at_booking` **figé**) ; pour un paiement lié à une
-**prestation seule**, la prestation (`services.name` + `Service.price`). Aucune
-écriture, aucun recalcul « à la main » côté client.
+prestations réglées — pour un paiement lié à un **ticket walk-in**, les
+prestations du ticket (nom courant + `Service.price` actuel) ; pour un paiement
+lié à une **prestation seule**, la prestation (`services.name` + `Service.price`).
+Aucune écriture, aucun recalcul « à la main » côté client.
 
 Points de sécurité/qualité de donnée (PRD §11.2/§11.3) :
 
@@ -49,13 +49,12 @@ DEFAULT_CURRENCY = "XOF"
 
 @dataclass(frozen=True)
 class ReceiptLine:
-    """Ligne de prestation d'un reçu : libellé + montant figé (US-5.5, #38).
+    """Ligne de prestation d'un reçu : libellé + montant (US-5.5, #38).
 
     Le **nom** est le libellé *courant* de la prestation (`services.name`), le
-    **montant** est le prix **figé** au moment de la réservation
-    (`price_at_booking`) pour un RDV, ou `Service.price` pour une prestation seule.
-    Une prestation soft-deletée (`is_active = false`) reste en table (FK
-    `RESTRICT`), donc son nom reste résoluble pour le reçu.
+    **montant** est `Service.price`. Une prestation soft-deletée (`is_active =
+    false`) reste en table (FK `RESTRICT`), donc son nom reste résoluble pour le
+    reçu.
     """
 
     service_name: str
@@ -69,8 +68,7 @@ class Receipt:
     Assemblage de données **déjà validées** (aucun `raise` métier ici) : le
     `payment` reste la source de vérité (`amount`/`status`/`reference`/`paid_at`),
     l'identité du salon est **publique** (`salon_name`), et les `lines` sont
-    informatives. `appointment_id` est renseigné pour un paiement lié à un RDV,
-    `None` pour une prestation seule.
+    informatives.
     """
 
     receipt_number: str
@@ -83,8 +81,12 @@ class Receipt:
     status: str
     reference: str | None
     paid_at: datetime.datetime
-    appointment_id: uuid.UUID | None
     lines: tuple[ReceiptLine, ...] = ()
+    # Numéro du ticket walk-in réglé (`queue_tickets.ticket_number`), `None` pour
+    # un paiement lié à une prestation seule (`service_id`) — pas de ticket à
+    # référencer. Entier **brut** (le zéro-padding « N° 004 » relève de
+    # l'affichage, miroir `QueueTicket.ticket_number`).
+    ticket_number: int | None = None
     # Renseignés **uniquement** par la lecture gérante (`get_receipt_for_salon`,
     # ADR-0040) — un client connaît déjà sa propre identité, la lecture
     # d'appartenance (`get_receipt_for_client`) les laisse toujours à `None`.

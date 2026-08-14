@@ -25,6 +25,16 @@ const KPIS: DashboardKpis = {
     currency: "XOF",
   },
   clientsCount: { current: 20, previous: 25, delta: -5, direction: "down" },
+  // Non rendus par `DashboardKpiCards` (consommés par `InsightCards` — cartes
+  // « À surveiller »), mais requis par le type `DashboardKpis`.
+  attendanceToday: { current: 8, previous: 6, delta: 2, direction: "up" },
+  revenueThisWeek: {
+    current: "210000.00",
+    previous: "178000.00",
+    delta: "32000.00",
+    direction: "up",
+    currency: "XOF",
+  },
 };
 
 function render(kpis: DashboardKpis | null): string {

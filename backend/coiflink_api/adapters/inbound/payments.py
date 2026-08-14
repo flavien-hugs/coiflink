@@ -12,10 +12,10 @@ isolation §11.2) :
   ancienne**, chacune portant `created_at` (horodatage) et l'auteur (`performed_by`
   + nom résolu) ;
 - **`GET /salons/{salon_id}/cash-discrepancies`** — écarts de caisse (US-5.4, #36),
-  garde `CASH_JOURNAL_READ`. Liste paginée des RDV `COMPLETED` **sans paiement
-  rattaché** (prestation réalisée mais non encaissée), chacun portant le **montant
-  attendu** (somme des `price_at_booking`) — lecture pure qui **signale** sans
-  corriger ;
+  garde `CASH_JOURNAL_READ`. Liste paginée des tickets walk-in `done` **sans
+  paiement `VALIDATED`/`ADJUSTED` rattaché** (prestation réalisée mais non
+  encaissée), chacun portant le **montant attendu** (somme des `Service.price`
+  actuels) — lecture pure qui **signale** sans corriger ;
 - **`POST /salons/{salon_id}/payments/{payment_id}/adjustments`** — correction
   (US-5.3, #34), garde `PAYMENT_RECORD`. **Insère** une ligne `ADJUSTMENT` (delta
   signé) rattachée au paiement d'origine et passe ce dernier à `ADJUSTED` — **sans
@@ -38,6 +38,8 @@ injection de dépendances, puis retraduit les erreurs de domaine :
 - `InvalidPaymentAmount` / `InvalidPaymentMethod` / `PaymentReferenceRequired` /
   `InvalidAdjustment` → **422** ;
 - `PaymentNotAdjustable` (paiement non `VALIDATED`) → **409** ;
+- `QueueTicketAlreadyPaid` (ticket déjà couvert par un paiement `VALIDATED`/
+  `ADJUSTED`) → **409** ;
 - `PaymentNotFound` → **404** *(uniquement après validation de portée)*.
 
 Sécurité (RBAC #12, ADR-0015 ; §8.2/§11.2/§11.3/§11.4) : `PAYMENT_RECORD` et
@@ -63,13 +65,11 @@ from coiflink_api.adapters.inbound.security import (
     require_permission,
     require_salon_scope,
 )
-from coiflink_api.adapters.outbound.persistence.appointment_repository import (
-    SqlAppointmentRepository,
-)
 from coiflink_api.adapters.outbound.persistence.audit_log_repository import SqlAuditLog
 from coiflink_api.adapters.outbound.persistence.cash_journal_repository import (
     SqlCashJournalEntryRepository,
 )
+from coiflink_api.adapters.inbound.queue_tickets import get_queue_ticket_repository
 from coiflink_api.adapters.outbound.persistence.payment_repository import (
     SqlPaymentRepository,
 )
@@ -79,7 +79,7 @@ from coiflink_api.adapters.outbound.persistence.service_repository import (
 from coiflink_api.adapters.outbound.persistence.session import get_session
 from coiflink_api.application.cash_journal import AdjustPayment, ListCashJournal
 from coiflink_api.application.payments import PaymentCommand, RecordPayment
-from coiflink_api.application.ports.appointment_repository import AppointmentRepository
+from coiflink_api.application.ports.queue_ticket_repository import QueueTicketRepository
 from coiflink_api.application.ports.audit_log import AuditLog
 from coiflink_api.application.ports.cash_journal_repository import (
     CASH_JOURNAL_LIMIT_DEFAULT,
@@ -113,15 +113,20 @@ from coiflink_api.domain.errors import (
     InvalidPaymentAmount,
     InvalidPaymentCurrency,
     InvalidPaymentMethod,
+    InvalidPhone,
     InvalidTransactionFilter,
+    MobileMoneyPhoneRequired,
+    MobileMoneyReferenceRequired,
     PaymentAmountMismatch,
     PaymentNotAdjustable,
     PaymentNotFound,
     PaymentReferenceNotFound,
     PaymentReferenceRequired,
+    QueueTicketAlreadyPaid,
 )
 from coiflink_api.domain.payment import (
     DEFAULT_CURRENCY,
+    MOBILE_MONEY_PHONE_MAX_LENGTH,
     PAYMENT_METHOD_VALUES,
     REFERENCE_MAX_LENGTH,
     Payment,
@@ -144,6 +149,9 @@ _VALIDATION_ERRORS = (
     PaymentReferenceRequired,
     PaymentAmountMismatch,
     PaymentReferenceNotFound,
+    MobileMoneyPhoneRequired,
+    MobileMoneyReferenceRequired,
+    InvalidPhone,
     InvalidAdjustment,
     InvalidTransactionFilter,
     InvalidDiscrepancyFilter,
@@ -160,18 +168,25 @@ class CreatePaymentRequest(BaseModel):
     `recorded_by` du `Principal`, le `status` est imposé `VALIDATED`, `id`/
     `created_at` sont générés côté serveur. Un champ privilégié présent est
     **ignoré** (`extra="ignore"`). Le paiement doit référencer une prestation
-    **ou** un rendez-vous (§8.2).
+    **ou** un ticket walk-in (§8.2). `reference`/`mobile_money_phone` sont
+    optionnels — sauf pour `payment_method = MOBILE_MONEY_MANUAL`, où les deux
+    deviennent **obligatoires** (migration 0019).
     """
 
     model_config = ConfigDict(extra="ignore")
 
     amount: decimal.Decimal = Field(examples=["5000.00"])
     payment_method: str = Field(examples=[PAYMENT_METHOD_VALUES[0]])
-    appointment_id: uuid.UUID | None = Field(default=None)
     service_id: uuid.UUID | None = Field(default=None)
+    queue_ticket_id: uuid.UUID | None = Field(default=None)
     client_id: uuid.UUID | None = Field(default=None)
     reference: str | None = Field(
         default=None, max_length=REFERENCE_MAX_LENGTH, examples=["REC-2026-0001"]
+    )
+    mobile_money_phone: str | None = Field(
+        default=None,
+        max_length=MOBILE_MONEY_PHONE_MAX_LENGTH,
+        examples=["+2250700000000"],
     )
     currency: str = Field(default=DEFAULT_CURRENCY, max_length=3, examples=[DEFAULT_CURRENCY])
 
@@ -206,10 +221,11 @@ class PaymentResponse(BaseModel):
     payment_method: str
     status: str
     recorded_by: uuid.UUID
-    appointment_id: uuid.UUID | None
     service_id: uuid.UUID | None
+    queue_ticket_id: uuid.UUID | None
     client_id: uuid.UUID | None
     reference: str | None
+    mobile_money_phone: str | None
     created_at: datetime.datetime
 
 
@@ -218,11 +234,14 @@ class TransactionResponse(PaymentResponse):
 
     Étend `PaymentResponse` (le paiement tel qu'enregistré, montant **brut** +
     `status` — un paiement corrigé porte `ADJUSTED`, cohérent avec le journal
-    #34) du **seul** `client_name` (résolu `client_id → users.full_name`, colonne
-    non sensible ; `null` si aucun client lié ou nom non résolu).
+    #34) de `client_name` (résolu `client_id → users.full_name` **ou**, pour un
+    paiement lié à un ticket sans compte client, `queue_ticket_id →
+    customer_profiles.full_name` ; `null` si aucun n'est résoluble) et de
+    `ticket_number` (le ticket lié, `null` pour une prestation seule).
     """
 
     client_name: str | None
+    ticket_number: int | None
 
 
 class TransactionPageResponse(BaseModel):
@@ -235,18 +254,20 @@ class TransactionPageResponse(BaseModel):
 
 
 class CashDiscrepancyResponse(BaseModel):
-    """Un écart de caisse : un RDV `COMPLETED` **sans** paiement rattaché (US-5.4, #36).
+    """Un écart de caisse : un ticket walk-in `done` **sans** paiement rattaché (US-5.4, #36).
 
-    `expected_amount` est le **montant attendu** (somme des `price_at_booking` du RDV),
-    la valeur « qui manque en caisse », sérialisée en chaîne décimale (`NUMERIC(12,2)`,
-    jamais de flottant). `client_name` résout `client_id → users.full_name` (colonne
-    non sensible **uniquement**, §11.3 ; `null` si non résolu).
+    `expected_amount` est le **montant attendu** (somme des `Service.price`
+    actuels du ticket), la valeur « qui manque en caisse », sérialisée en chaîne
+    décimale (`NUMERIC(12,2)`, jamais de flottant). `client_name` résout
+    `customer_profile_id → customer_profiles.full_name` (colonne non sensible
+    **uniquement**, §11.3 ; `null` si ticket anonyme ou fiche non résolue).
     """
 
-    appointment_id: uuid.UUID
-    appointment_date: datetime.date
-    start_time: datetime.time
-    client_id: uuid.UUID
+    queue_ticket_id: uuid.UUID
+    ticket_number: int
+    issued_date: datetime.date
+    completed_at: datetime.datetime
+    customer_profile_id: uuid.UUID | None
     client_name: str | None
     expected_amount: decimal.Decimal
     currency: str
@@ -321,6 +342,7 @@ class ManagerReceiptResponse(BaseModel):
     payment_id: uuid.UUID
     salon_id: uuid.UUID
     salon_name: str
+    ticket_number: int | None
     client_name: str | None
     client_phone: str | None
     amount: decimal.Decimal
@@ -329,7 +351,6 @@ class ManagerReceiptResponse(BaseModel):
     status: str
     reference: str | None
     paid_at: datetime.datetime
-    appointment_id: uuid.UUID | None
     lines: list[ManagerReceiptLineResponse]
 
 
@@ -350,19 +371,6 @@ def get_cash_journal_repository(
     """Dépôt du journal de caisse adossé à la session de la requête."""
 
     return SqlCashJournalEntryRepository(session)
-
-
-def get_appointment_repository(
-    session: Annotated[Session, Depends(get_session)],
-) -> AppointmentRepository:
-    """Dépôt des rendez-vous (lecture salon-scopée du prix figé) — même session.
-
-    Sert à résoudre le **montant attendu** d'un paiement lié à un RDV (somme des
-    `price_at_booking`), en lecture seule. Filtre `salon_id` (`get_in_salon`) :
-    isolation §11.2 en profondeur.
-    """
-
-    return SqlAppointmentRepository(session)
 
 
 def get_service_repository(
@@ -400,10 +408,11 @@ def _payment_response(payment: Payment) -> PaymentResponse:
         payment_method=payment.payment_method,
         status=payment.status,
         recorded_by=payment.recorded_by,
-        appointment_id=payment.appointment_id,
         service_id=payment.service_id,
+        queue_ticket_id=payment.queue_ticket_id,
         client_id=payment.client_id,
         reference=payment.reference,
+        mobile_money_phone=payment.mobile_money_phone,
         created_at=payment.created_at,
     )
 
@@ -418,21 +427,24 @@ def _transaction_response(transaction: Transaction) -> TransactionResponse:
         payment_method=payment.payment_method,
         status=payment.status,
         recorded_by=payment.recorded_by,
-        appointment_id=payment.appointment_id,
         service_id=payment.service_id,
+        queue_ticket_id=payment.queue_ticket_id,
         client_id=payment.client_id,
         reference=payment.reference,
+        mobile_money_phone=payment.mobile_money_phone,
         created_at=payment.created_at,
         client_name=transaction.client_name,
+        ticket_number=transaction.ticket_number,
     )
 
 
 def _discrepancy_response(discrepancy: CashDiscrepancy) -> CashDiscrepancyResponse:
     return CashDiscrepancyResponse(
-        appointment_id=discrepancy.appointment_id,
-        appointment_date=discrepancy.appointment_date,
-        start_time=discrepancy.start_time,
-        client_id=discrepancy.client_id,
+        queue_ticket_id=discrepancy.queue_ticket_id,
+        ticket_number=discrepancy.ticket_number,
+        issued_date=discrepancy.issued_date,
+        completed_at=discrepancy.completed_at,
+        customer_profile_id=discrepancy.customer_profile_id,
         client_name=discrepancy.client_name,
         expected_amount=discrepancy.expected_amount,
         currency=discrepancy.currency,
@@ -459,6 +471,7 @@ def _manager_receipt_response(receipt: Receipt) -> ManagerReceiptResponse:
         payment_id=receipt.payment_id,
         salon_id=receipt.salon_id,
         salon_name=receipt.salon_name,
+        ticket_number=receipt.ticket_number,
         client_name=receipt.client_name,
         client_phone=receipt.client_phone,
         amount=receipt.amount,
@@ -467,7 +480,6 @@ def _manager_receipt_response(receipt: Receipt) -> ManagerReceiptResponse:
         status=receipt.status,
         reference=receipt.reference,
         paid_at=receipt.paid_at,
-        appointment_id=receipt.appointment_id,
         lines=[
             ManagerReceiptLineResponse(service_name=line.service_name, amount=line.amount)
             for line in receipt.lines
@@ -486,11 +498,14 @@ def _manager_receipt_response(receipt: Receipt) -> ManagerReceiptResponse:
     responses={
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
+        409: {"description": "Ticket déjà couvert par un paiement VALIDATED/ADJUSTED"},
         422: {
             "description": (
                 "Montant, mode de paiement, devise ou référence invalides ; "
+                "téléphone ou numéro de transaction Mobile Money absent/invalide "
+                "(payment_method = MOBILE_MONEY_MANUAL) ; "
                 "montant incohérent avec la prestation liée ; "
-                "prestation ou rendez-vous introuvable pour ce salon"
+                "prestation ou ticket introuvable pour ce salon"
             )
         },
     },
@@ -501,19 +516,21 @@ def record_payment(
     payment_repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
     cash_journal_repo: Annotated[CashJournalRepository, Depends(get_cash_journal_repository)],
     audit_log: Annotated[AuditLog, Depends(get_audit_log)],
-    appointment_repo: Annotated[AppointmentRepository, Depends(get_appointment_repository)],
     service_repo: Annotated[ServiceRepository, Depends(get_service_repository)],
+    queue_ticket_repo: Annotated[QueueTicketRepository, Depends(get_queue_ticket_repository)],
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
     principal: Annotated[Principal, Depends(require_permission(Permission.PAYMENT_RECORD))],
 ) -> PaymentResponse:
     """Enregistre un paiement `VALIDATED` pour le salon de la portée (US-5.1, #33).
 
     Le `salon_id` vient du chemin (portée), `recorded_by` du `Principal` — jamais
-    du corps. Le **montant** est vérifié **cohérent** avec la prestation/RDV lié
-    (§5.3/§8.2 : somme des `price_at_booking` d'un RDV, ou `Service.price` d'une
-    prestation active) — tout écart est refusé (`422`) **avant** toute écriture.
-    Inscrit une ligne `PAYMENT` au journal et journalise `PAYMENT_RECORDED` (§11.4)
-    dans la même unité de travail, `metadata` **vide**.
+    du corps. Le **montant** est vérifié **cohérent** avec la prestation ou le
+    ticket lié (§5.3/§8.2 : somme des `Service.price` actuels d'un ticket walk-in,
+    ou `Service.price` d'une prestation active) — tout écart est refusé (`422`)
+    **avant** toute écriture. Un ticket **déjà couvert** par un paiement
+    `VALIDATED`/`ADJUSTED` refuse un second encaissement (`409`, §8.2). Inscrit une
+    ligne `PAYMENT` au journal et journalise `PAYMENT_RECORDED` (§11.4) dans la même
+    unité de travail, `metadata` **vide**.
     """
 
     try:
@@ -521,17 +538,18 @@ def record_payment(
             payment_repo,
             cash_journal_repo,
             audit_log,
-            appointment_repo,
             service_repo,
+            queue_ticket_repo,
         ).execute(
             salon_id,
             PaymentCommand(
                 amount=payload.amount,
                 payment_method=payload.payment_method,
-                appointment_id=payload.appointment_id,
                 service_id=payload.service_id,
+                queue_ticket_id=payload.queue_ticket_id,
                 client_id=payload.client_id,
                 reference=payload.reference,
+                mobile_money_phone=payload.mobile_money_phone,
                 currency=payload.currency or DEFAULT_CURRENCY,
             ),
             actor_user_id=principal.id,
@@ -539,6 +557,10 @@ def record_payment(
     except _VALIDATION_ERRORS as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except QueueTicketAlreadyPaid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
     return _payment_response(payment)
 
@@ -621,7 +643,7 @@ def list_transactions(
 @router.get(
     "/{salon_id}/cash-discrepancies",
     response_model=CashDiscrepancyPageResponse,
-    summary="Écarts de caisse : RDV terminés sans paiement (paginé, plus récent d'abord)",
+    summary="Écarts de caisse : tickets terminés sans paiement (paginé, plus récent d'abord)",
     responses={
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
@@ -643,16 +665,17 @@ def list_cash_discrepancies(
 ) -> CashDiscrepancyPageResponse:
     """Signale les **écarts de caisse** du salon de la portée (US-5.4, #36).
 
-    Un écart = un RDV `COMPLETED` (prestation réalisée) **auquel aucun paiement
-    `VALIDATED`/`ADJUSTED` n'est rattaché** — « ce qui a été fait mais pas encaissé ».
-    Bornes de dates **optionnelles** (`date_from`/`date_to`, jour civil
-    `Africa/Abidjan`, comparées à `appointment_date`) ; une plage incohérente → `422`
+    Un écart = un ticket walk-in `done` (prestation réalisée) **auquel aucun
+    paiement `VALIDATED`/`ADJUSTED` n'est rattaché** — « ce qui a été fait mais pas
+    encaissé ». Bornes de dates **optionnelles** (`date_from`/`date_to`, jour civil
+    `Africa/Abidjan`, comparées à `issued_date`) ; une plage incohérente → `422`
     (`InvalidDiscrepancyFilter`), message métier neutre. Chaque écart porte le
-    **montant attendu** (somme des `price_at_booking` du RDV) et le nom du client
-    résolu (`users.full_name`, §11.3). Isolation §11.2 en profondeur : jamais un RDV
-    d'un autre salon, et un paiement d'un autre salon ne « couvre » jamais un RDV.
-    Lecture seule : aucune écriture, aucun audit. Cette route **signale**, elle ne
-    corrige pas (la correction passe par `POST …/payments`).
+    **montant attendu** (somme des `Service.price` actuels du ticket) et le nom du
+    client résolu (`customer_profiles.full_name`, §11.3). Isolation §11.2 en
+    profondeur : jamais un ticket d'un autre salon, et un paiement d'un autre salon
+    ne « couvre » jamais un ticket. Lecture seule : aucune écriture, aucun audit.
+    Cette route **signale**, elle ne corrige pas (la correction passe par
+    `POST …/payments`).
     """
 
     try:

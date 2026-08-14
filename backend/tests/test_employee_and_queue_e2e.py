@@ -1,9 +1,9 @@
-"""Tests e2e — gestion des coiffeuses + file d'attente (#150).
+"""Tests e2e — gestion des coiffeuses (#150).
 
 Groupe `TestEmployeeAndQueueE2E` (PostgreSQL requis) exerçant le **chemin SQL
 réel** qu'aucune suite unitaire/API (adossée à des fakes en mémoire,
-`test_employee_usecases.py`/`test_employee_management_api.py`/
-`test_queue_usecases.py`/`test_queue_api.py`) ne peut couvrir :
+`test_employee_usecases.py`/`test_employee_management_api.py`) ne peut
+couvrir :
 
     - la **jointure** `salon_members × users` de `SqlSalonMemberRepository.
       list_for_salon`/`find_by_id` (identité + champs pro réels) ;
@@ -12,23 +12,17 @@ réel** qu'aucune suite unitaire/API (adossée à des fakes en mémoire,
       modification de profil (`SqlUserRepository.update_identity`) ;
     - l'effet réel de la désactivation (`salon_members.status = INACTIVE`) sur
       `_require_salon_hairdresser` : une coiffeuse désactivée est refusée à
-      une **nouvelle** assignation (`404 HairdresserNotInSalon`) mais garde
-      ses RDV déjà assignés ;
-    - les **jointures de noms** (`users` ×2 + `services`) et le **filtre de
-      statuts** (`CONFIRMED`/`COMPLETED` seulement) de `SqlAppointmentRepository.
-      list_queue_details` ;
-    - l'**idempotence réelle** (`UPDATE ... WHERE arrived_at IS NULL`
-      implicite) de `mark_arrived`/`mark_started` et la garde TOCTOU
-      (`status = 'CONFIRMED'`) ;
-    - la dérivation **« payée »** bout-en-bout : `SqlPaymentRepository.
-      list_paid_appointment_ids` ne couvre qu'un RDV avec paiement
-      `VALIDATED` réellement persisté (pas un `CANCELLED`) ;
-    - l'**isolation §11.2** inter-salons (coiffeuse et file d'attente) et
-      l'absence de PII (§11.3) sur des réponses réellement matérialisées.
+      la prise en charge d'un ticket walk-in (`404 HairdresserNotInSalon`),
+      puis acceptée après réactivation.
 
-Les RDV sont insérés **directement en base** (bypass des gardes HTTP de
-réservation, patron #43/#148) ; le paiement passe par l'API réelle
-(`POST /payments`, seul chemin qui persiste un `VALIDATED`).
+La lecture de la file d'attente (jointures de noms, filtre de statuts,
+dérivation « payée ») a été retirée avec la simplification de la route
+combinée au pivot walk-in exclusif (#148) — elle ne couvre plus désormais
+que des tickets, sous `GET .../queue/tickets` (`test_queue_ticket_api.py`).
+
+Les tickets sont insérés **directement en base** (bypass de la borne HTTP
+d'émission, patron #148/#157 — miroir `_seed_ticket` de
+`test_hairdresser_performance_e2e.py`).
 
 Prérequis :
     cd backend
@@ -43,6 +37,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import uuid
 from collections.abc import Generator
 
 import pytest
@@ -88,15 +83,10 @@ def _wipe_test_data() -> None:
             "DELETE FROM payments WHERE salon_id IN "
             "(SELECT id FROM salons WHERE owner_id IN "
             "(SELECT id FROM users WHERE phone LIKE :prefix))",
-            "DELETE FROM notifications WHERE salon_id IN "
+            "DELETE FROM queue_ticket_services WHERE salon_id IN "
             "(SELECT id FROM salons WHERE owner_id IN "
             "(SELECT id FROM users WHERE phone LIKE :prefix))",
-            "DELETE FROM notifications WHERE user_id IN "
-            "(SELECT id FROM users WHERE phone LIKE :prefix)",
-            "DELETE FROM appointment_services WHERE salon_id IN "
-            "(SELECT id FROM salons WHERE owner_id IN "
-            "(SELECT id FROM users WHERE phone LIKE :prefix))",
-            "DELETE FROM appointments WHERE salon_id IN "
+            "DELETE FROM queue_tickets WHERE salon_id IN "
             "(SELECT id FROM salons WHERE owner_id IN "
             "(SELECT id FROM users WHERE phone LIKE :prefix))",
             "DELETE FROM services WHERE salon_id IN "
@@ -219,85 +209,40 @@ def _create_employee(
     return resp.json()
 
 
-def _seed_appointment(
+def _seed_ticket(
     salon_id: str,
-    client_id: str,
-    hairdresser_id: str | None,
     *,
     day: datetime.date,
-    start_time: str,
-    status: str,
-    service_id: str,
+    ticket_number: int,
+    status: str = "waiting",
 ) -> str:
-    end_time = (
-        datetime.datetime.combine(day, datetime.time.fromisoformat(start_time))
-        + datetime.timedelta(minutes=30)
-    ).time()
+    """Insère directement en base un ticket walk-in `waiting` (bypass borne HTTP).
+
+    Miroir `_seed_ticket` de `test_hairdresser_performance_e2e.py` : un walk-in
+    n'a **jamais** de coiffeuse pré-assignée (`hairdresser_id` posé uniquement
+    par `StartQueueTicket.execute`), donc omis ici — c'est précisément ce que
+    la route `start` doit accepter/refuser selon l'éligibilité de la coiffeuse.
+    """
     engine = get_engine()
     with engine.connect() as conn:
-        row = conn.execute(
+        ticket_id = str(uuid.uuid4())
+        conn.execute(
             text(
-                "INSERT INTO appointments "
-                "(salon_id, client_id, hairdresser_id, appointment_date, "
-                "start_time, end_time, status) "
-                "VALUES (:salon_id, :client_id, :hairdresser_id, :day, "
-                ":start_time, :end_time, :status) RETURNING id"
+                "INSERT INTO queue_tickets "
+                "(id, salon_id, issued_date, ticket_number, status, "
+                "estimated_wait_minutes) "
+                "VALUES (:id, :salon_id, :day, :number, :status, 0)"
             ),
             {
+                "id": ticket_id,
                 "salon_id": salon_id,
-                "client_id": client_id,
-                "hairdresser_id": hairdresser_id,
                 "day": day,
-                "start_time": start_time,
-                "end_time": end_time.isoformat(),
+                "number": ticket_number,
                 "status": status,
             },
         )
-        appointment_id = str(row.scalar_one())
-        conn.execute(
-            text(
-                "INSERT INTO appointment_services "
-                "(salon_id, appointment_id, service_id, price_at_booking) "
-                "VALUES (:salon_id, :appointment_id, :service_id, 5000.00)"
-            ),
-            {"salon_id": salon_id, "appointment_id": appointment_id, "service_id": service_id},
-        )
         conn.commit()
-    return appointment_id
-
-
-def _record_payment(
-    client: TestClient,
-    manager_token: str,
-    salon_id: str,
-    *,
-    appointment_id: str,
-    client_id: str,
-) -> dict:
-    resp = client.post(
-        f"/salons/{salon_id}/payments",
-        json={
-            "amount": "5000.00",
-            "payment_method": "CASH",
-            "appointment_id": appointment_id,
-            "client_id": client_id,
-        },
-        headers={"Authorization": f"Bearer {manager_token}"},
-    )
-    assert resp.status_code == 201, f"Enregistrement paiement échoué : {resp.text}"
-    return resp.json()
-
-
-def _queue(client: TestClient, token: str, salon_id: str, *, day: str) -> list[dict]:
-    resp = client.get(
-        f"/salons/{salon_id}/queue",
-        params={"day": day},
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert resp.status_code == 200, f"Lecture file d'attente échouée : {resp.text}"
-    # #157 restructure la réponse en {"appointments": [...], "walk_in_tickets": [...]} ;
-    # cette suite (#152) ne couvre que les RDV planifiés.
-    return resp.json()["appointments"]
+    return ticket_id
 
 
 # ─── Groupe e2e : pile complète (PostgreSQL requis) ──────────────────────────
@@ -395,15 +340,20 @@ class TestEmployeeAndQueueE2E:
     def test_deactivated_employee_rejected_for_new_assignment(
         self, _e2e_client: TestClient
     ) -> None:
-        """Désactiver une coiffeuse retire son éligibilité aux **nouvelles** affectations."""
+        """Désactiver une coiffeuse retire son éligibilité à la prise en charge d'un ticket.
+
+        Équivalent ticket walk-in de l'ancienne assignation RDV (#150) :
+        `StartQueueTicket.execute` → `_require_salon_hairdresser`
+        (`coiflink_api/application/queue_ticket.py`) refuse un `hairdresser_id`
+        qui n'est pas membre `ACTIVE` du salon — une coiffeuse désactivée est
+        donc refusée à `POST .../queue/tickets/{id}/start` (`404
+        HairdresserNotInSalon`, cf. `coiflink_api/adapters/inbound/
+        queue_tickets.py`), puis acceptée une fois réactivée.
+        """
         client = _e2e_client
         _register_manager(client, phone=_PHONE_MANAGER_A_LOCAL)
         token = _login(client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(client, token, name=_SALON_NAME_A)
-        client_id = _register_client_account(
-            client, phone=_PHONE_CLIENT_LOCAL
-        )
-        service_id = _create_service(client, token, salon_id, name="Coupe")
         employee = _create_employee(
             client, token, salon_id, phone=_PHONE_HAIRDRESSER_1_LOCAL
         )
@@ -415,21 +365,15 @@ class TestEmployeeAndQueueE2E:
         assert deactivate.status_code == 200
         assert deactivate.json()["status"] == "INACTIVE"
 
-        appointment_id = _seed_appointment(
-            salon_id,
-            client_id,
-            None,
-            day=datetime.date(2026, 8, 10),
-            start_time="09:00",
-            status="CONFIRMED",
-            service_id=service_id,
+        ticket_id = _seed_ticket(
+            salon_id, day=datetime.date(2026, 8, 13), ticket_number=1
         )
-        assign = client.put(
-            f"/salons/{salon_id}/appointments/{appointment_id}/hairdresser",
+        start = client.post(
+            f"/salons/{salon_id}/queue/tickets/{ticket_id}/start",
             json={"hairdresser_id": employee["id"]},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert assign.status_code == 404
+        assert start.status_code == 404
 
         reactivate = client.post(
             f"/salons/{salon_id}/employees/{employee['id']}/reactivate",
@@ -438,168 +382,11 @@ class TestEmployeeAndQueueE2E:
         assert reactivate.status_code == 200
         assert reactivate.json()["status"] == "ACTIVE"
 
-        assign_again = client.put(
-            f"/salons/{salon_id}/appointments/{appointment_id}/hairdresser",
+        start_again = client.post(
+            f"/salons/{salon_id}/queue/tickets/{ticket_id}/start",
             json={"hairdresser_id": employee["id"]},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert assign_again.status_code == 200
-
-    # ── File d'attente : jointures réelles + dérivation de statut ──────────
-
-    def test_queue_reflects_real_joins_and_status_filter(
-        self, _e2e_client: TestClient
-    ) -> None:
-        client = _e2e_client
-        _register_manager(client, phone=_PHONE_MANAGER_A_LOCAL)
-        token = _login(client, phone=_PHONE_MANAGER_A_LOCAL)
-        salon_id = _create_salon(client, token, name=_SALON_NAME_A)
-        client_id = _register_client_account(
-            client, phone=_PHONE_CLIENT_LOCAL
-        )
-        service_id = _create_service(client, token, salon_id, name="Coupe homme")
-        employee = _create_employee(
-            client,
-            token,
-            salon_id,
-            phone=_PHONE_HAIRDRESSER_1_LOCAL,
-            full_name="Fatou Diarra",
-        )
-        day = datetime.date(2026, 8, 11)
-
-        confirmed_id = _seed_appointment(
-            salon_id, client_id, employee["id"], day=day, start_time="09:00",
-            status="CONFIRMED", service_id=service_id,
-        )
-        _seed_appointment(
-            salon_id, client_id, employee["id"], day=day, start_time="10:00",
-            status="PENDING", service_id=service_id,
-        )
-        _seed_appointment(
-            salon_id, client_id, employee["id"], day=day, start_time="11:00",
-            status="CANCELLED", service_id=service_id,
-        )
-
-        entries = _queue(client, token, salon_id, day=day.isoformat())
-        # Seul le RDV CONFIRMED entre dans la file (PENDING/CANCELLED exclus).
-        assert len(entries) == 1
-        entry = entries[0]
-        assert entry["appointment_id"] == confirmed_id
-        assert entry["client_name"] == "Client E2E"
-        assert entry["hairdresser_name"] == "Fatou Diarra"
-        assert entry["service_names"] == ["Coupe homme"]
-        assert entry["queue_status"] == "waiting"
-        assert client_id not in str(entries)
-
-    def test_pointage_and_payment_derive_full_lifecycle(
-        self, _e2e_client: TestClient
-    ) -> None:
-        """Attente → pointée arrivée (toujours attente) → en cours → terminée → payée."""
-        client = _e2e_client
-        _register_manager(client, phone=_PHONE_MANAGER_A_LOCAL)
-        token = _login(client, phone=_PHONE_MANAGER_A_LOCAL)
-        salon_id = _create_salon(client, token, name=_SALON_NAME_A)
-        client_id = _register_client_account(
-            client, phone=_PHONE_CLIENT_LOCAL
-        )
-        service_id = _create_service(client, token, salon_id, name="Brushing")
-        employee = _create_employee(
-            client, token, salon_id, phone=_PHONE_HAIRDRESSER_1_LOCAL
-        )
-        day = datetime.date(2026, 8, 12)
-        appointment_id = _seed_appointment(
-            salon_id, client_id, employee["id"], day=day, start_time="09:00",
-            status="CONFIRMED", service_id=service_id,
-        )
-
-        assert _queue(client, token, salon_id, day=day.isoformat())[0]["queue_status"] == "waiting"
-
-        arrival = client.post(
-            f"/salons/{salon_id}/appointments/{appointment_id}/arrival",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert arrival.status_code == 200
-        first_arrived_at = arrival.json()["arrived_at"]
-        assert first_arrived_at is not None
-        # Idempotent : un second pointage ne change pas l'horodatage.
-        arrival_again = client.post(
-            f"/salons/{salon_id}/appointments/{appointment_id}/arrival",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert arrival_again.json()["arrived_at"] == first_arrived_at
-        # Arrivée seule : toujours « en attente » (informative, pas une étape distincte).
-        assert _queue(client, token, salon_id, day=day.isoformat())[0]["queue_status"] == "waiting"
-
-        start = client.post(
-            f"/salons/{salon_id}/appointments/{appointment_id}/start",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert start.status_code == 200
-        assert _queue(client, token, salon_id, day=day.isoformat())[0]["queue_status"] == "in_progress"
-
-        complete = client.post(
-            f"/salons/{salon_id}/appointments/{appointment_id}/status",
-            json={"status": "COMPLETED"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert complete.status_code == 200
-        assert _queue(client, token, salon_id, day=day.isoformat())[0]["queue_status"] == "completed"
-
-        _record_payment(client, token, salon_id, appointment_id=appointment_id, client_id=client_id)
-        assert _queue(client, token, salon_id, day=day.isoformat())[0]["queue_status"] == "paid"
-
-    def test_start_without_arrival_returns_409(self, _e2e_client: TestClient) -> None:
-        client = _e2e_client
-        _register_manager(client, phone=_PHONE_MANAGER_A_LOCAL)
-        token = _login(client, phone=_PHONE_MANAGER_A_LOCAL)
-        salon_id = _create_salon(client, token, name=_SALON_NAME_A)
-        client_id = _register_client_account(
-            client, phone=_PHONE_CLIENT_LOCAL
-        )
-        service_id = _create_service(client, token, salon_id, name="Coupe")
-        employee = _create_employee(
-            client, token, salon_id, phone=_PHONE_HAIRDRESSER_1_LOCAL
-        )
-        appointment_id = _seed_appointment(
-            salon_id, client_id, employee["id"], day=datetime.date(2026, 8, 13),
-            start_time="09:00", status="CONFIRMED", service_id=service_id,
-        )
-
-        resp = client.post(
-            f"/salons/{salon_id}/appointments/{appointment_id}/start",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert resp.status_code == 409
-
-    def test_queue_isolation_between_salons(self, _e2e_client: TestClient) -> None:
-        client = _e2e_client
-        _register_manager(client, phone=_PHONE_MANAGER_A_LOCAL)
-        token_a = _login(client, phone=_PHONE_MANAGER_A_LOCAL)
-        salon_a = _create_salon(client, token_a, name=_SALON_NAME_A)
-        client_id = _register_client_account(
-            client, phone=_PHONE_CLIENT_LOCAL
-        )
-        service_id = _create_service(client, token_a, salon_a, name="Coupe")
-        employee = _create_employee(
-            client, token_a, salon_a, phone=_PHONE_HAIRDRESSER_1_LOCAL
-        )
-        day = datetime.date(2026, 8, 14)
-        _seed_appointment(
-            salon_a, client_id, employee["id"], day=day, start_time="09:00",
-            status="CONFIRMED", service_id=service_id,
-        )
-
-        _register_manager(client, phone=_PHONE_MANAGER_B_LOCAL)
-        token_b = _login(client, phone=_PHONE_MANAGER_B_LOCAL)
-        salon_b = _create_salon(client, token_b, name=_SALON_NAME_B)
-
-        assert _queue(client, token_b, salon_b, day=day.isoformat()) == []
-
-    def test_no_token_returns_401_for_queue(self, _e2e_client: TestClient) -> None:
-        client = _e2e_client
-        _register_manager(client, phone=_PHONE_MANAGER_A_LOCAL)
-        token = _login(client, phone=_PHONE_MANAGER_A_LOCAL)
-        salon_id = _create_salon(client, token, name=_SALON_NAME_A)
-
-        resp = client.get(f"/salons/{salon_id}/queue")
-        assert resp.status_code == 401
+        assert start_again.status_code == 200
+        assert start_again.json()["status"] == "in_progress"
+        assert start_again.json()["hairdresser_id"] == employee["id"]

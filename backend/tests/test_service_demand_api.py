@@ -1,17 +1,20 @@
 """Tests API — `GET /salons/{salon_id}/service-demand` (US-6.3, #41).
 
 Utilise FastAPI `TestClient` avec override de dépendances :
-- `get_appointment_repository` → `FakeServiceDemandRepo` ;
+- `get_queue_ticket_repository` → `FakeServiceDemandRepo` ;
 - `get_user_repository` → `FakeAuthUserRepository` (toutes les clés de rôle) ;
 - `get_access_policy` → `AccessPolicy(FakeSalonScopeRepository(...))`.
 
+Rebranché sur `queue_tickets` (pivot walk-in exclusif, #148) : le port est
+désormais `QueueTicketRepository`.
+
 Couvre :
 - 200 : structure attendue (`currency`, `date_from`, `date_to`, `by_volume`,
-  `by_revenue`) ; `revenue` en chaîne décimale ; classements vides si aucun RDV
+  `by_revenue`) ; `revenue` en chaîne décimale ; classements vides si aucun ticket
   réalisé ; les deux classements présents ;
 - **non-PII (§11.3)** : seules les clés autorisées sont présentes (`client_id`,
-  `appointment_id` interdits à tous les niveaux) ;
-- **filtre de statut** : `REVENUE_STATUSES` (`COMPLETED`) passé au port ;
+  `queue_ticket_id` interdits à tous les niveaux) ;
+- **filtre de statut** : tickets `done` passé au port ;
 - **bornes de période** : `date_from`/`date_to` transmis ; `date_to < date_from` →
   422 ; date mal formée → 422 ; sans bornes → `None` transmis au port ;
 - route absente de `PUBLIC_ROUTE_PATHS` (donnée d'exploitation salon) ;
@@ -31,15 +34,14 @@ from collections.abc import Generator
 import pytest
 from fastapi.testclient import TestClient
 
+from coiflink_api.adapters.inbound.queue_tickets import get_queue_ticket_repository
 from coiflink_api.adapters.inbound.security import (
     PUBLIC_ROUTE_PATHS,
     get_access_policy,
     get_user_repository,
 )
-from coiflink_api.adapters.inbound.stats import get_appointment_repository
 from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenService
 from coiflink_api.application.authorization import AccessPolicy
-from coiflink_api.domain.appointment import REVENUE_STATUSES
 from coiflink_api.domain.credentials import UserCredentials
 from coiflink_api.domain.enums import Role, UserStatus
 from coiflink_api.domain.service_demand import ServiceDemand
@@ -56,6 +58,8 @@ from .conftest import (
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
+
+_COMPLETED_STATUSES: tuple[str, ...] = ("done",)
 
 _MANAGER_ID = uuid.UUID(FAKE_ACCESS_CLAIMS.sub)
 _ADMIN_ID = uuid.UUID("aa111111-0000-0000-0000-000000000099")
@@ -90,12 +94,12 @@ _SVC_B = ServiceDemand(
 
 
 # ---------------------------------------------------------------------------
-# Fake AppointmentRepository (service-demand only)
+# Fake QueueTicketRepository (service-demand only)
 # ---------------------------------------------------------------------------
 
 
 class FakeServiceDemandRepo:
-    """Fake du port `AppointmentRepository` pour la route service-demand (#41) — aucun I/O.
+    """Fake du port `QueueTicketRepository` pour la route service-demand (#41) — aucun I/O.
 
     `results` contrôle ce que `demand_by_service` renvoie ; `calls` enregistre les
     arguments reçus. Les méthodes de mutation lèvent `NotImplementedError`.
@@ -118,40 +122,7 @@ class FakeServiceDemandRepo:
         )
         return self._results
 
-    def count_by_status_for_day(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def booked_slots(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
     def create(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def get_owned(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def update(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def cancel(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def get_in_salon(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def set_status(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def assign_hairdresser(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_client(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_salon(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_hairdresser(self, *a, **kw):  # type: ignore[no-untyped-def]
         raise NotImplementedError
 
 
@@ -192,7 +163,7 @@ def _demand_client(
         if manager_scope is not None
         else FakeSalonScopeRepository({_MANAGER_ID: frozenset({_SALON_ID})})
     )
-    app.dependency_overrides[get_appointment_repository] = lambda: r
+    app.dependency_overrides[get_queue_ticket_repository] = lambda: r
     app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope)
     return TestClient(app)
@@ -214,7 +185,7 @@ def _install_token_service() -> Generator[None, None, None]:
 @pytest.fixture(autouse=True)
 def _teardown_overrides() -> Generator[None, None, None]:
     yield
-    app.dependency_overrides.pop(get_appointment_repository, None)
+    app.dependency_overrides.pop(get_queue_ticket_repository, None)
     app.dependency_overrides.pop(get_user_repository, None)
     app.dependency_overrides.pop(get_access_policy, None)
 
@@ -275,7 +246,7 @@ class TestServiceDemand200:
         assert isinstance(r.json()["by_volume"][0]["volume"], int)
 
     def test_empty_lists_when_no_completed_appointments(self) -> None:
-        """Aucun RDV réalisé → classements vides (état légitime, ≠ erreur)."""
+        """Aucun ticket réalisé → classements vides (état légitime, ≠ erreur)."""
         repo = FakeServiceDemandRepo(results=())
         r = _demand_client(repo).get(_URL, headers=_auth_header("MANAGER"))
         assert r.status_code == 200
@@ -310,8 +281,8 @@ class TestServiceDemandNonPII:
     def test_no_client_id_in_root(self) -> None:
         assert "client_id" not in self._data()
 
-    def test_no_appointment_id_in_root(self) -> None:
-        assert "appointment_id" not in self._data()
+    def test_no_queue_ticket_id_in_root(self) -> None:
+        assert "queue_ticket_id" not in self._data()
 
     def test_by_volume_items_have_only_allowed_keys(self) -> None:
         allowed = {"service_id", "name", "volume", "revenue"}
@@ -329,9 +300,9 @@ class TestServiceDemandNonPII:
         for item in self._data()["by_volume"]:
             assert "client_id" not in item
 
-    def test_no_appointment_id_in_by_volume_items(self) -> None:
+    def test_no_queue_ticket_id_in_by_volume_items(self) -> None:
         for item in self._data()["by_volume"]:
-            assert "appointment_id" not in item
+            assert "queue_ticket_id" not in item
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +469,7 @@ class TestServiceDemandIsolation:
 
 
 # ---------------------------------------------------------------------------
-# Filtre de statut — REVENUE_STATUSES imposé
+# Filtre de statut — tickets done imposés
 # ---------------------------------------------------------------------------
 
 
@@ -516,16 +487,16 @@ class _TrackingStatusRepo(FakeServiceDemandRepo):
 
 class TestServiceDemandStatusFilter:
     def test_revenue_statuses_forwarded(self) -> None:
-        """Le port reçoit REVENUE_STATUSES (COMPLETED), jamais soumis par l'appelant."""
+        """Le port reçoit les tickets `done`, jamais soumis par l'appelant."""
         tracking = _TrackingStatusRepo()
         _demand_client(tracking).get(_URL, headers=_auth_header("MANAGER"))
         assert len(tracking.statuses_received) == 1
-        assert tracking.statuses_received[0] == REVENUE_STATUSES
+        assert tracking.statuses_received[0] == _COMPLETED_STATUSES
 
     def test_completed_in_statuses(self) -> None:
         tracking = _TrackingStatusRepo()
         _demand_client(tracking).get(_URL, headers=_auth_header("MANAGER"))
-        assert "COMPLETED" in tracking.statuses_received[0]
+        assert "done" in tracking.statuses_received[0]
 
 
 # ---------------------------------------------------------------------------

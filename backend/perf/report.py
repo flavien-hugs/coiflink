@@ -7,7 +7,7 @@ et est donc couvrable par des tests unitaires rapides **sans** exécuter de char
 
 Invariant §11.3/§11.4 : le rapport **agrège et compte**, il n'**affiche jamais** de
 donnée personnelle. Les seules chaînes émises sont des **libellés de groupe** et des
-**gabarits de route** (`/salons/{salon_id}/appointments`) — jamais un numéro, un
+**gabarits de route** (`/salons/{salon_id}/queue/tickets`) — jamais un numéro, un
 jeton, un e-mail, un nom ou un montant nominatif. `assert_no_pii` verrouille cet
 invariant sur la sortie sérialisée.
 """

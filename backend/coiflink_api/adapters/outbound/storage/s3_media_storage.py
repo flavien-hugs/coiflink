@@ -12,6 +12,17 @@ Invariants de sécurité (ADR-0005, §11.3) :
 - les **clés d'accès S3** viennent de l'environnement, jamais du dépôt, jamais
   journalisées.
 
+**Deux clients boto3, un seul jeu d'identifiants** : `_client` (opérationnel,
+`endpoint_url`) exécute les vrais appels réseau du backend (`delete_object`) et
+vise l'hôte fiable du réseau Docker interne ; `_presign_client`
+(`presign_endpoint_url`) ne fait *aucun* appel réseau — `generate_presigned_url`
+est une signature locale (HMAC), pas une requête HTTP — et n'a d'autre rôle que
+d'incorporer un hôte **joignable par le client final** (navigateur, mobile) dans
+le texte de l'URL renvoyée. Un signataire S3v4 inclut l'en-tête `Host` dans la
+requête canonique : les deux clients doivent donc chacun garder leur hôte
+cohérent de bout en bout (jamais mélanger la signature de l'un avec l'hôte de
+l'autre).
+
 `boto3` est importé **paresseusement** (dans le constructeur) : l'assemblage
 (`main.py`) ne crée cet adapter que si la configuration S3 est complète, et les
 tests unitaires utilisent une `FakeMediaStorage` — `pytest` ne requiert donc ni
@@ -43,6 +54,7 @@ class S3MediaStorage:
         self._config = config
         self._bucket = config.bucket
         self._ttl = config.url_ttl_seconds
+        boto_config = BotoConfig(signature_version="s3v4")
         self._client = boto3.client(
             "s3",
             endpoint_url=config.endpoint_url or None,
@@ -50,7 +62,23 @@ class S3MediaStorage:
             aws_access_key_id=config.access_key_id,
             aws_secret_access_key=config.secret_access_key,
             # Signature v4 : requise par la plupart des services S3-compatibles.
-            config=BotoConfig(signature_version="s3v4"),
+            config=boto_config,
+        )
+        presign_endpoint = config.presign_endpoint_url
+        # Même hôte que `_client` (cas courant, ex. AWS S3 pur ou domaine public en
+        # prod) : pas besoin d'un second client, `generate_presigned_url` donnerait
+        # de toute façon un résultat identique.
+        self._presign_client = (
+            self._client
+            if presign_endpoint == (config.endpoint_url or "")
+            else boto3.client(
+                "s3",
+                endpoint_url=presign_endpoint or None,
+                region_name=config.region,
+                aws_access_key_id=config.access_key_id,
+                aws_secret_access_key=config.secret_access_key,
+                config=boto_config,
+            )
         )
 
     def presign_upload(self, object_key: str, content_type: str) -> PresignedUpload:
@@ -60,7 +88,7 @@ class S3MediaStorage:
         le couvre, ce qui borne le type côté serveur (pas seulement le front).
         """
 
-        url = self._client.generate_presigned_url(
+        url = self._presign_client.generate_presigned_url(
             "put_object",
             Params={
                 "Bucket": self._bucket,
@@ -80,7 +108,7 @@ class S3MediaStorage:
     def presign_download(self, object_key: str) -> str:
         """URL signée de **lecture** à durée limitée (jamais d'URL publique)."""
 
-        return self._client.generate_presigned_url(
+        return self._presign_client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self._bucket, "Key": object_key},
             ExpiresIn=self._ttl,

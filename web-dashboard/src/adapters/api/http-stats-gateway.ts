@@ -242,6 +242,8 @@ interface DashboardKpisPayload {
   in_progress: { current: number };
   revenue: EvolutionMoneyPayload;
   clients_count: EvolutionCountPayload;
+  attendance_today: EvolutionCountPayload;
+  revenue_this_week: EvolutionMoneyPayload;
 }
 
 function toCountEvolution(payload: EvolutionCountPayload): CountEvolution {
@@ -274,6 +276,8 @@ function toDashboardKpis(payload: DashboardKpisPayload): DashboardKpis {
     inProgress: Number(payload.in_progress.current),
     revenue: toMoneyEvolution(payload.revenue),
     clientsCount: toCountEvolution(payload.clients_count),
+    attendanceToday: toCountEvolution(payload.attendance_today),
+    revenueThisWeek: toMoneyEvolution(payload.revenue_this_week),
   };
 }
 
@@ -344,12 +348,11 @@ function toAttendanceSeries(payload: AttendanceSeriesPayload): AttendanceSeries 
 }
 
 interface InProgressItemPayload {
-  appointment_id: string;
+  queue_ticket_id: string;
   client_name: string | null;
   service_names: string[];
   hairdresser_name: string | null;
-  start_time: string;
-  end_time: string;
+  started_at: string;
   status: string;
 }
 
@@ -360,14 +363,13 @@ interface InProgressPayload {
 
 function toInProgressItem(payload: InProgressItemPayload): InProgressItem {
   return {
-    appointmentId: payload.appointment_id,
+    queueTicketId: payload.queue_ticket_id,
     clientName: payload.client_name ?? null,
     serviceNames: Array.isArray(payload.service_names)
       ? payload.service_names.map(String)
       : [],
     hairdresserName: payload.hairdresser_name ?? null,
-    startTime: payload.start_time,
-    endTime: payload.end_time,
+    startedAt: payload.started_at,
     status: payload.status,
   };
 }

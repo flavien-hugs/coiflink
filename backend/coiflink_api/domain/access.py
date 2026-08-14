@@ -5,8 +5,7 @@ ce module répond « …**sur ces données-là** ? ». C'est ici que vit littér
 PRD §11.2 :
 
 - un **gérant** ne voit que les données de **son** salon ;
-- un **coiffeur** ne voit que **son** planning / les RDV qui lui sont **assignés** ;
-- un **client** ne voit que **ses propres** rendez-vous ;
+- un **coiffeur** ne voit que les tickets qui lui sont **assignés** ;
 - l'**admin** supervise la plateforme.
 
 Ce sont des **fonctions pures** : aucune I/O, aucune base, aucun HTTP. La portée
@@ -65,26 +64,13 @@ class SalonScope:
         return self.platform_wide or salon_id in self.salon_ids
 
 
-@dataclass(frozen=True)
-class AppointmentRef:
-    """Référence minimale d'un rendez-vous, suffisante pour **décider** (sans PII).
-
-    Alimentée par les issues RDV (#21+) depuis leur dépôt : la décision d'accès ne
-    dépend jamais du contenu du rendez-vous, seulement de son rattachement.
-    """
-
-    salon_id: uuid.UUID
-    client_id: uuid.UUID
-    hairdresser_id: uuid.UUID | None = None
-
-
 def can_access_salon(
     principal: Principal, salon_id: uuid.UUID, scope: SalonScope
 ) -> bool:
     """Vrai si ce compte peut accéder aux données de ce salon (PRD §11.2).
 
-    `ADMIN` : toujours (supervision). `MANAGER` / `HAIRDRESSER` / `KIOSK` :
-    uniquement si le salon est dans leur portée. Pour une borne `KIOSK` (US-8.1,
+    `ADMIN` : toujours (supervision). `MANAGER` / `HAIRDRESSER` / `TERMINAL` :
+    uniquement si le salon est dans leur portée. Pour une borne `TERMINAL` (US-8.1,
     #155), cette portée est son **rattachement d'appartenance** `salon_members`
     (mono-salon figé au provisioning) — jamais déduite d'un paramètre de requête.
     `CLIENT` : jamais — un client n'a pas de portée *salon* (il accède à **ses**
@@ -98,41 +84,13 @@ def can_access_salon(
     if principal.role in (
         Role.MANAGER.value,
         Role.HAIRDRESSER.value,
-        Role.KIOSK.value,
+        Role.TERMINAL.value,
     ):
         return scope.covers(salon_id)
     return False
 
 
-def can_access_appointment(
-    principal: Principal, appointment: AppointmentRef, scope: SalonScope
-) -> bool:
-    """Vrai si ce compte peut accéder à ce rendez-vous (PRD §11.2).
-
-    `CLIENT` : uniquement **son** rendez-vous. `HAIRDRESSER` : uniquement un RDV
-    qui lui est **assigné** (« son planning »). `MANAGER` : un RDV d'un salon de sa
-    portée. `ADMIN` : toujours.
-    """
-
-    if not principal.is_active:
-        return False
-    if principal.role == Role.ADMIN.value:
-        return True
-    if principal.role == Role.CLIENT.value:
-        return appointment.client_id == principal.id
-    if principal.role == Role.HAIRDRESSER.value:
-        return (
-            appointment.hairdresser_id is not None
-            and appointment.hairdresser_id == principal.id
-        )
-    if principal.role == Role.MANAGER.value:
-        return scope.covers(appointment.salon_id)
-    return False
-
-
 __all__ = [
     "SalonScope",
-    "AppointmentRef",
     "can_access_salon",
-    "can_access_appointment",
 ]

@@ -27,6 +27,8 @@ export interface ManagerReceipt {
   paymentId: string;
   salonId: string;
   salonName: string;
+  // `null` pour un paiement lié à une prestation seule (pas de ticket).
+  ticketNumber: number | null;
   // `null` pour un paiement comptoir sans client rattaché.
   clientName: string | null;
   clientPhone: string | null;

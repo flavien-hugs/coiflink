@@ -2,7 +2,7 @@
 // via `react-dom/server`. Couvre : état d'erreur (`inProgress = null`), liste vide →
 // état vide explicite, liste peuplée (cliente · prestation · professionnelle · début ·
 // statut), noms non résolus → « — » / « Non assignée », émission maîtrisée (§11.3 :
-// noms d'affichage seulement, aucun appointment_id visible).
+// noms d'affichage seulement, aucun identifiant de ticket brut visible).
 
 import { describe, expect, it } from "vitest";
 import React from "react";
@@ -15,21 +15,19 @@ const POPULATED: InProgressList = {
   asOf: "2026-08-09T10:00:00Z",
   items: [
     {
-      appointmentId: "apt-secret-1",
+      queueTicketId: "ticket-secret-1",
       clientName: "Awa K.",
       serviceNames: ["Tresses", "Soin"],
       hairdresserName: "Fatou",
-      startTime: "14:00:00",
-      endTime: "15:30:00",
+      startedAt: "14:00:00",
       status: "CONFIRMED",
     },
     {
-      appointmentId: "apt-secret-2",
+      queueTicketId: "ticket-secret-2",
       clientName: null,
       serviceNames: [],
       hairdresserName: null,
-      startTime: "15:00:00",
-      endTime: "16:00:00",
+      startedAt: "15:00:00",
       status: "CONFIRMED",
     },
   ],
@@ -90,9 +88,9 @@ describe("InProgressListPanel — liste peuplée", () => {
 });
 
 describe("InProgressListPanel — émission maîtrisée (§11.3)", () => {
-  it("n'expose aucun appointment_id dans le HTML rendu", () => {
+  it("n'expose aucun identifiant de ticket brut dans le HTML rendu", () => {
     const html = render(POPULATED);
-    expect(html).not.toContain("apt-secret");
-    expect(html).not.toMatch(/appointment_id/i);
+    expect(html).not.toContain("ticket-secret");
+    expect(html).not.toMatch(/queue_ticket_id/i);
   });
 });

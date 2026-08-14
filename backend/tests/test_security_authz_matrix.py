@@ -63,18 +63,19 @@ _USER_ID = uuid.UUID(FAKE_ACCESS_CLAIMS.sub)
 _SALON_ID = uuid.UUID("50000000-0000-0000-0000-0000000000a1")
 _PAYMENT_ID = uuid.UUID("50000000-0000-0000-0000-0000000000b2")
 _DEVICE_ID = uuid.UUID("50000000-0000-0000-0000-0000000000c3")
+_TICKET_ID = uuid.UUID("50000000-0000-0000-0000-0000000000d4")
 
-# `Role.KIOSK` (borne kiosque, US-8.1 #155) est inclus ici : la dérivation
+# `Role.TERMINAL` (borne terminal, US-8.1 #155) est inclus ici : la dérivation
 # `denied = _ALL_ROLES - allowed` (plus bas) l'exerce alors **automatiquement** en
 # `403` sur chaque route échantillonnée — dont la création de fiche
-# (`CUSTOMER_MANAGE`) et la réservation (`APPOINTMENT_BOOK`). C'est le « test RBAC
-# négatif ajouté à la matrice existante » du critère d'acceptation de l'issue.
+# (`CUSTOMER_MANAGE`). C'est le « test RBAC négatif ajouté à la matrice existante »
+# du critère d'acceptation de l'issue.
 _ALL_ROLES: tuple[Role, ...] = (
     Role.CLIENT,
     Role.HAIRDRESSER,
     Role.MANAGER,
     Role.ADMIN,
-    Role.KIOSK,
+    Role.TERMINAL,
 )
 
 _FORBIDDEN_DETAIL = "Accès refusé."
@@ -113,21 +114,30 @@ class _Route:
 _MATRIX: tuple[_Route, ...] = (
     _Route("POST", "/salons", Permission.SALON_CREATE),
     _Route("POST", f"/salons/{_SALON_ID}/services", Permission.SERVICE_MANAGE),
-    _Route("POST", f"/salons/{_SALON_ID}/appointments", Permission.APPOINTMENT_BOOK),
     _Route("POST", f"/salons/{_SALON_ID}/customers", Permission.CUSTOMER_MANAGE),
     _Route("POST", f"/salons/{_SALON_ID}/payments", Permission.PAYMENT_RECORD),
     _Route("GET", f"/salons/{_SALON_ID}/payments", Permission.CASH_JOURNAL_READ),
     _Route("GET", f"/salons/{_SALON_ID}/revenue/summary", Permission.STATS_READ_SALON),
     _Route("GET", "/admin/kpis", Permission.STATS_READ_PLATFORM),
     _Route("GET", "/me/receipts", Permission.PAYMENT_READ_OWN),
-    _Route("GET", "/appointments/history", Permission.APPOINTMENT_READ_OWN),
-    # Borne kiosque (US-8.1, #155) : seul `MANAGER` détient `KIOSK_PROVISION`.
-    # CLIENT, HAIRDRESSER, ADMIN **et KIOSK lui-même** sont donc dans le jeu de
+    # File d'attente walk-in (US-8.3, #157, pivot walk-in exclusif #148) : `MANAGER`
+    # et `HAIRDRESSER` détiennent `QUEUE_TICKET_UPDATE_STATUS` (démarrer un ticket).
+    _Route(
+        "POST",
+        f"/salons/{_SALON_ID}/queue/tickets/{_TICKET_ID}/start",
+        Permission.QUEUE_TICKET_UPDATE_STATUS,
+    ),
+    # Borne terminal (US-8.1, #155) : seul `MANAGER` détient `TERMINAL_PROVISION`.
+    # CLIENT, HAIRDRESSER, ADMIN **et TERMINAL lui-même** sont donc dans le jeu de
     # rôles refusés — c'est le « test RBAC négatif ajouté à la matrice » du critère
     # d'acceptation de l'issue.
-    _Route("POST", f"/salons/{_SALON_ID}/kiosk-devices", Permission.KIOSK_PROVISION),
-    _Route("GET",  f"/salons/{_SALON_ID}/kiosk-devices", Permission.KIOSK_PROVISION),
-    _Route("DELETE", f"/salons/{_SALON_ID}/kiosk-devices/{_DEVICE_ID}", Permission.KIOSK_PROVISION),
+    _Route("POST", f"/salons/{_SALON_ID}/terminal-devices", Permission.TERMINAL_PROVISION),
+    _Route("GET",  f"/salons/{_SALON_ID}/terminal-devices", Permission.TERMINAL_PROVISION),
+    _Route("DELETE", f"/salons/{_SALON_ID}/terminal-devices/{_DEVICE_ID}", Permission.TERMINAL_PROVISION),
+    # Journal d'audit (page gérante « Journal d'audit ») : seul `MANAGER` détient
+    # `AUDIT_LOG_READ` — nouvelle famille de permission de la réorganisation du
+    # tableau de bord.
+    _Route("GET", f"/salons/{_SALON_ID}/audit-logs", Permission.AUDIT_LOG_READ),
 )
 
 

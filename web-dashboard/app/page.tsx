@@ -10,7 +10,7 @@ import { SalonIllustrationPanel } from "@/src/adapters/ui/salon-illustration-pan
 // Page d'accueil (publique) **et** aiguillage par rôle après connexion. Si une
 // session valide existe (cookie httpOnly + `/auth/me`, source de vérité), la racine
 // redirige **côté serveur** vers la zone du rôle — `/gerant` pour un gérant,
-// `/coiffeur/planning` pour un coiffeur (#27) — sans « flash » de contenu privé. Un
+// `/coiffeur/tickets` pour un coiffeur (#27) — sans « flash » de contenu privé. Un
 // rôle sans surface web dédiée (CLIENT = mobile, ADMIN = zone à venir) ou un visiteur
 // anonyme voit la page marketing. Le backend reste autoritatif : aucun JWT n'est
 // décodé côté front, aucun jeton n'est exposé au navigateur ni journalisé (#14).
@@ -34,7 +34,7 @@ export default async function Home() {
           </span>
           <h1 className="font-serif text-4xl font-semibold tracking-tight text-balance text-ink">{SITE_NAME}</h1>
           <p className="text-muted">
-            Le tableau de bord de gestion pour votre salon : rendez-vous, équipe et encaissements,
+            Le tableau de bord de gestion pour votre salon : file d&apos;attente, équipe et encaissements,
             au même endroit.
           </p>
           <Link

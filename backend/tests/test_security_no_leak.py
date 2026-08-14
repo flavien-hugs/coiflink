@@ -37,15 +37,15 @@ _EXPECTED_PUBLIC_PATHS = frozenset(
         "/auth/register/manager",
         "/auth/login",
         "/auth/refresh",
-        # Authentification d'une borne kiosque (#155, US-8.1) — endpoint d'auth,
+        # Authentification d'une borne terminal (#155, US-8.1) — endpoint d'auth,
         # rate-limité, `401` générique constant (ADR-0041). Le provisioning des
-        # bornes (`/salons/{id}/kiosk-devices`) reste protégé, jamais public.
-        "/auth/kiosk/login",
+        # bornes (`/salons/{id}/terminal-devices`) reste protégé, jamais public.
+        "/auth/terminal/login",
         # Activation d'une borne (#155, US-8.1) — endpoint d'**échange** : une borne
         # non activée n'a aucun credential à présenter. Code à usage unique, rate-limité
         # par IP, `400` générique constant (ADR-0041). Le provisioning des bornes
-        # (`/salons/{id}/kiosk-devices`) reste protégé, jamais public.
-        "/auth/kiosk/activate",
+        # (`/salons/{id}/terminal-devices`) reste protégé, jamais public.
+        "/auth/terminal/activate",
         "/auth/password/reset/request",
         "/auth/password/reset/confirm",
         "/catalog/salons",
@@ -147,38 +147,38 @@ def test_message_response_carries_only_a_detail() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3. Schémas de réponse bornes kiosque — §11.3 (US-8.1, #155)
+# 3. Schémas de réponse bornes terminal — §11.3 (US-8.1, #155)
 # --------------------------------------------------------------------------- #
 
-def test_kiosk_device_response_has_no_secret_field() -> None:
-    """`KioskDeviceResponse` (GET/DELETE) ne déclare aucun champ secret (§11.3).
+def test_terminal_device_response_has_no_secret_field() -> None:
+    """`TerminalDeviceResponse` (GET/DELETE) ne déclare aucun champ secret (§11.3).
 
     La vue publique exposée sur les routes `GET`/`DELETE` ne porte **jamais** le
-    secret de device ni son condensat — seul le `KioskActivateResponse`
-    (`POST /auth/kiosk/activate`) peut exposer `secret`, et uniquement lors de
+    secret de device ni son condensat — seul le `TerminalActivateResponse`
+    (`POST /auth/terminal/activate`) peut exposer `secret`, et uniquement lors de
     l'activation (usage unique).
     """
 
-    from coiflink_api.adapters.inbound.kiosk_devices import KioskDeviceResponse
+    from coiflink_api.adapters.inbound.terminal_devices import TerminalDeviceResponse
 
-    fields = set(KioskDeviceResponse.model_fields)
+    fields = set(TerminalDeviceResponse.model_fields)
     for forbidden in ("secret", "password_hash", "hash"):
         assert forbidden not in fields, (
-            f"KioskDeviceResponse expose le champ sensible « {forbidden} »."
+            f"TerminalDeviceResponse expose le champ sensible « {forbidden} »."
         )
 
 
-def test_provision_kiosk_response_has_activation_code_but_no_secret_or_hash() -> None:
-    """`ProvisionKioskDeviceResponse` (`POST 201`) expose `activation_code`, jamais le secret ni le condensat.
+def test_provision_terminal_response_has_activation_code_but_no_secret_or_hash() -> None:
+    """`ProvisionTerminalDeviceResponse` (`POST 201`) expose `activation_code`, jamais le secret ni le condensat.
 
-    Le secret réel n'existe qu'après activation (`POST /auth/kiosk/activate`,
-    `KioskActivateResponse`) — le provisioning ne révèle qu'un code d'activation
-    à usage unique, jamais un secret directement utilisable pour `/auth/kiosk/login`.
+    Le secret réel n'existe qu'après activation (`POST /auth/terminal/activate`,
+    `TerminalActivateResponse`) — le provisioning ne révèle qu'un code d'activation
+    à usage unique, jamais un secret directement utilisable pour `/auth/terminal/login`.
     """
 
-    from coiflink_api.adapters.inbound.kiosk_devices import ProvisionKioskDeviceResponse
+    from coiflink_api.adapters.inbound.terminal_devices import ProvisionTerminalDeviceResponse
 
-    fields = set(ProvisionKioskDeviceResponse.model_fields)
+    fields = set(ProvisionTerminalDeviceResponse.model_fields)
     assert "activation_code" in fields, (
         "Le code d'activation doit figurer dans la réponse 201 (provisioning)."
     )
@@ -190,38 +190,38 @@ def test_provision_kiosk_response_has_activation_code_but_no_secret_or_hash() ->
     )
 
 
-def test_kiosk_activate_response_has_secret_but_no_hash() -> None:
-    """`KioskActivateResponse` (`POST /auth/kiosk/activate`) expose `secret` mais jamais le condensat.
+def test_terminal_activate_response_has_secret_but_no_hash() -> None:
+    """`TerminalActivateResponse` (`POST /auth/terminal/activate`) expose `secret` mais jamais le condensat.
 
     Le secret réel n'apparaît **qu'ici, une seule fois** (invariant de non-relecture) —
     généré à l'activation, jamais reconstruit ni relu ensuite.
     """
 
-    from coiflink_api.adapters.inbound.auth import KioskActivateResponse
+    from coiflink_api.adapters.inbound.auth import TerminalActivateResponse
 
-    fields = set(KioskActivateResponse.model_fields)
+    fields = set(TerminalActivateResponse.model_fields)
     assert "secret" in fields, "Le secret doit figurer dans la réponse d'activation."
     assert "password_hash" not in fields, (
         "Le condensat argon2id ne doit jamais être exposé dans un schéma de réponse."
     )
 
 
-def test_kiosk_provision_path_is_not_public() -> None:
-    """`/salons/{salon_id}/kiosk-devices` est **protégée** — jamais dans la liste blanche.
+def test_terminal_provision_path_is_not_public() -> None:
+    """`/salons/{salon_id}/terminal-devices` est **protégée** — jamais dans la liste blanche.
 
-    Le provisioning des bornes exige `KIOSK_PROVISION` (gérant uniquement) : le
+    Le provisioning des bornes exige `TERMINAL_PROVISION` (gérant uniquement) : le
     chemin ne peut pas figurer dans `PUBLIC_ROUTE_PATHS` (deny-by-default, ADR-0015).
     """
 
     from coiflink_api.adapters.inbound.security import is_public_path
 
-    assert not is_public_path("/salons/{salon_id}/kiosk-devices"), (
+    assert not is_public_path("/salons/{salon_id}/terminal-devices"), (
         "Le provisioning des bornes ne doit jamais être accessible publiquement."
     )
 
 
-def test_kiosk_login_path_is_public_and_auth_family() -> None:
-    """`/auth/kiosk/login` est bien dans la liste blanche (endpoint d'auth, rate-limité).
+def test_terminal_login_path_is_public_and_auth_family() -> None:
+    """`/auth/terminal/login` est bien dans la liste blanche (endpoint d'auth, rate-limité).
 
     Cette route est l'**unique** entrée publique liée aux bornes : le device échange
     son credential longue durée contre une paire JWT courte. Elle est déjà couverte
@@ -231,5 +231,5 @@ def test_kiosk_login_path_is_public_and_auth_family() -> None:
 
     from coiflink_api.adapters.inbound.security import PUBLIC_ROUTE_PATHS, is_public_path
 
-    assert "/auth/kiosk/login" in PUBLIC_ROUTE_PATHS
-    assert is_public_path("/auth/kiosk/login")
+    assert "/auth/terminal/login" in PUBLIC_ROUTE_PATHS
+    assert is_public_path("/auth/terminal/login")

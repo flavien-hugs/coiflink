@@ -38,13 +38,13 @@ DEFAULT_LOGIN_MAX_ATTEMPTS = 5
 DEFAULT_LOGIN_WINDOW = datetime.timedelta(seconds=300)
 DEFAULT_LOGIN_LOCKOUT = datetime.timedelta(seconds=900)
 
-# Recherche par téléphone à la borne kiosque (US-8.2, #156). Plus **permissif** que
+# Recherche par téléphone à la borne terminal (US-8.2, #156). Plus **permissif** que
 # la connexion (l'erreur de saisie tactile est fréquente et la borne est
 # physiquement surveillable), assez strict pour freiner l'énumération d'un annuaire
 # au rythme d'un terminal. Seuils à ajuster en pilote (spec §D / Risks §4).
-DEFAULT_KIOSK_LOOKUP_MAX_ATTEMPTS = 10
-DEFAULT_KIOSK_LOOKUP_WINDOW = datetime.timedelta(seconds=300)
-DEFAULT_KIOSK_LOOKUP_LOCKOUT = datetime.timedelta(seconds=600)
+DEFAULT_TERMINAL_LOOKUP_MAX_ATTEMPTS = 10
+DEFAULT_TERMINAL_LOOKUP_WINDOW = datetime.timedelta(seconds=300)
+DEFAULT_TERMINAL_LOOKUP_LOCKOUT = datetime.timedelta(seconds=600)
 
 
 def _bool_env(value: str | None, default: bool) -> bool:
@@ -90,12 +90,12 @@ class AuthConfig:
     password_reset_max_attempts: int = DEFAULT_LOGIN_MAX_ATTEMPTS
     password_reset_window: datetime.timedelta = DEFAULT_LOGIN_WINDOW
     password_reset_lockout: datetime.timedelta = DEFAULT_LOGIN_LOCKOUT
-    # Recherche téléphone à la borne kiosque (US-8.2, #156) : anti-énumération
+    # Recherche téléphone à la borne terminal (US-8.2, #156) : anti-énumération
     # dédié (device + IP), distinct des seuils de connexion (#10) et du login
-    # kiosque (#155). Variables d'environnement dédiées, défaut = valeurs spec §D.
-    kiosk_lookup_max_attempts: int = DEFAULT_KIOSK_LOOKUP_MAX_ATTEMPTS
-    kiosk_lookup_window: datetime.timedelta = DEFAULT_KIOSK_LOOKUP_WINDOW
-    kiosk_lookup_lockout: datetime.timedelta = DEFAULT_KIOSK_LOOKUP_LOCKOUT
+    # terminal (#155). Variables d'environnement dédiées, défaut = valeurs spec §D.
+    terminal_lookup_max_attempts: int = DEFAULT_TERMINAL_LOOKUP_MAX_ATTEMPTS
+    terminal_lookup_window: datetime.timedelta = DEFAULT_TERMINAL_LOOKUP_WINDOW
+    terminal_lookup_lockout: datetime.timedelta = DEFAULT_TERMINAL_LOOKUP_LOCKOUT
 
 
 def load_auth_config(env: Mapping[str, str] | None = None) -> AuthConfig:
@@ -164,20 +164,20 @@ def load_auth_config(env: Mapping[str, str] | None = None) -> AuthConfig:
                 source.get("PASSWORD_RESET_LOCKOUT_SECONDS"), login_lockout_seconds
             )
         ),
-        # Recherche téléphone kiosque (#156) : variables dédiées, défaut = spec §D.
-        kiosk_lookup_max_attempts=_int_env(
-            source.get("KIOSK_LOOKUP_MAX_ATTEMPTS"), DEFAULT_KIOSK_LOOKUP_MAX_ATTEMPTS
+        # Recherche téléphone terminal (#156) : variables dédiées, défaut = spec §D.
+        terminal_lookup_max_attempts=_int_env(
+            source.get("TERMINAL_LOOKUP_MAX_ATTEMPTS"), DEFAULT_TERMINAL_LOOKUP_MAX_ATTEMPTS
         ),
-        kiosk_lookup_window=datetime.timedelta(
+        terminal_lookup_window=datetime.timedelta(
             seconds=_int_env(
-                source.get("KIOSK_LOOKUP_WINDOW_SECONDS"),
-                int(DEFAULT_KIOSK_LOOKUP_WINDOW.total_seconds()),
+                source.get("TERMINAL_LOOKUP_WINDOW_SECONDS"),
+                int(DEFAULT_TERMINAL_LOOKUP_WINDOW.total_seconds()),
             )
         ),
-        kiosk_lookup_lockout=datetime.timedelta(
+        terminal_lookup_lockout=datetime.timedelta(
             seconds=_int_env(
-                source.get("KIOSK_LOOKUP_LOCKOUT_SECONDS"),
-                int(DEFAULT_KIOSK_LOOKUP_LOCKOUT.total_seconds()),
+                source.get("TERMINAL_LOOKUP_LOCKOUT_SECONDS"),
+                int(DEFAULT_TERMINAL_LOOKUP_LOCKOUT.total_seconds()),
             )
         ),
     )
@@ -199,9 +199,22 @@ class MediaConfig:
     fail-fast est déportée à l'assemblage (`main.py` ne crée l'adapter que si
     `is_configured` ; sinon les routes médias répondent `503`, sans casser la
     création de salon ni `GET /health`).
+
+    `endpoint_url` et `public_endpoint_url` sont **délibérément distincts** : le
+    premier est l'hôte que le backend utilise pour ses propres appels réseau
+    (`delete_object`, ex. `http://minio:9000`, résolu par le DNS interne Docker) ;
+    le second est l'hôte **incorporé dans les URLs pré-signées** renvoyées aux
+    clients (navigateur, application mobile) — qui ne vivent pas sur le réseau
+    Docker interne et ne peuvent pas résoudre `minio`. En local, `localhost`
+    fonctionne pour un navigateur sur la même machine mais jamais pour un
+    émulateur Android (`10.0.2.2` viserait l'émulateur lui-même) ni un appareil
+    physique : `public_endpoint_url` doit alors être l'IP LAN de la machine de
+    dev. Défaut (chaîne vide) → replié sur `endpoint_url` (comportement
+    précédent inchangé si la variable n'est pas définie).
     """
 
     endpoint_url: str = ""
+    public_endpoint_url: str = ""
     bucket: str = ""
     region: str = DEFAULT_S3_REGION
     access_key_id: str = ""
@@ -220,6 +233,14 @@ class MediaConfig:
 
         return bool(self.bucket and self.access_key_id and self.secret_access_key)
 
+    @property
+    def presign_endpoint_url(self) -> str:
+        """Hôte à utiliser pour **signer** les URLs — `public_endpoint_url` si
+        renseigné, sinon `endpoint_url` (une seule variable suffit quand les deux
+        publics coïncident, ex. AWS S3 « pur » ou un domaine public en prod)."""
+
+        return self.public_endpoint_url or self.endpoint_url
+
 
 def load_media_config(env: Mapping[str, str] | None = None) -> MediaConfig:
     """Construit `MediaConfig` depuis l'environnement (secrets sans défaut)."""
@@ -227,6 +248,7 @@ def load_media_config(env: Mapping[str, str] | None = None) -> MediaConfig:
     source = env if env is not None else os.environ
     return MediaConfig(
         endpoint_url=(source.get("S3_ENDPOINT_URL") or "").strip(),
+        public_endpoint_url=(source.get("S3_PUBLIC_ENDPOINT_URL") or "").strip(),
         bucket=(source.get("S3_BUCKET") or "").strip(),
         region=(source.get("S3_REGION") or DEFAULT_S3_REGION).strip(),
         access_key_id=(source.get("S3_ACCESS_KEY_ID") or "").strip(),

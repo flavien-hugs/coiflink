@@ -1,13 +1,17 @@
 // Graphique d'**évolution du chiffre d'affaires** du Dashboard Manager (#148). Adapter
 // UI (hexagonal, ADR-0008), rendu **pur** côté serveur : reçoit une `RevenueSeries`
 // déjà chargée côté serveur (jeton du cookie httpOnly, invariant #14) et la dessine en
-// **barres SVG** (aucune dépendance de charting). Le backend reste l'autorité (net
-// `cash_journal` par jour, jours vides complétés à 0). Aucune PII (dates + montants).
+// **aire lissée SVG** (`DashboardAreaChart`, aucune dépendance de charting) — la
+// trajectoire se lit mieux en courbe continue qu'en barres pour une « évolution », et
+// tient mieux à 30 points sans se tasser visuellement (`attendance-chart.tsx` reste,
+// lui, en barres — comparaison jour par jour plus utile pour la fréquentation). Le
+// backend reste l'autorité (net `cash_journal` par jour, jours vides complétés à 0).
+// Aucune PII (dates + montants).
 //
 // États : `series = null` → dégradation locale (message neutre) ; série tout-à-zéro →
-// état vide explicite ; sinon barres proportionnelles + table de secours accessible.
+// état vide explicite ; sinon aire lissée + table de secours accessible.
 
-import { DashboardBarChart } from "@/src/adapters/ui/dashboard-bar-chart";
+import { DashboardAreaChart } from "@/src/adapters/ui/dashboard-area-chart";
 import { revenueChartScale, type RevenueSeries } from "@/src/domain/dashboard/series";
 import { formatXof } from "@/src/domain/payments/payment";
 
@@ -27,7 +31,7 @@ export function RevenueChart({ series }: { series: RevenueSeries | null }) {
       {scale.isEmpty ? (
         <EmptyState />
       ) : (
-        <DashboardBarChart
+        <DashboardAreaChart
           points={scale.points}
           colorClassName="text-accent"
           ariaLabel="Évolution du chiffre d'affaires du salon sur la période"

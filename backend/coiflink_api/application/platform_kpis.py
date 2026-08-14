@@ -4,15 +4,15 @@ Tranche applicative hexagonale : ce cas d'usage ne dépend que d'un **port**
 (`PlatformKpiRepository`) — aucune dépendance FastAPI/SQLAlchemy. Il matérialise le
 critère d'acceptation #44 :
 
-> **Dashboard admin avec KPI globaux agrégés** (salons inscrits, rendez-vous, revenus
-> plateforme).
+> **Dashboard admin avec KPI globaux agrégés** (salons inscrits, tickets walk-in,
+> revenus plateforme).
 
 `ComputePlatformKpis` est une **lecture pure** (calquée sur `SummarizeRevenue` #40 et
 `SummarizeSalonTransactions` #37) : pour une **date de référence** (jour civil
 `Africa/Abidjan`), il dérive les bornes du **mois civil courant** (`month_bounds`,
 `domain/revenue.py`), convertit ces bornes en bornes UTC (`domain/time_window.py`,
-miroir #37/#40) **pour le revenu** — les rendez-vous du mois se comparant directement
-sur `appointment_date` (déjà un jour civil) — puis délègue le calcul en base au port.
+miroir #37/#40) **pour le revenu** — les tickets du mois se comparant directement
+sur `issued_date` (déjà un jour civil) — puis délègue le calcul en base au port.
 Il assemble enfin l'instantané public avec la date de référence, les bornes et la
 devise. Comme les autres lectures statistiques (#37/#39–#43), il **ne journalise
 aucune action** §11.4 — la consultation reste bornée par la permission
@@ -58,8 +58,8 @@ class ComputePlatformKpis:
             salons_total=counts.salons_total,
             salons_active=counts.salons_active,
             clients_total=counts.clients_total,
-            appointments_total=counts.appointments_total,
-            appointments_this_month=counts.appointments_this_month,
+            tickets_total=counts.tickets_total,
+            tickets_this_month=counts.tickets_this_month,
             revenue_total=counts.revenue_total,
             revenue_this_month=counts.revenue_this_month,
             reference_date=reference_date,

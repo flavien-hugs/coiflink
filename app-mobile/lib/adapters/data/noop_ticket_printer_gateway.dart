@@ -4,9 +4,9 @@
 // pause du minuteur → `print` → reprise) mais **ne construit pas** l'adaptateur
 // thermique concret : c'est le périmètre de #160 (`EscPosTicketPrinterGateway`).
 // Cet adaptateur no-op tient la place jusque-là : il réussit silencieusement, sans
-// matériel, pour que le parcours kiosque soit complet et exécutable dès #159.
+// matériel, pour que le parcours terminal soit complet et exécutable dès #159.
 //
-// Le jour où #160 livre l'adaptateur ESC/POS, `main_kiosk.dart` remplace ce no-op
+// Le jour où #160 livre l'adaptateur ESC/POS, `main_terminal.dart` remplace ce no-op
 // par l'implémentation réelle — aucun autre code du parcours ne change (le port
 // reste le seul point de couplage).
 

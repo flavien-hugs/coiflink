@@ -1,10 +1,10 @@
 """Cas d'usage : **performance des coiffeurs** d'un salon sur une période (US-6.5, #43).
 
 Tranche applicative hexagonale : ce cas d'usage ne dépend que de **deux ports**
-(`AppointmentRepository` **et** `CashJournalRepository`) — aucune dépendance
+(`QueueTicketRepository` **et** `CashJournalRepository`) — aucune dépendance
 FastAPI/SQLAlchemy. Il matérialise le critère d'acceptation #43 :
 
-> Indicateurs par coiffeur cohérents avec le planning et la caisse (§6 US-6.5).
+> Indicateurs par coiffeur cohérents avec la file d'attente et la caisse (§6 US-6.5).
 
 `SummarizeHairdresserPerformance` est une **lecture pure** (calquée sur
 `SummarizeServiceDemand` #41) : il délègue les
@@ -16,15 +16,16 @@ action** §11.4 — la consultation d'un KPI reste bornée par la permission
 `STATS_READ_SALON` (le `MANAGER` seul).
 
 **Chaque indicateur cohérent avec son autorité** (cœur de l'AC). Prestations
-réalisées et taux d'annulation dérivent **du planning** (`appointments` assignés,
-via `performance_by_hairdresser`) ; le CA dérive **de la caisse** (net
-`cash_journal` attribué par RDV, via `net_revenue_by_hairdresser`).
+réalisées et taux d'annulation dérivent **de la file d'attente** (`queue_tickets`
+assignés, via `performance_by_hairdresser`) ; le CA dérive **de la caisse** (net
+`cash_journal` attribué par ticket, via `net_revenue_by_hairdresser`).
 
 **« Réalisé » & « annulé » imposés serveur (§8.1).** Les statuts sont **décidés
-côté serveur** (`REVENUE_STATUSES == (COMPLETED,)` pour le réalisé,
-`CANCELLED_STATUSES == (CANCELLED,)` pour l'annulation) et jamais soumis par
-l'appelant. La période `[date_from, date_to]` est **résolue** (deux dates non
-nulles) par l'adapter entrant (défaut = mois civil courant), comme #42.
+côté serveur** (`_COMPLETED_STATUSES == ("done",)` pour le réalisé,
+`_CANCELLED_STATUSES == ("expired",)` pour l'équivalent walk-in de l'annulation — un
+ticket `expired` est un ticket auquel le client n'a jamais donné suite) et jamais
+soumis par l'appelant. La période `[date_from, date_to]` est **résolue** (deux dates
+non nulles) par l'adapter entrant (défaut = mois civil courant), comme #42.
 """
 
 from __future__ import annotations
@@ -33,32 +34,34 @@ import datetime
 import decimal
 import uuid
 
-from coiflink_api.application.ports.appointment_repository import (
-    AppointmentRepository,
-)
 from coiflink_api.application.ports.cash_journal_repository import (
     CashJournalRepository,
 )
-from coiflink_api.domain.appointment import CANCELLED_STATUSES, REVENUE_STATUSES
+from coiflink_api.application.ports.queue_ticket_repository import (
+    QueueTicketRepository,
+)
 from coiflink_api.domain.hairdresser_performance import (
     HairdresserActivity,
     HairdresserPerformanceReport,
     rank_hairdresser_performance,
 )
 
+_COMPLETED_STATUSES: tuple[str, ...] = ("done",)
+_CANCELLED_STATUSES: tuple[str, ...] = ("expired",)
+
 
 class SummarizeHairdresserPerformance:
     """Performance des coiffeurs d'un salon sur une période (lecture — pas d'audit, #43).
 
-    `execute(salon_id, *, date_from, date_to)` délègue l'agrégat planning `GROUP BY
-    hairdresser_id` au port `performance_by_hairdresser` (isolation §11.2 ré-affirmée
-    en SQL) en **imposant** `REVENUE_STATUSES` (RDV `COMPLETED` — prestations
-    réalisées) et `CANCELLED_STATUSES` (RDV `CANCELLED` — numérateur du taux), puis
+    `execute(salon_id, *, date_from, date_to)` délègue l'agrégat file d'attente
+    `GROUP BY hairdresser_id` au port `performance_by_hairdresser` (isolation §11.2
+    ré-affirmée en SQL) en **imposant** les tickets `done` (prestations réalisées) et
+    `expired` (numérateur du taux — équivalent walk-in de l'annulation), puis
     **greffe** le CA net attribué par la caisse (`net_revenue_by_hairdresser`),
     **fusionné par `hairdresser_id`** (`0.00` si le coiffeur n'a aucun paiement
-    attribué). La liste des coiffeurs vient **du planning** : un coiffeur avec du CA
-    mais aucun RDV assigné dans la fenêtre planning n'apparaît pas (cohérence « liste
-    = coiffeurs actifs au planning », spec §Open Questions 10). Le calcul du taux et
+    attribué). La liste des coiffeurs vient **de la file d'attente** : un coiffeur
+    avec du CA mais aucun ticket assigné dans la fenêtre n'apparaît pas (cohérence
+    « liste = coiffeurs actifs », spec §Open Questions 10). Le calcul du taux et
     l'ordre du classement sont délégués au domaine (`rank_hairdresser_performance`).
     Lecture pure : aucune écriture, aucun audit (§11.4). Aucune PII **client** ni
     contact employé n'est rapatriée — seulement des compteurs, des montants et le nom
@@ -67,10 +70,10 @@ class SummarizeHairdresserPerformance:
 
     def __init__(
         self,
-        appointment_repository: AppointmentRepository,
+        queue_ticket_repository: QueueTicketRepository,
         cash_journal_repository: CashJournalRepository,
     ) -> None:
-        self._appointments = appointment_repository
+        self._tickets = queue_ticket_repository
         self._cash_journal = cash_journal_repository
 
     def execute(
@@ -80,12 +83,12 @@ class SummarizeHairdresserPerformance:
         date_from: datetime.date,
         date_to: datetime.date,
     ) -> HairdresserPerformanceReport:
-        counts = self._appointments.performance_by_hairdresser(
+        counts = self._tickets.performance_by_hairdresser(
             salon_id,
             date_from=date_from,
             date_to=date_to,
-            completed_statuses=REVENUE_STATUSES,  # (COMPLETED,) — §8.1, réalisé
-            cancelled_statuses=CANCELLED_STATUSES,  # (CANCELLED,) — décidé serveur
+            completed_statuses=_COMPLETED_STATUSES,  # ("done",) — §8.1, réalisé
+            cancelled_statuses=_CANCELLED_STATUSES,  # ("expired",) — décidé serveur
         )
         net_by_hairdresser = self._cash_journal.net_revenue_by_hairdresser(
             salon_id,

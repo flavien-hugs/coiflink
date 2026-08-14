@@ -1,10 +1,14 @@
 """Tests API — `GET /salons/{salon_id}/hairdresser-performance` (US-6.5, #43).
 
 Utilise FastAPI `TestClient` avec override de dépendances :
-- `get_appointment_repository`  → `FakeHairdresserPerformanceAppointmentRepo` ;
+- `get_queue_ticket_repository` → `FakeHairdresserPerformanceQueueTicketRepo` ;
 - `get_cash_journal_repository` → `FakeHairdresserPerformanceCashRepo` ;
 - `get_user_repository`         → `FakeAuthUserRepository` (toutes les clés de rôle) ;
 - `get_access_policy`           → `AccessPolicy(FakeSalonScopeRepository(...))`.
+
+Rebranché sur `queue_tickets` (pivot walk-in exclusif, #148) : le port est
+désormais `QueueTicketRepository`, et l'équivalent walk-in de l'ancien statut
+RDV `CANCELLED` est le ticket `expired`.
 
 Couvre :
 - 200 : structure attendue (`currency`, `date_from`, `date_to`, `hairdressers`) ;
@@ -20,8 +24,8 @@ Couvre :
 - route absente de `PUBLIC_ROUTE_PATHS` ;
 - **non-collision de routage** : `hairdresser-performance` n'est pas un UUID ;
 - **isolation** : `salon_id` de l'URL transmis aux deux dépôts (§11.2) ;
-- **statuts serveur** : `REVENUE_STATUSES` et `CANCELLED_STATUSES` imposés
-  (jamais soumis par l'appelant) ;
+- **statuts serveur** : tickets `done`/`expired` imposés (jamais soumis par
+  l'appelant) ;
 - 422 : `date_to < date_from`, dates malformées ;
 - 401 : jeton absent ou invalide ;
 - 403 : CLIENT, HAIRDRESSER, ADMIN ; gérant hors portée → 403 générique.
@@ -37,18 +41,15 @@ from collections.abc import Generator, Mapping
 import pytest
 from fastapi.testclient import TestClient
 
+from coiflink_api.adapters.inbound.queue_tickets import get_queue_ticket_repository
 from coiflink_api.adapters.inbound.security import (
     PUBLIC_ROUTE_PATHS,
     get_access_policy,
     get_user_repository,
 )
-from coiflink_api.adapters.inbound.stats import (
-    get_appointment_repository,
-    get_cash_journal_repository,
-)
+from coiflink_api.adapters.inbound.stats import get_cash_journal_repository
 from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenService
 from coiflink_api.application.authorization import AccessPolicy
-from coiflink_api.domain.appointment import CANCELLED_STATUSES, REVENUE_STATUSES
 from coiflink_api.domain.credentials import UserCredentials
 from coiflink_api.domain.enums import Role, UserStatus
 from coiflink_api.domain.hairdresser_performance import HairdresserActivityCounts
@@ -87,14 +88,17 @@ _ROLE_USER_IDS: dict[str, uuid.UUID] = {
 
 _URL = f"/salons/{_SALON_ID}/hairdresser-performance"
 
+_COMPLETED_STATUSES: tuple[str, ...] = ("done",)
+_CANCELLED_STATUSES: tuple[str, ...] = ("expired",)
+
 
 # ---------------------------------------------------------------------------
-# Fake AppointmentRepository (hairdresser-performance)
+# Fake QueueTicketRepository (hairdresser-performance)
 # ---------------------------------------------------------------------------
 
 
-class FakeHairdresserPerformanceAppointmentRepo:
-    """Fake du port `AppointmentRepository` pour la route hairdresser-performance (#43).
+class FakeHairdresserPerformanceQueueTicketRepo:
+    """Fake du port `QueueTicketRepository` pour la route hairdresser-performance (#43).
 
     `counts` contrôle ce que `performance_by_hairdresser` renvoie.
     `calls` enregistre les arguments reçus.
@@ -130,40 +134,7 @@ class FakeHairdresserPerformanceAppointmentRepo:
     def demand_by_service(self, *a, **kw):  # type: ignore[no-untyped-def]
         raise NotImplementedError
 
-    def count_by_status_for_day(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def booked_slots(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
     def create(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def get_owned(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def update(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def cancel(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def get_in_salon(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def set_status(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def assign_hairdresser(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_client(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_salon(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_hairdresser(self, *a, **kw):  # type: ignore[no-untyped-def]
         raise NotImplementedError
 
 
@@ -234,19 +205,19 @@ def _auth_header(role: str) -> dict[str, str]:
 
 
 def _perf_client(
-    appt_repo: FakeHairdresserPerformanceAppointmentRepo | None = None,
+    tickets_repo: FakeHairdresserPerformanceQueueTicketRepo | None = None,
     cash_repo: FakeHairdresserPerformanceCashRepo | None = None,
     manager_scope: FakeSalonScopeRepository | None = None,
 ) -> TestClient:
     """TestClient MANAGER avec `_SALON_ID` dans sa portée (US-6.5, #43)."""
-    ar = appt_repo or FakeHairdresserPerformanceAppointmentRepo()
+    tr = tickets_repo or FakeHairdresserPerformanceQueueTicketRepo()
     cr = cash_repo or FakeHairdresserPerformanceCashRepo()
     scope = (
         manager_scope
         if manager_scope is not None
         else FakeSalonScopeRepository({_MANAGER_ID: frozenset({_SALON_ID})})
     )
-    app.dependency_overrides[get_appointment_repository] = lambda: ar
+    app.dependency_overrides[get_queue_ticket_repository] = lambda: tr
     app.dependency_overrides[get_cash_journal_repository] = lambda: cr
     app.dependency_overrides[get_user_repository] = lambda: _user_repo_for_all_roles()
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope)
@@ -285,7 +256,7 @@ def _install_token_service() -> Generator[None, None, None]:
 @pytest.fixture(autouse=True)
 def _teardown_overrides() -> Generator[None, None, None]:
     yield
-    app.dependency_overrides.pop(get_appointment_repository, None)
+    app.dependency_overrides.pop(get_queue_ticket_repository, None)
     app.dependency_overrides.pop(get_cash_journal_repository, None)
     app.dependency_overrides.pop(get_user_repository, None)
     app.dependency_overrides.pop(get_access_policy, None)
@@ -327,54 +298,58 @@ class TestHairdresserPerformance200:
 
     def test_empty_hairdressers_list_is_legitimate(self) -> None:
         """Aucun coiffeur assigné → liste vide (état vide légitime, ≠ erreur)."""
-        r = _perf_client(FakeHairdresserPerformanceAppointmentRepo(counts=())).get(
+        r = _perf_client(FakeHairdresserPerformanceQueueTicketRepo(counts=())).get(
             _URL, headers=_auth_header("MANAGER")
         )
         assert r.status_code == 200
         assert r.json()["hairdressers"] == []
 
     def test_one_hairdresser_in_list(self) -> None:
-        ar = FakeHairdresserPerformanceAppointmentRepo(counts=(_counts(),))
-        r = _perf_client(ar).get(_URL, headers=_auth_header("MANAGER"))
+        tr = FakeHairdresserPerformanceQueueTicketRepo(counts=(_counts(),))
+        r = _perf_client(tr).get(_URL, headers=_auth_header("MANAGER"))
         assert len(r.json()["hairdressers"]) == 1
 
     def test_hairdresser_item_has_hairdresser_id(self) -> None:
-        ar = FakeHairdresserPerformanceAppointmentRepo(counts=(_counts(),))
-        r = _perf_client(ar).get(_URL, headers=_auth_header("MANAGER"))
+        tr = FakeHairdresserPerformanceQueueTicketRepo(counts=(_counts(),))
+        r = _perf_client(tr).get(_URL, headers=_auth_header("MANAGER"))
         assert "hairdresser_id" in r.json()["hairdressers"][0]
 
     def test_hairdresser_item_has_hairdresser_name(self) -> None:
-        ar = FakeHairdresserPerformanceAppointmentRepo(counts=(_counts(),))
-        r = _perf_client(ar).get(_URL, headers=_auth_header("MANAGER"))
+        tr = FakeHairdresserPerformanceQueueTicketRepo(counts=(_counts(),))
+        r = _perf_client(tr).get(_URL, headers=_auth_header("MANAGER"))
         assert "hairdresser_name" in r.json()["hairdressers"][0]
 
     def test_hairdresser_name_value_correct(self) -> None:
-        ar = FakeHairdresserPerformanceAppointmentRepo(counts=(_counts(name="Mariame"),))
-        r = _perf_client(ar).get(_URL, headers=_auth_header("MANAGER"))
+        tr = FakeHairdresserPerformanceQueueTicketRepo(counts=(_counts(name="Mariame"),))
+        r = _perf_client(tr).get(_URL, headers=_auth_header("MANAGER"))
         assert r.json()["hairdressers"][0]["hairdresser_name"] == "Mariame"
 
     def test_revenue_is_decimal_string(self) -> None:
         """Le CA est sérialisé en chaîne décimale, jamais en flottant JS."""
-        ar = FakeHairdresserPerformanceAppointmentRepo(counts=(_counts(),))
+        tr = FakeHairdresserPerformanceQueueTicketRepo(counts=(_counts(),))
         cr = FakeHairdresserPerformanceCashRepo(
             revenue_map={_H_ID_1: decimal.Decimal("75000.00")}
         )
-        r = _perf_client(ar, cr).get(_URL, headers=_auth_header("MANAGER"))
+        r = _perf_client(tr, cr).get(_URL, headers=_auth_header("MANAGER"))
         assert isinstance(r.json()["hairdressers"][0]["revenue"], str)
 
     def test_cancellation_rate_is_decimal_string(self) -> None:
-        ar = FakeHairdresserPerformanceAppointmentRepo(counts=(_counts(),))
-        r = _perf_client(ar).get(_URL, headers=_auth_header("MANAGER"))
+        tr = FakeHairdresserPerformanceQueueTicketRepo(counts=(_counts(),))
+        r = _perf_client(tr).get(_URL, headers=_auth_header("MANAGER"))
         assert isinstance(r.json()["hairdressers"][0]["cancellation_rate"], str)
 
     def test_services_completed_is_integer(self) -> None:
-        ar = FakeHairdresserPerformanceAppointmentRepo(counts=(_counts(services_completed=42),))
-        r = _perf_client(ar).get(_URL, headers=_auth_header("MANAGER"))
+        tr = FakeHairdresserPerformanceQueueTicketRepo(
+            counts=(_counts(services_completed=42),)
+        )
+        r = _perf_client(tr).get(_URL, headers=_auth_header("MANAGER"))
         assert isinstance(r.json()["hairdressers"][0]["services_completed"], int)
 
     def test_services_completed_value_correct(self) -> None:
-        ar = FakeHairdresserPerformanceAppointmentRepo(counts=(_counts(services_completed=42),))
-        r = _perf_client(ar).get(_URL, headers=_auth_header("MANAGER"))
+        tr = FakeHairdresserPerformanceQueueTicketRepo(
+            counts=(_counts(services_completed=42),)
+        )
+        r = _perf_client(tr).get(_URL, headers=_auth_header("MANAGER"))
         assert r.json()["hairdressers"][0]["services_completed"] == 42
 
 
@@ -429,8 +404,8 @@ class TestHairdresserPerformanceDefaultPeriod:
 
 class TestHairdresserPerformanceNonPII:
     def _data_with_one_entry(self) -> dict:
-        ar = FakeHairdresserPerformanceAppointmentRepo(counts=(_counts(),))
-        r = _perf_client(ar).get(_URL, headers=_auth_header("MANAGER"))
+        tr = FakeHairdresserPerformanceQueueTicketRepo(counts=(_counts(),))
+        r = _perf_client(tr).get(_URL, headers=_auth_header("MANAGER"))
         assert r.status_code == 200
         return r.json()
 
@@ -463,8 +438,8 @@ class TestHairdresserPerformanceNonPII:
         item = self._data_with_one_entry()["hairdressers"][0]
         assert "role" not in item
 
-    def test_no_appointment_id_in_response(self) -> None:
-        assert "appointment_id" not in self._data_with_one_entry()
+    def test_no_queue_ticket_id_in_response(self) -> None:
+        assert "queue_ticket_id" not in self._data_with_one_entry()
 
     def test_no_recorded_by_in_response(self) -> None:
         assert "recorded_by" not in self._data_with_one_entry()
@@ -602,7 +577,7 @@ class TestHairdresserPerformance403:
 # ---------------------------------------------------------------------------
 
 
-class _TrackingAppointmentRepo(FakeHairdresserPerformanceAppointmentRepo):
+class _TrackingQueueTicketRepo(FakeHairdresserPerformanceQueueTicketRepo):
     def __init__(self) -> None:
         super().__init__()
         self.salon_ids_received: list[uuid.UUID] = []
@@ -627,8 +602,8 @@ class _TrackingCashRepo(FakeHairdresserPerformanceCashRepo):
 
 
 class TestHairdresserPerformanceIsolation:
-    def test_salon_id_forwarded_to_appointment_repo(self) -> None:
-        tracking = _TrackingAppointmentRepo()
+    def test_salon_id_forwarded_to_queue_ticket_repo(self) -> None:
+        tracking = _TrackingQueueTicketRepo()
         r = _perf_client(tracking).get(_URL, headers=_auth_header("MANAGER"))
         assert r.status_code == 200
         assert len(tracking.salon_ids_received) == 1
@@ -641,8 +616,8 @@ class TestHairdresserPerformanceIsolation:
         assert len(tracking_cash.salon_ids_received) == 1
         assert tracking_cash.salon_ids_received[0] == _SALON_ID
 
-    def test_appointment_repo_does_not_receive_other_salon_id(self) -> None:
-        tracking = _TrackingAppointmentRepo()
+    def test_queue_ticket_repo_does_not_receive_other_salon_id(self) -> None:
+        tracking = _TrackingQueueTicketRepo()
         _perf_client(tracking).get(_URL, headers=_auth_header("MANAGER"))
         for sid in tracking.salon_ids_received:
             assert sid != _OTHER_SALON_ID
@@ -659,7 +634,7 @@ class TestHairdresserPerformanceIsolation:
 # ---------------------------------------------------------------------------
 
 
-class _TrackingStatusesRepo(FakeHairdresserPerformanceAppointmentRepo):
+class _TrackingStatusesRepo(FakeHairdresserPerformanceQueueTicketRepo):
     def __init__(self) -> None:
         super().__init__()
         self.completed_statuses_received: list = []
@@ -674,28 +649,28 @@ class _TrackingStatusesRepo(FakeHairdresserPerformanceAppointmentRepo):
 
 
 class TestHairdresserPerformanceStatusFilter:
-    def test_revenue_statuses_forwarded(self) -> None:
-        """REVENUE_STATUSES (COMPLETED) transmis au port — jamais soumis par l'appelant."""
+    def test_completed_statuses_forwarded(self) -> None:
+        """Tickets `done` transmis au port — jamais soumis par l'appelant."""
         tracking = _TrackingStatusesRepo()
         _perf_client(tracking).get(_URL, headers=_auth_header("MANAGER"))
         assert len(tracking.completed_statuses_received) == 1
-        assert tracking.completed_statuses_received[0] == REVENUE_STATUSES
+        assert tracking.completed_statuses_received[0] == _COMPLETED_STATUSES
 
-    def test_completed_in_revenue_statuses(self) -> None:
+    def test_done_in_completed_statuses(self) -> None:
         tracking = _TrackingStatusesRepo()
         _perf_client(tracking).get(_URL, headers=_auth_header("MANAGER"))
-        assert "COMPLETED" in tracking.completed_statuses_received[0]
+        assert "done" in tracking.completed_statuses_received[0]
 
     def test_cancelled_statuses_forwarded(self) -> None:
         tracking = _TrackingStatusesRepo()
         _perf_client(tracking).get(_URL, headers=_auth_header("MANAGER"))
         assert len(tracking.cancelled_statuses_received) == 1
-        assert tracking.cancelled_statuses_received[0] == CANCELLED_STATUSES
+        assert tracking.cancelled_statuses_received[0] == _CANCELLED_STATUSES
 
-    def test_cancelled_in_cancelled_statuses(self) -> None:
+    def test_expired_in_cancelled_statuses(self) -> None:
         tracking = _TrackingStatusesRepo()
         _perf_client(tracking).get(_URL, headers=_auth_header("MANAGER"))
-        assert "CANCELLED" in tracking.cancelled_statuses_received[0]
+        assert "expired" in tracking.cancelled_statuses_received[0]
 
 
 # ---------------------------------------------------------------------------
@@ -703,7 +678,7 @@ class TestHairdresserPerformanceStatusFilter:
 # ---------------------------------------------------------------------------
 
 
-class _TrackingDatesAppointmentRepo(FakeHairdresserPerformanceAppointmentRepo):
+class _TrackingDatesQueueTicketRepo(FakeHairdresserPerformanceQueueTicketRepo):
     def __init__(self) -> None:
         super().__init__()
         self.date_from_received: list = []
@@ -718,16 +693,16 @@ class _TrackingDatesAppointmentRepo(FakeHairdresserPerformanceAppointmentRepo):
 
 
 class TestHairdresserPerformanceDateBounds:
-    def test_date_from_forwarded_to_appointment_port(self) -> None:
-        tracking = _TrackingDatesAppointmentRepo()
+    def test_date_from_forwarded_to_queue_ticket_port(self) -> None:
+        tracking = _TrackingDatesQueueTicketRepo()
         _perf_client(tracking).get(
             _URL + "?date_from=2026-08-01&date_to=2026-08-31",
             headers=_auth_header("MANAGER"),
         )
         assert tracking.date_from_received[0] == datetime.date(2026, 8, 1)
 
-    def test_date_to_forwarded_to_appointment_port(self) -> None:
-        tracking = _TrackingDatesAppointmentRepo()
+    def test_date_to_forwarded_to_queue_ticket_port(self) -> None:
+        tracking = _TrackingDatesQueueTicketRepo()
         _perf_client(tracking).get(
             _URL + "?date_from=2026-08-01&date_to=2026-08-31",
             headers=_auth_header("MANAGER"),
@@ -736,7 +711,7 @@ class TestHairdresserPerformanceDateBounds:
 
     def test_without_dates_port_receives_non_null_bounds(self) -> None:
         """Sans paramètres → les deux bornes du mois courant sont transmises."""
-        tracking = _TrackingDatesAppointmentRepo()
+        tracking = _TrackingDatesQueueTicketRepo()
         _perf_client(tracking).get(_URL, headers=_auth_header("MANAGER"))
         assert tracking.date_from_received[0] is not None
         assert tracking.date_to_received[0] is not None

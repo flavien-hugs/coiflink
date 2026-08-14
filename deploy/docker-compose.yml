@@ -106,10 +106,16 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Secret de signature JWT — requis dès #8 (auth) ; vide tant qu'inutilisé.
       JWT_SECRET: ${JWT_SECRET:-}
-      # Stockage objet S3-compatible des médias de salon (#15, ADR-0005). En local,
-      # pointe le service `minio` ci-dessus. Vide ⇒ routes médias en 503 (la
-      # création de salon reste possible sans logo). Clés = valeurs de DEV.
+      # Stockage objet S3-compatible des médias de salon/prestation (#15, ADR-0005).
+      # En local, pointe le service `minio` ci-dessus. Vide ⇒ routes médias en 503
+      # (la création de salon reste possible sans logo). Clés = valeurs de DEV.
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
+      # Hôte incorporé dans les URLs **pré-signées** renvoyées aux clients
+      # (navigateur, app mobile) — distinct de S3_ENDPOINT_URL ci-dessus, qui ne
+      # sert qu'aux appels réseau internes du backend. `minio` (DNS Docker) n'est
+      # joignable par aucun client externe : sans override, vide ⇒ replié sur
+      # S3_ENDPOINT_URL (voir deploy/.env.example pour le réglage local).
+      S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-}
       S3_BUCKET: ${S3_BUCKET:-coiflink-media}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-coiflink-dev}

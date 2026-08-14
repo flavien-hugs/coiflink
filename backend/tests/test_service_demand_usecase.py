@@ -1,9 +1,10 @@
 """Tests unitaires — cas d'usage `SummarizeServiceDemand` (US-6.3, #41).
 
-Port remplacé par un fake : aucun I/O, aucune base.
+Port remplacé par un fake : aucun I/O, aucune base. Rebranché sur `queue_tickets`
+(pivot walk-in exclusif, #148) : le port est désormais `QueueTicketRepository`.
 
 Couvre :
-- `execute` appelle `demand_by_service` avec `REVENUE_STATUSES` (jamais soumis par
+- `execute` appelle `demand_by_service` avec les tickets `done` (jamais soumis par
   l'appelant) ;
 - les bornes `date_from`/`date_to` (None ou fournies) sont transmises telles quelles
   au port ;
@@ -21,17 +22,18 @@ import decimal
 import uuid
 
 from coiflink_api.application.service_demand import SummarizeServiceDemand
-from coiflink_api.domain.appointment import REVENUE_STATUSES
 from coiflink_api.domain.payment import DEFAULT_CURRENCY
 from coiflink_api.domain.service_demand import ServiceDemand
 
+_COMPLETED_STATUSES: tuple[str, ...] = ("done",)
+
 # ---------------------------------------------------------------------------
-# Fake AppointmentRepository (lecture seule)
+# Fake QueueTicketRepository (lecture seule)
 # ---------------------------------------------------------------------------
 
 
-class FakeServiceDemandAppointmentRepository:
-    """Fake du port `AppointmentRepository` pour `SummarizeServiceDemand` (#41).
+class FakeServiceDemandQueueTicketRepository:
+    """Fake du port `QueueTicketRepository` pour `SummarizeServiceDemand` (#41).
 
     `results` est le tuple de `ServiceDemand` retourné par `demand_by_service`.
     `demand_by_service_calls` enregistre chaque appel pour vérification.
@@ -58,39 +60,6 @@ class FakeServiceDemandAppointmentRepository:
 
     def create(self, *a, **kw):  # type: ignore[no-untyped-def]
         raise NotImplementedError("SummarizeServiceDemand ne doit pas écrire")
-
-    def count_by_status_for_day(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def booked_slots(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def get_owned(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def update(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def cancel(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def get_in_salon(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def set_status(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def assign_hairdresser(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_client(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_salon(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
-
-    def list_for_hairdresser(self, *a, **kw):  # type: ignore[no-untyped-def]
-        raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
@@ -122,43 +91,43 @@ _DEMAND_B = ServiceDemand(
 
 class TestSummarizeServiceDemandPortArgs:
     def test_demand_by_service_called_once(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert len(repo.demand_by_service_calls) == 1
 
     def test_salon_id_forwarded(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert repo.demand_by_service_calls[0]["salon_id"] == _SALON_ID
 
     def test_revenue_statuses_imposed(self) -> None:
-        """Seul REVENUE_STATUSES (COMPLETED) est imposé — jamais soumis par l'appelant."""
-        repo = FakeServiceDemandAppointmentRepository()
+        """Seuls les tickets `done` sont imposés — jamais soumis par l'appelant."""
+        repo = FakeServiceDemandQueueTicketRepository()
         SummarizeServiceDemand(repo).execute(_SALON_ID)
-        assert repo.demand_by_service_calls[0]["statuses"] == REVENUE_STATUSES
+        assert repo.demand_by_service_calls[0]["statuses"] == _COMPLETED_STATUSES
 
     def test_date_from_forwarded(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         SummarizeServiceDemand(repo).execute(_SALON_ID, date_from=_DATE_FROM)
         assert repo.demand_by_service_calls[0]["date_from"] == _DATE_FROM
 
     def test_date_to_forwarded(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         SummarizeServiceDemand(repo).execute(_SALON_ID, date_to=_DATE_TO)
         assert repo.demand_by_service_calls[0]["date_to"] == _DATE_TO
 
     def test_date_from_none_by_default(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert repo.demand_by_service_calls[0]["date_from"] is None
 
     def test_date_to_none_by_default(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert repo.demand_by_service_calls[0]["date_to"] is None
 
     def test_both_date_bounds_forwarded(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         SummarizeServiceDemand(repo).execute(_SALON_ID, date_from=_DATE_FROM, date_to=_DATE_TO)
         call = repo.demand_by_service_calls[0]
         assert call["date_from"] == _DATE_FROM
@@ -166,7 +135,7 @@ class TestSummarizeServiceDemandPortArgs:
 
     def test_no_write_triggered(self) -> None:
         """Lecture pure : aucune méthode d'écriture ne doit être appelée."""
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         SummarizeServiceDemand(repo).execute(_SALON_ID)
 
 
@@ -177,39 +146,39 @@ class TestSummarizeServiceDemandPortArgs:
 
 class TestSummarizeServiceDemandAssembly:
     def test_ranking_has_by_volume(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository(results=(_DEMAND_A, _DEMAND_B))
+        repo = FakeServiceDemandQueueTicketRepository(results=(_DEMAND_A, _DEMAND_B))
         ranking = SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert hasattr(ranking, "by_volume")
 
     def test_ranking_has_by_revenue(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository(results=(_DEMAND_A, _DEMAND_B))
+        repo = FakeServiceDemandQueueTicketRepository(results=(_DEMAND_A, _DEMAND_B))
         ranking = SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert hasattr(ranking, "by_revenue")
 
     def test_ranking_currency_is_xof(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         ranking = SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert ranking.currency == DEFAULT_CURRENCY
 
     def test_ranking_date_from_echoed(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         ranking = SummarizeServiceDemand(repo).execute(_SALON_ID, date_from=_DATE_FROM)
         assert ranking.date_from == _DATE_FROM
 
     def test_ranking_date_to_echoed(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository()
+        repo = FakeServiceDemandQueueTicketRepository()
         ranking = SummarizeServiceDemand(repo).execute(_SALON_ID, date_to=_DATE_TO)
         assert ranking.date_to == _DATE_TO
 
     def test_by_volume_sorted_by_volume_desc(self) -> None:
         """Le classement by_volume est trié par volume décroissant. A=42 > B=30 → A en tête."""
-        repo = FakeServiceDemandAppointmentRepository(results=(_DEMAND_B, _DEMAND_A))
+        repo = FakeServiceDemandQueueTicketRepository(results=(_DEMAND_B, _DEMAND_A))
         ranking = SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert ranking.by_volume[0] == _DEMAND_A
 
     def test_by_revenue_sorted_by_revenue_desc(self) -> None:
         """Le classement by_revenue est trié par revenu décroissant. A=210000 > B=60000 → A en tête."""
-        repo = FakeServiceDemandAppointmentRepository(results=(_DEMAND_B, _DEMAND_A))
+        repo = FakeServiceDemandQueueTicketRepository(results=(_DEMAND_B, _DEMAND_A))
         ranking = SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert ranking.by_revenue[0] == _DEMAND_A
 
@@ -221,16 +190,16 @@ class TestSummarizeServiceDemandAssembly:
 
 class TestSummarizeServiceDemandEmpty:
     def test_empty_results_by_volume_empty(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository(results=())
+        repo = FakeServiceDemandQueueTicketRepository(results=())
         ranking = SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert ranking.by_volume == ()
 
     def test_empty_results_by_revenue_empty(self) -> None:
-        repo = FakeServiceDemandAppointmentRepository(results=())
+        repo = FakeServiceDemandQueueTicketRepository(results=())
         ranking = SummarizeServiceDemand(repo).execute(_SALON_ID)
         assert ranking.by_revenue == ()
 
     def test_empty_not_an_error(self) -> None:
-        """Un salon sans RDV réalisé retourne un classement vide, pas une erreur."""
-        repo = FakeServiceDemandAppointmentRepository(results=())
+        """Un salon sans ticket réalisé retourne un classement vide, pas une erreur."""
+        repo = FakeServiceDemandQueueTicketRepository(results=())
         SummarizeServiceDemand(repo).execute(_SALON_ID)

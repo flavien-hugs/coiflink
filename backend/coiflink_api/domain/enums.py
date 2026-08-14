@@ -31,11 +31,11 @@ class _StrEnum(str, Enum):
 class Role(_StrEnum):
     """Rôles utilisateur (PRD §9.1) + identité de terminal (US-8.1, #155).
 
-    `KIOSK` est un **compte de service** — jamais un humain : c'est l'identité
-    d'une **borne kiosque** en libre-service (jalon M7). Une borne s'authentifie
-    avec un credential de device longue durée (`POST /auth/kiosk/login`), obtient
-    une paire JWT courte au rôle `KIOSK` et ne détient que trois permissions
-    dédiées et minimales (`CUSTOMER_LOOKUP_KIOSK`, `CUSTOMER_CREATE_WALKIN`,
+    `TERMINAL` est un **compte de service** — jamais un humain : c'est l'identité
+    d'une **borne terminal** en libre-service (jalon M7). Une borne s'authentifie
+    avec un credential de device longue durée (`POST /auth/terminal/login`), obtient
+    une paire JWT courte au rôle `TERMINAL` et ne détient que trois permissions
+    dédiées et minimales (`CUSTOMER_LOOKUP_TERMINAL`, `CUSTOMER_CREATE_WALKIN`,
     `QUEUE_TICKET_CREATE`) — jamais `CUSTOMER_MANAGE` ni `APPOINTMENT_BOOK`
     (moindre privilège strict, cf. `domain/permissions.py` et ADR-0041).
     """
@@ -44,8 +44,8 @@ class Role(_StrEnum):
     HAIRDRESSER = "HAIRDRESSER"
     MANAGER = "MANAGER"
     ADMIN = "ADMIN"
-    # Compte de service d'une borne kiosque (jalon M7, US-8.1) : jamais un humain.
-    KIOSK = "KIOSK"
+    # Compte de service d'une borne terminal (jalon M7, US-8.1) : jamais un humain.
+    TERMINAL = "TERMINAL"
 
 
 @unique
@@ -64,17 +64,6 @@ class SalonStatus(_StrEnum):
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"
     SUSPENDED = "SUSPENDED"
-
-
-@unique
-class AppointmentStatus(_StrEnum):
-    """Statuts d'un rendez-vous (PRD §9.4)."""
-
-    PENDING = "PENDING"
-    CONFIRMED = "CONFIRMED"
-    CANCELLED = "CANCELLED"
-    COMPLETED = "COMPLETED"
-    NO_SHOW = "NO_SHOW"
 
 
 @unique
@@ -123,31 +112,6 @@ class CashOperationType(_StrEnum):
 
 
 @unique
-class NotificationType(_StrEnum):
-    """Type métier d'une notification (PRD §8.4).
-
-    `NEW_BOOKING` (US-7.3, #47) désigne la notification destinée au **salon** (au
-    gérant) à chaque nouvelle réservation — distincte de la `CONFIRMATION` du
-    **client** (#45). L'ajouter suppose de **régénérer** le `CHECK` `type`
-    (migration `0007`, dérivé de cette énumération via `models.py::enum_check`).
-
-    `APPOINTMENT_UPDATE` (US-7.4, #48) couvre les **autres** changements de statut
-    d'un RDV côté client (confirmation/clôture/absence par le gérant) **et** la
-    **modification** notifiée au salon — sémantique qu'aucune valeur existante ne
-    porte (`CONFIRMATION`/`REMINDER` visent une réservation client, `NEW_BOOKING`
-    le salon, `CANCELLATION` une annulation). L'ajouter suppose de **régénérer** le
-    `CHECK` `type` (migration `0008`, même patron que `0007`). L'**annulation**
-    réutilise `CANCELLATION` — elle n'exige **aucune** migration.
-    """
-
-    CONFIRMATION = "CONFIRMATION"
-    REMINDER = "REMINDER"
-    CANCELLATION = "CANCELLATION"
-    NEW_BOOKING = "NEW_BOOKING"
-    APPOINTMENT_UPDATE = "APPOINTMENT_UPDATE"
-
-
-@unique
 class NotificationChannel(_StrEnum):
     """Canaux de notification (PRD §9.8)."""
 
@@ -159,31 +123,14 @@ class NotificationChannel(_StrEnum):
 
 
 @unique
-class NotificationStatus(_StrEnum):
-    """Statut d'acheminement d'une notification.
-
-    `CANCELLED` (US-7.2, #46) marque un rappel qui ne partira jamais parce que le
-    RDV auquel il se rattache a été annulé — la ligne est **conservée** (trace
-    §8.4/§11.4) plutôt que supprimée.
-    """
-
-    PENDING = "PENDING"
-    SENT = "SENT"
-    FAILED = "FAILED"
-    READ = "READ"
-    CANCELLED = "CANCELLED"
-
-
-@unique
 class CampaignType(_StrEnum):
     """Type métier d'une campagne/message aux clients (PRD §8.4, US-7.5, #49).
 
     Les trois exemples « campagnes simples » du backlog (Épic 7) : un **rappel**
-    générique, une **promotion** et une **fermeture exceptionnelle**. Contrairement
-    aux notifications de RDV (#45–#48, à libellés fixes), le **titre** et le **corps**
-    d'une campagne sont **composés par le gérant** (texte libre validé). La colonne
-    `type` (`campaigns`, migration `0009`) en dérive son `CHECK` via
-    `models.py::enum_check`.
+    générique, une **promotion** et une **fermeture exceptionnelle**. Le **titre**
+    et le **corps** d'une campagne sont **composés par le gérant** (texte libre
+    validé). La colonne `type` (`campaigns`, migration `0009`) en dérive son
+    `CHECK` via `models.py::enum_check`.
     """
 
     REMINDER = "REMINDER"
@@ -215,8 +162,7 @@ class CampaignStatus(_StrEnum):
 
     Au MVP, une campagne est **émise/tracée** (`PENDING`) mais jamais remise : le
     worker de remise (M5+, ADR-0006) passera `SENT` (fan-out SMS effectué) ou
-    `FAILED`. Enum **dédié** (cycle de vie propre à la campagne), distinct de
-    `NotificationStatus` (notifications de RDV).
+    `FAILED`. Enum **dédié** (cycle de vie propre à la campagne).
     """
 
     PENDING = "PENDING"
@@ -238,14 +184,11 @@ __all__ = [
     "Role",
     "UserStatus",
     "SalonStatus",
-    "AppointmentStatus",
     "Gender",
     "PaymentMethod",
     "PaymentStatus",
     "CashOperationType",
-    "NotificationType",
     "NotificationChannel",
-    "NotificationStatus",
     "CampaignType",
     "CampaignSegment",
     "CampaignStatus",

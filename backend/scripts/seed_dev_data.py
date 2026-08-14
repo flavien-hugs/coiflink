@@ -11,17 +11,18 @@ pour ces réglages à ce stade du produit :
 - promouvoir un compte `ADMIN` (aucun endpoint d'inscription `ADMIN`, PRD §9.1 —
   le compte est d'abord inscrit `CLIENT` par l'API, puis promu par SQL, comme
   dans les tests e2e de la supervision plateforme, #37) ;
-- insérer des RDV de démo avec un créneau/statut contrôlés (aucune API cliente
-  ne permet de forcer un RDV `COMPLETED`/`CANCELLED`/`NO_SHOW` passé sans
-  simuler tout le parcours de réservation + gestion de statut — même
-  contournement ciblé que les suites e2e du dashboard, #39/#41). Les
-  **paiements**, eux, passent par l'API réelle (`POST /payments`) : c'est ce qui
-  peuple le journal de caisse et donc le chiffre d'affaires (#40).
+- insérer des tickets walk-in de démo avec un jour/statut contrôlés (aucune API
+  cliente ne permet d'émettre un ticket `done`/`expired` sur un jour passé sans
+  simuler toute la borne + le cycle de vie complet — même contournement ciblé
+  que les suites e2e du dashboard, #148/#157). Les **paiements**, eux, passent
+  par l'API réelle (`POST /payments`) : c'est ce qui peuple le journal de caisse
+  et donc le chiffre d'affaires (#40).
 
 Idempotent : un numéro déjà enregistré (409) est traité comme « déjà présent »
-et le script continue plutôt que d'échouer. L'activité de démo (RDV/paiements)
-n'est semée qu'une fois par salon — si des RDV existent déjà pour le salon
-d'Aïcha, cette étape est simplement ignorée au lieu d'accumuler des doublons.
+et le script continue plutôt que d'échouer. L'activité de démo (tickets/
+paiements) n'est semée qu'une fois par salon — si des tickets **antérieurs à
+aujourd'hui** existent déjà pour le salon d'Aïcha, cette étape est simplement
+ignorée au lieu d'accumuler des doublons.
 
 Usage (backend/) :
     uvicorn coiflink_api.main:app --reload &   # ou via docker compose
@@ -181,80 +182,230 @@ def _ensure_service(
     return resp.json()["id"]
 
 
-def _salon_appointment_count(salon_id: str) -> int:
-    """Compte les RDV déjà enregistrés pour ce salon (garde d'idempotence de l'activité de démo)."""
+def _provision_and_activate_terminal(
+    client: httpx.Client, manager_token: str, salon_id: str, *, label: str
+) -> tuple[str, str]:
+    """Provisionne une borne puis l'active immédiatement — miroir du geste du gérant.
 
-    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM appointments WHERE salon_id = %s", (salon_id,))
-        return int(cur.fetchone()[0])
+    Deux appels réels, comme en production : `POST .../terminal-devices` (gérant,
+    rend un code d'activation à 6 chiffres, jamais le secret) puis
+    `POST /auth/terminal/activate` (public, échange le code contre `device_id` +
+    `secret` — le secret n'est **jamais** relisible après cet appel, d'où la garde
+    d'idempotence en amont dans `main()`, pas ici).
+    """
+
+    resp = client.post(
+        f"/salons/{salon_id}/terminal-devices",
+        headers={"Authorization": f"Bearer {manager_token}"},
+        json={"label": label},
+    )
+    resp.raise_for_status()
+    activation_code = resp.json()["activation_code"]
+    print(f"  + borne provisionnée : {label} (code d'activation : {activation_code})")
+
+    resp = client.post("/auth/terminal/activate", json={"code": activation_code})
+    resp.raise_for_status()
+    body = resp.json()
+    print(f"  + borne activée : device_id={body['device_id']}")
+    return body["device_id"], body["secret"]
 
 
-def _end_time(start_time: str, duration_minutes: int) -> str:
-    """Calcule l'heure de fin (`HH:MM:SS`) à partir d'une heure de début et d'une durée."""
+def _terminal_login(client: httpx.Client, device_id: str, secret: str) -> str:
+    resp = client.post("/auth/terminal/login", json={"device_id": device_id, "secret": secret})
+    resp.raise_for_status()
+    return resp.json()["access_token"]
 
-    start = datetime.datetime.combine(datetime.date.today(), datetime.time.fromisoformat(start_time))
-    return (start + datetime.timedelta(minutes=duration_minutes)).time().isoformat()
 
-
-def _seed_appointment(
-    *,
-    salon_id: str,
-    client_id: str,
-    hairdresser_id: str,
-    service_id: str,
-    price: str,
-    day: datetime.date,
-    start_time: str,
-    duration_minutes: int,
-    status: str,
+def _create_walk_in_customer(
+    client: httpx.Client, terminal_token: str, salon_id: str, *, first_name: str, last_name: str, phone: str
 ) -> str:
-    """Insère directement en base un RDV démo (statut/jour/prix contrôlés) avec sa prestation.
+    """Crée une fiche walk-in via la borne (`POST .../terminal/customers`, #156)."""
 
-    Aucune API cliente ne permet de créer un RDV `COMPLETED`/`CANCELLED`/`NO_SHOW`
-    sans simuler tout le parcours réservation + transition de statut — bypass
-    ciblé, hors flux client, miroir du patron des suites e2e du dashboard
-    (`test_daily_summary_e2e.py` #39, `test_service_demand_e2e.py` #41).
-    L'exclusion de créneau (`ex_appointments_hairdresser_slot`) ne s'applique
-    qu'aux statuts `PENDING`/`CONFIRMED` : les horaires ci-dessous les espacent
-    pour éviter tout conflit, les autres statuts ne sont de toute façon jamais
-    concernés par cette contrainte.
+    resp = client.post(
+        f"/salons/{salon_id}/terminal/customers",
+        headers={"Authorization": f"Bearer {terminal_token}"},
+        json={"first_name": first_name, "last_name": last_name, "phone": phone},
+    )
+    resp.raise_for_status()
+    customer_id = resp.json()["customer_id"]
+    print(f"  + fiche walk-in créée : {first_name} {last_name} ({phone})")
+    return customer_id
+
+
+def _join_queue(
+    client: httpx.Client,
+    terminal_token: str,
+    salon_id: str,
+    *,
+    customer_profile_id: str,
+    service_ids: list[str],
+) -> None:
+    """Émet un ticket de passage via la borne (`POST .../queue/tickets`, #157)."""
+
+    resp = client.post(
+        f"/salons/{salon_id}/queue/tickets",
+        headers={"Authorization": f"Bearer {terminal_token}"},
+        json={"customer_profile_id": customer_profile_id, "service_ids": service_ids},
+    )
+    resp.raise_for_status()
+    ticket = resp.json()
+    print(f"  + ticket émis : N° {ticket['ticket_number']} (attente estimée {ticket['estimated_wait_minutes']} min)")
+
+
+def _customer_profile_has_tickets(customer_profile_id: str) -> bool:
+    """Vrai si cette fiche a déjà des tickets (garde d'idempotence de l'activité de démo).
+
+    Scopé à la fiche de démo (`customer_profile_id`), pas au salon entier : un
+    salon de dev accumule aussi de vrais tickets manuels (borne, essais manuels)
+    au fil des jours, qui deviendraient tous « antérieurs à aujourd'hui » sans
+    jamais correspondre au seed d'historique de ce module — un garde salon-large
+    se déclencherait donc à tort dès le lendemain de tout essai manuel.
     """
 
     with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO appointments "
-            "(salon_id, client_id, hairdresser_id, appointment_date, start_time, end_time, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            "SELECT EXISTS(SELECT 1 FROM queue_tickets WHERE customer_profile_id = %s)",
+            (customer_profile_id,),
+        )
+        return bool(cur.fetchone()[0])
+
+
+def _salon_terminal_device_id(salon_id: str) -> str | None:
+    """Id de la borne déjà provisionnée pour ce salon, ou `None` (garde d'idempotence).
+
+    Résolu par SQL direct (et non `GET /salons/{id}/terminal-devices`) car la
+    ré-exécution du script doit pouvoir décider de **sauter tout le bloc borne**
+    (provisioning + activation + walk-in + ticket) avant même le premier appel HTTP :
+    le code d'activation et le secret ne sont, par construction, jamais relisibles
+    une fois émis (§11.3) — il n'y a donc rien à « re-provisionner à moitié ».
+    """
+
+    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM users WHERE role = 'TERMINAL' AND id IN "
+            "(SELECT user_id FROM salon_members WHERE salon_id = %s)",
+            (salon_id,),
+        )
+        row = cur.fetchone()
+        return str(row[0]) if row else None
+
+
+def _ensure_customer_profile(
+    client: httpx.Client, token: str, salon_id: str, *, full_name: str, phone: str
+) -> str:
+    """Crée une fiche cliente walk-in via l'API gérant (`POST .../customers`), idempotent.
+
+    Distinct d'un compte `users` (rôle CLIENT) : une fiche `customer_profiles`
+    est **salon-scopée**, sans connexion possible — c'est elle, et non un compte
+    utilisateur, que référence `queue_tickets.customer_profile_id` (#148/#157).
+    Un doublon de téléphone dans ce salon (409) n'est pas une erreur : la fiche
+    existante est résolue par recherche de nom (aucun filtre par téléphone côté
+    liste), comme pour `_ensure_salon`.
+    """
+
+    resp = client.post(
+        f"/salons/{salon_id}/customers",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"full_name": full_name, "phone": phone},
+    )
+    if resp.status_code == 409:
+        existing = client.get(
+            f"/salons/{salon_id}/customers",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"q": full_name},
+        )
+        existing.raise_for_status()
+        for customer in existing.json()["items"]:
+            if customer["phone"] == normalize_phone(phone):
+                print(f"  = fiche cliente déjà présente : {full_name} ({phone})")
+                return customer["id"]
+        raise RuntimeError(
+            f"Fiche cliente {full_name!r}/{phone!r} en conflit (409) mais introuvable par recherche."
+        )
+    resp.raise_for_status()
+    customer_id = resp.json()["id"]
+    print(f"  + fiche cliente créée : {full_name} ({phone})")
+    return customer_id
+
+
+def _next_ticket_number(salon_id: str, day: datetime.date) -> int:
+    """Prochain `ticket_number` libre pour ce salon/jour (évite toute collision avec la borne)."""
+
+    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT COALESCE(MAX(ticket_number), 0) FROM queue_tickets "
+            "WHERE salon_id = %s AND issued_date = %s",
+            (salon_id, day),
+        )
+        return int(cur.fetchone()[0]) + 1
+
+
+def _seed_ticket(
+    *,
+    salon_id: str,
+    customer_profile_id: str,
+    hairdresser_id: str | None,
+    service_ids: list[str],
+    day: datetime.date,
+    status: str,
+    estimated_wait_minutes: int = 15,
+) -> str:
+    """Insère directement en base un ticket walk-in démo (statut/jour contrôlés) avec ses prestations.
+
+    Aucune API cliente ne permet d'émettre un ticket `in_progress`/`done`/
+    `expired` sur un jour passé sans simuler toute la borne + le cycle de vie
+    complet — bypass ciblé, hors flux client, miroir du patron des suites e2e du
+    dashboard (`test_dashboard_e2e.py`, `test_service_demand_e2e.py`).
+    """
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    started_at = now if status in ("in_progress", "done") else None
+    completed_at = now if status == "done" else None
+    ticket_number = _next_ticket_number(salon_id, day)
+
+    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO queue_tickets "
+            "(salon_id, ticket_number, issued_date, customer_profile_id, hairdresser_id, "
+            "status, estimated_wait_minutes, started_at, completed_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
                 salon_id,
-                client_id,
-                hairdresser_id,
+                ticket_number,
                 day,
-                start_time,
-                _end_time(start_time, duration_minutes),
+                customer_profile_id,
+                hairdresser_id,
                 status,
+                estimated_wait_minutes,
+                started_at,
+                completed_at,
             ),
         )
-        appointment_id = str(cur.fetchone()[0])
-        cur.execute(
-            "INSERT INTO appointment_services (salon_id, appointment_id, service_id, price_at_booking) "
-            "VALUES (%s, %s, %s, %s)",
-            (salon_id, appointment_id, service_id, price),
-        )
+        ticket_id = str(cur.fetchone()[0])
+        for service_id in service_ids:
+            cur.execute(
+                "INSERT INTO queue_ticket_services (salon_id, queue_ticket_id, service_id) "
+                "VALUES (%s, %s, %s)",
+                (salon_id, ticket_id, service_id),
+            )
         conn.commit()
-    return appointment_id
+    return ticket_id
 
 
-def _record_payment_for_appointment(
+def _record_payment_for_ticket(
     client: httpx.Client,
     token: str,
     salon_id: str,
     *,
-    appointment_id: str,
+    queue_ticket_id: str,
     amount: str,
-    client_id: str,
 ) -> None:
-    """Encaisse un RDV `COMPLETED` via l'API réelle (le journal de caisse pilote le CA, #40)."""
+    """Encaisse un ticket `done` via l'API réelle (le journal de caisse pilote le CA, #40).
+
+    Pas de `client_id` : ce champ référence un compte `users` (rôle CLIENT),
+    distinct de la fiche `customer_profiles` du ticket walk-in — un encaissement
+    comptoir n'a normalement aucun compte rattaché (#148/#157).
+    """
 
     resp = client.post(
         f"/salons/{salon_id}/payments",
@@ -262,12 +413,11 @@ def _record_payment_for_appointment(
         json={
             "amount": amount,
             "payment_method": "CASH",
-            "appointment_id": appointment_id,
-            "client_id": client_id,
+            "queue_ticket_id": queue_ticket_id,
         },
     )
     resp.raise_for_status()
-    print(f"  + paiement encaissé : {amount} FCFA (RDV {appointment_id})")
+    print(f"  + paiement encaissé : {amount} FCFA (ticket {queue_ticket_id})")
 
 
 def main() -> int:
@@ -313,65 +463,83 @@ def main() -> int:
             client, token_aicha, salon_id, name="Coloration", price="12000.00", duration_minutes=90
         )
 
-        print("\nCliente du salon d'Aïcha (historique de RDV pour peupler le dashboard, #39/#40/#41)")
-        client_id = (
-            _register(client, "/auth/register", full_name="Koffi N'Guessan", phone="0702030405")
-            or _user_id_by_phone("0702030405")
+        print("\nBorne (terminal) du salon d'Aïcha — walk-in + file d'attente (#155/#156/#157)")
+        terminal_credential: tuple[str, str] | None = None
+        existing_terminal_id = _salon_terminal_device_id(salon_id)
+        if existing_terminal_id is not None:
+            print(f"  = borne déjà provisionnée (device_id={existing_terminal_id}) — secret non relisible, seed ignoré")
+        else:
+            device_id, device_secret = _provision_and_activate_terminal(
+                client, token_aicha, salon_id, label="Borne accueil"
+            )
+            terminal_credential = (device_id, device_secret)
+            terminal_token = _terminal_login(client, device_id, device_secret)
+
+            walkin_id = _create_walk_in_customer(
+                client, terminal_token, salon_id,
+                first_name="Aminata", last_name="Diarra", phone="0706070809",
+            )
+            _join_queue(
+                client, terminal_token, salon_id,
+                customer_profile_id=walkin_id, service_ids=[service_coupe],
+            )
+
+            walkin_id_2 = _create_walk_in_customer(
+                client, terminal_token, salon_id,
+                first_name="Yssouf", last_name="Traoré", phone="0706070810",
+            )
+            _join_queue(
+                client, terminal_token, salon_id,
+                customer_profile_id=walkin_id_2, service_ids=[service_soin, service_coloration],
+            )
+
+        print("\nFiche cliente du salon d'Aïcha (historique de visites pour peupler le dashboard, #40/#41/#148)")
+        history_customer_id = _ensure_customer_profile(
+            client, token_aicha, salon_id, full_name="Koffi N'Guessan", phone="0702030405"
         )
 
-        if _salon_appointment_count(salon_id) > 0:
-            print("  = activité déjà présente (RDV/paiements) — seed ignoré")
+        if _customer_profile_has_tickets(history_customer_id):
+            print("  = activité déjà présente (tickets/paiements de cette fiche) — seed ignoré")
         else:
             today = datetime.date.today()
-            completed: list[tuple[str, str]] = []  # (appointment_id, montant)
+            done_tickets: list[tuple[str, str]] = []  # (queue_ticket_id, montant)
 
             def _seed(
-                *, day: datetime.date, start_time: str, duration_minutes: int, status: str,
-                service_id: str, price: str,
+                *, day: datetime.date, status: str, service_id: str, price: str,
+                assigned: bool = True,
             ) -> None:
-                appointment_id = _seed_appointment(
+                ticket_id = _seed_ticket(
                     salon_id=salon_id,
-                    client_id=client_id,
-                    hairdresser_id=hairdresser_id,
-                    service_id=service_id,
-                    price=price,
+                    customer_profile_id=history_customer_id,
+                    hairdresser_id=hairdresser_id if assigned else None,
+                    service_ids=[service_id],
                     day=day,
-                    start_time=start_time,
-                    duration_minutes=duration_minutes,
                     status=status,
                 )
-                if status == "COMPLETED":
-                    completed.append((appointment_id, price))
+                if status == "done":
+                    done_tickets.append((ticket_id, price))
 
-            print("  RDV du jour (statuts variés, US-6.1 #39)")
-            _seed(day=today, start_time="09:00", duration_minutes=45, status="CONFIRMED",
-                  service_id=service_coupe, price="5000.00")
-            _seed(day=today, start_time="10:00", duration_minutes=120, status="CONFIRMED",
-                  service_id=service_tresses, price="15000.00")
-            _seed(day=today, start_time="12:30", duration_minutes=60, status="PENDING",
-                  service_id=service_soin, price="8000.00")
-            _seed(day=today, start_time="13:30", duration_minutes=90, status="COMPLETED",
-                  service_id=service_coloration, price="12000.00")
-            _seed(day=today, start_time="15:00", duration_minutes=45, status="CANCELLED",
-                  service_id=service_coupe, price="5000.00")
-            _seed(day=today, start_time="16:00", duration_minutes=60, status="NO_SHOW",
-                  service_id=service_soin, price="8000.00")
+            print("  Tickets du jour (statuts variés, #148)")
+            _seed(day=today, status="waiting", service_id=service_soin, price="8000.00", assigned=False)
+            _seed(day=today, status="in_progress", service_id=service_tresses, price="15000.00")
+            _seed(day=today, status="done", service_id=service_coloration, price="12000.00")
+            _seed(day=today, status="expired", service_id=service_coupe, price="5000.00", assigned=False)
 
             print("  Historique réalisé (prestations les plus demandées, US-6.3 #41)")
-            _seed(day=today - datetime.timedelta(days=1), start_time="10:00", duration_minutes=45,
-                  status="COMPLETED", service_id=service_coupe, price="5000.00")
-            _seed(day=today - datetime.timedelta(days=2), start_time="10:00", duration_minutes=45,
-                  status="COMPLETED", service_id=service_coupe, price="5000.00")
-            _seed(day=today - datetime.timedelta(days=3), start_time="10:00", duration_minutes=120,
-                  status="COMPLETED", service_id=service_tresses, price="15000.00")
-            _seed(day=today - datetime.timedelta(days=10), start_time="10:00", duration_minutes=60,
-                  status="COMPLETED", service_id=service_soin, price="8000.00")
+            _seed(day=today - datetime.timedelta(days=1), status="done",
+                  service_id=service_coupe, price="5000.00")
+            _seed(day=today - datetime.timedelta(days=2), status="done",
+                  service_id=service_coupe, price="5000.00")
+            _seed(day=today - datetime.timedelta(days=3), status="done",
+                  service_id=service_tresses, price="15000.00")
+            _seed(day=today - datetime.timedelta(days=10), status="done",
+                  service_id=service_soin, price="8000.00")
 
-            print("  Encaissement des RDV terminés (chiffre d'affaires, US-6.2 #40)")
-            for appointment_id, amount in completed:
-                _record_payment_for_appointment(
+            print("  Encaissement des tickets terminés (chiffre d'affaires, US-6.2 #40)")
+            for queue_ticket_id, amount in done_tickets:
+                _record_payment_for_ticket(
                     client, token_aicha, salon_id,
-                    appointment_id=appointment_id, amount=amount, client_id=client_id,
+                    queue_ticket_id=queue_ticket_id, amount=amount,
                 )
 
         print("\nFatou (aucun salon — formulaire de création à tester)")
@@ -391,17 +559,34 @@ def main() -> int:
     print("Comptes de démo — mot de passe commun :", DEV_PASSWORD)
     print("=" * 72)
     rows = [
-        ("Aïcha Koné", "0701020304", "MANAGER", "ACTIVE", "salon réservable, dashboard peuplé (#39/#40/#41)"),
+        ("Aïcha Koné", "0701020304", "MANAGER", "ACTIVE", "salon réservable, dashboard peuplé (#40/#41/#148)"),
         ("Fatou Diabaté", "0705060708", "MANAGER", "ACTIVE", "sans salon"),
         ("Ibrahim Touré", "0709101112", "MANAGER", "SUSPENDED", "connexion refusée (401 générique)"),
         ("Awa Bamba", "0701121314", "HAIRDRESSER", "ACTIVE", "refus de rôle sur /gerant"),
-        ("Koffi N'Guessan", "0702030405", "CLIENT", "ACTIVE", "historique de RDV chez Aïcha"),
         ("Mariam Sanogo", "0705161718", "CLIENT", "ACTIVE", "refus de rôle sur /gerant"),
         ("Adama Ouattara", "0700112233", "ADMIN", "ACTIVE", "supervision plateforme /admin"),
     ]
     for full_name, phone, role, status_, note in rows:
         print(f"  {full_name:<16} {phone:<14} {role:<12} {status_:<10} {note}")
     print()
+    print(
+        "  Fiche cliente walk-in « Koffi N'Guessan » (0702030405) : pas de compte/connexion,"
+        " historique de visites chez Aïcha (customer_profiles, #148)."
+    )
+    print()
+
+    if terminal_credential is not None:
+        device_id, device_secret = terminal_credential
+        print("Borne (terminal) du salon d'Aïcha — credential émis à l'instant, non relisible ensuite")
+        print("  " + "-" * 68)
+        print(f"  device_id : {device_id}")
+        print(f"  secret    : {device_secret}")
+        print("  " + "-" * 68)
+        print("  À utiliser côté app-mobile via l'écran d'activation (le code à 6")
+        print("  chiffres est celui affiché ci-dessus lors du provisioning), ou en")
+        print("  direct : POST /auth/terminal/login {device_id, secret}.")
+        print()
+
     return 0
 
 

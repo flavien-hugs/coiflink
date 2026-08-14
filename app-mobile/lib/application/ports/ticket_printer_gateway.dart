@@ -1,7 +1,7 @@
 // Port (interface) d'impression d'un ticket de passage — application, #160.
 //
 // Contrat interne au paquet, indépendant de Flutter et du transport matériel
-// (ADR-0008) : l'écran de confirmation kiosque (#159) en dépend, un adaptateur
+// (ADR-0008) : l'écran de confirmation terminal (#159) en dépend, un adaptateur
 // concret (`NoopTicketPrinterGateway` ici, `EscPosTicketPrinterGateway` livré par
 // #160) l'implémente, et les tests le remplacent par un faux.
 //

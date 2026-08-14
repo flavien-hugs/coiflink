@@ -130,7 +130,7 @@ export interface CustomerGateway {
   create(salonId: string, input: CustomerInput): Promise<CreateCustomerResult>;
   // Proxifie `GET /salons/{id}/customers/{customerId}`.
   get(salonId: string, customerId: string): Promise<GetCustomerResult>;
-  // Proxifie `GET /salons/{id}/customers/{customerId}/appointments` (historique).
+  // Proxifie `GET /salons/{id}/customers/{customerId}/visits` (historique des visites walk-in).
   history(salonId: string, customerId: string): Promise<CustomerHistoryResult>;
   // Proxifie `GET /salons/{id}/customers/{customerId}/payments` (historique des paiements).
   payments(salonId: string, customerId: string): Promise<CustomerPaymentsResult>;

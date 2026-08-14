@@ -22,7 +22,7 @@ import decimal
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import ColumnElement, func, select, text
+from sqlalchemy import ColumnElement, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from coiflink_api.adapters.outbound.persistence import models
@@ -76,8 +76,8 @@ class SqlPaymentRepository:
 
         row = models.Payment(
             salon_id=payment.salon_id,
-            appointment_id=payment.appointment_id,
             service_id=payment.service_id,
+            queue_ticket_id=payment.queue_ticket_id,
             client_id=payment.client_id,
             amount=payment.amount,
             currency=payment.currency,
@@ -85,6 +85,7 @@ class SqlPaymentRepository:
             status=payment.status,
             recorded_by=payment.recorded_by,
             reference=payment.reference,
+            mobile_money_phone=payment.mobile_money_phone,
             receipt_number=next_receipt_number,
         )
         self._session.add(row)
@@ -133,22 +134,43 @@ class SqlPaymentRepository:
 
         Filtre `salon_id` **inconditionnel** (isolation §11.2) + clauses de filtre
         **conditionnelles** (date/client/montant/mode, combinées en ET), tri
-        `created_at DESC, id DESC`, bornes en SQL. Join restreint à
-        `users.full_name` (jamais d'autre PII, §11.3) pour l'affichage. **Aucune**
-        écriture, aucun `flush`.
+        `created_at DESC, id DESC`, bornes en SQL. `client_name` résout **soit**
+        `users.full_name` (compte client enregistré), **soit** — pour un paiement
+        lié à un ticket walk-in sans compte — `queue_tickets.customer_profile_id →
+        customer_profiles.full_name` (jamais d'autre PII, §11.3). `ticket_number`
+        accompagne ce nom. **Aucune** écriture, aucun `flush`.
         """
 
         stmt = (
-            select(models.Payment, models.User.full_name)
+            select(
+                models.Payment,
+                models.User.full_name,
+                models.CustomerProfile.full_name,
+                models.QueueTicket.ticket_number,
+            )
             .outerjoin(models.User, models.User.id == models.Payment.client_id)
+            .outerjoin(
+                models.QueueTicket,
+                models.QueueTicket.id == models.Payment.queue_ticket_id,
+            )
+            .outerjoin(
+                models.CustomerProfile,
+                models.CustomerProfile.id == models.QueueTicket.customer_profile_id,
+            )
             .where(*self._filter_clauses(salon_id, filter))
             .order_by(models.Payment.created_at.desc(), models.Payment.id.desc())
             .limit(limit)
             .offset(offset)
         )
         return tuple(
-            Transaction(payment=_to_domain(row), client_name=full_name)
-            for row, full_name in self._session.execute(stmt).all()
+            Transaction(
+                payment=_to_domain(row),
+                client_name=user_full_name or ticket_customer_name,
+                ticket_number=ticket_number,
+            )
+            for row, user_full_name, ticket_customer_name, ticket_number in (
+                self._session.execute(stmt).all()
+            )
         )
 
     def count_for_salon(
@@ -160,6 +182,14 @@ class SqlPaymentRepository:
             select(func.count())
             .select_from(models.Payment)
             .outerjoin(models.User, models.User.id == models.Payment.client_id)
+            .outerjoin(
+                models.QueueTicket,
+                models.QueueTicket.id == models.Payment.queue_ticket_id,
+            )
+            .outerjoin(
+                models.CustomerProfile,
+                models.CustomerProfile.id == models.QueueTicket.customer_profile_id,
+            )
             .where(*self._filter_clauses(salon_id, filter))
         )
         return int(self._session.scalar(stmt) or 0)
@@ -171,9 +201,11 @@ class SqlPaymentRepository:
         """Clauses `WHERE` : `salon_id` inconditionnel + critères présents (ET).
 
         Partagées **à l'identique** par `list_for_salon` et `count_for_salon` pour
-        que le `total` corresponde exactement à la page. La clause `q` suppose la
-        jointure `models.User` déjà présente dans les deux requêtes appelantes
-        (`outerjoin` sur `client_id`, relation 1:1 — ne multiplie jamais les lignes).
+        que le `total` corresponde exactement à la page. La clause `q` suppose les
+        jointures `models.User` et `models.CustomerProfile` déjà présentes dans les
+        deux requêtes appelantes (`outerjoin`, relations 1:1 — ne multiplient jamais
+        les lignes) : elle matche le nom du compte client **ou** celui de la fiche
+        du ticket lié.
         """
 
         clauses: list[ColumnElement[bool]] = [models.Payment.salon_id == salon_id]
@@ -190,10 +222,35 @@ class SqlPaymentRepository:
         if filter.payment_method is not None:
             clauses.append(models.Payment.payment_method == filter.payment_method)
         if filter.q is not None:
+            pattern = f"%{escape_like(filter.q)}%"
             clauses.append(
-                models.User.full_name.ilike(f"%{escape_like(filter.q)}%", escape="\\")
+                or_(
+                    models.User.full_name.ilike(pattern, escape="\\"),
+                    models.CustomerProfile.full_name.ilike(pattern, escape="\\"),
+                )
             )
         return clauses
+
+    def has_paid_payment(
+        self, salon_id: uuid.UUID, queue_ticket_id: uuid.UUID
+    ) -> bool:
+        """Vrai si le ticket a déjà un paiement `VALIDATED`/`ADJUSTED` (§8.2, garde #33).
+
+        Réutilise l'idiome `EXISTS` de `_discrepancy_clauses` (même
+        `PAID_PAYMENT_STATUSES`) — filtre direct (pas de corrélation `QueueTicket`
+        nécessaire ici, `queue_ticket_id` est déjà connu). **Aucune** écriture.
+        """
+
+        stmt = select(
+            select(models.Payment.id)
+            .where(
+                models.Payment.salon_id == salon_id,
+                models.Payment.queue_ticket_id == queue_ticket_id,
+                models.Payment.status.in_(PAID_PAYMENT_STATUSES),
+            )
+            .exists()
+        )
+        return bool(self._session.scalar(stmt))
 
     def list_completed_without_payment(
         self,
@@ -205,65 +262,76 @@ class SqlPaymentRepository:
     ) -> tuple[CashDiscrepancy, ...]:
         """Page des **écarts de caisse** du salon (US-5.4, #36) — lecture seule.
 
-        RDV `COMPLETED` sans paiement `VALIDATED`/`ADJUSTED` rattaché (`NOT EXISTS`
-        sur `payments.appointment_id`), filtre `salon_id` **inconditionnel**
-        (isolation §11.2) + bornes de dates conditionnelles sur `appointment_date`.
-        Le `LEFT JOIN appointment_services` + `GROUP BY` calcule le **montant
-        attendu** (somme des `price_at_booking`) ; le join `users` (restreint à
-        `full_name`, §11.3) résout le nom du client. Tri déterministe, bornes en SQL.
-        **Aucune** écriture, aucun `flush`.
+        Tickets walk-in `done` sans paiement `VALIDATED`/`ADJUSTED` rattaché
+        (`NOT EXISTS` sur `payments.queue_ticket_id`), filtre `salon_id`
+        **inconditionnel** (isolation §11.2) + bornes de dates conditionnelles sur
+        `issued_date`. Le `LEFT JOIN queue_ticket_services → services` + `GROUP BY`
+        calcule le **montant attendu** (somme des `Service.price` **actuels** —
+        résolution en direct, aucun prix figé côté ticket) ; le join
+        `customer_profiles` (restreint à `full_name`, §11.3) résout le nom du
+        client. Tri déterministe, bornes en SQL. **Aucune** écriture, aucun `flush`.
         """
 
-        expected_amount = func.coalesce(
-            func.sum(models.AppointmentService.price_at_booking), 0
-        )
+        expected_amount = func.coalesce(func.sum(models.Service.price), 0)
         stmt = (
             select(
-                models.Appointment.id,
-                models.Appointment.appointment_date,
-                models.Appointment.start_time,
-                models.Appointment.client_id,
-                models.User.full_name,
+                models.QueueTicket.id,
+                models.QueueTicket.ticket_number,
+                models.QueueTicket.issued_date,
+                models.QueueTicket.completed_at,
+                models.QueueTicket.customer_profile_id,
+                models.CustomerProfile.full_name,
                 expected_amount,
             )
-            .outerjoin(models.User, models.User.id == models.Appointment.client_id)
             .outerjoin(
-                models.AppointmentService,
-                (models.AppointmentService.salon_id == models.Appointment.salon_id)
-                & (models.AppointmentService.appointment_id == models.Appointment.id),
+                models.CustomerProfile,
+                models.CustomerProfile.id == models.QueueTicket.customer_profile_id,
+            )
+            .outerjoin(
+                models.QueueTicketService,
+                (models.QueueTicketService.salon_id == models.QueueTicket.salon_id)
+                & (models.QueueTicketService.queue_ticket_id == models.QueueTicket.id),
+            )
+            .outerjoin(
+                models.Service,
+                (models.Service.salon_id == models.QueueTicketService.salon_id)
+                & (models.Service.id == models.QueueTicketService.service_id),
             )
             .where(*self._discrepancy_clauses(salon_id, filter))
             .group_by(
-                models.Appointment.id,
-                models.Appointment.appointment_date,
-                models.Appointment.start_time,
-                models.Appointment.client_id,
-                models.User.full_name,
+                models.QueueTicket.id,
+                models.QueueTicket.ticket_number,
+                models.QueueTicket.issued_date,
+                models.QueueTicket.completed_at,
+                models.QueueTicket.customer_profile_id,
+                models.CustomerProfile.full_name,
             )
             .order_by(
-                models.Appointment.appointment_date.desc(),
-                models.Appointment.start_time.desc(),
-                models.Appointment.id.desc(),
+                models.QueueTicket.issued_date.desc(),
+                models.QueueTicket.ticket_number.desc(),
+                models.QueueTicket.id.desc(),
             )
             .limit(limit)
             .offset(offset)
         )
         return tuple(
             CashDiscrepancy(
-                appointment_id=appointment_id,
+                queue_ticket_id=ticket_id,
                 salon_id=salon_id,
-                appointment_date=appointment_date,
-                start_time=start_time,
-                client_id=client_id,
+                ticket_number=ticket_number,
+                issued_date=issued_date,
+                completed_at=completed_at,
+                customer_profile_id=customer_profile_id,
                 expected_amount=decimal.Decimal(amount).quantize(_AMOUNT_QUANTUM),
                 client_name=full_name,
                 currency=DEFAULT_CURRENCY,
             )
             for (
-                appointment_id,
-                appointment_date,
-                start_time,
-                client_id,
+                ticket_id,
+                ticket_number,
+                issued_date,
+                completed_at,
+                customer_profile_id,
                 full_name,
                 amount,
             ) in self._session.execute(stmt).all()
@@ -274,14 +342,14 @@ class SqlPaymentRepository:
     ) -> int:
         """Nombre total d'écarts du salon **sous le même filtre** (pagination).
 
-        Compte les **RDV** (jamais les lignes de prestation : pas de join
-        `appointment_services`) sous les **mêmes** clauses `WHERE`/`NOT EXISTS` que
+        Compte les **tickets** (jamais les lignes de prestation : pas de join
+        `queue_ticket_services`) sous les **mêmes** clauses `WHERE`/`NOT EXISTS` que
         `list_completed_without_payment`.
         """
 
         stmt = (
             select(func.count())
-            .select_from(models.Appointment)
+            .select_from(models.QueueTicket)
             .where(*self._discrepancy_clauses(salon_id, filter))
         )
         return int(self._session.scalar(stmt) or 0)
@@ -290,52 +358,34 @@ class SqlPaymentRepository:
     def _discrepancy_clauses(
         salon_id: uuid.UUID, filter: DiscrepancyFilter
     ) -> Sequence[ColumnElement[bool]]:
-        """Clauses `WHERE` des écarts : salon + `COMPLETED` + `NOT EXISTS` payé + dates.
+        """Clauses `WHERE` des écarts : salon + `done` + `NOT EXISTS` payé + dates.
 
         Partagées **à l'identique** par `list_completed_without_payment` et
         `count_completed_without_payment` (total cohérent avec la page). Le filtre
         `salon_id` est **inconditionnel** (isolation §11.2) ; la sous-requête
         `NOT EXISTS` porte elle aussi `salon_id` (un paiement d'un autre salon ne
-        couvre jamais un RDV).
+        couvre jamais un ticket).
         """
 
         paid_exists = (
             select(models.Payment.id)
             .where(
-                models.Payment.salon_id == models.Appointment.salon_id,
-                models.Payment.appointment_id == models.Appointment.id,
+                models.Payment.salon_id == models.QueueTicket.salon_id,
+                models.Payment.queue_ticket_id == models.QueueTicket.id,
                 models.Payment.status.in_(PAID_PAYMENT_STATUSES),
             )
             .exists()
         )
         clauses: list[ColumnElement[bool]] = [
-            models.Appointment.salon_id == salon_id,
-            models.Appointment.status == COMPLETED_STATUS,
+            models.QueueTicket.salon_id == salon_id,
+            models.QueueTicket.status == COMPLETED_STATUS,
             ~paid_exists,
         ]
         if filter.date_from is not None:
-            clauses.append(models.Appointment.appointment_date >= filter.date_from)
+            clauses.append(models.QueueTicket.issued_date >= filter.date_from)
         if filter.date_to is not None:
-            clauses.append(models.Appointment.appointment_date <= filter.date_to)
+            clauses.append(models.QueueTicket.issued_date <= filter.date_to)
         return clauses
-
-    def list_paid_appointment_ids(
-        self, salon_id: uuid.UUID, appointment_ids: tuple[uuid.UUID, ...]
-    ) -> frozenset[uuid.UUID]:
-        """Sous-ensemble d'`appointment_ids` couvert par un paiement `VALIDATED`/`ADJUSTED`."""
-
-        if not appointment_ids:
-            return frozenset()
-        rows = self._session.execute(
-            select(models.Payment.appointment_id)
-            .where(
-                models.Payment.salon_id == salon_id,
-                models.Payment.appointment_id.in_(appointment_ids),
-                models.Payment.status.in_(PAID_PAYMENT_STATUSES),
-            )
-            .distinct()
-        ).all()
-        return frozenset(row[0] for row in rows)
 
     def _get_row(
         self, salon_id: uuid.UUID, payment_id: uuid.UUID
@@ -356,10 +406,11 @@ def _to_domain(row: models.Payment) -> Payment:
         payment_method=row.payment_method,
         status=row.status,
         recorded_by=row.recorded_by,
-        appointment_id=row.appointment_id,
         service_id=row.service_id,
+        queue_ticket_id=row.queue_ticket_id,
         client_id=row.client_id,
         reference=row.reference,
+        mobile_money_phone=row.mobile_money_phone,
         created_at=row.created_at,
     )
 

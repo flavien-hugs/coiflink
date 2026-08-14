@@ -19,7 +19,8 @@ import {
   XIcon,
 } from "@/src/adapters/ui/action-icons";
 import { FieldLabel } from "@/src/adapters/ui/field-label";
-import { ServiceImageUpload } from "@/src/adapters/ui/service-image-upload";
+import { ServicePhotoGallery } from "@/src/adapters/ui/service-photo-gallery";
+import { uploadServicePhoto } from "@/src/adapters/ui/upload-service-photo";
 import { validateService, type Service } from "@/src/domain/service/service";
 
 const INPUT_CLASS =
@@ -49,12 +50,13 @@ export function ServiceForm({ salonId, service, onCancel, onSaved }: ServiceForm
   const [category, setCategory] = useState(service?.category ?? "");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  // L'illustration s'attache **séparément** (route dédiée, miroir logo salon
-  // #15) : `imageTouched` distingue « jamais touchée cette session » (aucun
-  // appel d'attachement) de « explicitement changée/retirée » (nouvelle clé,
-  // ou `null` pour effacer).
-  const [imageObjectKey, setImageObjectKey] = useState<string | null>(null);
-  const [imageTouched, setImageTouched] = useState(false);
+  // Les photos s'ajoutent/se retirent **immédiatement** en édition (la galerie
+  // gère son propre réseau). En création, la prestation n'existe pas encore :
+  // les fichiers choisis restent en attente ici, téléversés/attachés après la
+  // création. `photoGalleryResetKey` force un remontage (état local propre)
+  // après une création réussie, pour un formulaire prêt pour une saisie suivante.
+  const [pendingPhotoFiles, setPendingPhotoFiles] = useState<File[]>([]);
+  const [photoGalleryResetKey, setPhotoGalleryResetKey] = useState(0);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -101,34 +103,40 @@ export function ServiceForm({ salonId, service, onCancel, onSaved }: ServiceForm
         } | null;
         const savedId = body?.service?.id ?? service?.id;
 
-        if (imageTouched && savedId) {
-          const imageResponse = await fetch(
-            `/api/salons/${encodeURIComponent(salonId)}/services/${encodeURIComponent(savedId)}/image`,
-            {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ objectKey: imageObjectKey }),
-            },
-          );
-          if (!imageResponse.ok) {
-            router.refresh();
-            setError(
-              "La prestation a été enregistrée, mais l'image n'a pas pu être associée. Veuillez réessayer.",
-            );
-            return;
+        let somePhotosFailed = false;
+        if (!editing && savedId && pendingPhotoFiles.length > 0) {
+          for (const file of pendingPhotoFiles) {
+            const result = await uploadServicePhoto(salonId, savedId, file);
+            if (!result.ok) somePhotosFailed = true;
           }
         }
 
+        // La prestation est enregistrée dans tous les cas à ce stade (succès
+        // HTTP ci-dessus) : le formulaire est remis à zéro même en cas d'échec
+        // partiel des photos, pour qu'un nouveau clic sur « Ajouter » crée une
+        // prestation distincte plutôt que de re-soumettre les mêmes champs (ce
+        // qui créerait un doublon quasi identique à la prestation déjà enregistrée).
         if (!editing) {
           setName("");
           setPrice("");
           setDurationMinutes("");
           setDescription("");
           setCategory("");
-          setImageObjectKey(null);
-          setImageTouched(false);
+          setPendingPhotoFiles([]);
+          setPhotoGalleryResetKey((key) => key + 1);
         }
         router.refresh();
+
+        if (somePhotosFailed) {
+          // Le panneau reste ouvert (onSaved n'est volontairement pas appelé)
+          // pour que le gérant voie l'avertissement — le formulaire vierge
+          // ci-dessus empêche toute re-soumission accidentelle en doublon.
+          setError(
+            "La prestation a été enregistrée, mais certaines photos n'ont pas pu être associées. Vous pouvez les ajouter depuis la fiche de la prestation.",
+          );
+          return;
+        }
+
         onSaved?.();
         return;
       }
@@ -153,14 +161,13 @@ export function ServiceForm({ salonId, service, onCancel, onSaved }: ServiceForm
   return (
     <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
       <div className="flex flex-col gap-1.5 text-sm font-medium">
-        <FieldLabel optional>Image de la prestation</FieldLabel>
-        <ServiceImageUpload
+        <FieldLabel optional>Photos de la prestation</FieldLabel>
+        <ServicePhotoGallery
+          key={photoGalleryResetKey}
           salonId={salonId}
-          initialImageUrl={service?.imageUrl ?? null}
-          onChange={(objectKey) => {
-            setImageObjectKey(objectKey);
-            setImageTouched(true);
-          }}
+          serviceId={service?.id ?? null}
+          initialPhotos={service?.photos ?? []}
+          onPendingFilesChange={setPendingPhotoFiles}
         />
       </div>
       <label className="flex flex-col gap-1.5 text-sm font-medium">

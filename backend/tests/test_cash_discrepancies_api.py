@@ -9,8 +9,9 @@ Couvre :
 - 200 sans filtre : structure de page (`items`/`total`/`limit`/`offset`) ;
 - 200 avec filtre `date_from` et `date_to` : sous-ensemble correct ;
 - 200 filtre combined (`date_from` + `date_to`) ;
-- réponse contient `appointment_id`, `appointment_date`, `start_time`, `client_id`,
-  `client_name`, `expected_amount`, `currency` — et **pas** `salon_id` (non exposé) ;
+- réponse contient `queue_ticket_id`, `ticket_number`, `issued_date`, `completed_at`,
+  `customer_profile_id`, `client_name`, `expected_amount`, `currency` — et **pas**
+  `salon_id` (non exposé) ;
 - 422 plage incohérente (`date_from > date_to`) — message neutre (§11.3) ;
 - 401 sans jeton / token absent ;
 - 403 CLIENT, HAIRDRESSER, MANAGER hors portée — message générique ;
@@ -62,7 +63,7 @@ _HAIRDRESSER_ID = uuid.UUID("22222222-0000-0000-0000-000000000022")
 _SALON_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _OTHER_SALON_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
 
-_APPT_CLIENT_ID = uuid.UUID("dddddddd-0000-0000-0000-000000000001")
+_TICKET_CUSTOMER_PROFILE_ID = uuid.UUID("dddddddd-0000-0000-0000-000000000001")
 
 _DATE_OLD = datetime.date(2026, 3, 1)
 _DATE_MID = datetime.date(2026, 3, 15)
@@ -94,17 +95,20 @@ def _creds(user_id: uuid.UUID, role: str) -> UserCredentials:
 def _make_discrepancy(
     *,
     salon_id: uuid.UUID = _SALON_ID,
-    appointment_date: datetime.date = _DATE_MID,
-    start_time: datetime.time = datetime.time(10, 0),
+    issued_date: datetime.date = _DATE_MID,
+    ticket_number: int = 14,
     client_name: str | None = None,
     expected_amount: decimal.Decimal = decimal.Decimal("5000.00"),
 ) -> CashDiscrepancy:
     return CashDiscrepancy(
-        appointment_id=uuid.uuid4(),
+        queue_ticket_id=uuid.uuid4(),
         salon_id=salon_id,
-        appointment_date=appointment_date,
-        start_time=start_time,
-        client_id=_APPT_CLIENT_ID,
+        ticket_number=ticket_number,
+        issued_date=issued_date,
+        completed_at=datetime.datetime.combine(
+            issued_date, datetime.time(10, 0), tzinfo=datetime.timezone.utc
+        ),
+        customer_profile_id=_TICKET_CUSTOMER_PROFILE_ID,
         expected_amount=expected_amount,
         client_name=client_name,
         currency=DEFAULT_CURRENCY,
@@ -211,7 +215,7 @@ class TestListCashDiscrepancies200NoFilter:
 
 
 class TestListCashDiscrepanciesResponseSchema:
-    def test_item_has_appointment_id(
+    def test_item_has_queue_ticket_id(
         self, manager_client: TestClient, payment_repo: FakePaymentRepository
     ) -> None:
         payment_repo._discrepancies.append(_make_discrepancy())
@@ -219,31 +223,29 @@ class TestListCashDiscrepanciesResponseSchema:
             _url(_SALON_ID), headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
         )
         item = r.json()["items"][0]
-        assert "appointment_id" in item
+        assert "queue_ticket_id" in item
 
-    def test_item_has_appointment_date(
+    def test_item_has_issued_date(
         self, manager_client: TestClient, payment_repo: FakePaymentRepository
     ) -> None:
-        payment_repo._discrepancies.append(_make_discrepancy(appointment_date=_DATE_MID))
+        payment_repo._discrepancies.append(_make_discrepancy(issued_date=_DATE_MID))
         r = manager_client.get(
             _url(_SALON_ID), headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
         )
         item = r.json()["items"][0]
-        assert item["appointment_date"] == "2026-03-15"
+        assert item["issued_date"] == "2026-03-15"
 
-    def test_item_has_start_time(
+    def test_item_has_ticket_number(
         self, manager_client: TestClient, payment_repo: FakePaymentRepository
     ) -> None:
-        payment_repo._discrepancies.append(
-            _make_discrepancy(start_time=datetime.time(9, 30))
-        )
+        payment_repo._discrepancies.append(_make_discrepancy(ticket_number=42))
         r = manager_client.get(
             _url(_SALON_ID), headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
         )
         item = r.json()["items"][0]
-        assert "start_time" in item
+        assert item["ticket_number"] == 42
 
-    def test_item_has_client_id(
+    def test_item_has_completed_at(
         self, manager_client: TestClient, payment_repo: FakePaymentRepository
     ) -> None:
         payment_repo._discrepancies.append(_make_discrepancy())
@@ -251,7 +253,17 @@ class TestListCashDiscrepanciesResponseSchema:
             _url(_SALON_ID), headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
         )
         item = r.json()["items"][0]
-        assert "client_id" in item
+        assert "completed_at" in item
+
+    def test_item_has_customer_profile_id(
+        self, manager_client: TestClient, payment_repo: FakePaymentRepository
+    ) -> None:
+        payment_repo._discrepancies.append(_make_discrepancy())
+        r = manager_client.get(
+            _url(_SALON_ID), headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
+        )
+        item = r.json()["items"][0]
+        assert "customer_profile_id" in item
 
     def test_item_has_client_name_field(
         self, manager_client: TestClient, payment_repo: FakePaymentRepository
@@ -317,8 +329,8 @@ class TestListCashDiscrepancies200WithFilters:
     def test_date_from_excludes_older(
         self, manager_client: TestClient, payment_repo: FakePaymentRepository
     ) -> None:
-        payment_repo._discrepancies.append(_make_discrepancy(appointment_date=_DATE_OLD))
-        payment_repo._discrepancies.append(_make_discrepancy(appointment_date=_DATE_NEW))
+        payment_repo._discrepancies.append(_make_discrepancy(issued_date=_DATE_OLD))
+        payment_repo._discrepancies.append(_make_discrepancy(issued_date=_DATE_NEW))
         r = manager_client.get(
             _url(_SALON_ID),
             params={"date_from": "2026-03-20"},
@@ -330,8 +342,8 @@ class TestListCashDiscrepancies200WithFilters:
     def test_date_to_excludes_newer(
         self, manager_client: TestClient, payment_repo: FakePaymentRepository
     ) -> None:
-        payment_repo._discrepancies.append(_make_discrepancy(appointment_date=_DATE_OLD))
-        payment_repo._discrepancies.append(_make_discrepancy(appointment_date=_DATE_NEW))
+        payment_repo._discrepancies.append(_make_discrepancy(issued_date=_DATE_OLD))
+        payment_repo._discrepancies.append(_make_discrepancy(issued_date=_DATE_NEW))
         r = manager_client.get(
             _url(_SALON_ID),
             params={"date_to": "2026-03-10"},
@@ -343,9 +355,9 @@ class TestListCashDiscrepancies200WithFilters:
     def test_date_range_combined(
         self, manager_client: TestClient, payment_repo: FakePaymentRepository
     ) -> None:
-        payment_repo._discrepancies.append(_make_discrepancy(appointment_date=_DATE_OLD))
-        payment_repo._discrepancies.append(_make_discrepancy(appointment_date=_DATE_MID))
-        payment_repo._discrepancies.append(_make_discrepancy(appointment_date=_DATE_NEW))
+        payment_repo._discrepancies.append(_make_discrepancy(issued_date=_DATE_OLD))
+        payment_repo._discrepancies.append(_make_discrepancy(issued_date=_DATE_MID))
+        payment_repo._discrepancies.append(_make_discrepancy(issued_date=_DATE_NEW))
         r = manager_client.get(
             _url(_SALON_ID),
             params={"date_from": "2026-03-01", "date_to": "2026-03-15"},
@@ -357,7 +369,7 @@ class TestListCashDiscrepancies200WithFilters:
     def test_no_match_returns_empty(
         self, manager_client: TestClient, payment_repo: FakePaymentRepository
     ) -> None:
-        payment_repo._discrepancies.append(_make_discrepancy(appointment_date=_DATE_OLD))
+        payment_repo._discrepancies.append(_make_discrepancy(issued_date=_DATE_OLD))
         r = manager_client.get(
             _url(_SALON_ID),
             params={"date_from": "2026-04-01"},
@@ -519,7 +531,7 @@ class TestListCashDiscrepanciesPagination:
     ) -> None:
         for i in range(10):
             payment_repo._discrepancies.append(
-                _make_discrepancy(appointment_date=datetime.date(2026, 1, i + 1))
+                _make_discrepancy(issued_date=datetime.date(2026, 1, i + 1))
             )
         r = manager_client.get(
             _url(_SALON_ID),
@@ -543,7 +555,7 @@ class TestListCashDiscrepanciesPagination:
     ) -> None:
         for i in range(7):
             payment_repo._discrepancies.append(
-                _make_discrepancy(appointment_date=datetime.date(2026, 1, i + 1))
+                _make_discrepancy(issued_date=datetime.date(2026, 1, i + 1))
             )
         r = manager_client.get(
             _url(_SALON_ID),

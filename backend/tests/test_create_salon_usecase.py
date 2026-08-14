@@ -14,6 +14,8 @@ Couvre :
 - `GetSalon` : `SalonNotFound` si absent ; URLs signées résolues ;
   sans stockage (None) → logo_url/photos à None ;
 - `ListOwnSalons` : filtre par owner_id.
+- `ListSalonsForHairdresser` : filtre par appartenance `salon_members` (jamais
+  `owner_id` — un coiffeur n'est jamais propriétaire), régression #157.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from coiflink_api.application.salons import (
     GetSalon,
     IssueMediaUploadUrl,
     ListOwnSalons,
+    ListSalonsForHairdresser,
     RemoveSalonPhoto,
     UpdateSalon,
     UpdateSalonCommand,
@@ -46,7 +49,12 @@ from coiflink_api.domain.errors import (
     SalonNotFound,
 )
 
-from .conftest import FakeAuditLog, FakeMediaStorage, FakeSalonRepository
+from .conftest import (
+    FakeAuditLog,
+    FakeMediaStorage,
+    FakeSalonRepository,
+    FakeSalonScopeRepository,
+)
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -429,6 +437,58 @@ class TestListOwnSalons:
         CreateSalon(repo).execute(CreateSalonCommand(name="B"), owner_id=_OWNER_ID)
         views = ListOwnSalons(repo, None).execute(_OWNER_ID)
         assert len(views) == 2
+
+
+# ---------------------------------------------------------------------------
+# ListSalonsForHairdresser
+# ---------------------------------------------------------------------------
+
+
+_HAIRDRESSER_ID = uuid.UUID("55555555-0000-0000-0000-000000000005")
+
+
+class TestListSalonsForHairdresser:
+    """Régression #157 : un coiffeur n'est jamais `owner_id` — `GET /salons`
+    renvoyait systématiquement une liste vide pour ce rôle avant ce cas d'usage
+    (zone coiffeur, page « Mes tickets », bug « Aucun salon rattaché »)."""
+
+    def test_returns_empty_when_no_membership(self) -> None:
+        repo = FakeSalonRepository()
+        scope_repo = FakeSalonScopeRepository()
+        views = ListSalonsForHairdresser(repo, scope_repo, None).execute(_HAIRDRESSER_ID)
+        assert views == ()
+
+    def test_returns_salon_where_active_member(self) -> None:
+        repo = FakeSalonRepository()
+        salon = CreateSalon(repo).execute(CreateSalonCommand(name="A"), owner_id=_OWNER_ID)
+        scope_repo = FakeSalonScopeRepository(
+            scopes={_HAIRDRESSER_ID: frozenset({salon.id})}
+        )
+        views = ListSalonsForHairdresser(repo, scope_repo, None).execute(_HAIRDRESSER_ID)
+        assert len(views) == 1
+        assert views[0].salon.id == salon.id
+        # Le salon reste la propriété du gérant qui l'a créé — jamais du coiffeur.
+        assert views[0].salon.owner_id == _OWNER_ID
+
+    def test_does_not_return_owned_salon_without_membership(self) -> None:
+        """Un coiffeur ne peut jamais être `owner_id` : même un salon créé avec
+        `owner_id=_HAIRDRESSER_ID` (coïncidence d'UUID) n'apparaît pas sans
+        appartenance `salon_members` explicite dans la portée."""
+        repo = FakeSalonRepository()
+        CreateSalon(repo).execute(CreateSalonCommand(name="A"), owner_id=_HAIRDRESSER_ID)
+        scope_repo = FakeSalonScopeRepository()
+        views = ListSalonsForHairdresser(repo, scope_repo, None).execute(_HAIRDRESSER_ID)
+        assert views == ()
+
+    def test_ignores_membership_of_another_hairdresser(self) -> None:
+        repo = FakeSalonRepository()
+        salon = CreateSalon(repo).execute(CreateSalonCommand(name="A"), owner_id=_OWNER_ID)
+        other_hairdresser_id = uuid.uuid4()
+        scope_repo = FakeSalonScopeRepository(
+            scopes={other_hairdresser_id: frozenset({salon.id})}
+        )
+        views = ListSalonsForHairdresser(repo, scope_repo, None).execute(_HAIRDRESSER_ID)
+        assert views == ()
 
 
 # ---------------------------------------------------------------------------

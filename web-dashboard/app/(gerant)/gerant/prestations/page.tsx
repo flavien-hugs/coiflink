@@ -1,8 +1,9 @@
 // Prestations du salon — adapter entrant + composition root (Server Component,
 // #17). Charge **côté serveur** (jeton du cookie httpOnly, jamais exposé au
 // navigateur, invariant #14) le salon du gérant puis ses prestations,
-// **filtrables côté serveur** (nom/catégorie/plage de dates de création via
-// `searchParams`, même patron que Clients #28 / Encaissements #35) :
+// **filtrables côté serveur** (nom/plage de dates de création via
+// `searchParams`, même patron que Clients #28 / Encaissements #35) — la
+// catégorie reste une colonne informative du tableau, pas un filtre :
 //   - aucun salon → invite à créer d'abord le salon (Paramètres, #15) ;
 //   - un salon    → catalogue filtrable + drawer d'ajout/modification.
 // La modification et la désactivation sont journalisées §11.4 côté backend.
@@ -32,7 +33,6 @@ export default async function PrestationsPage({
 }) {
   const params = await searchParams;
   const q = one(params.q);
-  const category = one(params.category);
   const createdFrom = one(params.created_from);
   const createdTo = one(params.created_to);
 
@@ -58,7 +58,7 @@ export default async function PrestationsPage({
     );
   }
 
-  const options: ServiceListOptions = { q, category, createdFrom, createdTo };
+  const options: ServiceListOptions = { q, createdFrom, createdTo };
   const servicesResult = await createHttpServiceGateway({ accessToken }).list(
     salon.id,
     options,
@@ -83,7 +83,6 @@ export default async function PrestationsPage({
         salonId={salon.id}
         services={servicesResult.services}
         q={q}
-        category={category}
         createdFrom={createdFrom}
         createdTo={createdTo}
       />

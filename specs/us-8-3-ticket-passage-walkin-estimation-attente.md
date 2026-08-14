@@ -1,9 +1,9 @@
 # Ticket de passage walk-in & estimation d'attente (US-8.3, #157)
 
 > Spécification de planification pour l'issue GitHub **#157 — US-8.3 : Ticket de passage walk-in &
-> estimation d'attente** (`feature` · Must · Effort L · jalon **M7 — Borne client (kiosque
+> estimation d'attente** (`feature` · Must · Effort L · jalon **M7 — Borne client (terminal
 > libre-service)**, Épic 8 · PRD §17 « Borne Intelligente d'Accueil »). **Dépend de : #155
-> (rôle/auth `KIOSK`), #156 (identification téléphone / création walk-in).**
+> (rôle/auth `TERMINAL`), #156 (identification téléphone / création walk-in).**
 > **Cette spec ne produit pas de code** : elle décrit l'approche à implémenter dans une phase
 > ultérieure.
 >
@@ -13,7 +13,7 @@
 > plusieurs points désormais tranchés dans le code (`b9c5388` #155, `4320171` #156). Ce document en
 > reprend la conception — encore valide — mais **verrouille** les hypothèses vérifiées par lecture
 > directe du dépôt à l'état du commit `4320171` : nom canonique de la permission, numéro de
-> migration réel, forme exacte de la garde `KIOSK`, projection PII de #156. En cas de divergence,
+> migration réel, forme exacte de la garde `TERMINAL`, projection PII de #156. En cas de divergence,
 > **ce document fait foi** pour l'implémentation de #157 ; l'ancien reste la référence historique.
 >
 > Conventions du dépôt : contenu rédigé en **français** (PRD, README, ADR, commentaires
@@ -27,14 +27,14 @@ Le jalon M7 promeut le parcours « client sans rendez-vous » du PRD §17 au ran
 livrable, limité volontairement au walk-in (cf. bloc M7 de `BACKLOG.md`). Les deux briques amont sont
 livrées :
 
-- **#155** dote la borne d'une identité de terminal (rôle `KIOSK`, compte de service scopé à un
-  salon, JWT courts via `POST /auth/kiosk/login`) et de ses permissions **minimales**, dont
+- **#155** dote la borne d'une identité de terminal (rôle `TERMINAL`, compte de service scopé à un
+  salon, JWT courts via `POST /auth/terminal/login`) et de ses permissions **minimales**, dont
   `QUEUE_TICKET_CREATE` déjà déclarée dans la matrice `ROLE_PERMISSIONS` (vérifié :
   `coiflink_api/domain/permissions.py:79` et `:154`).
 - **#156** donne à la borne le moyen de savoir **qui** se présente : `POST
-  /salons/{salon_id}/kiosk/customers/lookup` (recherche par téléphone) et `POST
-  /salons/{salon_id}/kiosk/customers` (création walk-in), tous deux ne renvoyant qu'une projection
-  minimale `{customer_id, first_name}` (vérifié : `coiflink_api/adapters/inbound/kiosk_customers.py`).
+  /salons/{salon_id}/terminal/customers/lookup` (recherche par téléphone) et `POST
+  /salons/{salon_id}/terminal/customers` (création walk-in), tous deux ne renvoyant qu'une projection
+  minimale `{customer_id, first_name}` (vérifié : `coiflink_api/adapters/inbound/terminal_customers.py`).
 
 Il manque encore la **pièce centrale** du parcours : **quoi faire** de ce client une fois identifié —
 lui délivrer un **numéro de passage**, une **estimation d'attente**, et le faire apparaître dans la
@@ -83,7 +83,7 @@ file du personnel pour qu'il soit pris en charge. C'est l'objet de #157.
   redémarre à 1 chaque jour civil du salon (fuseau `Africa/Abidjan`), garanti unique par un index
   base **et** protégé d'une course par verrou consultatif transactionnel (patron ADR-0040, clé
   salon+jour).
-- **Endpoint « rejoindre la file »**, réservé au rôle `KIOSK` (#155) : crée un ticket `waiting`,
+- **Endpoint « rejoindre la file »**, réservé au rôle `TERMINAL` (#155) : crée un ticket `waiting`,
   retourne `ticket_number`, `estimated_wait_minutes`, l'heure d'émission — la borne peut imprimer
   immédiatement (préalable direct de #160).
 - **Formule V1 d'ETA explicite et bornée**, assumée heuristique perfectible : position dans la file
@@ -112,7 +112,7 @@ affichage temps réel des coiffeurs disponibles **avant** affectation, paiement 
 
 Spécifiquement hors scope de **#157** :
 
-- **Le rôle `KIOSK`, son credential, sa garde de portée.** #157 **consomme** ce qui est livré par
+- **Le rôle `TERMINAL`, son credential, sa garde de portée.** #157 **consomme** ce qui est livré par
   #155 (`require_salon_scope` + `require_permission(Permission.QUEUE_TICKET_CREATE)`) ; il ne le
   redéfinit pas.
 - **L'identification téléphone / création de fiche walk-in.** #157 **consomme** le `customer_id`
@@ -131,7 +131,7 @@ Spécifiquement hors scope de **#157** :
 - **Affinage de l'ETA au-delà de la V1** (données historiques, durée par coiffeuse, pondération par
   prestation) — explicitement heuristique V1 assumée perfectible.
 - **Modification de `ROLE_PERMISSIONS` pour `CLIENT`/`HAIRDRESSER`/`MANAGER`/`ADMIN`.** La permission
-  `KIOSK` (`QUEUE_TICKET_CREATE`) **existe déjà** (#155). Pour la prise en charge (start/complete),
+  `TERMINAL` (`QUEUE_TICKET_CREATE`) **existe déjà** (#155). Pour la prise en charge (start/complete),
   la réutilisation de `APPOINTMENT_UPDATE_STATUS` (déjà détenue par `MANAGER`, et par le coiffeur sur
   son planning) est proposée — aucun nouveau droit à créer (voir *Risks*).
 - **Expiration automatique planifiée** (job cron) : le dépôt n'a aucun ordonnanceur ; l'`expired` est
@@ -149,7 +149,7 @@ Spécifiquement hors scope de **#157** :
 | Autorisation | RBAC **deny-by-default**, permissions §4.1, portée salon §11.2 | [0015](../docs/adr/0015-autorisation-rbac-deny-by-default.md) |
 | Journal d'audit | Table `audit_logs` + port `AuditLog`, entrées **neutres** | [0019](../docs/adr/0019-journalisation-audit-et-prestations.md) |
 | Numérotation séquentielle par salon | verrou consultatif transactionnel + `MAX+1`, sans table de compteur | [0040](../docs/adr/0040-impression-recu-encaissement-gerant.md) |
-| Authentification borne kiosque | rôle `KIOSK`, device credential, JWT courts, révocation à la requête suivante | [0041](../docs/adr/0041-authentification-borne-kiosque.md) |
+| Authentification borne terminal | rôle `TERMINAL`, device credential, JWT courts, révocation à la requête suivante | [0041](../docs/adr/0041-authentification-borne-kiosque.md) |
 
 `docs/adr/` s'arrête aujourd'hui à **ADR-0041** (livrée avec #155). #157 introduit **ADR-0042**
 (`docs/adr/0042-file-attente-walkin-queue-ticket.md`), committée avec son implémentation — cette spec
@@ -160,10 +160,10 @@ en constitue la matière première. #161 (US-8.7) vérifie la présence des deux
 
 | Point | Ancienne hypothèse | État vérifié (commit `4320171`) |
 | --- | --- | --- |
-| Permission kiosque « rejoindre la file » | nom à confirmer | **`Permission.QUEUE_TICKET_CREATE`** existe (`domain/permissions.py:79`), détenue **exactement** par `Role.KIOSK` (`:150-155`) |
-| Garde d'une route kiosque salon-scopée | forme à confirmer | `require_salon_scope` (portée device→salon, `salon_id` lu du **chemin**) **+** `require_permission(...)`, deux dépendances résolvant le **même** `Principal` (patron `kiosk_customers.py:247-250`, `308-311`) |
+| Permission terminal « rejoindre la file » | nom à confirmer | **`Permission.QUEUE_TICKET_CREATE`** existe (`domain/permissions.py:79`), détenue **exactement** par `Role.TERMINAL` (`:150-155`) |
+| Garde d'une route terminal salon-scopée | forme à confirmer | `require_salon_scope` (portée device→salon, `salon_id` lu du **chemin**) **+** `require_permission(...)`, deux dépendances résolvant le **même** `Principal` (patron `terminal_customers.py:247-250`, `308-311`) |
 | Dernière migration | inconnue | **`0013_kiosk_role.py`** est la tête → nouvelle migration **`0014`**, `down_revision = "0013"` |
-| Projection PII walk-in de #156 | à aligner | `lookup`/`create` renvoient **`{customer_id, first_name}`** uniquement (`kiosk_customers.py`) — le prénom seul est la PII autorisée à l'écran ; `walk_in_tickets` s'y aligne |
+| Projection PII walk-in de #156 | à aligner | `lookup`/`create` renvoient **`{customer_id, first_name}`** uniquement (`terminal_customers.py`) — le prénom seul est la PII autorisée à l'écran ; `walk_in_tickets` s'y aligne |
 | `GET .../queue` actuel | `list[QueueEntryResponse]` | confirmé (`appointments.py:1236`, `1271-1272` : `ListSalonQueue(appointments, payments).execute(...)`) |
 
 ### File d'attente existante (#150/#152) — à ne pas confondre
@@ -451,7 +451,7 @@ une seule requête agrégée, pas de calcul en mémoire.
 
 **`adapters/inbound/queue_tickets.py`** (nouveau routeur, `prefix="/salons"`, tag `queue-tickets`),
 monté dans `main.py` avec un commentaire de câblage dans le style existant (permission, portée,
-absence de `PUBLIC_ROUTE_PATHS`). Gardes exactes reproduisant `kiosk_customers.py` : `require_salon_scope`
+absence de `PUBLIC_ROUTE_PATHS`). Gardes exactes reproduisant `terminal_customers.py` : `require_salon_scope`
 + `require_permission(...)`. Détail des routes en *API / Interface Changes*.
 
 ## Affected Files / Packages / Modules
@@ -464,7 +464,7 @@ absence de `PUBLIC_ROUTE_PATHS`). Gardes exactes reproduisant `kiosk_customers.p
 | `coiflink_api/application/ports/queue_ticket_repository.py` | port `Protocol` |
 | `coiflink_api/application/queue_ticket.py` | `JoinQueue`, `StartQueueTicket`, `CompleteQueueTicket`, `ListSalonQueueTickets` |
 | `coiflink_api/adapters/outbound/persistence/queue_ticket_repository.py` | `SqlQueueTicketRepository` |
-| `coiflink_api/adapters/inbound/queue_tickets.py` | router `/salons/{salon_id}/queue/tickets` (KIOSK + gérant/coiffeuse) |
+| `coiflink_api/adapters/inbound/queue_tickets.py` | router `/salons/{salon_id}/queue/tickets` (TERMINAL + gérant/coiffeuse) |
 | `migrations/versions/0014_queue_tickets.py` | tables `queue_tickets` + `queue_ticket_services` |
 | `tests/test_domain_queue_ticket.py`, `tests/test_queue_ticket_usecases.py`, `tests/test_queue_ticket_api.py`, `tests/test_queue_ticket_e2e.py` | tests |
 
@@ -500,7 +500,7 @@ absence de `PUBLIC_ROUTE_PATHS`). Gardes exactes reproduisant `kiosk_customers.p
 `application/queue.py`, `domain/queue.py`, `adapters/outbound/persistence/appointment_repository.py`
 (`mark_arrived`/`mark_started`), `adapters/outbound/persistence/payment_repository.py:67-89`,
 `adapters/outbound/persistence/salon_catalog_repository.py` (`list_active_hairdressers`),
-`adapters/inbound/kiosk_customers.py` (garde KIOSK), `domain/errors.py`,
+`adapters/inbound/terminal_customers.py` (garde TERMINAL), `domain/errors.py`,
 `docs/adr/0040-impression-recu-encaissement-gerant.md`.
 
 ## API / Interface Changes
@@ -509,7 +509,7 @@ absence de `PUBLIC_ROUTE_PATHS`). Gardes exactes reproduisant `kiosk_customers.p
 
 | Méthode | Chemin | Garde | Réponses |
 | --- | --- | --- | --- |
-| `POST` | `/salons/{salon_id}/queue/tickets` | `require_salon_scope` (portée device→salon) **+** `require_permission(Permission.QUEUE_TICKET_CREATE)` — détenue par `Role.KIOSK` (#155) | `201` ticket · `401` (jeton absent/invalide) · `403` (rôle/permission insuffisant, salon hors périmètre) · `404` fiche client hors salon · `422` prestation(s) invalide(s) |
+| `POST` | `/salons/{salon_id}/queue/tickets` | `require_salon_scope` (portée device→salon) **+** `require_permission(Permission.QUEUE_TICKET_CREATE)` — détenue par `Role.TERMINAL` (#155) | `201` ticket · `401` (jeton absent/invalide) · `403` (rôle/permission insuffisant, salon hors périmètre) · `404` fiche client hors salon · `422` prestation(s) invalide(s) |
 
 ```jsonc
 // POST /salons/{salon_id}/queue/tickets — corps
@@ -534,7 +534,7 @@ absence de `PUBLIC_ROUTE_PATHS`). Gardes exactes reproduisant `kiosk_customers.p
 014 », zéro-padding) est la responsabilité exclusive du formatter ESC/POS de #160 (sur le modèle de
 `format_receipt_number`, `domain/receipt.py`) — jamais une chaîne pré-formatée par #157.
 
-Cette route n'est **pas** ajoutée à `PUBLIC_ROUTE_PATHS` : « public/kiosk » qualifie l'usage (un
+Cette route n'est **pas** ajoutée à `PUBLIC_ROUTE_PATHS` : « public/terminal » qualifie l'usage (un
 terminal en salle d'accueil), pas le régime d'authentification (deny-by-default inchangé). Le
 `salon_id` du chemin doit correspondre au salon figé du device (§11.2, borne mono-salon) : toute
 divergence renvoie le `403` générique, jamais un `404` qui confirmerait l'existence du salon visé.
@@ -637,17 +637,17 @@ round-trip Alembic de la CI.
 
 ## Security & Privacy Considerations
 
-- **Aucune route publique.** Les trois routes restent **protégées** (credential `KIOSK` de #155 pour
+- **Aucune route publique.** Les trois routes restent **protégées** (credential `TERMINAL` de #155 pour
   la création ; `APPOINTMENT_UPDATE_STATUS` + portée salon pour start/complete) — jamais ajoutées à
   `PUBLIC_ROUTE_PATHS`. Invariant deny-by-default inchangé ; l'invariant de test
   `unprotected_routes(app) == []` (tests de sécurité #51) couvre automatiquement les nouvelles routes.
 - **Isolation par salon (§11.2), en profondeur.** Toutes les méthodes du port filtrent `salon_id` en
   SQL ; un `customer_profile_id` d'un autre salon est refusé avec la **même** erreur
-  (`QueueTicketNotFound`) qu'un id inexistant — aucun oracle d'existence. Le device `KIOSK` ne peut
+  (`QueueTicketNotFound`) qu'un id inexistant — aucun oracle d'existence. Le device `TERMINAL` ne peut
   de toute façon soumettre que le `salon_id` de son provisioning (`require_salon_scope`, #155).
 - **Minimisation de la PII à l'écran gérant partagé.** `GET .../queue` n'expose que
   `customer_first_name` pour un ticket walk-in — jamais le nom complet ni le téléphone —, aligné sur
-  la projection `{customer_id, first_name}` déjà retenue par #156 (`kiosk_customers.py`). L'écran
+  la projection `{customer_id, first_name}` déjà retenue par #156 (`terminal_customers.py`). L'écran
   borne (#159) n'affiche jamais l'identité d'un autre client que celui en interaction.
 - **`customer_profile_id` nullable — ticket anonyme possible.** Un client qui refuse de laisser son
   identité doit tout de même pouvoir obtenir un ticket : `customer_profile_id = null` reste valide
@@ -662,7 +662,7 @@ round-trip Alembic de la CI.
   dans le journal d'audit **gérant** (aucune action humaine du personnel) — **à confirmer** (une
   trace d'accès device relèverait d'un futur journal d'activité borne, #155/#161).
 - **Abus du terminal partagé.** Rien dans #157 n'empêche la création de tickets en boucle ; un
-  **débit maximal par device/minute** est une mitigation naturelle mais relève de la garde `KIOSK`
+  **débit maximal par device/minute** est une mitigation naturelle mais relève de la garde `TERMINAL`
   (#155, qui pose déjà un rate-limiter sur `lookup`) ou d'un middleware transverse — **hors périmètre
   de #157**, signalé comme dépendance amont à vérifier avant mise en production du jalon.
 - **Intégrité concurrente du numéro de ticket.** Le verrou consultatif sérialise les créations
@@ -701,7 +701,7 @@ round-trip Alembic de la CI.
   - `POST .../queue/tickets` : `201` avec `ticket_number` séquentiel croissant sur appels successifs
     du même salon/jour ; `422` prestation vide/inactive/hors salon ; `404` `customer_profile_id`
     d'un autre salon ; `403` si le principal n'a pas la permission `QUEUE_TICKET_CREATE` (ex. un
-    `CLIENT`/`MANAGER` sur cette route kiosque) ; `401` sans jeton.
+    `CLIENT`/`MANAGER` sur cette route terminal) ; `401` sans jeton.
   - `POST .../start` / `.../complete` : `200` nominal ; `409` transition invalide (déjà démarré / pas
     encore démarré) ; `404` ticket d'un autre salon ; `403` rôle insuffisant ; `401` sans jeton.
   - `tests/test_queue_api.py` (existant, à étendre) : le corps de `GET .../queue` porte désormais
@@ -713,8 +713,8 @@ round-trip Alembic de la CI.
 
 ### Backend — e2e (PostgreSQL réel, sauté si `DATABASE_URL` absent)
 
-- **`tests/test_queue_ticket_e2e.py`** (patron des e2e kiosque #155/#156) :
-  1. parcours complet : device `KIOSK` provisionné (#155) → identification/omission client (#156) →
+- **`tests/test_queue_ticket_e2e.py`** (patron des e2e terminal #155/#156) :
+  1. parcours complet : device `TERMINAL` provisionné (#155) → identification/omission client (#156) →
      `POST .../queue/tickets` → le ticket apparaît dans `ListSalonQueueTickets` → `POST .../start`
      (coiffeuse du salon) → apparaît dans `GET .../queue` (`walk_in_tickets`) → `POST .../complete`.
   2. **concurrence réelle** : deux créations quasi-simultanées (threads/connexions séparées) sur le
@@ -773,7 +773,7 @@ schéma ou de contrat difficiles à revenir en arrière) :
 7. **Ticket anonyme (`customer_profile_id = null`)** — le domaine l'autorise ; l'UX (#159) ne le
    tranche pas ici. **À confirmer** avec #156/#159 : la borne doit-elle offrir un chemin « continuer
    sans donner mon nom » ?
-8. **Rate-limiting de la création de tickets** — non livré par #157 (dépendance à la garde `KIOSK`
+8. **Rate-limiting de la création de tickets** — non livré par #157 (dépendance à la garde `TERMINAL`
    #155 ou à un middleware transverse). À vérifier avant mise en production du jalon.
 9. **`down_revision` de la migration** — `0013` est la tête vérifiée aujourd'hui, mais si une autre
    issue du jalon (ex. #158+) merge une migration avant #157, **renuméroter** ; ne jamais laisser
@@ -783,7 +783,7 @@ schéma ou de contrat difficiles à revenir en arrière) :
 
 1. **Lire** `application/queue.py`, `domain/queue.py`, `appointment_repository.py`
    (`mark_arrived`/`mark_started`), `payment_repository.py:67-89`,
-   `salon_catalog_repository.py` (`list_active_hairdressers`), `kiosk_customers.py` (garde KIOSK),
+   `salon_catalog_repository.py` (`list_active_hairdressers`), `terminal_customers.py` (garde TERMINAL),
    `docs/adr/0040-…` — s'imprégner des patrons de verrouillage, de préconditions et d'audit.
 2. **Trancher** avec le porteur produit les questions ouvertes 1, 2, 3, 4, 5, 6, 7 (elles déterminent
    des choix de schéma/contrat difficiles à revenir en arrière).

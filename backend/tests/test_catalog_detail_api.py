@@ -30,7 +30,7 @@ from coiflink_api.adapters.inbound.security import unprotected_routes
 from coiflink_api.domain.employee import Employee
 from coiflink_api.domain.enums import SalonStatus
 from coiflink_api.domain.salon import Salon, SalonPhoto
-from coiflink_api.domain.service import Service
+from coiflink_api.domain.service import Service, ServicePhoto
 from coiflink_api.main import app
 
 from .conftest import FakeMediaStorage, FakeSalonCatalogRepository
@@ -76,7 +76,6 @@ def _make_service(
     *,
     name: str = "Coupe homme",
     is_active: bool = True,
-    image_object_key: str | None = None,
 ) -> Service:
     return Service(
         id=uuid.uuid4(),
@@ -87,7 +86,6 @@ def _make_service(
         duration_minutes=30,
         category="Coupe",
         is_active=is_active,
-        image_object_key=image_object_key,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )
@@ -117,6 +115,19 @@ def _make_photo(salon_id: uuid.UUID, *, position: int = 0) -> SalonPhoto:
         id=uuid.uuid4(),
         salon_id=salon_id,
         object_key=f"salons/{salon_id}/photos/{uuid.uuid4()}.jpg",
+        position=position,
+        created_at=_CREATED_AT,
+    )
+
+
+def _make_service_photo(
+    service: Service, *, object_key: str = "services/salon-id/photo.png", position: int = 0
+) -> ServicePhoto:
+    return ServicePhoto(
+        id=uuid.uuid4(),
+        salon_id=service.salon_id,
+        service_id=service.id,
+        object_key=object_key,
         position=position,
         created_at=_CREATED_AT,
     )
@@ -342,11 +353,12 @@ def test_service_image_url_signed_not_raw_key() -> None:
     # ADR-0005 / #158 : avec FakeMediaStorage configuré, image_url est une URL
     # signée (contient « ? »), différente de la clé brute et non null.
     salon = _make_salon()
-    svc = _make_service(
-        salon.id, image_object_key="services/salon-id/photo.png"
-    )
+    svc = _make_service(salon.id)
+    photo = _make_service_photo(svc, object_key="services/salon-id/photo.png")
     resp = _client(
-        FakeSalonCatalogRepository([salon], services={salon.id: [svc]}),
+        FakeSalonCatalogRepository(
+            [salon], services={salon.id: [svc]}, service_photos={svc.id: [photo]}
+        ),
         storage=FakeMediaStorage(),
     ).get(_url(salon.id))
 
@@ -358,13 +370,14 @@ def test_service_image_url_signed_not_raw_key() -> None:
 
 def test_service_image_url_null_without_storage() -> None:
     # Résilience (spec §Security) : sans MediaStorage configuré, image_url vaut
-    # null même si image_object_key est renseigné — jamais d'exception 5xx.
+    # null même si une photo existe — jamais d'exception 5xx.
     salon = _make_salon()
-    svc = _make_service(
-        salon.id, image_object_key="services/salon-id/photo.png"
-    )
+    svc = _make_service(salon.id)
+    photo = _make_service_photo(svc, object_key="services/salon-id/photo.png")
     resp = _client(
-        FakeSalonCatalogRepository([salon], services={salon.id: [svc]}),
+        FakeSalonCatalogRepository(
+            [salon], services={salon.id: [svc]}, service_photos={svc.id: [photo]}
+        ),
         storage=None,
     ).get(_url(salon.id))
 
@@ -372,10 +385,10 @@ def test_service_image_url_null_without_storage() -> None:
     assert resp.json()["services"][0]["image_url"] is None
 
 
-def test_service_image_url_null_when_no_key() -> None:
-    # image_object_key=None → image_url null, même avec un stockage configuré.
+def test_service_image_url_null_when_no_photo() -> None:
+    # Aucune photo → image_url null, même avec un stockage configuré.
     salon = _make_salon()
-    svc = _make_service(salon.id, image_object_key=None)
+    svc = _make_service(salon.id)
     resp = _client(
         FakeSalonCatalogRepository([salon], services={salon.id: [svc]}),
         storage=FakeMediaStorage(),
@@ -389,9 +402,12 @@ def test_service_raw_object_key_never_leaks_in_response() -> None:
     # tel quel dans le corps de la réponse quand le stockage est configuré.
     salon = _make_salon()
     raw_key = f"services/{salon.id}/photo.png"
-    svc = _make_service(salon.id, image_object_key=raw_key)
+    svc = _make_service(salon.id)
+    photo = _make_service_photo(svc, object_key=raw_key)
     resp = _client(
-        FakeSalonCatalogRepository([salon], services={salon.id: [svc]}),
+        FakeSalonCatalogRepository(
+            [salon], services={salon.id: [svc]}, service_photos={svc.id: [photo]}
+        ),
         storage=FakeMediaStorage(),
     ).get(_url(salon.id))
 
@@ -401,6 +417,25 @@ def test_service_raw_object_key_never_leaks_in_response() -> None:
     assert resp.json()["services"][0]["image_url"] != raw_key
     image_url = resp.json()["services"][0]["image_url"]
     assert image_url is not None and image_url.startswith("https://")
+
+
+def test_service_photos_gallery_exposed_not_only_cover() -> None:
+    # La borne kiosque doit pouvoir parcourir TOUTES les photos d'une prestation.
+    salon = _make_salon()
+    svc = _make_service(salon.id)
+    photo0 = _make_service_photo(svc, object_key="services/salon-id/a.png", position=0)
+    photo1 = _make_service_photo(svc, object_key="services/salon-id/b.png", position=1)
+    resp = _client(
+        FakeSalonCatalogRepository(
+            [salon], services={salon.id: [svc]}, service_photos={svc.id: [photo0, photo1]}
+        ),
+        storage=FakeMediaStorage(),
+    ).get(_url(salon.id))
+
+    service = resp.json()["services"][0]
+    assert len(service["photos"]) == 2
+    assert service["photos"][0]["url"] == service["image_url"]
+    assert all("?" in p["url"] for p in service["photos"])
 
 
 def test_logo_and_photos_null_without_storage() -> None:

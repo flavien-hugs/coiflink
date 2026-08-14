@@ -18,9 +18,9 @@ applicative requise, et **pas** dans l'image Docker de production.
 | Groupe | Endpoint(s) | Budget |
 | --- | --- | ---: |
 | `salon_search` | `GET /catalog/salons` (`q`/`city`/`commune`/pagination) | **< 2 s** |
-| `appointment_create` | fiche → disponibilités → `POST /salons/{id}/appointments` | **< 3 s** |
-| `dashboard` | agrégat des 5 lectures gérant (`daily-summary`, `revenue/summary`, `service-demand`, `active-clients`, `hairdresser-performance`) | **< 3 s** |
-| `api_general` | échantillon de lectures protégées (`/appointments/history`, `/me/receipts`, `/salons/{id}/appointments`, `/salons/{id}/payments`) | **< 3 s** |
+| `ticket_create` | fiche walk-in (borne) → `POST /salons/{id}/queue/tickets` | **< 3 s** |
+| `dashboard` | agrégat des 4 lectures gérant (`dashboard/kpis`, `revenue/summary`, `service-demand`, `hairdresser-performance`) | **< 3 s** |
+| `api_general` | échantillon de lectures protégées (`/me/receipts`, `/salons/{id}/queue/tickets`, `/salons/{id}/payments`) | **< 3 s** |
 
 Métrique de **décision** : **p95** serveur en **régime établi** (warm-up exclu) ; **p99**
 rapporté en **surveillance**. Un seuil « informatif » plus strict (80 % du budget) signale

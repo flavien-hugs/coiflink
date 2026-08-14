@@ -19,8 +19,6 @@ Couvre :
 - `RecordPayment` validation invalide : aucune écriture, aucun audit.
 - `RecordPayment` cohérence (#33) : montant ≠ prix → `PaymentAmountMismatch` avant écriture ;
   prestation inconnue/inactive → `PaymentReferenceNotFound` avant écriture.
-- `RecordPayment` via RDV : montant = somme `price_at_booking` ; RDV inconnu/hors-salon
-  → `PaymentReferenceNotFound` ; `service_id` hors RDV → `PaymentReferenceNotFound`.
 """
 
 from __future__ import annotations
@@ -33,27 +31,31 @@ import pytest
 
 from coiflink_api.application.cash_journal import AdjustPayment, ListCashJournal
 from coiflink_api.application.payments import PaymentCommand, RecordPayment
-from coiflink_api.domain.appointment import Appointment, BookedService
 from coiflink_api.domain.audit import ENTITY_TYPE_PAYMENT, AuditAction
 from coiflink_api.domain.cash_journal import CashJournalEntry
-from coiflink_api.domain.enums import AppointmentStatus, CashOperationType, PaymentStatus
+from coiflink_api.domain.enums import CashOperationType, PaymentStatus
 from coiflink_api.domain.errors import (
     InvalidAdjustment,
     InvalidPaymentAmount,
+    InvalidPhone,
+    MobileMoneyPhoneRequired,
+    MobileMoneyReferenceRequired,
     PaymentAmountMismatch,
     PaymentNotAdjustable,
     PaymentNotFound,
     PaymentReferenceNotFound,
     PaymentReferenceRequired,
+    QueueTicketAlreadyPaid,
 )
 from coiflink_api.domain.payment import Payment
+from coiflink_api.domain.queue_ticket import QueueTicket
 from coiflink_api.domain.service import Service
 
 from .conftest import (
-    FakeAppointmentRepository,
     FakeAuditLog,
     FakeCashJournalRepository,
     FakePaymentRepository,
+    FakeQueueTicketRepository,
     FakeServiceRepository,
 )
 
@@ -66,8 +68,7 @@ _OTHER_SALON_ID = uuid.UUID("22222222-0000-0000-0000-000000000002")
 _ACTOR_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _PAYMENT_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")
 _SERVICE_ID = uuid.UUID("cccccccc-0000-0000-0000-000000000001")
-_APPOINTMENT_ID = uuid.UUID("dddddddd-0000-0000-0000-000000000001")
-_CLIENT_ID = uuid.UUID("eeeeeeee-0000-0000-0000-000000000001")
+_QUEUE_TICKET_ID = uuid.UUID("dddddddd-0000-0000-0000-000000000001")
 _CREATED_AT = datetime.datetime(2026, 7, 28, 10, 0, 0, tzinfo=datetime.timezone.utc)
 
 
@@ -89,7 +90,6 @@ def _service_repo_for(price: decimal.Decimal) -> FakeServiceRepository:
         duration_minutes=30,
         category=None,
         is_active=True,
-        image_object_key=None,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )
@@ -110,10 +110,11 @@ def _make_payment(
         payment_method="CASH",
         status=status,
         recorded_by=_ACTOR_ID,
-        appointment_id=None,
         service_id=_SERVICE_ID,
+        queue_ticket_id=None,
         client_id=None,
         reference=None,
+        mobile_money_phone=None,
         created_at=_CREATED_AT,
     )
 
@@ -483,8 +484,8 @@ class TestRecordPaymentNominal:
             payment_repo,
             journal_repo,
             audit,
-            FakeAppointmentRepository(),
             _service_repo_for(amount),
+            FakeQueueTicketRepository(),
         ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
         return payment, payment_repo, journal_repo, audit
 
@@ -554,8 +555,8 @@ class TestRecordPaymentValidation:
                 payment_repo,
                 journal_repo,
                 audit,
-                FakeAppointmentRepository(),
                 FakeServiceRepository(),
+                FakeQueueTicketRepository(),
             ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
 
         assert len(payment_repo.created) == 0
@@ -563,7 +564,7 @@ class TestRecordPaymentValidation:
         assert len(audit.recorded) == 0
 
     def test_missing_reference_raises_no_writes(self) -> None:
-        """Un paiement sans prestation ni RDV est refusé avant toute écriture (§8.2)."""
+        """Un paiement sans prestation ni ticket est refusé avant toute écriture (§8.2)."""
         payment_repo = FakePaymentRepository()
         journal_repo = FakeCashJournalRepository()
         audit = FakeAuditLog()
@@ -577,13 +578,104 @@ class TestRecordPaymentValidation:
                 payment_repo,
                 journal_repo,
                 audit,
-                FakeAppointmentRepository(),
                 FakeServiceRepository(),
+                FakeQueueTicketRepository(),
             ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
 
         assert len(payment_repo.created) == 0
         assert len(journal_repo.appended) == 0
         assert len(audit.recorded) == 0
+
+
+class TestRecordPaymentMobileMoney:
+    """Mobile Money exige téléphone ET numéro de transaction (§8.2, migration 0019)."""
+
+    def _run(self, **overrides: object) -> tuple:
+        payment_repo = FakePaymentRepository()
+        journal_repo = FakeCashJournalRepository()
+        audit = FakeAuditLog()
+        fields = {
+            "amount": decimal.Decimal("5000.00"),
+            "payment_method": "MOBILE_MONEY_MANUAL",
+            "service_id": _SERVICE_ID,
+            "reference": "MM-TX-0001",
+            "mobile_money_phone": "0700000000",
+        }
+        fields.update(overrides)
+        cmd = PaymentCommand(**fields)  # type: ignore[arg-type]
+        payment = RecordPayment(
+            payment_repo,
+            journal_repo,
+            audit,
+            _service_repo_for(fields["amount"]),  # type: ignore[arg-type]
+            FakeQueueTicketRepository(),
+        ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
+        return payment, payment_repo, journal_repo, audit
+
+    def test_phone_and_reference_present_creates_payment(self) -> None:
+        payment, payment_repo, _, _ = self._run()
+        assert len(payment_repo.created) == 1
+        assert payment.mobile_money_phone == "+2250700000000"
+        assert payment.reference == "MM-TX-0001"
+
+    def test_missing_phone_raises_no_writes(self) -> None:
+        payment_repo = FakePaymentRepository()
+        journal_repo = FakeCashJournalRepository()
+        audit = FakeAuditLog()
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="MOBILE_MONEY_MANUAL",
+            service_id=_SERVICE_ID,
+            reference="MM-TX-0001",
+        )
+
+        with pytest.raises(MobileMoneyPhoneRequired):
+            RecordPayment(
+                payment_repo,
+                journal_repo,
+                audit,
+                _service_repo_for(decimal.Decimal("5000.00")),
+                FakeQueueTicketRepository(),
+            ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
+
+        assert len(payment_repo.created) == 0
+        assert len(journal_repo.appended) == 0
+        assert len(audit.recorded) == 0
+
+    def test_missing_reference_raises_no_writes(self) -> None:
+        payment_repo = FakePaymentRepository()
+        journal_repo = FakeCashJournalRepository()
+        audit = FakeAuditLog()
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="MOBILE_MONEY_MANUAL",
+            service_id=_SERVICE_ID,
+            mobile_money_phone="0700000000",
+        )
+
+        with pytest.raises(MobileMoneyReferenceRequired):
+            RecordPayment(
+                payment_repo,
+                journal_repo,
+                audit,
+                _service_repo_for(decimal.Decimal("5000.00")),
+                FakeQueueTicketRepository(),
+            ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
+
+        assert len(payment_repo.created) == 0
+        assert len(journal_repo.appended) == 0
+        assert len(audit.recorded) == 0
+
+    def test_malformed_phone_raises_invalid_phone(self) -> None:
+        with pytest.raises(InvalidPhone):
+            self._run(mobile_money_phone="abc")
+
+    def test_cash_payment_ignores_a_provided_phone(self) -> None:
+        """Un téléphone fourni hors Mobile Money est toujours ignoré (jamais persisté)."""
+        payment, _, _, _ = self._run(
+            payment_method="CASH", reference=None, mobile_money_phone="0700000000"
+        )
+        assert payment.mobile_money_phone is None
 
 
 # ---------------------------------------------------------------------------
@@ -603,33 +695,10 @@ def _make_inactive_service_repo() -> FakeServiceRepository:
         duration_minutes=30,
         category=None,
         is_active=False,
-        image_object_key=None,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )
     return repo
-
-
-def _make_appointment(
-    *,
-    appointment_id: uuid.UUID = _APPOINTMENT_ID,
-    salon_id: uuid.UUID = _SALON_ID,
-    booked_amount: decimal.Decimal = decimal.Decimal("5000.00"),
-    service_id: uuid.UUID = _SERVICE_ID,
-) -> Appointment:
-    return Appointment(
-        id=appointment_id,
-        salon_id=salon_id,
-        client_id=_CLIENT_ID,
-        hairdresser_id=None,
-        date=datetime.date(2026, 7, 28),
-        start_time=datetime.time(10, 0),
-        end_time=datetime.time(10, 30),
-        status=AppointmentStatus.CONFIRMED.value,
-        client_note=None,
-        created_at=_CREATED_AT,
-        services=(BookedService(service_id=service_id, price_at_booking=booked_amount),),
-    )
 
 
 class TestRecordPaymentCoherence:
@@ -651,8 +720,8 @@ class TestRecordPaymentCoherence:
             payment_repo,
             journal_repo,
             audit,
-            FakeAppointmentRepository(),
             service_repo,
+            FakeQueueTicketRepository(),
         ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
 
     def test_amount_mismatch_raises(self) -> None:
@@ -737,134 +806,150 @@ class TestRecordPaymentCoherence:
 
 
 # ---------------------------------------------------------------------------
-# RecordPayment — chemin via rendez-vous (appointment_id, §5.3/§8.2)
+# RecordPayment — garde anti double-encaissement d'un ticket (§8.2)
 # ---------------------------------------------------------------------------
 
 
-class TestRecordPaymentAppointmentPath:
-    """Paiement lié à un RDV : montant attendu = somme des `price_at_booking`.
+def _make_ticket_payment(
+    *,
+    queue_ticket_id: uuid.UUID = _QUEUE_TICKET_ID,
+    salon_id: uuid.UUID = _SALON_ID,
+    status: str = PaymentStatus.VALIDATED.value,
+) -> Payment:
+    """Un paiement déjà rattaché à `queue_ticket_id` (aucune prestation directe)."""
 
-    Le chemin `appointment_id` est prioritaire sur `service_id` seul (§5.3) :
-    le montant attendu est la somme des lignes du RDV, pas le prix catalogue.
+    return Payment(
+        id=uuid.uuid4(),
+        salon_id=salon_id,
+        amount=decimal.Decimal("5000.00"),
+        currency="XOF",
+        payment_method="CASH",
+        status=status,
+        recorded_by=_ACTOR_ID,
+        service_id=None,
+        queue_ticket_id=queue_ticket_id,
+        client_id=None,
+        reference=None,
+        mobile_money_phone=None,
+        created_at=_CREATED_AT,
+    )
+
+
+def _make_queue_ticket(
+    *,
+    ticket_id: uuid.UUID = _QUEUE_TICKET_ID,
+    salon_id: uuid.UUID = _SALON_ID,
+) -> QueueTicket:
+    """Ticket `done` portant `_SERVICE_ID` — résout un montant attendu de 5000.00."""
+
+    return QueueTicket(
+        id=ticket_id,
+        salon_id=salon_id,
+        ticket_number=1,
+        issued_date=datetime.date(2026, 7, 28),
+        customer_profile_id=None,
+        service_ids=(_SERVICE_ID,),
+        status="done",
+        hairdresser_id=None,
+        estimated_wait_minutes=10,
+        created_at=_CREATED_AT,
+        called_at=None,
+        started_at=_CREATED_AT,
+        completed_at=_CREATED_AT,
+        cancellation_reason=None,
+    )
+
+
+class TestRecordPaymentAlreadyPaidTicket:
+    """Second encaissement d'un ticket déjà couvert → `QueueTicketAlreadyPaid` (§8.2).
+
+    Miroir de `TestRecordPaymentCoherence` : la garde est vérifiée **avant** toute
+    écriture (ni `payments`, ni `cash_journal`, ni `audit_logs`).
     """
 
-    def _run(
+    def _record(
         self,
-        *,
+        payment_repo: FakePaymentRepository,
+        journal_repo: FakeCashJournalRepository,
+        audit: FakeAuditLog,
+        service_repo: FakeServiceRepository,
+        tickets_repo: FakeQueueTicketRepository,
         cmd: PaymentCommand,
-        appointment_repo: FakeAppointmentRepository,
-    ) -> tuple:
-        payment_repo = FakePaymentRepository()
-        journal_repo = FakeCashJournalRepository()
-        audit = FakeAuditLog()
-        payment = RecordPayment(
+    ) -> None:
+        RecordPayment(
             payment_repo,
             journal_repo,
             audit,
-            appointment_repo,
-            FakeServiceRepository(),
+            service_repo,
+            tickets_repo,
         ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
-        return payment, payment_repo, journal_repo, audit
 
-    def test_appointment_nominal_payment_validated(self) -> None:
-        appt = _make_appointment(booked_amount=decimal.Decimal("5000.00"))
-        appt_repo = FakeAppointmentRepository(appointments=[appt])
+    def test_second_payment_on_paid_ticket_raises(self) -> None:
+        payment_repo = FakePaymentRepository(payments=[_make_ticket_payment()])
+        tickets_repo = FakeQueueTicketRepository()
+        tickets_repo.seed(_make_queue_ticket())
         cmd = PaymentCommand(
             amount=decimal.Decimal("5000.00"),
             payment_method="CASH",
-            appointment_id=_APPOINTMENT_ID,
+            queue_ticket_id=_QUEUE_TICKET_ID,
         )
-        payment, _, _, _ = self._run(cmd=cmd, appointment_repo=appt_repo)
-        assert payment.status == PaymentStatus.VALIDATED.value
+        with pytest.raises(QueueTicketAlreadyPaid):
+            self._record(
+                payment_repo,
+                FakeCashJournalRepository(),
+                FakeAuditLog(),
+                _service_repo_for(decimal.Decimal("5000.00")),
+                tickets_repo,
+                cmd,
+            )
 
-    def test_appointment_nominal_journal_entry(self) -> None:
-        appt = _make_appointment(booked_amount=decimal.Decimal("5000.00"))
-        appt_repo = FakeAppointmentRepository(appointments=[appt])
-        cmd = PaymentCommand(
-            amount=decimal.Decimal("5000.00"),
-            payment_method="CASH",
-            appointment_id=_APPOINTMENT_ID,
-        )
-        _, _, journal_repo, _ = self._run(cmd=cmd, appointment_repo=appt_repo)
-        assert len(journal_repo.appended) == 1
-        assert journal_repo.appended[0].operation_type == CashOperationType.PAYMENT.value
-
-    def test_appointment_nominal_audit_recorded(self) -> None:
-        appt = _make_appointment(booked_amount=decimal.Decimal("5000.00"))
-        appt_repo = FakeAppointmentRepository(appointments=[appt])
-        cmd = PaymentCommand(
-            amount=decimal.Decimal("5000.00"),
-            payment_method="CASH",
-            appointment_id=_APPOINTMENT_ID,
-        )
-        _, _, _, audit = self._run(cmd=cmd, appointment_repo=appt_repo)
-        assert len(audit.recorded) == 1
-        assert audit.recorded[0].action == AuditAction.PAYMENT_RECORDED.value
-
-    def test_unknown_appointment_raises_reference_not_found(self) -> None:
-        """RDV inconnu → PaymentReferenceNotFound, indiscernable de hors-salon (§11.2)."""
-        cmd = PaymentCommand(
-            amount=decimal.Decimal("5000.00"),
-            payment_method="CASH",
-            appointment_id=uuid.uuid4(),
-        )
-        with pytest.raises(PaymentReferenceNotFound):
-            self._run(cmd=cmd, appointment_repo=FakeAppointmentRepository())
-
-    def test_unknown_appointment_no_writes(self) -> None:
-        payment_repo = FakePaymentRepository()
+    def test_second_payment_on_paid_ticket_no_writes(self) -> None:
+        payment_repo = FakePaymentRepository(payments=[_make_ticket_payment()])
+        tickets_repo = FakeQueueTicketRepository()
+        tickets_repo.seed(_make_queue_ticket())
         journal_repo = FakeCashJournalRepository()
         audit = FakeAuditLog()
         cmd = PaymentCommand(
             amount=decimal.Decimal("5000.00"),
             payment_method="CASH",
-            appointment_id=uuid.uuid4(),
+            queue_ticket_id=_QUEUE_TICKET_ID,
         )
-        with pytest.raises(PaymentReferenceNotFound):
-            RecordPayment(
-                payment_repo, journal_repo, audit,
-                FakeAppointmentRepository(), FakeServiceRepository(),
-            ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
+        with pytest.raises(QueueTicketAlreadyPaid):
+            self._record(
+                payment_repo,
+                journal_repo,
+                audit,
+                _service_repo_for(decimal.Decimal("5000.00")),
+                tickets_repo,
+                cmd,
+            )
 
         assert len(payment_repo.created) == 0
         assert len(journal_repo.appended) == 0
         assert len(audit.recorded) == 0
 
-    def test_cross_salon_appointment_raises_reference_not_found(self) -> None:
-        """RDV d'un autre salon → PaymentReferenceNotFound (isolation §11.2)."""
-        appt = _make_appointment(salon_id=_OTHER_SALON_ID, booked_amount=decimal.Decimal("5000.00"))
-        appt_repo = FakeAppointmentRepository(appointments=[appt])
+    def test_first_payment_on_fresh_ticket_still_succeeds(self) -> None:
+        """Pas de faux positif : un ticket sans paiement existant encaisse normalement."""
+        payment_repo = FakePaymentRepository()
+        tickets_repo = FakeQueueTicketRepository()
+        tickets_repo.seed(_make_queue_ticket())
+        journal_repo = FakeCashJournalRepository()
+        audit = FakeAuditLog()
         cmd = PaymentCommand(
             amount=decimal.Decimal("5000.00"),
             payment_method="CASH",
-            appointment_id=_APPOINTMENT_ID,
+            queue_ticket_id=_QUEUE_TICKET_ID,
         )
-        with pytest.raises(PaymentReferenceNotFound):
-            self._run(cmd=cmd, appointment_repo=appt_repo)
 
-    def test_appointment_and_service_in_appointment_passes(self) -> None:
-        """Les deux fournis : prestation présente dans le RDV → valide."""
-        appt = _make_appointment(booked_amount=decimal.Decimal("5000.00"), service_id=_SERVICE_ID)
-        appt_repo = FakeAppointmentRepository(appointments=[appt])
-        cmd = PaymentCommand(
-            amount=decimal.Decimal("5000.00"),
-            payment_method="CASH",
-            appointment_id=_APPOINTMENT_ID,
-            service_id=_SERVICE_ID,
-        )
-        payment, _, _, _ = self._run(cmd=cmd, appointment_repo=appt_repo)
+        payment = RecordPayment(
+            payment_repo,
+            journal_repo,
+            audit,
+            _service_repo_for(decimal.Decimal("5000.00")),
+            tickets_repo,
+        ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
+
         assert payment.status == PaymentStatus.VALIDATED.value
-
-    def test_appointment_and_service_not_in_appointment_raises(self) -> None:
-        """Les deux fournis : prestation absente du RDV → PaymentReferenceNotFound."""
-        other_service_id = uuid.UUID("ffffffff-0000-0000-0000-000000000001")
-        appt = _make_appointment(booked_amount=decimal.Decimal("5000.00"), service_id=_SERVICE_ID)
-        appt_repo = FakeAppointmentRepository(appointments=[appt])
-        cmd = PaymentCommand(
-            amount=decimal.Decimal("5000.00"),
-            payment_method="CASH",
-            appointment_id=_APPOINTMENT_ID,
-            service_id=other_service_id,
-        )
-        with pytest.raises(PaymentReferenceNotFound):
-            self._run(cmd=cmd, appointment_repo=appt_repo)
+        assert len(payment_repo.created) == 1
+        assert len(journal_repo.appended) == 1
+        assert len(audit.recorded) == 1

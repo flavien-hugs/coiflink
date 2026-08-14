@@ -50,13 +50,16 @@ class Permission(_StrEnum):
     SERVICE_MANAGE = "SERVICE_MANAGE"
     SERVICE_READ = "SERVICE_READ"
 
-    # Rendez-vous.
-    APPOINTMENT_BOOK = "APPOINTMENT_BOOK"
-    APPOINTMENT_READ_OWN = "APPOINTMENT_READ_OWN"
-    APPOINTMENT_READ_ASSIGNED = "APPOINTMENT_READ_ASSIGNED"
-    APPOINTMENT_READ_SALON = "APPOINTMENT_READ_SALON"
-    APPOINTMENT_MANAGE = "APPOINTMENT_MANAGE"
-    APPOINTMENT_UPDATE_STATUS = "APPOINTMENT_UPDATE_STATUS"
+    # File d'attente walk-in (US-8.3, #157, pivot walk-in exclusif #148) —
+    # `QUEUE_TICKET_UPDATE_STATUS` : démarrer (assigner une coiffeuse + passer
+    # `in_progress`) ou clôturer (`done`) un ticket du salon. `QUEUE_TICKET_READ_SALON` :
+    # lister les tickets du salon pour un jour (file gérant, future page « Mes
+    # tickets » coiffeur). Toutes deux attribuées au `MANAGER` (exploitation de sa
+    # file d'attente) et au `HAIRDRESSER` (ses propres prises en charge) — seul
+    # modèle de rendez-vous du produit depuis le pivot walk-in exclusif (#148), qui
+    # a fait disparaître les anciennes permissions `APPOINTMENT_*`.
+    QUEUE_TICKET_UPDATE_STATUS = "QUEUE_TICKET_UPDATE_STATUS"
+    QUEUE_TICKET_READ_SALON = "QUEUE_TICKET_READ_SALON"
 
     # Employés.
     EMPLOYEE_MANAGE = "EMPLOYEE_MANAGE"
@@ -64,20 +67,20 @@ class Permission(_StrEnum):
     # Fiches clients.
     CUSTOMER_MANAGE = "CUSTOMER_MANAGE"
 
-    # Borne kiosque (US-8.1, #155) — permissions **minimales et dédiées** du rôle
-    # `KIOSK`, distinctes de `CUSTOMER_MANAGE`/`APPOINTMENT_BOOK` (moindre privilège
-    # d'un terminal public partagé, ADR-0041) :
-    # - `CUSTOMER_LOOKUP_KIOSK` : rechercher une fiche `CustomerProfile` par
+    # Borne terminal (US-8.1, #155) — permissions **minimales et dédiées** du rôle
+    # `TERMINAL`, distinctes de `CUSTOMER_MANAGE` (moindre privilège d'un terminal
+    # public partagé, ADR-0041) :
+    # - `CUSTOMER_LOOKUP_TERMINAL` : rechercher une fiche `CustomerProfile` par
     #   téléphone, restreinte au salon de la borne, réponse minimale (consommée par #156) ;
     # - `CUSTOMER_CREATE_WALKIN` : créer une fiche walk-in (nom/prénom/téléphone)
     #   **sans** compte ni mot de passe (consommée par #156) ;
     # - `QUEUE_TICKET_CREATE` : créer un ticket de passage walk-in (consommée par #157) ;
-    # - `KIOSK_PROVISION` : provisionner/lister/révoquer les bornes de **son** salon
+    # - `TERMINAL_PROVISION` : provisionner/lister/révoquer les bornes de **son** salon
     #   (consommée par #155, **MANAGER** uniquement).
-    CUSTOMER_LOOKUP_KIOSK = "CUSTOMER_LOOKUP_KIOSK"
+    CUSTOMER_LOOKUP_TERMINAL = "CUSTOMER_LOOKUP_TERMINAL"
     CUSTOMER_CREATE_WALKIN = "CUSTOMER_CREATE_WALKIN"
     QUEUE_TICKET_CREATE = "QUEUE_TICKET_CREATE"
-    KIOSK_PROVISION = "KIOSK_PROVISION"
+    TERMINAL_PROVISION = "TERMINAL_PROVISION"
 
     # Caisse.
     PAYMENT_RECORD = "PAYMENT_RECORD"
@@ -89,6 +92,13 @@ class Permission(_StrEnum):
     STATS_READ_SALON = "STATS_READ_SALON"
     STATS_READ_PLATFORM = "STATS_READ_PLATFORM"
 
+    # Journal d'audit (§11.4) — page gérante « Journal d'audit » (réorganisation du
+    # tableau de bord). Distinct de `STATS_READ_SALON` (chiffres d'activité) et de
+    # `CASH_JOURNAL_READ` (données financières) : c'est un outil de **preuve**
+    # (qui a fait quoi), pas un indicateur de pilotage — MANAGER uniquement, comme
+    # tout autre droit de lecture salon-scopé de ce tableau.
+    AUDIT_LOG_READ = "AUDIT_LOG_READ"
+
     # Comptes utilisateurs (supervision plateforme).
     USER_MANAGE = "USER_MANAGE"
 
@@ -97,31 +107,28 @@ class Permission(_StrEnum):
 # par ce dictionnaire (et par les tests de matrice qui le figent), jamais par un
 # contrôle ad hoc dans une route.
 ROLE_PERMISSIONS: Mapping[Role, frozenset[Permission]] = {
-    # Client : consulte les salons et prestations, réserve/modifie/annule **ses**
-    # rendez-vous, consulte **son** historique et **ses** reçus de paiement (#38).
-    # Aucun droit de gestion.
+    # Client : consulte les salons et prestations, consulte **son** historique et
+    # **ses** reçus de paiement (#38). Aucun droit de gestion.
     Role.CLIENT: frozenset(
         {
             Permission.SALON_READ_ANY,
             Permission.SERVICE_READ,
-            Permission.APPOINTMENT_BOOK,
-            Permission.APPOINTMENT_READ_OWN,
             Permission.PAYMENT_READ_OWN,
         }
     ),
-    # Coiffeur : voit **son** planning et les RDV qui lui sont assignés, met à
-    # jour leur statut (réalisé, absent, retard). Ni caisse ni employés.
+    # Coiffeur : voit **son** planning. Démarre/termine ses propres tickets de la
+    # file d'attente walk-in (#148, #157). Ni caisse ni employés.
     Role.HAIRDRESSER: frozenset(
         {
             Permission.SALON_READ_OWN,
             Permission.SERVICE_READ,
-            Permission.APPOINTMENT_READ_ASSIGNED,
-            Permission.APPOINTMENT_UPDATE_STATUS,
+            Permission.QUEUE_TICKET_UPDATE_STATUS,
+            Permission.QUEUE_TICKET_READ_SALON,
         }
     ),
     # Gérant : gestion complète de **son** salon (la portée est appliquée à part,
-    # cf. `domain/access.py`) — salon, prestations, employés, RDV, fiches clients,
-    # caisse, statistiques du salon.
+    # cf. `domain/access.py`) — salon, prestations, employés, file d'attente
+    # walk-in, fiches clients, caisse, statistiques du salon.
     Role.MANAGER: frozenset(
         {
             Permission.SALON_CREATE,
@@ -129,27 +136,28 @@ ROLE_PERMISSIONS: Mapping[Role, frozenset[Permission]] = {
             Permission.SALON_READ_OWN,
             Permission.SERVICE_MANAGE,
             Permission.SERVICE_READ,
-            Permission.APPOINTMENT_MANAGE,
-            Permission.APPOINTMENT_READ_SALON,
-            Permission.APPOINTMENT_UPDATE_STATUS,
+            Permission.QUEUE_TICKET_UPDATE_STATUS,
+            Permission.QUEUE_TICKET_READ_SALON,
             Permission.EMPLOYEE_MANAGE,
             Permission.CUSTOMER_MANAGE,
             Permission.PAYMENT_RECORD,
             Permission.CASH_JOURNAL_READ,
             Permission.STATS_READ_SALON,
-            # Provisioning des bornes kiosque de son salon (US-8.1, #155) — seul
+            # Provisioning des bornes terminal de son salon (US-8.1, #155) — seul
             # ajout au gérant : aucun retrait, aucun élargissement d'un droit existant.
-            Permission.KIOSK_PROVISION,
+            Permission.TERMINAL_PROVISION,
+            # Journal d'audit de son salon — page « Journal d'audit ».
+            Permission.AUDIT_LOG_READ,
         }
     ),
-    # Borne kiosque (US-8.1, #155) : compte de service d'un **terminal public
+    # Borne terminal (US-8.1, #155) : compte de service d'un **terminal public
     # partagé**, scopé à un salon. Détient **exactement** ces trois permissions
     # dédiées — ni `CUSTOMER_MANAGE` (fiches complètes, notes privées, caisse), ni
-    # `APPOINTMENT_BOOK` (réservation au nom d'un compte), ni aucune lecture gérant.
-    # C'est le cœur du critère d'acceptation négatif de l'issue (ADR-0041).
-    Role.KIOSK: frozenset(
+    # aucune lecture gérant. C'est le cœur du critère d'acceptation négatif de
+    # l'issue (ADR-0041).
+    Role.TERMINAL: frozenset(
         {
-            Permission.CUSTOMER_LOOKUP_KIOSK,
+            Permission.CUSTOMER_LOOKUP_TERMINAL,
             Permission.CUSTOMER_CREATE_WALKIN,
             Permission.QUEUE_TICKET_CREATE,
         }

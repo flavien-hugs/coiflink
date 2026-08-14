@@ -3,8 +3,7 @@
 Tranche applicative hexagonale calquée sur #28 : ces cas d'usage ne dépendent que
 de **ports** (`CampaignRepository`, `CustomerRepository`, `AuditLog`) — aucune
 dépendance FastAPI/SQLAlchemy. Ils orchestrent le domaine (`domain/campaign.py`,
-`domain/notification.py`, `domain/audit.py`) et laissent l'adapter entrant traduire
-les erreurs en HTTP.
+`domain/audit.py`) et laissent l'adapter entrant traduire les erreurs en HTTP.
 
 Invariants structurants (miroir de `CreateCustomer`) :
 
@@ -39,16 +38,14 @@ from coiflink_api.application.ports.customer_repository import CustomerRepositor
 from coiflink_api.domain.audit import ENTITY_TYPE_CAMPAIGN, AuditAction, AuditEntry
 from coiflink_api.domain.campaign import (
     Campaign,
+    ChannelAvailability,
     build_campaign,
     normalize_campaign_segment,
     normalize_campaign_type,
+    resolve_notification_channel,
     segment_to_customer_filter,
     validate_campaign_message,
     validate_campaign_title,
-)
-from coiflink_api.domain.notification import (
-    ChannelAvailability,
-    resolve_notification_channel,
 )
 
 
@@ -102,8 +99,7 @@ class CreateCampaign:
         title = validate_campaign_title(command.title)
         message = validate_campaign_message(command.message)
 
-        # 2. Canal : SMS au MVP (population walk-in #28, sans jeton push) — un seul
-        #    point de résolution de canal, réutilisé des notifications de RDV.
+        # 2. Canal : SMS au MVP (population walk-in #28, sans jeton push).
         channel = resolve_notification_channel(
             ChannelAvailability(has_push_token=False, has_phone=True)
         )

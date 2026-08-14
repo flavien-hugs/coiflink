@@ -9,9 +9,9 @@ l'hexagonal (ADR-0008), l'application ne connaît ni la `Session` ni le modèle 
 **Port dédié (et non `PaymentRepository`/`CashJournalRepository`/… salon-scopés).**
 Les méthodes de ces ports sont **inconditionnellement** salon-scopées (isolation
 §11.2) ; les compteurs/sommes de #44 portent sur **toutes** les entités de la
-plateforme (tous salons, tous clients, tous RDV) — ils ne leur appartiennent pas. Un
-port séparé garde cette lecture inter-entités explicite et auditable (raison
-identique au port dédié de #37).
+plateforme (tous salons, tous clients, tous tickets walk-in) — ils ne leur
+appartiennent pas. Un port séparé garde cette lecture inter-entités explicite et
+auditable (raison identique au port dédié de #37).
 
 **Instantané unique, pas de pagination.** La lecture renvoie une poignée de scalaires
 globaux (aucune ligne matérialisée) : pas de `limit`/`offset`, pas de constante
@@ -47,10 +47,10 @@ class PlatformKpiRepository(Protocol):
           status = 'ACTIVE'` ;
         - `clients_total = COUNT(*)` sur `users` `WHERE role = 'CLIENT'` (exclut
           `HAIRDRESSER`/`MANAGER`/`ADMIN`) ;
-        - `appointments_total = COUNT(*)` sur `appointments` (**tous statuts**,
-          volume créé) ; `appointments_this_month = COUNT(*) WHERE appointment_date
-          BETWEEN month_from AND month_to` (comparaison **date** — `appointment_date`
-          est déjà un jour civil `Africa/Abidjan`, **sans** conversion de fuseau) ;
+        - `tickets_total = COUNT(*)` sur `queue_tickets` (**tous statuts**, volume
+          émis) ; `tickets_this_month = COUNT(*) WHERE issued_date BETWEEN month_from
+          AND month_to` (comparaison **date** — `issued_date` est déjà un jour civil
+          `Africa/Abidjan`, **sans** conversion de fuseau) ;
         - `revenue_total = SUM(amount)` (net signé) sur **toute** la table
           `cash_journal` ; `revenue_this_month = SUM(amount) WHERE created_at BETWEEN
           revenue_from_utc AND revenue_to_utc` (bornes du mois civil **converties en

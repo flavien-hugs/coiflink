@@ -1,14 +1,17 @@
-"""Tests API — `GET /salons/{id}/customers/{id}/appointments` (US-4.2, #29).
+"""Tests API — `GET /salons/{id}/customers/{id}/visits` (US-4.2, #29).
 
 Utilise FastAPI `TestClient` avec override de dépendances :
 - `get_customer_repository` → `FakeCustomerRepository` pré-chargé ;
 - `get_user_repository` → `FakeAuthUserRepository` ;
 - `get_access_policy` → `AccessPolicy(FakeSalonScopeRepository(...))`.
 
+Rebranché sur `queue_tickets` (pivot walk-in exclusif, #148) : une visite est un
+ticket `done`, l'identité exposée est `queue_ticket_id` (plus d'`appointment_id`).
+
 Couvre :
 - 200 fiche walk-in → `items: []`, `total_visits: 0`, `last_visit_at: null` ;
 - 200 avec visites : corps complet (prestations, montants, résumé) ;
-- `user_id`/`client_id` absents de la réponse (anti-oracle ADR-0026) ;
+- `customer_profile_id`/`client_id` absents de la réponse (§11.1/§11.3) ;
 - `currency` == "XOF" (devise §9.6) ;
 - 401 sans jeton ; 403 CLIENT/HAIRDRESSER/ADMIN/hors-portée (message générique) ;
 - 404 fiche inconnue dans le salon (message **neutre**) ;
@@ -35,7 +38,7 @@ from coiflink_api.adapters.outbound.security.jwt_token_service import JwtTokenSe
 from coiflink_api.application.authorization import AccessPolicy
 from coiflink_api.application.customers import CreateCustomer, CustomerCommand
 from coiflink_api.domain.credentials import UserCredentials
-from coiflink_api.domain.enums import AppointmentStatus, Role, UserStatus
+from coiflink_api.domain.enums import Role, UserStatus
 from coiflink_api.domain.visit import CustomerVisit, VisitService
 from coiflink_api.main import app
 
@@ -64,7 +67,7 @@ _OTHER_SALON_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
 _MANAGER_TOKEN = make_access_token(_MANAGER_ID, Role.MANAGER.value)
 
 _SERVICE_ID = uuid.UUID("dddddddd-0000-0000-0000-000000000001")
-_APT_ID = uuid.UUID("eeeeeeee-0000-0000-0000-000000000001")
+_TICKET_ID = uuid.UUID("eeeeeeee-0000-0000-0000-000000000001")
 
 
 # ---------------------------------------------------------------------------
@@ -82,21 +85,20 @@ def _creds(user_id: uuid.UUID, role: str) -> UserCredentials:
 
 
 def _history_url(salon_id: uuid.UUID, customer_id: uuid.UUID) -> str:
-    return f"/salons/{salon_id}/customers/{customer_id}/appointments"
+    return f"/salons/{salon_id}/customers/{customer_id}/visits"
 
 
 def _make_completed_visit() -> CustomerVisit:
     svc = VisitService(
         service_id=_SERVICE_ID,
         name="Coupe homme",
-        price_at_booking=decimal.Decimal("5000.00"),
+        price=decimal.Decimal("5000.00"),
     )
     return CustomerVisit(
-        appointment_id=_APT_ID,
-        date=datetime.date(2026, 7, 20),
-        start_time=datetime.time(9, 0, 0),
-        end_time=datetime.time(10, 0, 0),
-        status=AppointmentStatus.COMPLETED.value,
+        queue_ticket_id=_TICKET_ID,
+        issued_date=datetime.date(2026, 7, 20),
+        completed_at=datetime.datetime(2026, 7, 20, 9, 0, 0),
+        status="done",
         services=(svc,),
         total_amount=decimal.Decimal("5000.00"),
     )
@@ -254,7 +256,7 @@ class TestHistoryWithVisits:
         )
         assert len(r.json()["items"]) == 1
 
-    def test_visit_appointment_id_in_response(
+    def test_visit_queue_ticket_id_in_response(
         self, manager_client: TestClient, customer_repo: FakeCustomerRepository
     ) -> None:
         customer = _create_customer(customer_repo)
@@ -263,7 +265,7 @@ class TestHistoryWithVisits:
             _history_url(_SALON_ID, customer.id),
             headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
         )
-        assert r.json()["items"][0]["appointment_id"] == str(_APT_ID)
+        assert r.json()["items"][0]["queue_ticket_id"] == str(_TICKET_ID)
 
     def test_visit_total_amount_correct(
         self, manager_client: TestClient, customer_repo: FakeCustomerRepository
@@ -289,7 +291,7 @@ class TestHistoryWithVisits:
         services = r.json()["items"][0]["services"]
         assert len(services) == 1
         assert services[0]["name"] == "Coupe homme"
-        assert decimal.Decimal(services[0]["price_at_booking"]) == decimal.Decimal("5000.00")
+        assert decimal.Decimal(services[0]["price"]) == decimal.Decimal("5000.00")
 
     def test_summary_total_visits_correct(
         self, manager_client: TestClient, customer_repo: FakeCustomerRepository
@@ -324,7 +326,7 @@ class TestHistoryWithVisits:
         )
         assert r.json()["customer_id"] == str(customer.id)
 
-    def test_status_is_completed_in_visit(
+    def test_status_is_done_in_visit(
         self, manager_client: TestClient, customer_repo: FakeCustomerRepository
     ) -> None:
         customer = _create_customer(customer_repo)
@@ -333,7 +335,7 @@ class TestHistoryWithVisits:
             _history_url(_SALON_ID, customer.id),
             headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
         )
-        assert r.json()["items"][0]["status"] == "COMPLETED"
+        assert r.json()["items"][0]["status"] == "done"
 
 
 # ---------------------------------------------------------------------------
@@ -538,11 +540,11 @@ class TestHistoryNotFound:
 
 
 class TestHistoryRouteNotPublic:
-    def test_appointments_history_path_not_in_public_routes(self) -> None:
+    def test_visits_history_path_not_in_public_routes(self) -> None:
         """Invariant deny-by-default (ADR-0015) : l'historique est toujours protégé."""
         for path in PUBLIC_ROUTE_PATHS:
-            assert "appointments" not in path.lower() or "customers" not in path.lower()
+            assert "visits" not in path.lower() or "customers" not in path.lower()
 
-    def test_no_customer_appointments_path_in_public_routes(self) -> None:
+    def test_no_customer_visits_path_in_public_routes(self) -> None:
         combined = " ".join(PUBLIC_ROUTE_PATHS).lower()
-        assert "customers" not in combined or "appointments" not in combined
+        assert "customers" not in combined or "visits" not in combined

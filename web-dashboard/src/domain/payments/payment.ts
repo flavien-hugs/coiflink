@@ -3,16 +3,22 @@
 // backend (`coiflink_api/domain/payment.py`, US-5.1 #33) : montant
 // **obligatoire** `>= 0` et borné (`NUMERIC(12,2)`, au plus 2 décimales), mode
 // de paiement **fermé** (`CASH | MOBILE_MONEY_MANUAL | CARD_MANUAL | OTHER`),
-// référence optionnelle bornée ; un paiement doit être lié à une **prestation
-// OU un rendez-vous** (§8.2). Le backend reste l'autorité : cette validation
-// guide l'UI et pré-remplit le montant attendu, mais c'est lui qui **vérifie la
-// cohérence du montant** (§5.3/§8.2) et rejette tout écart.
+// référence optionnelle bornée — **sauf** pour `MOBILE_MONEY_MANUAL`, où elle
+// devient **obligatoire** (numéro de transaction) au même titre qu'un
+// **téléphone** dédié (migration backend 0019) ; un paiement doit être lié à
+// une **prestation OU un ticket de file d'attente** (§8.2). Le backend reste
+// l'autorité : cette validation guide l'UI et pré-remplit le montant attendu,
+// mais c'est lui qui **vérifie la cohérence du montant** (§5.3/§8.2) et la
+// forme E.164 du téléphone, et rejette tout écart.
 //
 // `amount` est porté en **chaîne décimale** (parité `NUMERIC(12,2)`) pour ne pas
 // perdre de précision via un flottant JavaScript. Aucun secret ici ; aucune PII
 // n'est journalisée.
 
 export const REFERENCE_MAX_LENGTH = 255;
+// Aligné sur `payments.mobile_money_phone` (`String(32)`, migration 0019) —
+// même borne que les autres champs téléphone du domaine (`customer.ts`).
+export const MOBILE_MONEY_PHONE_MAX_LENGTH = 32;
 // Aligné sur la colonne `NUMERIC(12,2)` : au plus 9999999999.99, 2 décimales.
 export const AMOUNT_MAX = 9999999999.99;
 // Devise unique du MVP (mono-devise XOF/FCFA — PRD §9.6).
@@ -50,10 +56,13 @@ export interface Payment {
   paymentMethod: string;
   status: string;
   recordedBy: string;
-  appointmentId: string | null;
+  queueTicketId: string | null;
   serviceId: string | null;
   clientId: string | null;
   reference: string | null;
+  // Téléphone utilisé pour la transaction Mobile Money — toujours `null` pour
+  // les autres modes (migration backend 0019).
+  mobileMoneyPhone: string | null;
   createdAt: string;
 }
 
@@ -63,27 +72,32 @@ export interface Payment {
 export interface PaymentDraft {
   amount: string;
   paymentMethod: PaymentMethod;
-  appointmentId: string | null;
+  queueTicketId: string | null;
   serviceId: string | null;
   clientId: string | null;
   reference: string | null;
+  mobileMoneyPhone: string | null;
 }
 
 // Saisie brute (formulaire) avant normalisation/validation.
 export interface RawPaymentInput {
   amount: string;
   paymentMethod: string;
-  appointmentId?: string | null;
+  queueTicketId?: string | null;
   serviceId?: string | null;
   clientId?: string | null;
   reference?: string | null;
+  mobileMoneyPhone?: string | null;
 }
 
 export type PaymentValidationReason =
   | "invalid-amount"
   | "invalid-method"
   | "invalid-reference"
-  | "missing-reference";
+  | "missing-reference"
+  | "missing-mobile-money-phone"
+  | "invalid-mobile-money-phone"
+  | "missing-mobile-money-reference";
 
 export type PaymentValidationResult =
   | { ok: true; value: PaymentDraft }
@@ -92,6 +106,15 @@ export type PaymentValidationResult =
 // Un montant décimal : entier optionnel + au plus 2 décimales (pas de signe, pas
 // de notation exponentielle) — reflet de la précision `NUMERIC(12,2)`.
 const AMOUNT_PATTERN = /^\d+(\.\d{1,2})?$/;
+
+// Chiffres, espaces et séparateurs de présentation, avec un `+` initial
+// optionnel — même garde-fou « manifestement inexploitable » que
+// `customer.ts` ; la forme canonique E.164 reste produite par le backend.
+// L'anticipation `(?=.*\d)` exige **au moins un chiffre** : sans elle, une
+// saisie composée uniquement de séparateurs (« ---- », « () ») passerait ce
+// contrôle pour être rejetée seulement côté serveur, avec un message générique
+// (aucun cas neutre du backend ne s'y prête dans `classify422`).
+const MOBILE_MONEY_PHONE_PATTERN = /^\+?(?=.*\d)[\d\s.\-()]+$/;
 
 function normalizeAmount(raw: string): string | null {
   const cleaned = raw.trim();
@@ -102,9 +125,12 @@ function normalizeAmount(raw: string): string | null {
 }
 
 // Valide et normalise une saisie de paiement (parité `domain/payment.py`). Ordre
-// stable (montant → mode → référence → présence de la référence) pour un motif
-// d'erreur déterministe. Référence vide repliée sur `null`. Un paiement doit être
-// lié à une prestation **ou** un rendez-vous (§8.2).
+// stable (montant → mode → référence → téléphone/référence Mobile Money →
+// présence de la référence prestation/ticket) pour un motif d'erreur
+// déterministe. Référence vide repliée sur `null`. Un paiement doit être lié à
+// une prestation **ou** un ticket de file d'attente (§8.2). Mobile Money exige
+// en plus un **téléphone** et un **numéro de transaction** (`reference`) — le
+// téléphone retombe toujours sur `null` pour tout autre mode, même saisi.
 export function validatePayment(raw: RawPaymentInput): PaymentValidationResult {
   const amount = normalizeAmount(raw.amount ?? "");
   if (amount === null) {
@@ -122,9 +148,29 @@ export function validatePayment(raw: RawPaymentInput): PaymentValidationResult {
   }
   const reference = rawReference.length > 0 ? rawReference : null;
 
-  const appointmentId = (raw.appointmentId ?? "").trim() || null;
+  const isMobileMoney = method === "MOBILE_MONEY_MANUAL";
+  let mobileMoneyPhone: string | null = null;
+  if (isMobileMoney) {
+    const rawPhone = (raw.mobileMoneyPhone ?? "").trim();
+    if (rawPhone.length === 0) {
+      return { ok: false, reason: "missing-mobile-money-phone" };
+    }
+    if (
+      rawPhone.length > MOBILE_MONEY_PHONE_MAX_LENGTH ||
+      !MOBILE_MONEY_PHONE_PATTERN.test(rawPhone)
+    ) {
+      return { ok: false, reason: "invalid-mobile-money-phone" };
+    }
+    mobileMoneyPhone = rawPhone;
+
+    if (reference === null) {
+      return { ok: false, reason: "missing-mobile-money-reference" };
+    }
+  }
+
+  const queueTicketId = (raw.queueTicketId ?? "").trim() || null;
   const serviceId = (raw.serviceId ?? "").trim() || null;
-  if (appointmentId === null && serviceId === null) {
+  if (queueTicketId === null && serviceId === null) {
     return { ok: false, reason: "missing-reference" };
   }
 
@@ -135,10 +181,11 @@ export function validatePayment(raw: RawPaymentInput): PaymentValidationResult {
     value: {
       amount,
       paymentMethod: method as PaymentMethod,
-      appointmentId,
+      queueTicketId,
       serviceId,
       clientId,
       reference,
+      mobileMoneyPhone,
     },
   };
 }

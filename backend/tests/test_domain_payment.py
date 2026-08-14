@@ -9,8 +9,13 @@ Couvre :
 - `validate_currency` : None/vide → `DEFAULT_CURRENCY` ; devise conforme acceptée ;
   devise différente ou non-string refusée (MVP mono-devise).
 - `normalize_reference` : None → None ; vide/espaces → None ; trim ; troncature.
-- `require_reference_present` : les deux absents → erreur ; l'un ou l'autre
-  présent → OK ; les deux présents → OK.
+- `require_reference_present` : prestation et ticket absents → erreur ; l'un ou
+  l'autre présent → OK ; les deux présents → OK.
+- `validate_mobile_money_phone` : autre mode → toujours `None` (même si fourni) ;
+  Mobile Money sans téléphone → erreur ; Mobile Money avec téléphone → normalisé
+  E.164 ; format invalide → `InvalidPhone`.
+- `require_mobile_money_reference` : Mobile Money sans référence → erreur ; avec
+  référence → OK ; autre mode sans référence → OK.
 - `validate_amount_matches` : égalité stricte au centime ; message neutre (§11.3).
 - `expected_amount_for_prices` : somme vide → 0.00 ; somme simple ; somme multiple ;
   résultat quantifié ; retour `Decimal`.
@@ -29,6 +34,9 @@ from coiflink_api.domain.errors import (
     InvalidPaymentAmount,
     InvalidPaymentCurrency,
     InvalidPaymentMethod,
+    InvalidPhone,
+    MobileMoneyPhoneRequired,
+    MobileMoneyReferenceRequired,
     PaymentAmountMismatch,
     PaymentReferenceRequired,
 )
@@ -40,10 +48,12 @@ from coiflink_api.domain.payment import (
     REFERENCE_MAX_LENGTH,
     expected_amount_for_prices,
     normalize_reference,
+    require_mobile_money_reference,
     require_reference_present,
     validate_amount,
     validate_amount_matches,
     validate_currency,
+    validate_mobile_money_phone,
     validate_payment_method,
 )
 
@@ -253,10 +263,10 @@ class TestRequireReferencePresent:
         with pytest.raises(PaymentReferenceRequired):
             require_reference_present(None, None)
 
-    def test_appointment_id_present_passes(self) -> None:
+    def test_service_id_present_passes(self) -> None:
         require_reference_present(uuid.uuid4(), None)
 
-    def test_service_id_present_passes(self) -> None:
+    def test_queue_ticket_id_present_passes(self) -> None:
         require_reference_present(None, uuid.uuid4())
 
     def test_both_present_passes(self) -> None:
@@ -265,6 +275,63 @@ class TestRequireReferencePresent:
     def test_error_is_payment_reference_required(self) -> None:
         with pytest.raises(PaymentReferenceRequired):
             require_reference_present(None, None)
+
+
+# ---------------------------------------------------------------------------
+# validate_mobile_money_phone
+# ---------------------------------------------------------------------------
+
+
+class TestValidateMobileMoneyPhone:
+    def test_other_method_returns_none_even_if_phone_provided(self) -> None:
+        assert validate_mobile_money_phone("CASH", "0700000000") is None
+
+    def test_other_method_with_no_phone_returns_none(self) -> None:
+        assert validate_mobile_money_phone("CARD_MANUAL", None) is None
+
+    def test_mobile_money_without_phone_raises(self) -> None:
+        with pytest.raises(MobileMoneyPhoneRequired):
+            validate_mobile_money_phone("MOBILE_MONEY_MANUAL", None)
+
+    def test_mobile_money_with_blank_phone_raises(self) -> None:
+        with pytest.raises(MobileMoneyPhoneRequired):
+            validate_mobile_money_phone("MOBILE_MONEY_MANUAL", "   ")
+
+    def test_mobile_money_with_valid_phone_normalizes_to_e164(self) -> None:
+        assert (
+            validate_mobile_money_phone("MOBILE_MONEY_MANUAL", "0700000000")
+            == "+2250700000000"
+        )
+
+    def test_mobile_money_with_already_international_phone_is_idempotent(self) -> None:
+        assert (
+            validate_mobile_money_phone("MOBILE_MONEY_MANUAL", "+2250700000000")
+            == "+2250700000000"
+        )
+
+    def test_mobile_money_with_malformed_phone_raises_invalid_phone(self) -> None:
+        with pytest.raises(InvalidPhone):
+            validate_mobile_money_phone("MOBILE_MONEY_MANUAL", "not-a-phone")
+
+
+# ---------------------------------------------------------------------------
+# require_mobile_money_reference
+# ---------------------------------------------------------------------------
+
+
+class TestRequireMobileMoneyReference:
+    def test_mobile_money_without_reference_raises(self) -> None:
+        with pytest.raises(MobileMoneyReferenceRequired):
+            require_mobile_money_reference("MOBILE_MONEY_MANUAL", None)
+
+    def test_mobile_money_with_reference_passes(self) -> None:
+        require_mobile_money_reference("MOBILE_MONEY_MANUAL", "MM-TX-0001")
+
+    def test_other_method_without_reference_passes(self) -> None:
+        require_mobile_money_reference("CASH", None)
+
+    def test_other_method_with_reference_passes(self) -> None:
+        require_mobile_money_reference("CARD_MANUAL", "REC-0001")
 
 
 # ---------------------------------------------------------------------------

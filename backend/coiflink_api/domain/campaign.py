@@ -6,9 +6,13 @@ prédicat salon-scopé sur les fiches clients (#28) — sans rien savoir de la
 persistance (table `campaigns`) ni de l'acheminement réel (SMS via file Redis,
 différé M5+). L'écriture est un port
 (`application/ports/campaign_repository.py`) ; l'implémentation vit dans
-`adapters/outbound/persistence/campaign_repository.py`. Gabarits directs :
-`domain/customer.py` (validations, `CustomerFilter`) et `domain/notification.py`
-(`NotificationToCreate` `frozen`, `build_*`).
+`adapters/outbound/persistence/campaign_repository.py`. Gabarit direct :
+`domain/customer.py` (validations, `CustomerFilter`).
+
+Porte aussi `ChannelAvailability`/`resolve_notification_channel` : la sélection de
+canal « selon disponibilité » (PUSH → SMS → IN_APP, sans PII) est **générique**,
+héritée du module notifications de RDV disparu avec le pivot walk-in exclusif
+(#148) — la campagne (#49) en reste l'unique appelant.
 
 Différence **structurante** avec #45–#48 : une campagne porte un **texte libre
 composé par le gérant** (titre + corps), pas un libellé templaté fixe. Le titre
@@ -39,6 +43,7 @@ from coiflink_api.domain.enums import (
     CampaignSegment,
     CampaignStatus,
     CampaignType,
+    NotificationChannel,
     values,
 )
 from coiflink_api.domain.errors import (
@@ -132,6 +137,37 @@ def normalize_campaign_segment(value: str) -> str:
     if cleaned not in CAMPAIGN_SEGMENT_VALUES:
         raise InvalidCampaignSegment("Le segment de la campagne est invalide.")
     return cleaned
+
+
+@dataclass(frozen=True)
+class ChannelAvailability:
+    """Signaux **non-PII** de disponibilité de canal (des booléens, jamais la valeur).
+
+    Ne porte **jamais** le jeton d'appareil ni le numéro eux-mêmes : seulement le
+    *fait* qu'ils soient connus (`has_push_token`/`has_phone`). Cela garde
+    `resolve_notification_channel` pur et testable, sans PII.
+    """
+
+    has_push_token: bool = False
+    has_phone: bool = False
+
+
+def resolve_notification_channel(availability: ChannelAvailability) -> str:
+    """Choisit le canal de notification « selon disponibilité » (fonction **pure**).
+
+    Priorité **PUSH → SMS → IN_APP**. `WHATSAPP` est **exclu** (V2, ADR-0006).
+    Déterministe, sans I/O. Réutilisée pour la campagne (#49) : faute de
+    **registre de jetons d'appareil**, `has_push_token` est toujours faux au MVP —
+    le canal effectif est **SMS** (le gérant cible des fiches joignables par
+    téléphone, #28), avec `IN_APP` comme **repli garanti**. La branche PUSH reste
+    prête pour l'activation d'un registre de jetons (story distincte).
+    """
+
+    if availability.has_push_token:
+        return NotificationChannel.PUSH.value
+    if availability.has_phone:
+        return NotificationChannel.SMS.value
+    return NotificationChannel.IN_APP.value
 
 
 def segment_to_customer_filter(segment: str) -> CustomerFilter:
@@ -255,6 +291,8 @@ __all__ = [
     "normalize_campaign_type",
     "normalize_campaign_segment",
     "segment_to_customer_filter",
+    "ChannelAvailability",
+    "resolve_notification_channel",
     "CampaignToCreate",
     "Campaign",
     "build_campaign",

@@ -11,7 +11,7 @@ compteurs et des bornes de période.
 lectures statistiques salon-scopées (Épic 6, #39–#43, gardées par `STATS_READ_SALON`
 du seul `MANAGER` et montées sous `/salons/{salon_id}/…`), il s'agit d'un agrégat
 **inter-entités** réservé à l'`ADMIN` (`STATS_READ_PLATFORM`) : combien de salons sont
-inscrits, combien de rendez-vous ont été pris, quel revenu transite par CoifLink.
+inscrits, combien de tickets walk-in ont été pris, quel revenu transite par CoifLink.
 C'est aussi une vue **plus globale** que la supervision #37 (`GET
 /admin/transactions/summary`, qui liste des agrégats **par salon**) : #44 ne renvoie
 **que des scalaires globaux**, aucune ligne par entité.
@@ -40,8 +40,8 @@ distinction est explicite dans les libellés pour ne pas induire en erreur.
 `domain/revenue.py::month_bounds` (1er → dernier jour du mois civil `Africa/Abidjan`,
 convention #21) — aucune duplication calendaire. Le cas d'usage convertit ces bornes
 de **jour civil** en bornes UTC (via `domain/time_window.py`) **uniquement** pour le
-revenu (colonne `cash_journal.created_at` timezone-aware) ; les rendez-vous se
-comparent **directement** sur `appointment_date` (déjà un jour civil).
+revenu (colonne `cash_journal.created_at` timezone-aware) ; les tickets se comparent
+**directement** sur `issued_date` (déjà un jour civil).
 """
 
 from __future__ import annotations
@@ -68,8 +68,8 @@ class PlatformKpiCounts:
     salons_total: int
     salons_active: int
     clients_total: int
-    appointments_total: int
-    appointments_this_month: int
+    tickets_total: int
+    tickets_this_month: int
     revenue_total: decimal.Decimal
     revenue_this_month: decimal.Decimal
 
@@ -83,9 +83,10 @@ class PlatformKpiSnapshot:
     - **Salons inscrits** — `salons_total` (tous statuts) et `salons_active`
       (statut `ACTIVE`, PRD §7.3 « Salons actifs ») ;
     - **Clients inscrits** — `clients_total` (comptes de rôle `CLIENT` uniquement) ;
-    - **Rendez-vous** — `appointments_total` (**volume créé**, tous statuts, y compris
-      `CANCELLED` — cf. ADR-0032) et `appointments_this_month` (RDV du **mois civil
-      courant**, comparés sur `appointment_date`) ;
+    - **Tickets walk-in** — `tickets_total` (**volume émis**, tous statuts, y compris
+      `expired` — cf. ADR-0032) et `tickets_this_month` (tickets du **mois civil
+      courant**, comparés sur `issued_date`) — rebranché sur `queue_tickets` avec le
+      pivot walk-in exclusif (#148) ;
     - **Revenus plateforme** — `revenue_total` (net cumulé) et `revenue_this_month`
       (net du **mois civil courant**), **somme signée** des lignes `cash_journal`
       (net des corrections #34), `Decimal` quantifié au centime — jamais un flottant,
@@ -102,8 +103,8 @@ class PlatformKpiSnapshot:
     salons_total: int
     salons_active: int
     clients_total: int
-    appointments_total: int
-    appointments_this_month: int
+    tickets_total: int
+    tickets_this_month: int
     revenue_total: decimal.Decimal
     revenue_this_month: decimal.Decimal
     reference_date: datetime.date

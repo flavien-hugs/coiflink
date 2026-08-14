@@ -1,44 +1,46 @@
 """Tests e2e pour US-6.5 — performance des coiffeurs, dashboard gérant (#43).
 
 Groupe `TestHairdresserPerformanceE2E` (PostgreSQL requis) :
-    exerce le **chemin SQL réel** de `SqlAppointmentRepository.
+    exerce le **chemin SQL réel** de `SqlQueueTicketRepository.
     performance_by_hairdresser` (deux agrégats `GROUP BY hairdresser_id` :
-    compteurs planning + occurrences de prestations) et de
+    compteurs file d'attente + occurrences de prestations) et de
     `SqlCashJournalEntryRepository.net_revenue_by_hairdresser` (somme signée du
-    journal de caisse jointe `payments → appointments.hairdresser_id`), puis leur
+    journal de caisse jointe `payments → queue_tickets.hairdresser_id`), puis leur
     **fusion** par `SummarizeHairdresserPerformance`. Aucune suite unitaire/API
     (adossée à des fakes en mémoire) ne couvre ce SQL : c'est le seul code qui
     satisfait réellement le critère d'acceptation #43 *« indicateurs par
-    coiffeur cohérents avec le planning et la caisse »*.
+    coiffeur cohérents avec la file d'attente et la caisse »*.
+
+Rebranché sur `queue_tickets` (pivot walk-in exclusif, #148) : l'équivalent
+walk-in de l'ancien statut RDV `CANCELLED` est le ticket `expired`.
 
 Scénarios (spec `specs/performance-des-coiffeurs.md`, miroir
 `test_service_demand_e2e.py` #41) :
-    - deux coiffeurs, RDV variés (réalisés, annulés, en attente) → prestations
-      réalisées et taux d'annulation reflètent exactement le `GROUP BY` réel
-      (pas seulement un fake), classement trié par CA décroissant ;
+    - deux coiffeurs, tickets variés (réalisés, expirés, en attente) →
+      prestations réalisées et taux d'annulation reflètent exactement le
+      `GROUP BY` réel (pas seulement un fake), classement trié par CA décroissant ;
     - le CA attribué dérive du **journal de caisse** (paiements réels via
-      l'API), pas d'un comptage de RDV — un coiffeur avec des RDV réalisés mais
-      **aucun paiement enregistré** a un CA à `0.00` ;
+      l'API), pas d'un comptage de tickets — un coiffeur avec des tickets
+      réalisés mais **aucun paiement enregistré** a un CA à `0.00` ;
     - bornes de période : `date_from`/`date_to` réaffirmées en SQL
-      (`appointment_date`, planning **et** caisse partagent la même fenêtre) ;
+      (`issued_date`, file d'attente **et** caisse partagent la même fenêtre) ;
     - défaut de période : sans bornes, la performance porte sur le **mois
       civil courant** (`month_bounds`, symétrie #42) ;
-    - isolation §11.2 : un coiffeur/RDV d'un autre salon n'entre jamais dans le
-      classement (filtre `salon_id` réaffirmé en SQL, planning et caisse) ;
-    - un coiffeur sans RDV assigné sur la période n'apparaît pas (liste dérivée
-      du planning, spec §Open Questions 10) ;
+    - isolation §11.2 : un coiffeur/ticket d'un autre salon n'entre jamais dans
+      le classement (filtre `salon_id` réaffirmé en SQL, file d'attente et caisse) ;
+    - un coiffeur sans ticket assigné sur la période n'apparaît pas (liste
+      dérivée de la file d'attente, spec §Open Questions 10) ;
     - salon sans coiffeur assigné → liste vide (état normal, pas une erreur) ;
     - `401` sans jeton, `403` inter-salons ;
     - §11.3 : la réponse porte l'identité **d'affichage** du coiffeur
-      (`hairdresser_id` + nom) mais **aucune** PII client (`client_id`,
-      `appointment_id`) ni contact employé (téléphone, e-mail).
+      (`hairdresser_id` + nom) mais **aucune** PII client ni contact employé
+      (téléphone, e-mail).
 
-Les RDV sont insérés **directement en base** (bypass des gardes HTTP de
-réservation — créneaux/heures d'ouverture, hors périmètre #43) pour contrôler
-statut, date et coiffeur assigné sans dépendre du parcours de réservation
-complet. Les **paiements**, eux, passent par l'API réelle (`POST /payments`) :
-c'est ce qui peuple le journal de caisse et donc le CA attribué (miroir
-`seed_dev_data.py`).
+Les tickets sont insérés **directement en base** (bypass des gardes HTTP de la
+borne walk-in) pour contrôler statut, date et coiffeur assigné sans dépendre du
+parcours de prise de ticket complet. Les **paiements**, eux, passent par l'API
+réelle (`POST /payments`) : c'est ce qui peuple le journal de caisse et donc le
+CA attribué (miroir `seed_dev_data.py`).
 
 Prérequis :
     cd backend
@@ -54,6 +56,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import os
+import uuid
 from collections.abc import Generator
 
 import pytest
@@ -79,7 +82,6 @@ _TEST_JWT_SECRET = "test-only-hairdresser-performance-e2e-jwt-secret-not-for-pro
 _E2E_PHONE_PREFIX = "+225079999"
 _PHONE_MANAGER_A_LOCAL = "0799990001"   # gérant A — parcours principal
 _PHONE_MANAGER_B_LOCAL = "0799990002"   # gérant B — isolation inter-salons
-_PHONE_CLIENT_LOCAL = "0799990003"
 _PHONE_HAIRDRESSER_1_LOCAL = "0799990004"
 _PHONE_HAIRDRESSER_2_LOCAL = "0799990005"
 _PASSWORD = "hairdresser-performance-e2e-strong-password-2024"
@@ -94,84 +96,63 @@ _SALON_NAME_B = "e2e-salon-hairdresser-performance-b"
 def _wipe_test_data() -> None:
     """Supprime les données de test dans l'ordre des contraintes FK (`ON DELETE RESTRICT`).
 
-    Ordre : audit_logs → cash_journal → payments → appointment_services →
-    appointments → services → salon_members → salons → users.
+    Ordre : audit_logs → cash_journal → payments → queue_ticket_services →
+    queue_tickets → customer_profiles → services → salon_members → salons → users.
     """
     engine = get_engine()
+    salons_of_prefix = (
+        "SELECT id FROM salons WHERE owner_id IN "
+        "(SELECT id FROM users WHERE phone LIKE :prefix)"
+    )
+    params = {"prefix": f"{_E2E_PHONE_PREFIX}%"}
     with engine.connect() as conn:
         conn.execute(
-            text(
-                "DELETE FROM audit_logs WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
-            ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            text(f"DELETE FROM audit_logs WHERE salon_id IN ({salons_of_prefix})"), params
+        )
+        conn.execute(
+            text(f"DELETE FROM cash_journal WHERE salon_id IN ({salons_of_prefix})"),
+            params,
+        )
+        conn.execute(
+            text(f"DELETE FROM payments WHERE salon_id IN ({salons_of_prefix})"), params
         )
         conn.execute(
             text(
-                "DELETE FROM cash_journal WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
+                f"DELETE FROM queue_ticket_services WHERE salon_id IN ({salons_of_prefix})"
             ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            params,
         )
         conn.execute(
-            text(
-                "DELETE FROM payments WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
-            ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            text(f"DELETE FROM queue_tickets WHERE salon_id IN ({salons_of_prefix})"),
+            params,
         )
         conn.execute(
-            text(
-                "DELETE FROM appointment_services WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
-            ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            text(f"DELETE FROM customer_profiles WHERE salon_id IN ({salons_of_prefix})"),
+            params,
         )
         conn.execute(
-            text(
-                "DELETE FROM appointments WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
-            ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            text(f"DELETE FROM services WHERE salon_id IN ({salons_of_prefix})"), params
         )
         conn.execute(
-            text(
-                "DELETE FROM services WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
-            ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
-        )
-        conn.execute(
-            text(
-                "DELETE FROM salon_members WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
-            ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            text(f"DELETE FROM salon_members WHERE salon_id IN ({salons_of_prefix})"),
+            params,
         )
         conn.execute(
             text(
                 "DELETE FROM salon_members WHERE user_id IN "
                 "(SELECT id FROM users WHERE phone LIKE :prefix)"
             ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            params,
         )
         conn.execute(
             text(
                 "DELETE FROM salons WHERE owner_id IN "
                 "(SELECT id FROM users WHERE phone LIKE :prefix)"
             ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            params,
         )
         conn.execute(
-            text("DELETE FROM users WHERE phone LIKE :prefix"),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
+            text("DELETE FROM users WHERE phone LIKE :prefix"), params
         )
         conn.commit()
 
@@ -213,7 +194,7 @@ def _e2e_client() -> Generator[TestClient, None, None]:
         main_app.state.login_rate_limiter = orig_rate_limiter
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ─── Helpers API ──────────────────────────────────────────────────────────────
 
 
 def _register_manager(client: TestClient, *, phone: str) -> str:
@@ -223,16 +204,6 @@ def _register_manager(client: TestClient, *, phone: str) -> str:
         json={"full_name": "Gérant E2E Performance", "phone": phone, "password": _PASSWORD},
     )
     assert resp.status_code == 201, f"Inscription gérant échouée : {resp.text}"
-    return resp.json()["id"]
-
-
-def _register_client_account(client: TestClient, *, phone: str) -> str:
-    """Inscrit un compte client via l'API et retourne son UUID."""
-    resp = client.post(
-        "/auth/register",
-        json={"full_name": "Client E2E Performance", "phone": phone, "password": _PASSWORD},
-    )
-    assert resp.status_code == 201, f"Inscription client échouée : {resp.text}"
     return resp.json()["id"]
 
 
@@ -297,91 +268,101 @@ def _add_hairdresser(
     return hairdresser_id
 
 
-def _seed_appointment(
+# ─── Helpers SQL (insertion directe — bypass des gardes HTTP) ─────────────────
+
+
+def _insert_customer_profile(*, salon_id: str, full_name: str = "Client E2E Performance") -> str:
+    """Insère une fiche client walk-in directement en base."""
+    profile_id = str(uuid.uuid4())
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO customer_profiles (id, salon_id, full_name) "
+                "VALUES (:id, :salon_id, :full_name)"
+            ),
+            {"id": profile_id, "salon_id": salon_id, "full_name": full_name},
+        )
+        conn.commit()
+    return profile_id
+
+
+def _seed_ticket(
     salon_id: str,
-    client_id: str,
+    customer_profile_id: str,
     hairdresser_id: str,
     *,
     day: datetime.date,
-    start_time: str,
+    ticket_number: int,
     status: str,
     service_id: str | None = None,
-    price_at_booking: str | None = None,
 ) -> str:
-    """Insère directement en base un RDV (statut/jour/coiffeur contrôlés).
+    """Insère directement en base un ticket (statut/jour/coiffeur contrôlés).
 
-    Bypass des gardes de réservation HTTP (créneaux/heures d'ouverture) — seul
-    l'agrégat `GROUP BY hairdresser_id` du dépôt est testé ici, pas le parcours
-    complet de réservation (déjà couvert par `test_appointment_concurrency.py`,
-    #21). Si `service_id` est fourni, une ligne `appointment_services` est
-    ajoutée (nécessaire pour `services_completed` et pour qu'un paiement lié au
-    RDV soit acceptable par `RecordPayment`).
+    Bypass des gardes de la borne HTTP — seul l'agrégat `GROUP BY hairdresser_id`
+    du dépôt est testé ici, pas le parcours complet de prise en charge. Si
+    `service_id` est fourni, une ligne `queue_ticket_services` est ajoutée
+    (nécessaire pour `services_completed` et pour qu'un paiement lié au ticket
+    soit acceptable par `RecordPayment` — aucun prix figé, contrairement à
+    l'ancien `appointment_services.price_at_booking`).
     """
-    end_time = (
-        datetime.datetime.combine(day, datetime.time.fromisoformat(start_time))
-        + datetime.timedelta(minutes=30)
-    ).time()
+    completed_at = (
+        datetime.datetime.now(datetime.timezone.utc) if status == "done" else None
+    )
     engine = get_engine()
     with engine.connect() as conn:
-        row = conn.execute(
+        ticket_id = str(uuid.uuid4())
+        conn.execute(
             text(
-                "INSERT INTO appointments "
-                "(salon_id, client_id, hairdresser_id, appointment_date, "
-                "start_time, end_time, status) "
-                "VALUES (:salon_id, :client_id, :hairdresser_id, :day, "
-                ":start_time, :end_time, :status) RETURNING id"
+                "INSERT INTO queue_tickets "
+                "(id, salon_id, customer_profile_id, hairdresser_id, issued_date, "
+                "ticket_number, status, estimated_wait_minutes, completed_at) "
+                "VALUES (:id, :salon_id, :customer, :hairdresser, :day, :number, "
+                ":status, 0, :completed_at)"
             ),
             {
+                "id": ticket_id,
                 "salon_id": salon_id,
-                "client_id": client_id,
-                "hairdresser_id": hairdresser_id,
+                "customer": customer_profile_id,
+                "hairdresser": hairdresser_id,
                 "day": day,
-                "start_time": start_time,
-                "end_time": end_time.isoformat(),
+                "number": ticket_number,
                 "status": status,
+                "completed_at": completed_at,
             },
         )
-        appointment_id = row.scalar_one()
         if service_id is not None:
             conn.execute(
                 text(
-                    "INSERT INTO appointment_services "
-                    "(salon_id, appointment_id, service_id, price_at_booking) "
-                    "VALUES (:salon_id, :appointment_id, :service_id, :price)"
+                    "INSERT INTO queue_ticket_services (queue_ticket_id, service_id, salon_id) "
+                    "VALUES (:ticket, :service, :salon)"
                 ),
-                {
-                    "salon_id": salon_id,
-                    "appointment_id": str(appointment_id),
-                    "service_id": service_id,
-                    "price": price_at_booking,
-                },
+                {"ticket": ticket_id, "service": service_id, "salon": salon_id},
             )
         conn.commit()
-    return str(appointment_id)
+    return ticket_id
 
 
-def _record_payment_for_appointment(
+def _record_payment_for_ticket(
     client: TestClient,
     manager_token: str,
     salon_id: str,
     *,
     amount: str,
-    appointment_id: str,
-    client_id: str,
+    queue_ticket_id: str,
 ) -> str:
-    """Enregistre un paiement `VALIDATED` lié à un RDV et retourne son UUID.
+    """Enregistre un paiement `VALIDATED` lié à un ticket et retourne son UUID.
 
     C'est ce qui peuple le `cash_journal` (ligne `PAYMENT`) que
     `net_revenue_by_hairdresser` agrège — le CA attribué dérive de la caisse,
-    jamais d'un comptage de RDV.
+    jamais d'un comptage de tickets.
     """
     resp = client.post(
         f"/salons/{salon_id}/payments",
         json={
             "amount": amount,
             "payment_method": "CASH",
-            "appointment_id": appointment_id,
-            "client_id": client_id,
+            "queue_ticket_id": queue_ticket_id,
         },
         headers={"Authorization": f"Bearer {manager_token}"},
     )
@@ -409,23 +390,23 @@ def _hairdresser_performance(
 class TestHairdresserPerformanceE2E:
     """`GET /salons/{id}/hairdresser-performance` bout-en-bout : GROUP BY SQL réel."""
 
-    # ── Parcours 1 : agrégat réel (planning + caisse fusionnés) ────────────────
+    # ── Parcours 1 : agrégat réel (file d'attente + caisse fusionnés) ──────────
 
-    def test_metrics_reflect_real_planning_and_cash_journal(
+    def test_metrics_reflect_real_queue_and_cash_journal(
         self, _e2e_client: TestClient
     ) -> None:
-        """Deux coiffeurs, RDV variés → prestations/annulations (planning réel) + CA (caisse réelle).
+        """Deux coiffeurs, tickets variés → prestations/expirations (file réelle) + CA (caisse réelle).
 
-        Coiffeur 1 : 2 RDV `COMPLETED` (payés), 1 `CANCELLED`, 1 `PENDING` — total
-        assigné = 4, annulés = 1, prestations réalisées = 2, CA = somme des deux
-        paiements. Coiffeur 2 : 1 RDV `COMPLETED` (payé) de montant supérieur — doit
+        Coiffeur 1 : 2 tickets `done` (payés), 1 `expired`, 1 `waiting` — total
+        assigné = 4, expirés = 1, prestations réalisées = 2, CA = somme des deux
+        paiements. Coiffeur 2 : 1 ticket `done` (payé) de montant supérieur — doit
         apparaître **avant** le coiffeur 1 (tri CA décroissant).
         """
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_id = _register_client_account(_e2e_client, phone=_PHONE_CLIENT_LOCAL)
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
+        customer_id = _insert_customer_profile(salon_id=salon_id)
         hairdresser_1 = _add_hairdresser(
             _e2e_client,
             manager_token,
@@ -446,38 +427,38 @@ class TestHairdresserPerformanceE2E:
         today = datetime.date.today()
         period_from = today.replace(day=1)
 
-        appt1 = _seed_appointment(
-            salon_id, client_id, hairdresser_1, day=today, start_time="09:00",
-            status="COMPLETED", service_id=service_id, price_at_booking="10000.00",
+        ticket1 = _seed_ticket(
+            salon_id, customer_id, hairdresser_1, day=today, ticket_number=1,
+            status="done", service_id=service_id,
         )
-        appt2 = _seed_appointment(
-            salon_id, client_id, hairdresser_1, day=today, start_time="10:00",
-            status="COMPLETED", service_id=service_id, price_at_booking="10000.00",
+        ticket2 = _seed_ticket(
+            salon_id, customer_id, hairdresser_1, day=today, ticket_number=2,
+            status="done", service_id=service_id,
         )
-        _seed_appointment(
-            salon_id, client_id, hairdresser_1, day=today, start_time="11:00",
-            status="CANCELLED",
+        _seed_ticket(
+            salon_id, customer_id, hairdresser_1, day=today, ticket_number=3,
+            status="expired",
         )
-        _seed_appointment(
-            salon_id, client_id, hairdresser_1, day=today, start_time="12:00",
-            status="PENDING",
+        _seed_ticket(
+            salon_id, customer_id, hairdresser_1, day=today, ticket_number=4,
+            status="waiting",
         )
-        appt3 = _seed_appointment(
-            salon_id, client_id, hairdresser_2, day=today, start_time="09:00",
-            status="COMPLETED", service_id=service_id, price_at_booking="10000.00",
+        ticket3 = _seed_ticket(
+            salon_id, customer_id, hairdresser_2, day=today, ticket_number=5,
+            status="done", service_id=service_id,
         )
 
-        _record_payment_for_appointment(
+        _record_payment_for_ticket(
             _e2e_client, manager_token, salon_id,
-            amount="10000.00", appointment_id=appt1, client_id=client_id,
+            amount="10000.00", queue_ticket_id=ticket1,
         )
-        _record_payment_for_appointment(
+        _record_payment_for_ticket(
             _e2e_client, manager_token, salon_id,
-            amount="10000.00", appointment_id=appt2, client_id=client_id,
+            amount="10000.00", queue_ticket_id=ticket2,
         )
-        _record_payment_for_appointment(
+        _record_payment_for_ticket(
             _e2e_client, manager_token, salon_id,
-            amount="10000.00", appointment_id=appt3, client_id=client_id,
+            amount="10000.00", queue_ticket_id=ticket3,
         )
 
         report = _hairdresser_performance(
@@ -511,16 +492,16 @@ class TestHairdresserPerformanceE2E:
     def test_completed_without_payment_has_zero_revenue(
         self, _e2e_client: TestClient
     ) -> None:
-        """Un coiffeur avec des RDV réalisés mais aucun paiement enregistré a un CA à 0.00.
+        """Un coiffeur avec des tickets réalisés mais aucun paiement enregistré a un CA à 0.00.
 
-        Le CA dérive de la **caisse**, pas d'un comptage de RDV : les prestations
-        réalisées et le CA sont deux sources indépendantes.
+        Le CA dérive de la **caisse**, pas d'un comptage de tickets : les
+        prestations réalisées et le CA sont deux sources indépendantes.
         """
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_id = _register_client_account(_e2e_client, phone=_PHONE_CLIENT_LOCAL)
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
+        customer_id = _insert_customer_profile(salon_id=salon_id)
         hairdresser_id = _add_hairdresser(
             _e2e_client,
             manager_token,
@@ -532,9 +513,9 @@ class TestHairdresserPerformanceE2E:
             _e2e_client, manager_token, salon_id, name="Coupe", price="10000.00"
         )
         today = datetime.date.today()
-        _seed_appointment(
-            salon_id, client_id, hairdresser_id, day=today, start_time="09:00",
-            status="COMPLETED", service_id=service_id, price_at_booking="10000.00",
+        _seed_ticket(
+            salon_id, customer_id, hairdresser_id, day=today, ticket_number=1,
+            status="done", service_id=service_id,
         )
 
         report = _hairdresser_performance(
@@ -551,13 +532,13 @@ class TestHairdresserPerformanceE2E:
 
     # ── Parcours 2 : bornes de période ─────────────────────────────────────────
 
-    def test_date_bounds_filter_planning_and_cash(self, _e2e_client: TestClient) -> None:
-        """`date_from`/`date_to` réaffirmées en SQL, planning et caisse partagent la fenêtre."""
+    def test_date_bounds_filter_queue_and_cash(self, _e2e_client: TestClient) -> None:
+        """`date_from`/`date_to` réaffirmées en SQL, file d'attente et caisse partagent la fenêtre."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_id = _register_client_account(_e2e_client, phone=_PHONE_CLIENT_LOCAL)
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
+        customer_id = _insert_customer_profile(salon_id=salon_id)
         hairdresser_id = _add_hairdresser(
             _e2e_client,
             manager_token,
@@ -571,16 +552,16 @@ class TestHairdresserPerformanceE2E:
         today = datetime.date.today()
         old_day = today - datetime.timedelta(days=30)
 
-        appt_old = _seed_appointment(
-            salon_id, client_id, hairdresser_id, day=old_day, start_time="09:00",
-            status="COMPLETED", service_id=service_id, price_at_booking="10000.00",
+        ticket_old = _seed_ticket(
+            salon_id, customer_id, hairdresser_id, day=old_day, ticket_number=1,
+            status="done", service_id=service_id,
         )
-        _record_payment_for_appointment(
+        _record_payment_for_ticket(
             _e2e_client, manager_token, salon_id,
-            amount="10000.00", appointment_id=appt_old, client_id=client_id,
+            amount="10000.00", queue_ticket_id=ticket_old,
         )
 
-        # Fenêtre bornée sur aujourd'hui uniquement → le RDV ancien est exclu.
+        # Fenêtre bornée sur aujourd'hui uniquement → le ticket ancien est exclu.
         report = _hairdresser_performance(
             _e2e_client,
             manager_token,
@@ -590,7 +571,7 @@ class TestHairdresserPerformanceE2E:
         )
         assert report["hairdressers"] == []
 
-        # Fenêtre couvrant l'ancien RDV → le coiffeur apparaît avec son CA.
+        # Fenêtre couvrant l'ancien ticket → le coiffeur apparaît avec son CA.
         report_wide = _hairdresser_performance(
             _e2e_client,
             manager_token,
@@ -609,10 +590,10 @@ class TestHairdresserPerformanceE2E:
     def test_missing_bounds_default_to_current_month(self, _e2e_client: TestClient) -> None:
         """Sans `date_from`/`date_to`, la performance porte sur le mois civil courant."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_id = _register_client_account(_e2e_client, phone=_PHONE_CLIENT_LOCAL)
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
+        customer_id = _insert_customer_profile(salon_id=salon_id)
         hairdresser_id = _add_hairdresser(
             _e2e_client,
             manager_token,
@@ -622,9 +603,9 @@ class TestHairdresserPerformanceE2E:
         )
         today = datetime.date.today()
         month_from, month_to = month_bounds(today)
-        _seed_appointment(
-            salon_id, client_id, hairdresser_id, day=today, start_time="09:00",
-            status="COMPLETED",
+        _seed_ticket(
+            salon_id, customer_id, hairdresser_id, day=today, ticket_number=1,
+            status="done",
         )
 
         report = _hairdresser_performance(_e2e_client, manager_token, salon_id)
@@ -636,15 +617,15 @@ class TestHairdresserPerformanceE2E:
     # ── Parcours 4 : isolation §11.2 ───────────────────────────────────────────
 
     def test_other_salon_hairdresser_not_counted(self, _e2e_client: TestClient) -> None:
-        """Un coiffeur/RDV du salon B n'entre jamais dans le classement du salon A."""
+        """Un coiffeur/ticket du salon B n'entre jamais dans le classement du salon A."""
         manager_a_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         manager_b_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_B_LOCAL)
-        client_id = _register_client_account(_e2e_client, phone=_PHONE_CLIENT_LOCAL)
         assert manager_a_id and manager_b_id
         token_a = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         token_b = _login(_e2e_client, phone=_PHONE_MANAGER_B_LOCAL)
         salon_a_id = _create_salon(_e2e_client, token_a, name=_SALON_NAME_A)
         salon_b_id = _create_salon(_e2e_client, token_b, name=_SALON_NAME_B)
+        customer_b_id = _insert_customer_profile(salon_id=salon_b_id)
         hairdresser_b = _add_hairdresser(
             _e2e_client,
             token_b,
@@ -656,13 +637,13 @@ class TestHairdresserPerformanceE2E:
             _e2e_client, token_b, salon_b_id, name="Coupe B", price="10000.00"
         )
         today = datetime.date.today()
-        appt_b = _seed_appointment(
-            salon_b_id, client_id, hairdresser_b, day=today, start_time="09:00",
-            status="COMPLETED", service_id=service_b, price_at_booking="10000.00",
+        ticket_b = _seed_ticket(
+            salon_b_id, customer_b_id, hairdresser_b, day=today, ticket_number=1,
+            status="done", service_id=service_b,
         )
-        _record_payment_for_appointment(
+        _record_payment_for_ticket(
             _e2e_client, token_b, salon_b_id,
-            amount="10000.00", appointment_id=appt_b, client_id=client_id,
+            amount="10000.00", queue_ticket_id=ticket_b,
         )
 
         report_a = _hairdresser_performance(
@@ -689,7 +670,7 @@ class TestHairdresserPerformanceE2E:
         )
         assert resp.status_code == 403
 
-    # ── Parcours 5 : listes vides / dérivées du planning ────────────────────────
+    # ── Parcours 5 : listes vides / dérivées de la file d'attente ──────────────
 
     def test_salon_without_assigned_hairdresser_returns_empty_list(
         self, _e2e_client: TestClient
@@ -723,10 +704,10 @@ class TestHairdresserPerformanceE2E:
     ) -> None:
         """La réponse porte le nom du coiffeur mais aucune PII client ni contact employé."""
         manager_id = _register_manager(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
-        client_id = _register_client_account(_e2e_client, phone=_PHONE_CLIENT_LOCAL)
         assert manager_id
         manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_A_LOCAL)
         salon_id = _create_salon(_e2e_client, manager_token, name=_SALON_NAME_A)
+        customer_id = _insert_customer_profile(salon_id=salon_id)
         hairdresser_id = _add_hairdresser(
             _e2e_client,
             manager_token,
@@ -734,9 +715,9 @@ class TestHairdresserPerformanceE2E:
             full_name="Coiffeur Identité",
             phone=_PHONE_HAIRDRESSER_1_LOCAL,
         )
-        appointment_id = _seed_appointment(
-            salon_id, client_id, hairdresser_id, day=datetime.date.today(),
-            start_time="09:00", status="COMPLETED",
+        ticket_id = _seed_ticket(
+            salon_id, customer_id, hairdresser_id, day=datetime.date.today(),
+            ticket_number=1, status="done",
         )
 
         resp = _e2e_client.get(
@@ -748,6 +729,6 @@ class TestHairdresserPerformanceE2E:
         assert "Coiffeur Identité" in resp.text
         # Aucune PII client ni jeton ni contact employé.
         assert manager_token not in resp.text
-        assert client_id not in resp.text
-        assert appointment_id not in resp.text
+        assert customer_id not in resp.text
+        assert ticket_id not in resp.text
         assert _PHONE_HAIRDRESSER_1_LOCAL not in resp.text

@@ -2,8 +2,7 @@
 
 Groupe `TestReceiptsE2E` (PostgreSQL requis) :
     exerce le **chemin SQL réel** de `SqlReceiptRepository` — la jointure
-    `payments ⋈ salons`, la résolution des lignes de prestation (jointure
-    composite `appointment_services ⋈ services` pour un RDV, `services` seul pour
+    `payments ⋈ salons`, la résolution des lignes de prestation (`services` pour
     une prestation directe), le tri `created_at DESC, id DESC` et la pagination.
     Aucune suite unitaire/API (adossée à un dépôt en mémoire) ne couvre ce SQL :
     c'est le seul code qui satisfait réellement le critère d'acceptation #38
@@ -12,8 +11,6 @@ Groupe `TestReceiptsE2E` (PostgreSQL requis) :
 Scénarios (spec `specs/*.md`, cf. finding de revue automatisée sur la PR #118) :
     - paiement lié à une **prestation seule** → reçu avec **une** ligne
       (`services.name`/`price`) ;
-    - paiement lié à un **RDV** (plusieurs prestations) → reçu avec **autant de
-      lignes** que de prestations réservées, montants `price_at_booking` figés ;
     - `salon_name` résolu via la jointure `salons` (identité publique) ;
     - appartenance §11.2/§11.3 : le reçu d'un autre client est **indiscernable**
       d'un reçu inexistant (`404` neutre sur `GET /me/receipts/{id}`, absent de
@@ -73,8 +70,8 @@ _ME_RECEIPTS_URL = "/me/receipts"
 def _wipe_test_data() -> None:
     """Supprime les données de test dans l'ordre des contraintes FK (`ON DELETE RESTRICT`).
 
-    Ordre : audit_logs → cash_journal → payments → appointment_services →
-    appointments → services → salon_members → salons → users.
+    Ordre : audit_logs → cash_journal → payments → services → salon_members →
+    salons → users.
     """
     engine = get_engine()
     with engine.connect() as conn:
@@ -97,22 +94,6 @@ def _wipe_test_data() -> None:
         conn.execute(
             text(
                 "DELETE FROM payments WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
-            ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
-        )
-        conn.execute(
-            text(
-                "DELETE FROM appointment_services WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
-            ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
-        )
-        conn.execute(
-            text(
-                "DELETE FROM appointments WHERE salon_id IN "
                 "(SELECT id FROM salons WHERE owner_id IN "
                 "(SELECT id FROM users WHERE phone LIKE :prefix))"
             ),
@@ -270,105 +251,6 @@ def _record_payment(
     return resp.json()["id"]
 
 
-def _seed_appointment_with_services(
-    salon_id: str, client_id: str, hairdresser_id: str, service_prices: dict[str, str]
-) -> str:
-    """Insère directement en base un RDV `COMPLETED` avec plusieurs prestations.
-
-    Aucune API publique ne permet de créer un RDV multi-prestations avec un
-    `price_at_booking` figé arbitraire sans dépendre du prix courant du service au
-    moment de la réservation — l'insertion directe isole le test de cette mécanique
-    (hors périmètre #38) tout en exerçant fidèlement la jointure
-    `appointment_services ⋈ services` du dépôt de reçus.
-    """
-    engine = get_engine()
-    appointment_id = None
-    with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                "INSERT INTO appointments "
-                "(salon_id, client_id, hairdresser_id, appointment_date, "
-                "start_time, end_time, status) "
-                "VALUES (:salon_id, :client_id, :hairdresser_id, CURRENT_DATE, "
-                "'10:00', '11:00', 'COMPLETED') RETURNING id"
-            ),
-            {
-                "salon_id": salon_id,
-                "client_id": client_id,
-                "hairdresser_id": hairdresser_id,
-            },
-        )
-        appointment_id = row.scalar_one()
-        for service_id, price in service_prices.items():
-            conn.execute(
-                text(
-                    "INSERT INTO appointment_services "
-                    "(salon_id, appointment_id, service_id, price_at_booking) "
-                    "VALUES (:salon_id, :appointment_id, :service_id, :price)"
-                ),
-                {
-                    "salon_id": salon_id,
-                    "appointment_id": str(appointment_id),
-                    "service_id": service_id,
-                    "price": price,
-                },
-            )
-        conn.commit()
-    return str(appointment_id)
-
-
-def _record_payment_for_appointment(
-    client: TestClient,
-    manager_token: str,
-    salon_id: str,
-    *,
-    amount: str,
-    appointment_id: str,
-    client_id: str,
-) -> str:
-    """Enregistre un paiement `VALIDATED` lié à un RDV et retourne son UUID."""
-    resp = client.post(
-        f"/salons/{salon_id}/payments",
-        json={
-            "amount": amount,
-            "payment_method": "CASH",
-            "appointment_id": appointment_id,
-            "client_id": client_id,
-        },
-        headers={"Authorization": f"Bearer {manager_token}"},
-    )
-    assert resp.status_code == 201, f"Enregistrement paiement échoué : {resp.text}"
-    return resp.json()["id"]
-
-
-def _add_hairdresser(
-    client: TestClient, manager_token: str, salon_id: str, *, phone: str
-) -> str:
-    """Inscrit un coiffeur, l'enregistre comme membre du salon, retourne son UUID."""
-    resp_register = client.post(
-        "/auth/register",
-        json={"full_name": "Coiffeur E2E Reçus", "phone": phone, "password": _PASSWORD},
-    )
-    assert resp_register.status_code == 201, f"Inscription coiffeur échouée : {resp_register.text}"
-    hairdresser_id = resp_register.json()["id"]
-
-    engine = get_engine()
-    with engine.connect() as conn:
-        conn.execute(
-            text("UPDATE users SET role = 'HAIRDRESSER' WHERE id = :uid"),
-            {"uid": hairdresser_id},
-        )
-        conn.execute(
-            text(
-                "INSERT INTO salon_members (salon_id, user_id, role) "
-                "VALUES (:salon_id, :uid, 'HAIRDRESSER')"
-            ),
-            {"salon_id": salon_id, "uid": hairdresser_id},
-        )
-        conn.commit()
-    return hairdresser_id
-
-
 def _list_receipts(client: TestClient, token: str, **params: object) -> dict:
     """`GET /me/receipts` (page des reçus du client, US-5.5, #38)."""
     resp = client.get(
@@ -443,79 +325,6 @@ class TestReceiptsE2E:
         page = _list_receipts(_e2e_client, client_token)
         assert page["items"][0]["salon_name"] == _SALON_NAME
         assert page["items"][0]["salon_id"] == salon_id
-
-    # ── Parcours 2 : reçu d'un RDV multi-prestations (plusieurs lignes) ───────
-
-    def test_appointment_payment_receipt_has_one_line_per_service(
-        self, _e2e_client: TestClient
-    ) -> None:
-        """Un paiement lié à un RDV produit autant de lignes que de prestations réservées."""
-        _register_manager(_e2e_client)
-        client_id = _register_client(_e2e_client, phone=_PHONE_CLIENT_A_LOCAL)
-        manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_LOCAL)
-        client_token = _login(_e2e_client, phone=_PHONE_CLIENT_A_LOCAL)
-        salon_id = _create_salon(_e2e_client, manager_token)
-        hairdresser_id = _add_hairdresser(
-            _e2e_client, manager_token, salon_id, phone="0769960099"
-        )
-        service_cut_id = _create_service(
-            _e2e_client, manager_token, salon_id, name="Coupe", price="1000.00"
-        )
-        service_beard_id = _create_service(
-            _e2e_client, manager_token, salon_id, name="Barbe", price="500.00"
-        )
-        appointment_id = _seed_appointment_with_services(
-            salon_id,
-            client_id,
-            hairdresser_id,
-            {service_cut_id: "1000.00", service_beard_id: "500.00"},
-        )
-        _record_payment_for_appointment(
-            _e2e_client,
-            manager_token,
-            salon_id,
-            amount="1500.00",
-            appointment_id=appointment_id,
-            client_id=client_id,
-        )
-
-        page = _list_receipts(_e2e_client, client_token)
-        assert len(page["items"]) == 1
-        lines = page["items"][0]["lines"]
-        assert len(lines) == 2
-        names = {line["service_name"] for line in lines}
-        assert names == {"Coupe", "Barbe"}
-
-    def test_appointment_receipt_amounts_are_price_at_booking(
-        self, _e2e_client: TestClient
-    ) -> None:
-        """Les montants des lignes d'un RDV sont les `price_at_booking` figés, pas le prix courant."""
-        _register_manager(_e2e_client)
-        client_id = _register_client(_e2e_client, phone=_PHONE_CLIENT_A_LOCAL)
-        manager_token = _login(_e2e_client, phone=_PHONE_MANAGER_LOCAL)
-        client_token = _login(_e2e_client, phone=_PHONE_CLIENT_A_LOCAL)
-        salon_id = _create_salon(_e2e_client, manager_token)
-        hairdresser_id = _add_hairdresser(
-            _e2e_client, manager_token, salon_id, phone="0769960098"
-        )
-        service_id = _create_service(
-            _e2e_client, manager_token, salon_id, name="Coupe", price="1000.00"
-        )
-        # price_at_booking figé à 800.00, différent du prix courant du service (1000.00).
-        appointment_id = _seed_appointment_with_services(
-            salon_id, client_id, hairdresser_id, {service_id: "800.00"}
-        )
-        _record_payment_for_appointment(
-            _e2e_client,
-            manager_token,
-            salon_id,
-            amount="800.00",
-            appointment_id=appointment_id,
-            client_id=client_id,
-        )
-
-        page = _list_receipts(_e2e_client, client_token)
-        assert page["items"][0]["lines"][0]["amount"] == "800.00"
 
     # ── Parcours 3 : appartenance §11.2/§11.3 — non-oracle ────────────────────
 

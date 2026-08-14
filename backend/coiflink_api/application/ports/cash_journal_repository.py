@@ -118,19 +118,20 @@ class CashJournalRepository(Protocol):
 
         Variante **attribuée** de `net_revenue_between` : renvoie
         `{hairdresser_id: net_amount}` — somme **signée** des lignes `cash_journal`
-        `PAYMENT`/`ADJUSTMENT` du salon dont le `payment` référence un `appointment`
-        **assigné** (`hairdresser_id IS NOT NULL`) dont `appointment_date` est dans
-        `[date_from, date_to]` **inclus**, `GROUP BY appointments.hairdresser_id`. Le
-        CA est **net des corrections** (#34) — un paiement corrigé fait **baisser** le
-        total du coiffeur (parité « montant net » de #40/#37).
+        `PAYMENT`/`ADJUSTMENT` du salon dont le `payment` référence un ticket walk-in
+        **assigné** (`queue_tickets.hairdresser_id IS NOT NULL`) dont `issued_date`
+        est dans `[date_from, date_to]` **inclus**, `GROUP BY
+        queue_tickets.hairdresser_id`. Le CA est **net des corrections** (#34) — un
+        paiement corrigé fait **baisser** le total du coiffeur (parité « montant net »
+        de #40/#37).
 
-        **Attribution par le RDV** : le join `cash_journal → payments.appointment_id →
-        appointments` porte le `hairdresser_id` **et** la borne `appointment_date`
-        (axe **planning**, pas `cash_journal.created_at`) — ce qui aligne le CA sur la
-        **même période** que les prestations/annulations. Les paiements **sans RDV**
-        (`appointment_id IS NULL`, prestation directe) ou liés à un RDV **non assigné**
-        sont **exclus** (inattribuables) par les joins ; la somme des CA par coiffeur
-        peut donc différer du CA salon #40 (résidu documenté). Isolation §11.2
+        **Attribution par le ticket** : le join `cash_journal → payments.queue_ticket_id
+        → queue_tickets` porte le `hairdresser_id` **et** la borne `issued_date` (axe
+        **file d'attente**, pas `cash_journal.created_at`) — ce qui aligne le CA sur la
+        **même période** que les prestations/annulations. Les paiements **sans ticket**
+        (`queue_ticket_id IS NULL`, prestation directe) ou liés à un ticket **non
+        assigné** sont **exclus** (inattribuables) par les joins ; la somme des CA par
+        coiffeur peut donc différer du CA salon #40 (résidu documenté). Isolation §11.2
         **imposée en SQL** (`WHERE cash_journal.salon_id = :salon_id`), en défense en
         profondeur de `require_salon_scope`. `Decimal` quantifié au centime. **Ne
         renvoie aucune PII** (ni `client_id`, ni `reference`, ni `recorded_by`, ni

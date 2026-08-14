@@ -42,21 +42,23 @@ interface PaymentResponsePayload {
   payment_method: string;
   status: string;
   recorded_by: string;
-  appointment_id: string | null;
   service_id: string | null;
+  queue_ticket_id: string | null;
   client_id: string | null;
   reference: string | null;
+  mobile_money_phone: string | null;
   created_at: string;
 }
 
 // Messages métier **neutres** du backend (parité `domain/errors.py`) permettant
 // de raffiner un `422` générique. Aucune valeur (montant, prix) n'y figure.
 const AMOUNT_MISMATCH_DETAIL = "Le montant ne correspond pas à la prestation.";
-const REFERENCE_NOT_FOUND_DETAIL = "Prestation ou rendez-vous introuvable pour ce salon.";
+const REFERENCE_NOT_FOUND_DETAIL = "Prestation ou ticket introuvable pour ce salon.";
 
-// Forme du corps `TransactionResponse` (#35) : un paiement + `client_name`.
+// Forme du corps `TransactionResponse` (#35) : un paiement + `client_name`/`ticket_number`.
 interface TransactionResponsePayload extends PaymentResponsePayload {
   client_name: string | null;
+  ticket_number: number | null;
 }
 
 interface TransactionPagePayload {
@@ -76,16 +78,21 @@ function toPayment(payload: PaymentResponsePayload): Payment {
     paymentMethod: payload.payment_method,
     status: payload.status,
     recordedBy: payload.recorded_by,
-    appointmentId: payload.appointment_id,
+    queueTicketId: payload.queue_ticket_id,
     serviceId: payload.service_id,
     clientId: payload.client_id,
     reference: payload.reference,
+    mobileMoneyPhone: payload.mobile_money_phone,
     createdAt: payload.created_at,
   };
 }
 
 function toTransaction(payload: TransactionResponsePayload): Transaction {
-  return { ...toPayment(payload), clientName: payload.client_name };
+  return {
+    ...toPayment(payload),
+    clientName: payload.client_name,
+    ticketNumber: payload.ticket_number,
+  };
 }
 
 // Forme du corps `ManagerReceiptResponse` renvoyé par le backend (ADR-0040).
@@ -94,6 +101,7 @@ interface ManagerReceiptResponsePayload {
   payment_id: string;
   salon_id: string;
   salon_name: string;
+  ticket_number: number | null;
   client_name: string | null;
   client_phone: string | null;
   amount: string;
@@ -115,6 +123,7 @@ function toManagerReceipt(payload: ManagerReceiptResponsePayload): ManagerReceip
     paymentId: payload.payment_id,
     salonId: payload.salon_id,
     salonName: payload.salon_name,
+    ticketNumber: payload.ticket_number,
     clientName: payload.client_name,
     clientPhone: payload.client_phone,
     amount: payload.amount,
@@ -134,10 +143,11 @@ function toBody(draft: PaymentDraft): Record<string, unknown> {
   return {
     amount: draft.amount,
     payment_method: draft.paymentMethod,
-    appointment_id: draft.appointmentId,
+    queue_ticket_id: draft.queueTicketId,
     service_id: draft.serviceId,
     client_id: draft.clientId,
     reference: draft.reference,
+    mobile_money_phone: draft.mobileMoneyPhone,
   };
 }
 
@@ -199,6 +209,9 @@ export function createHttpPaymentGateway(
       }
       if (response.status === 422) {
         return { ok: false, reason: await classify422(response) };
+      }
+      if (response.status === 409) {
+        return { ok: false, reason: "already-paid" };
       }
       return { ok: false, reason: "unavailable" };
     },

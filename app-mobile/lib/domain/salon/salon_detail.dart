@@ -9,16 +9,10 @@
 
 import 'hairdresser.dart';
 import 'opening_hours.dart';
+import 'salon_photo.dart';
 import 'salon_service.dart';
 
-/// Photo de la galerie : `url` **signée** (durée limitée) ou `null`.
-/// Jamais une clé d'objet brute (ADR-0005).
-class SalonPhoto {
-  const SalonPhoto({required this.id, this.url});
-
-  final String id;
-  final String? url;
-}
+export 'salon_photo.dart' show SalonPhoto;
 
 /// Détail public d'un salon `ACTIVE`, tel qu'affiché dans sa fiche.
 class SalonDetail {

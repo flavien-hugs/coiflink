@@ -1,6 +1,6 @@
 # Adapters UI (app-mobile)
 
 Adapter **entrant** (driving) : widgets et écrans Flutter (présentation), point
-d'entrée du framework. `kiosk/kiosk_app.dart` expose `KioskApp` (composition root,
+d'entrée du framework. `terminal/terminal_app.dart` expose `TerminalApp` (composition root,
 seul mode de ce paquet). Les écrans appellent les cas d'usage de `application/` ;
 aucune règle métier ici (ADR-0008).

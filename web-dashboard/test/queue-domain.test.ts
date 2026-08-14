@@ -1,4 +1,6 @@
-// Tests unitaires — domaine `queue` TypeScript (#150). `queueStatus` est
+// Tests unitaires — domaine `queue` TypeScript (#157). Le backend a retiré le
+// modèle RDV au profit d'un modèle walk-in exclusif (`QueueTicket`) : ce
+// module ne porte plus que le vocabulaire ticket de passage. `status` est
 // **dérivé côté backend** (jamais recalculé ici) : ce module ne fait
 // qu'afficher (libellés, styles) et exposer des prédicats d'action miroir
 // des préconditions serveur.
@@ -6,151 +8,195 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  QUEUE_STATUSES,
-  QUEUE_STATUS_LABELS_FR,
-  QUEUE_STATUS_STYLES,
-  canComplete,
-  canMarkArrived,
-  canMarkPaid,
-  canStartService,
-  isQueueStatus,
-  type QueueEntry,
+  WALK_IN_TICKET_STATUSES,
+  WALK_IN_TICKET_STATUS_LABELS_FR,
+  WALK_IN_TICKET_STATUS_STYLES,
+  canCancelTicket,
+  canCompleteTicket,
+  canEditTicketServices,
+  canPayTicket,
+  canStartTicket,
+  countPeopleAhead,
+  formatTicketNumber,
+  isTicketPaid,
+  isWalkInTicketStatus,
+  type WalkInTicket,
 } from "../src/domain/queue/queue";
 
-function entry(overrides: Partial<QueueEntry> = {}): QueueEntry {
+function ticket(overrides: Partial<WalkInTicket> = {}): WalkInTicket {
   return {
-    appointmentId: "appt-1",
-    clientName: "Awa Koné",
-    serviceNames: ["Coupe"],
+    ticketId: "ticket-1",
+    ticketNumber: 7,
+    customerProfileId: "customer-1",
+    customerFirstName: "Awa",
+    serviceIds: ["service-1"],
+    serviceNames: ["Tresses"],
     hairdresserId: null,
     hairdresserName: null,
-    startTime: "09:00:00",
-    endTime: "09:30:00",
-    status: "CONFIRMED",
-    queueStatus: "waiting",
-    arrivedAt: null,
+    status: "waiting",
+    paymentId: null,
+    estimatedWaitMinutes: 12,
+    createdAt: "2026-08-09T09:12:00Z",
     startedAt: null,
+    completedAt: null,
+    cancellationReason: null,
     ...overrides,
   };
 }
 
-describe("isQueueStatus", () => {
-  it.each(QUEUE_STATUSES)("%s est un statut de file valide", (status) => {
-    expect(isQueueStatus(status)).toBe(true);
+describe("isWalkInTicketStatus", () => {
+  it.each(WALK_IN_TICKET_STATUSES)("%s est un statut de ticket valide", (status) => {
+    expect(isWalkInTicketStatus(status)).toBe(true);
   });
 
   it("valeur inconnue → false", () => {
-    expect(isQueueStatus("unknown")).toBe(false);
+    expect(isWalkInTicketStatus("unknown")).toBe(false);
   });
 });
 
-describe("QUEUE_STATUS_LABELS_FR", () => {
+describe("WALK_IN_TICKET_STATUS_LABELS_FR", () => {
   it("porte un libellé pour chaque statut", () => {
-    for (const status of QUEUE_STATUSES) {
-      expect(QUEUE_STATUS_LABELS_FR[status]).toBeTruthy();
+    for (const status of WALK_IN_TICKET_STATUSES) {
+      expect(WALK_IN_TICKET_STATUS_LABELS_FR[status]).toBeTruthy();
     }
   });
 
   it("libellés attendus", () => {
-    expect(QUEUE_STATUS_LABELS_FR.waiting).toBe("En attente");
-    expect(QUEUE_STATUS_LABELS_FR.in_progress).toBe("En cours");
-    expect(QUEUE_STATUS_LABELS_FR.completed).toBe("Terminée");
-    expect(QUEUE_STATUS_LABELS_FR.paid).toBe("Payée");
+    expect(WALK_IN_TICKET_STATUS_LABELS_FR.waiting).toBe("En attente");
+    expect(WALK_IN_TICKET_STATUS_LABELS_FR.called).toBe("Appelé");
+    expect(WALK_IN_TICKET_STATUS_LABELS_FR.in_progress).toBe("En cours");
+    expect(WALK_IN_TICKET_STATUS_LABELS_FR.done).toBe("Terminé");
+    // `expired` n'est atteignable que via l'annulation à motif obligatoire —
+    // le libellé reflète désormais exclusivement ce sens.
+    expect(WALK_IN_TICKET_STATUS_LABELS_FR.expired).toBe("Annulée");
   });
 });
 
-describe("QUEUE_STATUS_STYLES", () => {
+describe("WALK_IN_TICKET_STATUS_STYLES", () => {
   it("porte un style pour chaque statut", () => {
-    for (const status of QUEUE_STATUSES) {
-      expect(QUEUE_STATUS_STYLES[status].badge).toBeTruthy();
+    for (const status of WALK_IN_TICKET_STATUSES) {
+      expect(WALK_IN_TICKET_STATUS_STYLES[status].badge).toBeTruthy();
     }
   });
 });
 
-describe("canMarkArrived", () => {
-  it("RDV CONFIRMED → true", () => {
-    expect(canMarkArrived(entry({ status: "CONFIRMED" }))).toBe(true);
-  });
-
-  it("RDV COMPLETED → false", () => {
-    expect(canMarkArrived(entry({ status: "COMPLETED" }))).toBe(false);
+describe("canStartTicket", () => {
+  it.each(WALK_IN_TICKET_STATUSES)("statut %s", (status) => {
+    const expected = status === "waiting" || status === "called";
+    expect(canStartTicket(ticket({ status }))).toBe(expected);
   });
 });
 
-describe("canStartService", () => {
-  it("CONFIRMED + arrivée + coiffeuse + pas déjà en cours → true", () => {
-    const e = entry({
-      status: "CONFIRMED",
-      arrivedAt: "2026-08-09T09:00:00Z",
-      hairdresserId: "h1",
-      queueStatus: "waiting",
-    });
-    expect(canStartService(e)).toBe(true);
-  });
-
-  it("sans arrivée → false", () => {
-    const e = entry({
-      status: "CONFIRMED",
-      arrivedAt: null,
-      hairdresserId: "h1",
-      queueStatus: "waiting",
-    });
-    expect(canStartService(e)).toBe(false);
-  });
-
-  it("sans coiffeuse assignée → false", () => {
-    const e = entry({
-      status: "CONFIRMED",
-      arrivedAt: "2026-08-09T09:00:00Z",
-      hairdresserId: null,
-      queueStatus: "waiting",
-    });
-    expect(canStartService(e)).toBe(false);
-  });
-
-  it("déjà en cours → false (idempotence visuelle : le bouton disparaît)", () => {
-    const e = entry({
-      status: "CONFIRMED",
-      arrivedAt: "2026-08-09T09:00:00Z",
-      hairdresserId: "h1",
-      queueStatus: "in_progress",
-    });
-    expect(canStartService(e)).toBe(false);
-  });
-
-  it("RDV COMPLETED → false même avec arrivée et coiffeuse", () => {
-    const e = entry({
-      status: "COMPLETED",
-      arrivedAt: "2026-08-09T09:00:00Z",
-      hairdresserId: "h1",
-    });
-    expect(canStartService(e)).toBe(false);
+describe("canCompleteTicket", () => {
+  it.each(WALK_IN_TICKET_STATUSES)("statut %s", (status) => {
+    const expected = status === "in_progress";
+    expect(canCompleteTicket(ticket({ status }))).toBe(expected);
   });
 });
 
-describe("canComplete", () => {
-  it("RDV CONFIRMED → true", () => {
-    expect(canComplete(entry({ status: "CONFIRMED" }))).toBe(true);
+describe("canCancelTicket", () => {
+  it.each(WALK_IN_TICKET_STATUSES)("statut %s", (status) => {
+    const expected = status === "waiting" || status === "called";
+    expect(canCancelTicket(ticket({ status }))).toBe(expected);
   });
 
-  it("RDV COMPLETED → false", () => {
-    expect(canComplete(entry({ status: "COMPLETED" }))).toBe(false);
+  it("statut in_progress → jamais annulable (règle métier dure)", () => {
+    expect(canCancelTicket(ticket({ status: "in_progress" }))).toBe(false);
   });
 });
 
-describe("canMarkPaid", () => {
-  it("RDV COMPLETED non payé → true", () => {
-    const e = entry({ status: "COMPLETED", queueStatus: "completed" });
-    expect(canMarkPaid(e)).toBe(true);
+describe("canEditTicketServices", () => {
+  it.each(WALK_IN_TICKET_STATUSES)("statut %s", (status) => {
+    const expected = status === "waiting" || status === "in_progress";
+    expect(canEditTicketServices(ticket({ status }))).toBe(expected);
+  });
+});
+
+describe("isTicketPaid", () => {
+  it.each(WALK_IN_TICKET_STATUSES)("statut %s, paymentId null → false", (status) => {
+    expect(isTicketPaid(ticket({ status, paymentId: null }))).toBe(false);
   });
 
-  it("RDV COMPLETED déjà payé → false", () => {
-    const e = entry({ status: "COMPLETED", queueStatus: "paid" });
-    expect(canMarkPaid(e)).toBe(false);
+  it.each(WALK_IN_TICKET_STATUSES)("statut %s, paymentId défini → true", (status) => {
+    expect(isTicketPaid(ticket({ status, paymentId: "payment-1" }))).toBe(true);
+  });
+});
+
+describe("canPayTicket", () => {
+  it.each(WALK_IN_TICKET_STATUSES)("statut %s, paymentId null", (status) => {
+    const expected = status === "done";
+    expect(canPayTicket(ticket({ status, paymentId: null }))).toBe(expected);
   });
 
-  it("RDV CONFIRMED → false (pas encore réalisé)", () => {
-    const e = entry({ status: "CONFIRMED", queueStatus: "waiting" });
-    expect(canMarkPaid(e)).toBe(false);
+  it("statut done avec paymentId déjà défini → non payable à nouveau", () => {
+    expect(canPayTicket(ticket({ status: "done", paymentId: "payment-1" }))).toBe(false);
+  });
+
+  it.each(WALK_IN_TICKET_STATUSES)(
+    "statut %s, paymentId défini → toujours false",
+    (status) => {
+      expect(canPayTicket(ticket({ status, paymentId: "payment-1" }))).toBe(false);
+    },
+  );
+});
+
+describe("countPeopleAhead", () => {
+  it("aucun autre ticket en attente → 0", () => {
+    const current = ticket({ ticketId: "ticket-current", ticketNumber: 5 });
+    expect(countPeopleAhead([current], current)).toBe(0);
+  });
+
+  it("compte les tickets waiting avec un numéro inférieur", () => {
+    const current = ticket({ ticketId: "ticket-current", ticketNumber: 5, status: "waiting" });
+    const tickets = [
+      ticket({ ticketId: "ticket-1", ticketNumber: 2, status: "waiting" }),
+      ticket({ ticketId: "ticket-2", ticketNumber: 4, status: "waiting" }),
+      current,
+    ];
+    expect(countPeopleAhead(tickets, current)).toBe(2);
+  });
+
+  it("ignore les tickets avec un numéro inférieur mais un statut différent de waiting", () => {
+    const current = ticket({ ticketId: "ticket-current", ticketNumber: 5, status: "waiting" });
+    const tickets = [
+      ticket({ ticketId: "ticket-1", ticketNumber: 1, status: "done" }),
+      ticket({ ticketId: "ticket-2", ticketNumber: 2, status: "in_progress" }),
+      ticket({ ticketId: "ticket-3", ticketNumber: 3, status: "waiting" }),
+      current,
+    ];
+    expect(countPeopleAhead(tickets, current)).toBe(1);
+  });
+
+  it("ignore les tickets avec un numéro supérieur, quel que soit leur statut", () => {
+    const current = ticket({ ticketId: "ticket-current", ticketNumber: 5, status: "waiting" });
+    const tickets = [
+      ticket({ ticketId: "ticket-1", ticketNumber: 8, status: "waiting" }),
+      ticket({ ticketId: "ticket-2", ticketNumber: 9, status: "waiting" }),
+      current,
+    ];
+    expect(countPeopleAhead(tickets, current)).toBe(0);
+  });
+
+  it("exclut le ticket lui-même de son propre compte", () => {
+    const current = ticket({ ticketId: "ticket-current", ticketNumber: 5, status: "waiting" });
+    expect(countPeopleAhead([current], current)).toBe(0);
+  });
+});
+
+describe("formatTicketNumber", () => {
+  it("zéro-padde à 3 chiffres", () => {
+    expect(formatTicketNumber(4)).toBe("N° 004");
+  });
+
+  it("laisse un numéro déjà à 3 chiffres inchangé", () => {
+    expect(formatTicketNumber(142)).toBe("N° 142");
+  });
+
+  it("ne tronque pas un numéro à plus de 3 chiffres", () => {
+    expect(formatTicketNumber(1024)).toBe("N° 1024");
+  });
+
+  it("gère le numéro 1", () => {
+    expect(formatTicketNumber(1)).toBe("N° 001");
   });
 });

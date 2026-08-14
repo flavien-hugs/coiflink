@@ -26,7 +26,7 @@
 | **M4 — Clients, encaissement & caisse** | Sprint 4 | Fiches clients, paiements liés aux prestations, journal de caisse horodaté. | Épics 4, 5 |
 | **M5 — Dashboard & notifications** | Sprint 5 | KPI gérant/admin + notifications confirmation/rappel/annulation. | Épics 6, 7 |
 | **M6 — Tests, corrections & production** | Sprint 6 | Durcissement, e2e, perf, déploiement et pilote 10 salons. | (transverse) |
-| **M7 — Borne client (kiosque libre-service)** | Post-MVP | Un client sans rendez-vous s'enregistre seul sur une borne tactile en salon et reçoit un ticket imprimé avec numéro de passage. | Épic 8 |
+| **M7 — Borne client (terminal libre-service)** | Post-MVP | Un client sans rendez-vous s'enregistre seul sur une borne tactile en salon et reçoit un ticket imprimé avec numéro de passage. | Épic 8 |
 
 **Chemin critique :** M0 → M1 → M2 → M3 → M4/M5 → M6.
 M3 ne peut démarrer tant que le modèle de données (#3) et l'auth/RBAC (M1) ne sont pas figés ;
@@ -405,7 +405,7 @@ public) et M4 (fiches clients), et réutilise la file d'attente livrée par la P
 
 ---
 
-## M7 — Borne client (kiosque libre-service) (Post-MVP) — Épic 8
+## M7 — Borne client (terminal libre-service) (Post-MVP) — Épic 8
 
 > **Contexte :** promu depuis « Hors périmètre MVP » (PRD §17 « Borne Intelligente d'Accueil »).
 > Le PRD (Risque 5) recommandait explicitement de « lancer d'abord sans borne » et de la piloter sur
@@ -425,7 +425,7 @@ public) et M4 (fiches clients), et réutilise la file d'attente livrée par la P
 > salon, sans intervention du personnel d'accueil, et reçoit un ticket imprimé.
 
 - **#155 — US-8.1 · Rôle & authentification borne** · `Must` · `M` · `feature` `security`
-  Nouveau rôle `KIOSK` scopé à un salon, avec un identifiant device longue durée distinct des JWT
+  Nouveau rôle `TERMINAL` scopé à un salon, avec un identifiant device longue durée distinct des JWT
   personnels : le RBAC actuel sépare `CUSTOMER_MANAGE` (MANAGER uniquement) et `APPOINTMENT_BOOK`
   (CLIENT uniquement), aucun rôle existant ne convient à un terminal public partagé. Permissions
   minimales et dédiées ; ADR requise (même exigence que l'anti-oracle ADR-0026).
@@ -436,7 +436,7 @@ public) et M4 (fiches clients), et réutilise la file d'attente livrée par la P
 
 - **#156 — US-8.2 · Identification téléphone & création client walk-in** · `Must` · `M` · `feature`
   Nouveau `find_by_phone` (port + repository + endpoint) sur `CustomerProfile`, réservé au rôle
-  `KIOSK`, sans jamais interroger `users` par téléphone (préserve l'anti-oracle ADR-0026) ; ouverture
+  `TERMINAL`, sans jamais interroger `users` par téléphone (préserve l'anti-oracle ADR-0026) ; ouverture
   ciblée de la création de fiche client à ce même rôle.
   *Acceptation :* la borne retrouve une fiche existante par téléphone (salon de la borne uniquement)
   et n'affiche que le prénom du client ; si absente, crée une fiche nom/prénom/téléphone sans mot de
@@ -446,7 +446,7 @@ public) et M4 (fiches clients), et réutilise la file d'attente livrée par la P
 - **#157 — US-8.3 · Ticket de passage walk-in & estimation d'attente** · `Must` · `L` · `feature`
   Nouveau domaine `QueueTicket` (numéro séquentiel par salon/jour, statut, estimation d'attente),
   indépendant d'`Appointment` (pas de détournement de créneaux planifiés), avec un endpoint
-  public/kiosk « rejoindre la file » et une formule V1 d'ETA (position dans la file × durée moyenne
+  public/terminal « rejoindre la file » et une formule V1 d'ETA (position dans la file × durée moyenne
   des prestations des tickets en attente et en cours ÷ coiffeuses actives). Pontable vers un `Appointment` uniquement quand une
   coiffeuse démarre réellement la prestation, pour réutiliser la file d'attente livrée en PR #152.
   *Acceptation :* un ticket walk-in reçoit un numéro séquentiel, une heure d'émission et un temps
@@ -461,12 +461,12 @@ public) et M4 (fiches clients), et réutilise la file d'attente livrée par la P
   aucune régression sur les consommateurs existants de l'endpoint.
   *Dépend de :* aucune.
 
-- **#159 — US-8.5 · Mode kiosque de l'app mobile** · `Must` · `L` · `feature` `ux` — **livré**
-  `app-mobile/` est désormais un paquet **kiosque exclusif** (point d'entrée unique `main.dart`, plus
+- **#159 — US-8.5 · Mode terminal de l'app mobile** · `Must` · `L` · `feature` `ux` — **livré**
+  `app-mobile/` est désormais un paquet **terminal exclusif** (point d'entrée unique `main.dart`, plus
   d'app cliente dans ce dépôt) : huit écrans accueil/identification/création/choix-prestation/
   vérification/numéro/impression en gros boutons tactiles adaptés à un usage à distance de bras, avec
   un timer d'inactivité global ramenant automatiquement à l'accueil. Activation **une seule fois** par
-  code à 6 chiffres remis au provisioning (`POST /auth/kiosk/activate`, code à usage unique lié au
+  code à 6 chiffres remis au provisioning (`POST /auth/terminal/activate`, code à usage unique lié au
   device) puis authentification device **silencieuse** à chaque lancement (credential persisté chiffré
   sur l'appareil, aucune session personnelle) — voir [`app-mobile/README.md`](./app-mobile/README.md).
   *Acceptation :* US-001 à US-007 (UI) et US-008 couvertes ; aucune session personnelle active en fin
@@ -484,7 +484,7 @@ public) et M4 (fiches clients), et réutilise la file d'attente livrée par la P
 
 - **#161 — US-8.7 · ADR, documentation & procédure de provisioning borne** · `Should` · `S` · `docs` `infra`
   ADR sur le modèle d'authentification borne et l'architecture `QueueTicket` ; procédure de
-  provisioning d'un device (PIN gérant, sortie du mode kiosque, mise à jour applicative) ; mise à jour
+  provisioning d'un device (PIN gérant, sortie du mode terminal, mise à jour applicative) ; mise à jour
   du PRD/BACKLOG une fois le jalon livré.
   *Acceptation :* les ADR d'authentification borne et d'architecture `QueueTicket` sont committées
   dans `docs/adr/` et indexées ; procédure de provisioning documentée et vérifiée sur au moins un

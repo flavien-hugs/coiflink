@@ -9,7 +9,7 @@ Utilise FastAPI `TestClient` avec override de dépendances :
 
 Couvre :
 - POST `/salons/{id}/payments` : 201 (paiement `VALIDATED`, `recorded_by` du principal) ;
-  422 (montant négatif, mode inconnu, prestation/RDV absents, montant incohérent,
+  422 (montant négatif, mode inconnu, prestation/ticket absents, montant incohérent,
   prestation inconnue) ; 401 sans jeton ;
   403 CLIENT/HAIRDRESSER/hors-portée ; champs privilégiés dans le corps → ignorés.
 - GET `/salons/{id}/cash-journal` : 200 (page paginée `items`/`total`/`limit`/`offset`) ;
@@ -31,10 +31,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from coiflink_api.adapters.inbound.payments import (
-    get_appointment_repository,
     get_audit_log,
     get_cash_journal_repository,
     get_payment_repository,
+    get_queue_ticket_repository,
     get_service_repository,
 )
 from coiflink_api.adapters.inbound.security import (
@@ -53,11 +53,11 @@ from coiflink_api.main import app
 from .conftest import (
     FAKE_ACCESS_CLAIMS,
     TEST_JWT_SECRET,
-    FakeAppointmentRepository,
     FakeAuditLog,
     FakeAuthUserRepository,
     FakeCashJournalRepository,
     FakePaymentRepository,
+    FakeQueueTicketRepository,
     FakeSalonScopeRepository,
     FakeServiceRepository,
     make_access_token,
@@ -133,10 +133,11 @@ def _make_validated_payment(
         payment_method="CASH",
         status=PaymentStatus.VALIDATED.value,
         recorded_by=_MANAGER_ID,
-        appointment_id=None,
         service_id=_SERVICE_ID,
+        queue_ticket_id=None,
         client_id=None,
         reference=None,
+        mobile_money_phone=None,
         created_at=_CREATED_AT,
     )
 
@@ -187,7 +188,6 @@ def _service_repo_with_valid_service() -> FakeServiceRepository:
         duration_minutes=30,
         category=None,
         is_active=True,
-        image_object_key=None,
         created_at=_CREATED_AT,
         updated_at=_CREATED_AT,
     )
@@ -200,17 +200,11 @@ def service_repo() -> FakeServiceRepository:
 
 
 @pytest.fixture()
-def appointment_repo() -> FakeAppointmentRepository:
-    return FakeAppointmentRepository()
-
-
-@pytest.fixture()
 def manager_client(
     payment_repo: FakePaymentRepository,
     journal_repo: FakeCashJournalRepository,
     audit_log: FakeAuditLog,
     service_repo: FakeServiceRepository,
-    appointment_repo: FakeAppointmentRepository,
 ) -> Generator[TestClient, None, None]:
     """TestClient avec MANAGER authentifié et salon dans sa portée."""
     creds = _creds(_MANAGER_ID, Role.MANAGER.value)
@@ -220,8 +214,8 @@ def manager_client(
     app.dependency_overrides[get_payment_repository] = lambda: payment_repo
     app.dependency_overrides[get_cash_journal_repository] = lambda: journal_repo
     app.dependency_overrides[get_audit_log] = lambda: audit_log
-    app.dependency_overrides[get_appointment_repository] = lambda: appointment_repo
     app.dependency_overrides[get_service_repository] = lambda: service_repo
+    app.dependency_overrides[get_queue_ticket_repository] = lambda: FakeQueueTicketRepository()
     app.dependency_overrides[get_user_repository] = lambda: user_repo
     app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
     try:
@@ -230,8 +224,8 @@ def manager_client(
         app.dependency_overrides.pop(get_payment_repository, None)
         app.dependency_overrides.pop(get_cash_journal_repository, None)
         app.dependency_overrides.pop(get_audit_log, None)
-        app.dependency_overrides.pop(get_appointment_repository, None)
         app.dependency_overrides.pop(get_service_repository, None)
+        app.dependency_overrides.pop(get_queue_ticket_repository, None)
         app.dependency_overrides.pop(get_user_repository, None)
         app.dependency_overrides.pop(get_access_policy, None)
 
@@ -334,8 +328,8 @@ class TestRecordPayment422:
         )
         assert r.status_code == 422
 
-    def test_no_service_or_appointment_returns_422(self, manager_client: TestClient) -> None:
-        """Un paiement doit référencer une prestation OU un RDV (§8.2)."""
+    def test_no_service_or_ticket_returns_422(self, manager_client: TestClient) -> None:
+        """Un paiement doit référencer une prestation OU un ticket (§8.2)."""
         body = {"amount": "1000.00", "payment_method": "CASH"}
         r = manager_client.post(
             _payments_url(_SALON_ID),
@@ -424,11 +418,11 @@ class TestRecordPaymentAuth:
         app.dependency_overrides[get_payment_repository] = lambda: payment_repo
         app.dependency_overrides[get_cash_journal_repository] = lambda: journal_repo
         app.dependency_overrides[get_audit_log] = lambda: audit_log
-        app.dependency_overrides[get_appointment_repository] = (
-            lambda: FakeAppointmentRepository()
-        )
         app.dependency_overrides[get_service_repository] = (
             lambda: _service_repo_with_valid_service()
+        )
+        app.dependency_overrides[get_queue_ticket_repository] = (
+            lambda: FakeQueueTicketRepository()
         )
         app.dependency_overrides[get_user_repository] = lambda: user_repo
         app.dependency_overrides[get_access_policy] = lambda: AccessPolicy(scope_repo)
@@ -443,8 +437,8 @@ class TestRecordPaymentAuth:
             app.dependency_overrides.pop(get_payment_repository, None)
             app.dependency_overrides.pop(get_cash_journal_repository, None)
             app.dependency_overrides.pop(get_audit_log, None)
-            app.dependency_overrides.pop(get_appointment_repository, None)
             app.dependency_overrides.pop(get_service_repository, None)
+            app.dependency_overrides.pop(get_queue_ticket_repository, None)
             app.dependency_overrides.pop(get_user_repository, None)
             app.dependency_overrides.pop(get_access_policy, None)
 
@@ -733,10 +727,11 @@ class TestAdjustPayment409:
             payment_method="CASH",
             status=PaymentStatus.ADJUSTED.value,
             recorded_by=_MANAGER_ID,
-            appointment_id=None,
             service_id=_SERVICE_ID,
+            queue_ticket_id=None,
             client_id=None,
             reference=None,
+            mobile_money_phone=None,
             created_at=_CREATED_AT,
         )
         payment_repo = FakePaymentRepository(payments=[payment])

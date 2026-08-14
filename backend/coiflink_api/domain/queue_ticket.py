@@ -1,7 +1,7 @@
 """Ticket de passage walk-in & estimation d'attente (domaine pur, US-8.3, #157).
 
 Domaine **pur** (aucune I/O, ni FastAPI ni SQLAlchemy — ADR-0008) du **ticket de
-passage** délivré à un client sans rendez-vous à la borne kiosque (PRD §17, jalon
+passage** délivré à un client sans rendez-vous à la borne terminal (PRD §17, jalon
 M7). Un `QueueTicket` est **indépendant** d'`Appointment` (ADR-0042) : il ne
 détourne aucun créneau planifié, ne suppose aucun compte utilisateur
 (`customer_profile_id` nullable) et porte son propre cycle de vie.
@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from coiflink_api.domain.errors import (
+    InvalidQueueTicketCancellationReason,
     InvalidQueueTicketServices,
     InvalidQueueTicketTransition,
 )
@@ -46,14 +47,18 @@ QUEUE_TICKET_STATUSES: tuple[QueueTicketStatus, ...] = (
     "expired",
 )
 
-# Statuts **actifs** repris dans la file gérant (§C) : le jour civil du salon,
-# hors `expired` (jamais pris en charge / purgé). `done` reste visible pour la
-# journée (prestation servie), à l'image d'un RDV `COMPLETED`.
+# Statuts **actifs** repris dans la file gérant (§C) : le jour civil du salon.
+# `done` reste visible pour la journée (prestation servie), à l'image d'un RDV
+# `COMPLETED` ; `expired` (annulation manuelle, no-show, motif obligatoire) reste
+# de même visible pour le reste de la journée, affiché « Annulée » avec son
+# motif — un ticket annulé ne doit **jamais** disparaître de la file, seulement
+# porter clairement son état terminal (élargissement délibéré, pas un oubli).
 QUEUE_TICKET_ACTIVE_STATUSES: tuple[QueueTicketStatus, ...] = (
     "waiting",
     "called",
     "in_progress",
     "done",
+    "expired",
 )
 
 # Statuts pesant sur l'estimation d'attente (file **réellement à écouler**) :
@@ -77,6 +82,11 @@ ALLOWED_QUEUE_TICKET_TRANSITIONS: dict[QueueTicketStatus, frozenset[QueueTicketS
 # Repli documenté de l'ETA quand le salon n'a **aucune** coiffeuse active : on ne
 # divise jamais par zéro (filet explicite, pas un `ZeroDivisionError` masqué).
 DEFAULT_WAIT_MINUTES_NO_STAFF = 30
+
+# Borne applicative du motif d'annulation (colonne `TEXT`, non-bornée en base) —
+# même convention que les autres champs libres courts (`SPECIALTIES_MAX_LENGTH`,
+# `DEVICE_LABEL_MAX_LENGTH`) : jamais un corps non borné.
+CANCELLATION_REASON_MAX_LENGTH = 500
 
 
 def can_transition(current: str, target: str) -> bool:
@@ -103,18 +113,47 @@ def assert_transition(current: str, target: str) -> None:
 def validate_service_ids(
     service_ids: tuple[uuid.UUID, ...],
 ) -> tuple[uuid.UUID, ...]:
-    """Exige **au moins une** prestation (miroir `require_services` du RDV).
+    """Exige **au moins une** prestation, **sans doublon** (miroir `require_services` du RDV).
 
     Ne juge **pas** l'appartenance salon ni l'activité des prestations (résolues
-    par le cas d'usage contre le catalogue) : seule la cardinalité « ≥ 1 » est une
-    règle de domaine pure. Lève `InvalidQueueTicketServices` sur un tuple vide.
+    par le cas d'usage contre le catalogue) : seules la cardinalité « ≥ 1 » et
+    l'absence de répétition sont des règles de domaine pures. Un doublon violerait
+    silencieusement la contrainte PK composite `(queue_ticket_id, service_id)` de
+    `queue_ticket_services` (`IntegrityError` non interceptée, `500`) — rejeté ici
+    **avant** toute écriture, avec un message métier clair. Lève
+    `InvalidQueueTicketServices` sur un tuple vide ou un doublon.
     """
 
     if not service_ids:
         raise InvalidQueueTicketServices(
             "Un ticket de passage doit comporter au moins une prestation."
         )
+    if len(set(service_ids)) != len(service_ids):
+        raise InvalidQueueTicketServices(
+            "Une prestation ne peut pas être sélectionnée plusieurs fois."
+        )
     return service_ids
+
+
+def validate_cancellation_reason(reason: str | None) -> str:
+    """Exige un motif d'annulation **non vide** et borné (miroir `validate_service_ids`).
+
+    Le motif est **obligatoire** (no-show client, cliente qui ne se présente
+    pas) : `None` ou une chaîne vide/blanche après `strip()` lève
+    `InvalidQueueTicketCancellationReason`, de même qu'un motif dépassant
+    `CANCELLATION_REASON_MAX_LENGTH`. Retourne le motif **trimé**.
+    """
+
+    trimmed = reason.strip() if reason is not None else ""
+    if not trimmed:
+        raise InvalidQueueTicketCancellationReason(
+            "Le motif d'annulation est obligatoire."
+        )
+    if len(trimmed) > CANCELLATION_REASON_MAX_LENGTH:
+        raise InvalidQueueTicketCancellationReason(
+            "Le motif d'annulation dépasse la longueur autorisée."
+        )
+    return trimmed
 
 
 def estimate_wait_minutes(
@@ -189,6 +228,10 @@ class QueueTicket:
     called_at: datetime.datetime | None
     started_at: datetime.datetime | None
     completed_at: datetime.datetime | None
+    # Motif d'annulation manuelle (no-show), posé **uniquement** quand `status =
+    # "expired"` via une annulation explicite (motif obligatoire) ; `None` sinon
+    # — y compris pour un `expired` hypothétique d'une autre origine future.
+    cancellation_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -198,14 +241,22 @@ class QueueTicketEntry:
     Miroir de `QueueEntry` (#150) pour les tickets walk-in : n'émet que des noms
     d'affichage (`service_names`/`hairdresser_name` = `services.name`/
     `users.full_name`) et le **prénom** du client (`customer_first_name`,
-    projection minimale alignée sur #156, §11.3) — jamais le nom complet, le
-    téléphone ni le `customer_profile_id`. `hairdresser_id` (UUID **opaque**,
-    non-PII) reste exposé : le gérant en a besoin pour agir sur la ligne.
+    projection minimale alignée sur #156, §11.3) — jamais le nom complet ni le
+    téléphone **dans cette ligne**. `hairdresser_id`/`customer_profile_id`
+    (UUID **opaques**, non-PII) restent exposés : le gérant en a besoin pour agir
+    sur la ligne et pour ouvrir le **détail** du ticket (résolution de la fiche
+    complète via `GET /customers/{customer_profile_id}`, guardée séparément par
+    `CUSTOMER_MANAGE`) — l'exposition reste bornée à la route gérant/coiffeur
+    authentifiée, jamais à un écran public. `service_ids` permet de même de
+    résoudre le détail (prix/durée courants) d'une prestation depuis le
+    catalogue déjà chargé, sans dupliquer ces champs ici.
     """
 
     ticket_id: uuid.UUID
     ticket_number: int
+    customer_profile_id: uuid.UUID | None
     customer_first_name: str | None
+    service_ids: tuple[uuid.UUID, ...]
     service_names: tuple[str, ...]
     hairdresser_id: uuid.UUID | None
     hairdresser_name: str | None
@@ -214,6 +265,12 @@ class QueueTicketEntry:
     created_at: datetime.datetime
     started_at: datetime.datetime | None
     completed_at: datetime.datetime | None
+    # Id du paiement `VALIDATED`/`ADJUSTED` rattaché au ticket (même notion de « payé »
+    # que `PAID_PAYMENT_STATUSES` de `domain/discrepancy.py`), ou `None` si aucun.
+    payment_id: uuid.UUID | None
+    # Motif d'annulation manuelle (no-show), affiché « Annulée » + motif dans la
+    # file gérant quand `status = "expired"` ; `None` sinon (miroir `QueueTicket`).
+    cancellation_reason: str | None
 
 
 __all__ = [
@@ -223,9 +280,11 @@ __all__ = [
     "QUEUE_TICKET_PENDING_STATUSES",
     "ALLOWED_QUEUE_TICKET_TRANSITIONS",
     "DEFAULT_WAIT_MINUTES_NO_STAFF",
+    "CANCELLATION_REASON_MAX_LENGTH",
     "can_transition",
     "assert_transition",
     "validate_service_ids",
+    "validate_cancellation_reason",
     "estimate_wait_minutes",
     "QueueTicketToCreate",
     "QueueTicket",

@@ -3,8 +3,8 @@
 Groupe `TestPlatformKpisE2E` (PostgreSQL requis) :
     exerce le **chemin SQL réel** de `SqlPlatformKpiRepository.compute_snapshot` —
     sept `SELECT` scalaires indépendants (`COUNT` sur `salons`/`users`/
-    `appointments`, `SUM` net signé sur `cash_journal`), filtrés par statut de
-    salon, rôle utilisateur, bornes de mois civil (`appointment_date`) et bornes
+    `queue_tickets`, `SUM` net signé sur `cash_journal`), filtrés par statut de
+    salon, rôle utilisateur, bornes de mois civil (`issued_date`) et bornes
     UTC de mois (`cash_journal.created_at`). Aucune suite unitaire/API (adossée à
     un dépôt en mémoire) ne couvre ce SQL : c'est le seul code qui satisfait
     réellement le critère d'acceptation #44 *« dashboard admin avec KPI globaux
@@ -19,28 +19,31 @@ résiduelle d'autres suites e2e (chacune nettoie son propre préfixe dans
 « plateforme vide » qui vérifie explicitement l'absence de toute donnée au
 moment précis de l'appel (miroir de l'exigence du plan de test de la spec).
 
+Rebranché sur `queue_tickets` (pivot walk-in exclusif, #148) : les anciens RDV
+insérés directement en base sont remplacés par des tickets walk-in.
+
 Scénarios (spec `specs/kpi-globaux-plateforme-admin.md`, §Testing Plan
 « Intégration SQL réelle ») :
     - `salons_total` compte **tous** les statuts, `salons_active` **seulement**
       `ACTIVE` ;
     - `clients_total` ne compte **que** les comptes `CLIENT` (exclut
       `MANAGER`/`HAIRDRESSER`/`ADMIN`) ;
-    - `appointments_this_month` filtre aux **bornes inclusives** du mois civil
-      (`appointment_date`), un jour avant/après le mois est exclu ;
-    - `appointments_total` compte **tous** les RDV, y compris `CANCELLED` ;
+    - `tickets_this_month` filtre aux **bornes inclusives** du mois civil
+      (`issued_date`), un jour avant/après le mois est exclu ;
+    - `tickets_total` compte **tous** les tickets, y compris `expired` ;
     - `revenue_total`/`revenue_this_month` = somme **signée** du journal de
       caisse (paiement + ajustement négatif = net), `revenue_this_month`
       exclut une opération d'un mois antérieur (bornes UTC) ;
-    - plateforme sans salon/RDV/paiement → tous les compteurs à `0`, revenus
+    - plateforme sans salon/ticket/paiement → tous les compteurs à `0`, revenus
       `"0.00"` (état vide légitime, ≠ erreur) ;
     - `401` sans jeton, `403` pour un rôle autre qu'`ADMIN` ;
     - aucune PII (client, salon, jeton) dans la réponse agrégée.
 
 Aucun endpoint d'inscription `ADMIN` n'existe (PRD §9.1) : le compte est créé
 via l'inscription **client** puis promu `ADMIN` par une écriture SQL directe
-(miroir `test_admin_transactions_e2e.py`, #37). Les RDV et l'opération de
+(miroir `test_admin_transactions_e2e.py`, #37). Les tickets et l'opération de
 caisse antérieure sont insérés **directement en base** (bypass des gardes HTTP
-de réservation / contrôle du montant) pour fixer `appointment_date` et
+de la borne walk-in / contrôle du montant) pour fixer `issued_date` et
 `created_at` sans dépendre du jour d'exécution du test.
 
 Prérequis :
@@ -93,8 +96,8 @@ _AMOUNT_QUANTUM = decimal.Decimal("0.01")
 def _wipe_test_data() -> None:
     """Supprime les données de test dans l'ordre des contraintes FK (`ON DELETE RESTRICT`).
 
-    Ordre : audit_logs → cash_journal → payments → appointment_services →
-    appointments → services → salon_members → salons → users.
+    Ordre : audit_logs → cash_journal → payments → queue_tickets →
+    services → salon_members → salons → users.
     """
     engine = get_engine()
     with engine.connect() as conn:
@@ -124,15 +127,7 @@ def _wipe_test_data() -> None:
         )
         conn.execute(
             text(
-                "DELETE FROM appointment_services WHERE salon_id IN "
-                "(SELECT id FROM salons WHERE owner_id IN "
-                "(SELECT id FROM users WHERE phone LIKE :prefix))"
-            ),
-            {"prefix": f"{_E2E_PHONE_PREFIX}%"},
-        )
-        conn.execute(
-            text(
-                "DELETE FROM appointments WHERE salon_id IN "
+                "DELETE FROM queue_tickets WHERE salon_id IN "
                 "(SELECT id FROM salons WHERE owner_id IN "
                 "(SELECT id FROM users WHERE phone LIKE :prefix))"
             ),
@@ -312,30 +307,35 @@ def _set_salon_status(salon_id: str, status: str) -> None:
         conn.commit()
 
 
-def _seed_appointment(
-    salon_id: str, client_id: str, *, day: datetime.date, status: str = "COMPLETED"
+def _seed_ticket(
+    salon_id: str, *, day: datetime.date, ticket_number: int = 1, status: str = "done"
 ) -> str:
-    """Insère directement en base un RDV **non assigné** (jour/statut contrôlés).
+    """Insère directement en base un ticket walk-in **anonyme** (jour/statut contrôlés).
 
-    Bypass des gardes de réservation HTTP — seuls les compteurs globaux
-    (`appointments_total`/`appointments_this_month`) sont testés ici, pas le
-    parcours de réservation. `hairdresser_id` reste `NULL` (nullable) : la
-    lecture globale ne s'appuie que sur `appointment_date`/`status`.
+    Bypass des gardes de la borne HTTP — seuls les compteurs globaux
+    (`tickets_total`/`tickets_this_month`) sont testés ici, pas le parcours de
+    prise de ticket. `customer_profile_id` reste `NULL` (nullable, ticket
+    anonyme) : la lecture globale ne s'appuie que sur `issued_date`/`status`.
     """
     engine = get_engine()
     with engine.connect() as conn:
         row = conn.execute(
             text(
-                "INSERT INTO appointments "
-                "(salon_id, client_id, appointment_date, start_time, end_time, status) "
-                "VALUES (:salon_id, :client_id, :day, '10:00', '10:30', :status) "
+                "INSERT INTO queue_tickets "
+                "(salon_id, issued_date, ticket_number, status, estimated_wait_minutes) "
+                "VALUES (:salon_id, :day, :number, :status, 0) "
                 "RETURNING id"
             ),
-            {"salon_id": salon_id, "client_id": client_id, "day": day, "status": status},
+            {
+                "salon_id": salon_id,
+                "day": day,
+                "number": ticket_number,
+                "status": status,
+            },
         )
-        appointment_id = row.scalar_one()
+        ticket_id = row.scalar_one()
         conn.commit()
-    return str(appointment_id)
+    return str(ticket_id)
 
 
 def _create_service(client: TestClient, token: str, salon_id: str, *, price: str) -> str:
@@ -423,7 +423,7 @@ class TestPlatformKpisE2E:
     # ── Parcours 0 : plateforme vide ────────────────────────────────────────────
 
     def test_empty_platform_returns_zero_counters(self, _e2e_client: TestClient) -> None:
-        """Sans salon/RDV/paiement, tous les compteurs valent `0` (état normal, ≠ erreur)."""
+        """Sans salon/ticket/paiement, tous les compteurs valent `0` (état normal, ≠ erreur)."""
         admin_phone = _next_phone()
         admin_id = _register_and_promote_admin(_e2e_client, phone=admin_phone)
         assert admin_id
@@ -434,8 +434,8 @@ class TestPlatformKpisE2E:
         assert kpis["salons_total"] == 0
         assert kpis["salons_active"] == 0
         assert kpis["clients_total"] == 0
-        assert kpis["appointments_total"] == 0
-        assert kpis["appointments_this_month"] == 0
+        assert kpis["tickets_total"] == 0
+        assert kpis["tickets_this_month"] == 0
         assert _dec(kpis["revenue_total"]) == decimal.Decimal("0.00")
         assert _dec(kpis["revenue_this_month"]) == decimal.Decimal("0.00")
 
@@ -502,12 +502,12 @@ class TestPlatformKpisE2E:
         # ni le coiffeur (HAIRDRESSER), ni l'admin (ADMIN) lui-même.
         assert after["clients_total"] - before["clients_total"] == 1
 
-    # ── Parcours 3 : bornes de mois civil (appointments_this_month) ────────────
+    # ── Parcours 3 : bornes de mois civil (tickets_this_month) ─────────────────
 
-    def test_appointments_this_month_respects_inclusive_month_bounds(
+    def test_tickets_this_month_respects_inclusive_month_bounds(
         self, _e2e_client: TestClient
     ) -> None:
-        """Un RDV le 1er/dernier jour du mois compte ; la veille/le lendemain du mois, non."""
+        """Un ticket le 1er/dernier jour du mois compte ; la veille/le lendemain du mois, non."""
         admin_phone = _next_phone()
         admin_id = _register_and_promote_admin(_e2e_client, phone=admin_phone)
         assert admin_id
@@ -517,7 +517,6 @@ class TestPlatformKpisE2E:
         _register_manager(_e2e_client, phone=manager_phone)
         manager_token = _login(_e2e_client, phone=manager_phone)
         salon_id = _create_salon(_e2e_client, manager_token, name="e2e-kpi-salon-month")
-        client_id = _register_client_account(_e2e_client, phone=_next_phone())
 
         today = datetime.date.today()
         month_from, month_to = month_bounds(today)
@@ -525,25 +524,25 @@ class TestPlatformKpisE2E:
         before = _get_kpis(_e2e_client, admin_token)
 
         # Bornes incluses du mois courant.
-        _seed_appointment(salon_id, client_id, day=month_from, status="PENDING")
-        _seed_appointment(salon_id, client_id, day=month_to, status="CONFIRMED")
-        # Un jour avant/après le mois : exclus de `appointments_this_month`.
-        _seed_appointment(
-            salon_id, client_id, day=month_from - datetime.timedelta(days=1), status="PENDING"
+        _seed_ticket(salon_id, day=month_from, status="waiting")
+        _seed_ticket(salon_id, day=month_to, status="in_progress")
+        # Un jour avant/après le mois : exclus de `tickets_this_month`.
+        _seed_ticket(
+            salon_id, day=month_from - datetime.timedelta(days=1), status="waiting"
         )
-        _seed_appointment(
-            salon_id, client_id, day=month_to + datetime.timedelta(days=1), status="PENDING"
+        _seed_ticket(
+            salon_id, day=month_to + datetime.timedelta(days=1), status="waiting"
         )
 
         after = _get_kpis(_e2e_client, admin_token)
 
-        assert after["appointments_total"] - before["appointments_total"] == 4
-        assert after["appointments_this_month"] - before["appointments_this_month"] == 2
+        assert after["tickets_total"] - before["tickets_total"] == 4
+        assert after["tickets_this_month"] - before["tickets_this_month"] == 2
         assert after["month_from"] == month_from.isoformat()
         assert after["month_to"] == month_to.isoformat()
 
-    def test_appointments_total_includes_cancelled(self, _e2e_client: TestClient) -> None:
-        """`appointments_total` compte un RDV `CANCELLED` (volume plateforme, tous statuts)."""
+    def test_tickets_total_includes_expired(self, _e2e_client: TestClient) -> None:
+        """`tickets_total` compte un ticket `expired` (volume plateforme, tous statuts)."""
         admin_phone = _next_phone()
         admin_id = _register_and_promote_admin(_e2e_client, phone=admin_phone)
         assert admin_id
@@ -552,19 +551,16 @@ class TestPlatformKpisE2E:
         manager_phone = _next_phone()
         _register_manager(_e2e_client, phone=manager_phone)
         manager_token = _login(_e2e_client, phone=manager_phone)
-        salon_id = _create_salon(_e2e_client, manager_token, name="e2e-kpi-salon-cancelled")
-        client_id = _register_client_account(_e2e_client, phone=_next_phone())
+        salon_id = _create_salon(_e2e_client, manager_token, name="e2e-kpi-salon-expired")
 
         before = _get_kpis(_e2e_client, admin_token)
 
-        _seed_appointment(
-            salon_id, client_id, day=datetime.date.today(), status="CANCELLED"
-        )
+        _seed_ticket(salon_id, day=datetime.date.today(), status="expired")
 
         after = _get_kpis(_e2e_client, admin_token)
 
-        assert after["appointments_total"] - before["appointments_total"] == 1
-        assert after["appointments_this_month"] - before["appointments_this_month"] == 1
+        assert after["tickets_total"] - before["tickets_total"] == 1
+        assert after["tickets_this_month"] - before["tickets_this_month"] == 1
 
     # ── Parcours 4 : revenu net (paiement + ajustement + borne de mois) ────────
 

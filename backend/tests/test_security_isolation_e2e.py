@@ -8,16 +8,16 @@ PostgreSQL, **JWT réel** injecté) refuse au gérant A toute donnée du salon B
 
 Couvre (spec §2/§3/§4) :
 
-- lecture inter-salons → `403` systématique (salon, services, RDV, paiements,
-  clients, CA, décompte du jour) ;
+- lecture inter-salons → `403` systématique (salon, services, file d'attente
+  walk-in, paiements, clients, CA, décompte du jour) ;
 - écriture inter-salons → `403` **et aucune ligne écrite** dans le salon B ;
 - anti-oracle : corps du `403` sans donnée de B, `detail` **identique** à celui
   d'un rôle insuffisant ;
 - filtre `client_id` étranger → **liste vide**, jamais les données de B ;
 - `CLIENT` : refusé sur toute route `/salons/{id}/…`, `404` neutre sur un reçu
-  tiers/inexistant, historique borné à ses RDV ;
-- `HAIRDRESSER` : lit « son planning » mais **ne peut pas encaisser** (`403`,
-  permission absente même **dans** sa portée) ;
+  tiers/inexistant, lecture « mes reçus » bornée aux siens ;
+- `HAIRDRESSER` : lit la file d'attente **de son salon** mais **ne peut pas
+  encaisser** (`403`, permission absente même **dans** sa portée) ;
 - révocation immédiate (compte suspendu après émission → `403` « Compte désactivé. ») ;
 - rotation du refresh à `/auth/refresh` + refus du refresh d'un compte non `ACTIVE`.
 
@@ -26,9 +26,11 @@ Prérequis :
     DATABASE_URL=postgresql://user:pwd@host/db alembic upgrade head
     DATABASE_URL=postgresql://user:pwd@host/db pytest tests/test_security_isolation_e2e.py -v
 
-Nettoyage FK-safe (mémoire projet `notifications-fk-restrict-cleanup`) : plage de
-téléphones réservée `+225089991xxxx` ; `audit_logs`/`notifications`/`campaigns`
-**avant** `appointments`/`salons`/`users`, `cash_journal` avant `payments`.
+Nettoyage FK-safe : plage de téléphones réservée `+225089991xxxx` ;
+`audit_logs`/`campaigns` **avant** `salons`/`users`, `cash_journal` avant
+`payments`. La table `notifications` a été supprimée par la migration
+destructive `0017` avec tout le module Rendez-vous/Notification — plus rien
+à nettoyer ici.
 """
 
 from __future__ import annotations
@@ -95,13 +97,6 @@ def _wipe_test_data() -> None:
         )
         conn.execute(
             text(
-                f"DELETE FROM notifications WHERE salon_id IN ({salons_of_prefix}) "
-                f"OR user_id IN ({users_of_prefix})"
-            ),
-            params,
-        )
-        conn.execute(
-            text(
                 f"DELETE FROM campaigns WHERE salon_id IN ({salons_of_prefix}) "
                 f"OR created_by IN ({users_of_prefix})"
             ),
@@ -113,16 +108,6 @@ def _wipe_test_data() -> None:
         )
         conn.execute(
             text(f"DELETE FROM payments WHERE salon_id IN ({salons_of_prefix})"), params
-        )
-        conn.execute(
-            text(
-                f"DELETE FROM appointment_services WHERE salon_id IN ({salons_of_prefix})"
-            ),
-            params,
-        )
-        conn.execute(
-            text(f"DELETE FROM appointments WHERE salon_id IN ({salons_of_prefix})"),
-            params,
         )
         conn.execute(
             text(f"DELETE FROM services WHERE salon_id IN ({salons_of_prefix})"), params
@@ -239,53 +224,19 @@ def _create_customer(client: TestClient, token: str, salon_id: str, *, full_name
     return resp.json()["id"]
 
 
-def _next_monday() -> datetime.date:
-    today = datetime.date.today()
-    return today + datetime.timedelta(days=((7 - today.weekday()) % 7 or 7))
-
-
-def _first_slot(client: TestClient, salon_id: str, *, date: datetime.date, service_id: str) -> str:
-    resp = client.get(
-        f"/catalog/salons/{salon_id}/availability",
-        params={"date": date.isoformat(), "service_id": service_id},
-    )
-    assert resp.status_code == 200, f"Disponibilité échouée : {resp.text}"
-    slots = resp.json()["slots"]
-    assert slots, "Aucun créneau libre — le salon devrait être réservable et vide."
-    return slots[0]["start"]
-
-
-def _book_complete_pay(
-    client: TestClient, journey: "_Iso", *, client_id: str, client_token: str
-) -> str:
-    """Réserve (client) → COMPLETED (gérant A) → paiement (gérant A) dans salon A.
+def _pay_for_service(client: TestClient, journey: "_Iso", *, client_id: str) -> str:
+    """Encaisse (gérant A) la prestation du salon A pour `client_id`.
 
     Retourne le `payment_id`. Sert à peupler le salon A pour le test du filtre
     `client_id` étranger (aucune donnée de B ne doit jamais fuiter par ce filtre).
     """
 
-    date = _next_monday()
-    start = _first_slot(client, journey.salon_a, date=date, service_id=journey.service_a)
-    booking = client.post(
-        f"/salons/{journey.salon_a}/appointments",
-        json={"date": date.isoformat(), "start_time": start, "service_ids": [journey.service_a]},
-        headers=_auth(client_token),
-    )
-    assert booking.status_code == 201, f"Réservation échouée : {booking.text}"
-    appointment_id = booking.json()["id"]
-    for target in ("CONFIRMED", "COMPLETED"):
-        resp = client.post(
-            f"/salons/{journey.salon_a}/appointments/{appointment_id}/status",
-            json={"status": target},
-            headers=_auth(journey.token_a),
-        )
-        assert resp.status_code == 200, f"Transition {target} échouée : {resp.text}"
     payment = client.post(
         f"/salons/{journey.salon_a}/payments",
         json={
             "amount": _SERVICE_PRICE,
             "payment_method": "CASH",
-            "appointment_id": appointment_id,
+            "service_id": journey.service_a,
             "client_id": client_id,
         },
         headers=_auth(journey.token_a),
@@ -375,20 +326,13 @@ class TestCrossSalonIsolationE2E:
 
         client = _e2e_client
         b = _iso.salon_b
-        week = _next_monday()
-        params = {"date_from": week.isoformat(), "date_to": (week + datetime.timedelta(days=6)).isoformat()}
         read_targets = [
             client.get(f"/salons/{b}", headers=_auth(_iso.token_a)),
             client.get(f"/salons/{b}/services", headers=_auth(_iso.token_a)),
-            client.get(f"/salons/{b}/appointments", params=params, headers=_auth(_iso.token_a)),
+            client.get(f"/salons/{b}/queue/tickets", headers=_auth(_iso.token_a)),
             client.get(f"/salons/{b}/payments", headers=_auth(_iso.token_a)),
             client.get(f"/salons/{b}/customers", headers=_auth(_iso.token_a)),
             client.get(f"/salons/{b}/revenue/summary", headers=_auth(_iso.token_a)),
-            client.get(
-                f"/salons/{b}/appointments/daily-summary",
-                params={"date": week.isoformat()},
-                headers=_auth(_iso.token_a),
-            ),
         ]
         for resp in read_targets:
             assert resp.status_code == 403, f"Lecture inter-salons non refusée : {resp.request.url}"
@@ -455,9 +399,7 @@ class TestCrossSalonIsolationE2E:
 
         client = _e2e_client
         # Un paiement réel dans le salon A, pour le client E2E.
-        payment_id = _book_complete_pay(
-            client, _iso, client_id=_iso.client_id, client_token=_iso.client_token
-        )
+        payment_id = _pay_for_service(client, _iso, client_id=_iso.client_id)
 
         # Filtre par le vrai client → le paiement apparaît (contrôle positif).
         own = client.get(
@@ -492,30 +434,25 @@ class TestCrossSalonIsolationE2E:
         assert missing.status_code == 404
         assert missing.json()["detail"] == "Reçu introuvable."
 
-        # Historique : route d'appartenance, borné au client (par construction, vide ici).
-        history = client.get("/appointments/history", headers=auth)
-        assert history.status_code == 200
-        assert isinstance(history.json(), list)
+        # « Mes reçus » : route d'appartenance, bornée au client (par construction, vide ici).
+        receipts = client.get("/me/receipts", headers=auth)
+        assert receipts.status_code == 200
+        assert receipts.json()["items"] == []
 
-    def test_hairdresser_reads_planning_but_cannot_record_payment(
+    def test_hairdresser_reads_queue_but_cannot_record_payment(
         self, _e2e_client: TestClient, _iso: _Iso
     ) -> None:
-        """Le coiffeur lit « son planning » mais n'encaisse pas (`403`, permission absente **dans** sa portée)."""
+        """Le coiffeur lit la file d'attente **de son salon** mais n'encaisse pas (`403`, permission absente **dans** sa portée)."""
 
         client = _e2e_client
-        week = _next_monday()
 
-        # « Son planning » : lecture d'appartenance → 200 (même liste vide).
-        planning = client.get(
-            "/appointments/assigned",
-            params={
-                "date_from": week.isoformat(),
-                "date_to": (week + datetime.timedelta(days=6)).isoformat(),
-            },
+        # File d'attente **de son salon** (QUEUE_TICKET_READ_SALON) → 200 (même liste vide).
+        queue = client.get(
+            f"/salons/{_iso.salon_a}/queue/tickets",
             headers=_auth(_iso.hairdresser_token),
         )
-        assert planning.status_code == 200
-        assert isinstance(planning.json(), list)
+        assert queue.status_code == 200
+        assert isinstance(queue.json()["items"], list)
 
         # Encaissement dans **son** salon → 403 : le coiffeur a la portée mais **pas**
         # la permission `PAYMENT_RECORD` (la portée seule n'ouvre aucun droit).

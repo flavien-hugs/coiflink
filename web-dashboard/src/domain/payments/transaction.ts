@@ -7,9 +7,10 @@
 // de projeter la réponse.
 //
 // Une transaction est un `Payment` (montant **brut** en chaîne décimale, statut :
-// `ADJUSTED` signale une correction, cohérent avec le journal #34) enrichi du
-// **seul** `clientName` (résolu côté backend, colonne non sensible ; jamais
-// d'autre PII). Aucun secret ici ; aucune PII n'est journalisée.
+// `ADJUSTED` signale une correction, cohérent avec le journal #34) enrichi de
+// `clientName` (résolu côté backend — compte client **ou** fiche du ticket lié,
+// colonne non sensible ; jamais d'autre PII) et de `ticketNumber` (le ticket lié,
+// `null` pour une prestation seule). Aucun secret ici ; aucune PII n'est journalisée.
 
 import {
   PAYMENT_METHOD_VALUES,
@@ -26,9 +27,11 @@ export const SALON_TIME_ZONE = "Africa/Abidjan";
 
 // Une ligne de l'historique : le paiement tel qu'enregistré + le nom du client.
 export interface Transaction extends Payment {
-  // Nom d'affichage du client lié (`users.full_name`), ou `null` si aucun client
-  // n'est lié / le nom n'est pas résolu. Aucune autre PII.
+  // Nom d'affichage du client lié (compte enregistré ou fiche du ticket walk-in),
+  // ou `null` si aucun n'est résoluble. Aucune autre PII.
   clientName: string | null;
+  // Numéro du ticket walk-in réglé, `null` pour une prestation seule.
+  ticketNumber: number | null;
 }
 
 // Page renvoyée par le backend (items + total + bornes de pagination).

@@ -23,11 +23,8 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("isActivityKind", () => {
-  it("accepte les genres du domaine", () => {
+  it("accepte le seul genre du domaine walk-in", () => {
     expect(isActivityKind("payment")).toBe(true);
-    expect(isActivityKind("new_booking")).toBe(true);
-    expect(isActivityKind("cancellation")).toBe(true);
-    expect(isActivityKind("appointment_update")).toBe(true);
   });
 
   it("rejette un genre inconnu", () => {
@@ -35,10 +32,15 @@ describe("isActivityKind", () => {
     expect(isActivityKind("")).toBe(false);
   });
 
-  it("expose un libellé francisé et un glyphe par genre", () => {
+  it("rejette les anciens genres RDV, retirés du domaine walk-in", () => {
+    expect(isActivityKind("new_booking")).toBe(false);
+    expect(isActivityKind("cancellation")).toBe(false);
+    expect(isActivityKind("appointment_update")).toBe(false);
+  });
+
+  it("expose un libellé francisé et un glyphe pour le seul genre restant", () => {
     expect(ACTIVITY_KIND_LABELS_FR.payment).toBe("Paiement");
-    expect(ACTIVITY_KIND_LABELS_FR.cancellation).toBe("Annulation");
-    expect(ACTIVITY_KIND_SYMBOL.new_booking).toBe("＋");
+    expect(ACTIVITY_KIND_SYMBOL.payment).toBe("₣");
   });
 });
 
@@ -115,7 +117,7 @@ describe("formatActivityAmount", () => {
     expect(formatted).not.toBe("5000.00");
   });
 
-  it("évènement sans montant (non-paiement) → null", () => {
-    expect(formatActivityAmount(event({ kind: "cancellation", amount: null }))).toBeNull();
+  it("paiement sans montant résolu → null (défensif)", () => {
+    expect(formatActivityAmount(event({ kind: "payment", amount: null }))).toBeNull();
   });
 });

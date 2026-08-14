@@ -2,7 +2,7 @@
 //
 // Domaine **pur** (ADR-0008) : aucune dépendance à Flutter ni à un client HTTP.
 // Indépendant du domaine `QueueTicket` de #157 (découplage assumé) — l'écran de
-// confirmation kiosque (#159) construit ce payload à partir de la réponse
+// confirmation terminal (#159) construit ce payload à partir de la réponse
 // `joinQueue` (#157) et le remet au port `TicketPrinterGateway`.
 //
 // Ce fichier est le contrat consommé par la confirmation de #159 ; #160 livrera
