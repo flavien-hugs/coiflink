@@ -55,6 +55,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0040](./0040-impression-recu-encaissement-gerant.md) | Impression du reçu (gérant) — `receipt_number` séquentiel par salon (migration `0012`, verrou consultatif transactionnel), projection `Receipt` étendue (`client_name`/`client_phone`, lecture salon-scopée `CASH_JOURNAL_READ` réutilisée), aperçu navigateur `@media print` (succès best-effort via `afterprint`), mobile client = consultation + partage natif (aucun changement backend, #38) | Accepté | ad hoc |
 | [0041](./0041-authentification-borne-kiosque.md) | Rôle & authentification borne terminal — cinquième rôle fermé `TERMINAL` (compte de service `users` + rattachement `salon_members`, migration `0013` régénérant les `CHECK` role), permissions minimales dédiées (`CUSTOMER_LOOKUP_TERMINAL`/`CUSTOMER_CREATE_WALKIN`/`QUEUE_TICKET_CREATE`, jamais `CUSTOMER_MANAGE`/`APPOINTMENT_BOOK`), `TERMINAL_PROVISION` au MANAGER, credential de device longue durée révocable (secret argon2id rendu une fois) → JWT courts via `/auth/terminal/login` (publique-listée, rate-limitée, `401` générique), portée mono-salon lue en base, révocation logique à effet immédiat, sentinelle `phone = id.hex` | Accepté | #155 |
 | [0042](./0042-file-attente-walkin-queue-ticket.md) | File d'attente walk-in — ticket de passage `QueueTicket` **indépendant d'`Appointment`** (tables `queue_tickets`/`queue_ticket_services`, migration `0014` additive), numéro séquentiel par salon **et** jour civil (verrou consultatif transactionnel + `UNIQUE`, patron ADR-0040), estimation d'attente V1 heuristique figée à l'émission (`position × durée moyenne ÷ coiffeuses actives`, filets dégénérés), endpoint « rejoindre la file » réservé au rôle `TERMINAL` (`QUEUE_TICKET_CREATE`), prise en charge/clôture réutilisant `APPOINTMENT_UPDATE_STATUS`, visibilité gérant par **fusion en lecture** dans `GET /salons/{id}/queue` (`{appointments, walk_in_tickets}`, jamais d'écriture dans `appointments`) | Accepté | #157 |
+| [0043](./0043-registre-images-ghcr-deploiement-railway-depuis-image.md) | Registre d'images GHCR & déploiement Railway depuis l'image — reformule la « Stratégie de registre d'images » d'ADR-0011 (deploy-from-source → push GHCR), `ci.yml` publie `coiflink-backend`/`coiflink-web` sur `ghcr.io` à chaque push `main`/`develop`/`rc/**`/tag git avec un tag dérivé de la ref (`latest`/`dev`/`<X.Y.Z>_RC`/`<X.Y.Z>` + SHA, job `image-tag` dédié, secret `MY_GITHUB_TOKEN`, `packages: write` scopé à 2 jobs), bascule des services Railway en source « Docker Image » + Image Auto Updates **à appliquer manuellement** (non exprimable en `railway.json`, hors accès disponible à la rédaction) | Accepté | ad hoc |
 
 ## Décisions volontairement différées (non bloquantes pour M1)
 
@@ -64,8 +65,10 @@ ultérieure et signalés en *Conséquences* des ADR concernés :
 - **Plateforme d'hébergement & région des données** — **tranchée par
   [ADR-0011](./0011-deploiement-environnements-secrets.md)** (#5 : Railway, région `europe-west4`) ;
   la partie **CI/CD GitHub Actions & empaquetage Docker** l'avait été par
-  [ADR-0010](./0010-ci-cd-docker-packaging.md) (#4). Le **registre d'images** est tranché par
-  ADR-0011 (deploy-from-source ; push GHCR différé, optionnel).
+  [ADR-0010](./0010-ci-cd-docker-packaging.md) (#4). Le **registre d'images**, initialement tranché
+  par ADR-0011 (deploy-from-source), est **reformulé par
+  [ADR-0043](./0043-registre-images-ghcr-deploiement-railway-depuis-image.md)** (push GHCR + Railway
+  en source image, bascule Railway à appliquer manuellement — voir Conséquences de cet ADR).
 - **Fournisseur SMS concret** (agrégateur local) — **reste différé** (opérationnel, M5) ; la surface
   de secrets est documentée par ADR-0011, voir ADR-0006.
 - **Fournisseur de stockage objet** (AWS S3 / MinIO / R2 / bucket plateforme) — **provisionnement
