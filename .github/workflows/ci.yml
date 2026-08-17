@@ -103,7 +103,7 @@ jobs:
           python -m build
 
       - name: Téléverser l'artefact backend (dist)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-dist
           path: backend/dist/*
@@ -140,7 +140,7 @@ jobs:
         run: npm run build
 
       - name: Téléverser l'artefact web (sortie standalone)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-dashboard-build
           path: |
@@ -187,7 +187,7 @@ jobs:
         run: flutter build apk --debug
 
       - name: Téléverser l'artefact mobile (APK)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: app-mobile-apk
           path: app-mobile/build/app/outputs/flutter-apk/*.apk
