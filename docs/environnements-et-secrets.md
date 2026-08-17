@@ -148,9 +148,13 @@ la skill **`use-railway`** / le serveur MCP `railway` (voir ADR-0011).
    - **Prérequis PostgreSQL** : vérifier que `CREATE EXTENSION btree_gist` est autorisé (requis par la
      migration initiale, ADR-0009). Sur un Postgres managé restreint, confirmer le privilège avant de
      migrer.
-3. **Services applicatifs** : créer les services `backend` et `web` en **deploy-from-source** à partir
-   des `Dockerfile` committés — config déclarative non secrète : `deploy/railway/backend.json` et
-   `deploy/railway/web.json`.
+3. **Services applicatifs** : créer les services `backend` et `web`. Deux sources possibles :
+   **deploy-from-source** (Railway build les `Dockerfile` committés — config déclarative non secrète
+   `deploy/railway/backend.json`/`web.json`) ou **source « Docker Image »**
+   (`ghcr.io/<owner>/coiflink-backend:latest`/`coiflink-web:latest`, publiées par `ci.yml` à chaque
+   push `main` — décision **[ADR-0043](./adr/0043-registre-images-ghcr-deploiement-railway-depuis-image.md)**).
+   Pour la source image, reporter manuellement `startCommand`/`healthcheckPath`/`restartPolicy*` de
+   `deploy/railway/*.json` sur le service (ces fichiers ne sont **plus lus** par Railway dans ce mode).
 4. **Variables (non secrètes)** : poser `APP_ENV=staging`, `APP_NAME`, et l'URL publique de l'API dans
    `NEXT_PUBLIC_API_BASE_URL` (web).
 5. **Secrets (hors dépôt)** : renseigner `DATABASE_URL`, `REDIS_URL` (références aux bases managées),
@@ -223,18 +227,26 @@ démarrage (fail-fast attendu — cf. `session.py` qui lève si `DATABASE_URL` m
 - **Interaction avec la phase `merge` du pipeline ADW** : l'orchestrateur détient le merge ; il **doit
   attendre** ces checks requis (**pas de contournement**), sans quoi « CI verte obligatoire avant
   merge » ne serait pas réellement garanti.
-- **Registre d'images** : au MVP, **deploy-from-source** (Railway build les `Dockerfile` committés) —
-  `ci.yml` **reste inchangé** (build-seul, aucune élévation de `permissions:`). Le **push GHCR**
-  (`permissions: packages: write` **scopé** au job, `GITHUB_TOKEN`, jamais de PAT) reste l'évolution
-  documentée (ADR-0011).
+- **Registre d'images** : `ci.yml` **publie** désormais `coiflink-backend`/`coiflink-web` sur
+  `ghcr.io/<owner>/…` à chaque push vers `main` (jamais sur une PR), après le smoke test —
+  authentification par `GITHUB_TOKEN` intégré (aucun PAT), `permissions: packages: write` **scopé**
+  aux deux jobs `docker-backend`/`docker-web` uniquement (décision
+  **[ADR-0043](./adr/0043-registre-images-ghcr-deploiement-railway-depuis-image.md)**, reformule
+  ADR-0011). **La bascule des services Railway en source « Docker Image » reste une action manuelle**
+  (dashboard/API, non exprimable en `railway.json`) — tant qu'elle n'est pas appliquée, Railway
+  continue de builder depuis le source (`deploy-from-source`, comportement inchangé). Voir les
+  Conséquences d'ADR-0043 pour la checklist de bascule (source du service, report des réglages
+  `deploy/railway/*.json`, visibilité du package GHCR).
 
 ## 7. Renvois
 
 - **[ADR-0011](./adr/0011-deploiement-environnements-secrets.md)** — décision hébergement/région,
-  magasin de secrets, environnements, registre, sauvegardes.
+  magasin de secrets, environnements, sauvegardes.
+- **[ADR-0043](./adr/0043-registre-images-ghcr-deploiement-railway-depuis-image.md)** — registre
+  d'images GHCR & déploiement Railway depuis l'image (reformule le registre d'ADR-0011).
 - **[CONTRIBUTING](../CONTRIBUTING.md)** (« Secrets ») — règle « aucun secret committé ».
 - **Invariants CI/Docker** : [ADR-0010](./adr/0010-ci-cd-docker-packaging.md), `.github/workflows/ci.yml`
-  (build-seul, images non-root sans secret).
+  (build + smoke test à chaque PR ; publication GHCR sur `main`, images non-root sans secret).
 - **Frontière de secrets du pipeline ADW** : `adw_sdlc/src/env.ts`, garde `lint:env`, rétention de
   `GH_TOKEN` (modèle « secrets hors de portée de l'agent » — **hors périmètre** de #5).
 - **PRD** : §10.2 (déploiement, sauvegardes), §11.3/§11.4 (PII, journalisation), §12.2 (sauvegarde

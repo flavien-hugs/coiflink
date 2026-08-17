@@ -3,7 +3,8 @@
 # Build multi-stage → runtime minimal (sortie `output: 'standalone'` de
 # next.config.ts). Principes : AUCUN secret dans l'image (config par variables
 # d'environnement à l'exécution, #5) ; utilisateur NON-root ; Node 20 (ADR-0007).
-# Push vers un registre différé (#5) : image construite en CI (build-seul).
+# Construite en CI à chaque PR ; publiée sur GHCR (ghcr.io/<owner>/coiflink-web)
+# à chaque push sur `main` (ADR-0011 révisée) — Railway déploie depuis cette image.
 
 # --- Étape 1 : dépendances -------------------------------------------------- #
 FROM node:20-slim AS deps

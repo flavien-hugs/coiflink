@@ -1,10 +1,14 @@
 # CI applicative CoifLink — lint + tests + build par paquet, scan de dépendances
 # et build d'images Docker, déclenchés à chaque PR (issue #4, cf. docs/adr/0010).
+# Sur push vers `main`, `docker-backend`/`docker-web` publient en plus l'image
+# vers GHCR (ADR-0011 révisée : Railway déploie désormais depuis l'image publiée,
+# plus depuis le source).
 #
 # Distincte de `adw-sdlc.yml` (control plane ADW) : groupe de concurrence propre
 # (`ci-…`) pour ne pas s'annuler mutuellement. Jobs séparés mobile/web/backend
 # (critère d'acceptation). Aucun secret n'est requis ni journalisé ; le mot de
-# passe du service Postgres de test est éphémère, jetable et non secret.
+# passe du service Postgres de test est éphémère, jetable et non secret ; la
+# publication GHCR n'utilise que le `GITHUB_TOKEN` intégré (aucun PAT).
 name: CI applicative
 
 on:
@@ -17,8 +21,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Least-privilege par défaut : lecture seule du contenu. Aucun job ne pousse
-# d'image (push: false) → pas de `packages: write` (différé #5).
+# Least-privilege par défaut : lecture seule du contenu. `packages: write`
+# n'est accordé qu'aux deux jobs qui publient réellement une image
+# (docker-backend/docker-web), jamais au workflow entier.
 permissions:
   contents: read
 
@@ -226,11 +231,16 @@ jobs:
           ./osv-scanner scan -L app-mobile/pubspec.lock
 
   # --------------------------------------------------------------------------- #
-  # Build de l'image Docker backend (build-seul ; push GHCR différé #5).
+  # Build de l'image Docker backend (+ push GHCR sur main, ADR-0011 révisée).
   # --------------------------------------------------------------------------- #
   docker-backend:
     name: docker-backend
     runs-on: ubuntu-latest
+    # `packages: write` scopé à ce seul job (jamais au workflow entier) : les
+    # autres jobs restent en lecture seule (least-privilege, ADR-0010/0011).
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -256,12 +266,47 @@ jobs:
           curl -fsS http://localhost:8000/health | grep -q '"status":"ok"'
           docker rm -f coiflink-backend-ci
 
+      # Publication GHCR : uniquement sur push vers main (jamais sur une PR —
+      # pas de packages:write pour une PR d'un fork, pas de bruit registre par
+      # build). Réutilise le cache GHA du build ci-dessus (rebuild instantané).
+      - name: Connexion à GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Métadonnées de l'image (tags)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/coiflink-backend
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long,prefix=
+
+      - name: Push de l'image backend vers GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   # --------------------------------------------------------------------------- #
-  # Build de l'image Docker web (Next.js standalone ; build-seul, push différé #5).
+  # Build de l'image Docker web (Next.js standalone ; + push GHCR sur main).
   # --------------------------------------------------------------------------- #
   docker-web:
     name: docker-web
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -286,3 +331,32 @@ jobs:
           done
           curl -fsS http://localhost:3000/ >/dev/null
           docker rm -f coiflink-web-ci
+
+      - name: Connexion à GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Métadonnées de l'image (tags)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: meta-web
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/coiflink-web
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long,prefix=
+
+      - name: Push de l'image web vers GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web-dashboard
+          push: true
+          tags: ${{ steps.meta-web.outputs.tags }}
+          labels: ${{ steps.meta-web.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -4,7 +4,8 @@
 # - config lue depuis l'environnement à l'exécution : AUCUN secret ni .env dans l'image ;
 # - utilisateur NON-root ;
 # - image de base slim, épinglée sur la version de référence Python 3.12 (ADR-0007).
-# Le push vers un registre est différé (#5) : cette image est construite en CI (build-seul).
+# Construite en CI à chaque PR ; publiée sur GHCR (ghcr.io/<owner>/coiflink-backend)
+# à chaque push sur `main` (ADR-0011 révisée) — Railway déploie depuis cette image.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
