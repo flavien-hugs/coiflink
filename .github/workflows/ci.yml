@@ -1,19 +1,27 @@
 # CI applicative CoifLink — lint + tests + build par paquet, scan de dépendances
 # et build d'images Docker, déclenchés à chaque PR (issue #4, cf. docs/adr/0010).
-# Sur push vers `main`, `docker-backend`/`docker-web` publient en plus l'image
-# vers GHCR (ADR-0011 révisée : Railway déploie désormais depuis l'image publiée,
-# plus depuis le source).
+# Sur push vers `main`/`develop`/`rc/**` ou sur un tag git, `docker-backend`/
+# `docker-web` publient en plus l'image vers GHCR (ADR-0011 révisée : Railway
+# déploie désormais depuis l'image publiée, plus depuis le source) — convention
+# de tag d'image dérivée de la ref déclenchante (ADR-0043) :
+#   - branche `main`        → tag `latest`
+#   - branche `develop`     → tag `dev`
+#   - branche `rc/<X.Y.Z>`  → tag `<X.Y.Z>_RC`
+#   - tag git `[v]X.Y.Z`    → tag `<X.Y.Z>` (le `v` initial est retiré s'il existe)
+# Chaque image porte aussi le SHA long en second tag (traçabilité/rollback).
 #
 # Distincte de `adw-sdlc.yml` (control plane ADW) : groupe de concurrence propre
 # (`ci-…`) pour ne pas s'annuler mutuellement. Jobs séparés mobile/web/backend
 # (critère d'acceptation). Aucun secret n'est requis ni journalisé ; le mot de
 # passe du service Postgres de test est éphémère, jetable et non secret ; la
-# publication GHCR n'utilise que le `GITHUB_TOKEN` intégré (aucun PAT).
+# publication GHCR s'authentifie via le secret dépôt `MY_GITHUB_TOKEN`
+# (Settings → Secrets and variables → Actions), jamais journalisé.
 name: CI applicative
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop, "rc/**"]
+    tags: ["*"]
   pull_request:
 
 # Annule les runs superflus sur la même ref (comme adw-sdlc.yml, groupe distinct).
@@ -231,10 +239,46 @@ jobs:
           ./osv-scanner scan -L app-mobile/pubspec.lock
 
   # --------------------------------------------------------------------------- #
-  # Build de l'image Docker backend (+ push GHCR sur main, ADR-0011 révisée).
+  # Tag de publication d'image — calculé UNE FOIS ici, réutilisé par
+  # docker-backend ET docker-web (source de vérité unique, ADR-0043) : évite
+  # que les deux jobs divergent si la convention change. Tourne sur tout
+  # déclencheur (push ET pull_request) et ne bloque jamais rien lui-même —
+  # `tag` vaut `""` hors push sur une ref de publication supportée (PR, ou
+  # future branche non couverte), les jobs consommateurs le traitent comme
+  # « ne pas publier ».
+  # --------------------------------------------------------------------------- #
+  image-tag:
+    name: image-tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
+    steps:
+      - name: Calculer le tag (branche/tag → convention de versionnage, ADR-0043)
+        id: compute
+        run: |
+          TAG=""
+          if [ "${{ github.event_name }}" = "push" ]; then
+            REF_NAME="${{ github.ref_name }}"
+            if [ "${{ github.ref_type }}" = "tag" ]; then
+              # Tag git [v]X.Y.Z → image taggée X.Y.Z (le "v" initial, s'il existe, est retiré).
+              TAG="${REF_NAME#v}"
+            elif [ "$REF_NAME" = "main" ]; then
+              TAG="latest"
+            elif [ "$REF_NAME" = "develop" ]; then
+              TAG="dev"
+            elif [[ "$REF_NAME" == rc/* ]]; then
+              # Branche rc/X.Y.Z → image taggée X.Y.Z_RC.
+              TAG="${REF_NAME#rc/}_RC"
+            fi
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  # --------------------------------------------------------------------------- #
+  # Build de l'image Docker backend (+ push GHCR, ADR-0011 révisée par ADR-0043).
   # --------------------------------------------------------------------------- #
   docker-backend:
     name: docker-backend
+    needs: image-tag
     runs-on: ubuntu-latest
     # `packages: write` scopé à ce seul job (jamais au workflow entier) : les
     # autres jobs restent en lecture seule (least-privilege, ADR-0010/0011).
@@ -266,43 +310,40 @@ jobs:
           curl -fsS http://localhost:8000/health | grep -q '"status":"ok"'
           docker rm -f coiflink-backend-ci
 
-      # Publication GHCR : uniquement sur push vers main (jamais sur une PR —
-      # pas de packages:write pour une PR d'un fork, pas de bruit registre par
-      # build). Réutilise le cache GHA du build ci-dessus (rebuild instantané).
+      # Publication GHCR : uniquement si image-tag a résolu un tag (push sur
+      # main/develop/rc/**/tag git — jamais sur une PR, pas de packages:write
+      # pour une PR d'un fork, pas de bruit registre par build). Réutilise le
+      # cache GHA du build ci-dessus (rebuild instantané). Tag de convention +
+      # SHA long (traçabilité/rollback) sur la même image.
       - name: Connexion à GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: needs.image-tag.outputs.tag != ''
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Métadonnées de l'image (tags)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        id: meta-backend
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/coiflink-backend
-          tags: |
-            type=raw,value=latest
-            type=sha,format=long,prefix=
+          password: ${{ secrets.MY_GITHUB_TOKEN }}
 
       - name: Push de l'image backend vers GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: needs.image-tag.outputs.tag != ''
         uses: docker/build-push-action@v6
         with:
           context: ./backend
           push: true
-          tags: ${{ steps.meta-backend.outputs.tags }}
-          labels: ${{ steps.meta-backend.outputs.labels }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/coiflink-backend:${{ needs.image-tag.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/coiflink-backend:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   # --------------------------------------------------------------------------- #
-  # Build de l'image Docker web (Next.js standalone ; + push GHCR sur main).
+  # Build de l'image Docker web (Next.js standalone ; + push GHCR, ADR-0043).
   # --------------------------------------------------------------------------- #
   docker-web:
     name: docker-web
+    needs: image-tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -332,31 +373,27 @@ jobs:
           curl -fsS http://localhost:3000/ >/dev/null
           docker rm -f coiflink-web-ci
 
+      # Publication GHCR : mêmes conditions/tags que docker-backend, voir les
+      # commentaires de ce job.
       - name: Connexion à GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: needs.image-tag.outputs.tag != ''
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Métadonnées de l'image (tags)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        id: meta-web
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/coiflink-web
-          tags: |
-            type=raw,value=latest
-            type=sha,format=long,prefix=
+          password: ${{ secrets.MY_GITHUB_TOKEN }}
 
       - name: Push de l'image web vers GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: needs.image-tag.outputs.tag != ''
         uses: docker/build-push-action@v6
         with:
           context: ./web-dashboard
           push: true
-          tags: ${{ steps.meta-web.outputs.tags }}
-          labels: ${{ steps.meta-web.outputs.labels }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/coiflink-web:${{ needs.image-tag.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/coiflink-web:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

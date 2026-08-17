@@ -228,8 +228,9 @@ démarrage (fail-fast attendu — cf. `session.py` qui lève si `DATABASE_URL` m
   attendre** ces checks requis (**pas de contournement**), sans quoi « CI verte obligatoire avant
   merge » ne serait pas réellement garanti.
 - **Registre d'images** : `ci.yml` **publie** désormais `coiflink-backend`/`coiflink-web` sur
-  `ghcr.io/<owner>/…` à chaque push vers `main` (jamais sur une PR), après le smoke test —
-  authentification par `GITHUB_TOKEN` intégré (aucun PAT), `permissions: packages: write` **scopé**
+  `ghcr.io/<owner>/…` à chaque push vers `main`/`develop`/`rc/**` ou sur un tag git (jamais sur une
+  PR), après le smoke test — tag dérivé de la ref (`latest`/`dev`/`<X.Y.Z>_RC`/`<X.Y.Z>` + SHA long),
+  authentification par le secret dépôt `MY_GITHUB_TOKEN`, `permissions: packages: write` **scopé**
   aux deux jobs `docker-backend`/`docker-web` uniquement (décision
   **[ADR-0043](./adr/0043-registre-images-ghcr-deploiement-railway-depuis-image.md)**, reformule
   ADR-0011). **La bascule des services Railway en source « Docker Image » reste une action manuelle**
