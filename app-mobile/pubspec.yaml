@@ -43,7 +43,7 @@ dependencies:
   # Keystore Android (EncryptedSharedPreferences) / Keychain iOS. Le credential est
   # obtenu une seule fois à l'activation (code à 6 chiffres, jamais saisi
   # directement) puis persisté ici pour ne plus jamais être redemandé.
-  flutter_secure_storage: ^10.3.1
+  flutter_secure_storage: ^11.0.0
 
   # Polices éditoriales de la borne (US-8.5, #159) : Fraunces (titres/wordmark/
   # numéro de ticket) + Outfit (corps/formulaires/clavier/boutons), identité visuelle
