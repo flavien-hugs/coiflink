@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Requise pour tous les appels réseau de l'app (API_BASE_URL, #18) : présente
+         par défaut dans les manifestes debug/profile (scaffold Flutter, hot reload),
+         mais absente ici jusqu'à présent : un flutter build apk en mode release
+         n'hérite pas de ces manifestes et ne pouvait donc joindre aucun serveur,
+         quelle que soit l'URL configurée. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="coiflink_mobile"
         android:name="${applicationName}"
