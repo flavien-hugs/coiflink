@@ -8,7 +8,8 @@ opérations d'identité du parcours « client sans rendez-vous » (PRD §17), so
 - `POST /salons/{salon_id}/terminal/customers/lookup` — retrouve une fiche par
   **téléphone** (salon de la borne uniquement), réponse **minimale** (prénom seul) ;
 - `POST /salons/{salon_id}/terminal/customers` — crée une fiche walk-in
-  (**prénom + nom + téléphone**, sans mot de passe, `user_id = NULL`).
+  (**prénom + nom + téléphone**, sans mot de passe, `user_id = NULL`), avec un
+  **genre optionnel** (#172 — deux choix à l'écran borne, Homme/Femme).
 
 `POST` (jamais `GET`) : le numéro voyage en **corps de requête**, jamais en query
 string — pas de PII dans les URL, les logs d'accès, l'historique des proxies ou les
@@ -17,7 +18,7 @@ traces.
 Le router traduit HTTP → commande applicative, assemble les cas d'usage par
 injection de dépendances FastAPI, puis retraduit les erreurs de domaine :
 
-- `InvalidPhone` / `InvalidCustomerName` → **422** ;
+- `InvalidPhone` / `InvalidCustomerName` / `InvalidCustomerGender` → **422** ;
 - `CustomerAlreadyExists` (téléphone déjà fiché dans ce salon) → **409** ;
 - `TooManyLoginAttempts` (anti-énumération du lookup) → **429** + `Retry-After` ;
 - fiche introuvable → **404** neutre (sans écho du numéro).
@@ -69,6 +70,7 @@ from coiflink_api.domain.customer import (
 )
 from coiflink_api.domain.errors import (
     CustomerAlreadyExists,
+    InvalidCustomerGender,
     InvalidCustomerName,
     InvalidPhone,
     TooManyLoginAttempts,
@@ -114,25 +116,23 @@ class TerminalLookupRequest(BaseModel):
 class TerminalWalkInCreateRequest(BaseModel):
     """Corps de `POST /salons/{salon_id}/terminal/customers` — création walk-in.
 
-    Les **trois** champs sont requis (US-8.2). **Aucun** champ privilégié : tout
-    `salon_id`, `user_id`, `gender`, `notes`, `total_visits` présent au corps est
-    **ignoré** (`extra="ignore"`) — collecte minimale (§11.3), la fiche reste
-    walk-in (`user_id = NULL`, aucun mot de passe).
+    Prénom, nom et téléphone sont requis (US-8.2) ; `gender` est **optionnel**
+    (`FEMALE`/`MALE`/`OTHER`, écran borne limité à Homme/Femme — #172). **Aucun**
+    autre champ privilégié : tout `salon_id`, `user_id`, `notes`, `total_visits`
+    présent au corps est **ignoré** (`extra="ignore"`) — la fiche reste walk-in
+    (`user_id = NULL`, aucun mot de passe, aucune note interne collectée).
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    first_name: str = Field(
-        min_length=1, max_length=CUSTOMER_NAME_MAX_LENGTH, examples=["Awa"]
-    )
-    last_name: str = Field(
-        min_length=1, max_length=CUSTOMER_NAME_MAX_LENGTH, examples=["Koné"]
-    )
+    first_name: str = Field(min_length=1, max_length=CUSTOMER_NAME_MAX_LENGTH, examples=["Awa"])
+    last_name: str = Field(min_length=1, max_length=CUSTOMER_NAME_MAX_LENGTH, examples=["Koné"])
     phone: str = Field(
         min_length=_PHONE_MIN_LENGTH,
         max_length=_PHONE_MAX_LENGTH,
         examples=["0700000000"],
     )
+    gender: str | None = Field(default=None, examples=["FEMALE"])
 
 
 class WalkInIdentityResponse(BaseModel):
@@ -149,9 +149,7 @@ class WalkInIdentityResponse(BaseModel):
 
 
 def _identity_response(identity: WalkInIdentity) -> WalkInIdentityResponse:
-    return WalkInIdentityResponse(
-        customer_id=identity.customer_id, first_name=identity.first_name
-    )
+    return WalkInIdentityResponse(customer_id=identity.customer_id, first_name=identity.first_name)
 
 
 # --------------------------------------------------------------------------- #
@@ -174,9 +172,7 @@ def get_terminal_lookup_rate_limiter(request: Request) -> LoginRateLimiter:
             InMemoryLoginRateLimiter,
         )
 
-        config: AuthConfig = (
-            getattr(request.app.state, "auth_config", None) or AuthConfig()
-        )
+        config: AuthConfig = getattr(request.app.state, "auth_config", None) or AuthConfig()
         limiter = InMemoryLoginRateLimiter(
             max_attempts=config.terminal_lookup_max_attempts,
             window=config.terminal_lookup_window,
@@ -188,9 +184,7 @@ def get_terminal_lookup_rate_limiter(request: Request) -> LoginRateLimiter:
 
 def get_identify_walk_in_customer(
     repository: Annotated[CustomerRepository, Depends(get_customer_repository)],
-    rate_limiter: Annotated[
-        LoginRateLimiter, Depends(get_terminal_lookup_rate_limiter)
-    ],
+    rate_limiter: Annotated[LoginRateLimiter, Depends(get_terminal_lookup_rate_limiter)],
 ) -> IdentifyWalkInCustomer:
     """Assemble le cas d'usage de **recherche** par téléphone (aucune règle métier ici)."""
 
@@ -229,7 +223,9 @@ def _rate_key(principal: Principal, request: Request) -> str:
         200: {"description": "Fiche trouvée — projection minimale (customer_id + first_name)"},
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (message générique)"},
-        404: {"description": "Aucune fiche pour ce numéro dans ce salon (neutre, sans écho du numéro)"},
+        404: {
+            "description": "Aucune fiche pour ce numéro dans ce salon (neutre, sans écho du numéro)"
+        },
         422: {"description": "Numéro de téléphone invalide"},
         429: {"description": "Trop de tentatives (anti-énumération par device + IP)"},
     },
@@ -238,9 +234,7 @@ def lookup_walk_in_customer(
     salon_id: uuid.UUID,
     payload: TerminalLookupRequest,
     request: Request,
-    usecase: Annotated[
-        IdentifyWalkInCustomer, Depends(get_identify_walk_in_customer)
-    ],
+    usecase: Annotated[IdentifyWalkInCustomer, Depends(get_identify_walk_in_customer)],
     # Gardes RBAC (#12) : portée salon §11.2 **et** permission TERMINAL dédiée (#155).
     # `salon_id` est lu du chemin par `require_salon_scope` ; les deux dépendances
     # résolvent le même `Principal` (pas de double lecture de compte).
@@ -259,15 +253,9 @@ def lookup_walk_in_customer(
     """
 
     try:
-        identity = usecase.execute(
-            salon_id, payload.phone, rate_key=_rate_key(principal, request)
-        )
+        identity = usecase.execute(salon_id, payload.phone, rate_key=_rate_key(principal, request))
     except TooManyLoginAttempts as exc:
-        headers = (
-            {"Retry-After": str(exc.retry_after)}
-            if exc.retry_after is not None
-            else None
-        )
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=_RATE_LIMITED_DETAIL,
@@ -280,9 +268,7 @@ def lookup_walk_in_customer(
 
     if identity is None:
         # `404` **neutre constant** : jamais l'écho du numéro soumis (§11.3).
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
     return _identity_response(identity)
 
 
@@ -302,20 +288,17 @@ def lookup_walk_in_customer(
 def create_walk_in_customer(
     salon_id: uuid.UUID,
     payload: TerminalWalkInCreateRequest,
-    usecase: Annotated[
-        CreateWalkInCustomer, Depends(get_create_walk_in_customer)
-    ],
+    usecase: Annotated[CreateWalkInCustomer, Depends(get_create_walk_in_customer)],
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
-    principal: Annotated[
-        Principal, Depends(require_permission(Permission.CUSTOMER_CREATE_WALKIN))
-    ],
+    principal: Annotated[Principal, Depends(require_permission(Permission.CUSTOMER_CREATE_WALKIN))],
 ) -> WalkInIdentityResponse:
     """Crée une fiche walk-in (`user_id = NULL`, sans mot de passe) pour le salon de la portée.
 
-    Le `salon_id` vient du chemin (portée), jamais du corps ; `gender`/`notes` ne
-    sont **jamais** collectés (§11.3). Journalise `CUSTOMER_CREATED` (§11.4) dans la
-    même unité de travail, `metadata` **vide** (aucune PII), acteur = `principal.id`
-    du compte de service de la borne. Doublon de téléphone → `409` neutre (la borne
+    Le `salon_id` vient du chemin (portée), jamais du corps ; `notes` n'est
+    **jamais** collecté (§11.3), `gender` est optionnel (#172). Journalise
+    `CUSTOMER_CREATED` (§11.4) dans la même unité de travail, `metadata` **vide**
+    (aucune PII — le genre n'y figure pas non plus), acteur = `principal.id` du
+    compte de service de la borne. Doublon de téléphone → `409` neutre (la borne
     relance alors le lookup, contrat #159) ; champ invalide → `422`.
     """
 
@@ -326,17 +309,16 @@ def create_walk_in_customer(
                 first_name=payload.first_name,
                 last_name=payload.last_name,
                 phone=payload.phone,
+                gender=payload.gender,
             ),
             actor_user_id=principal.id,
         )
-    except (InvalidCustomerName, InvalidPhone) as exc:
+    except (InvalidCustomerName, InvalidPhone, InvalidCustomerGender) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
     except CustomerAlreadyExists as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return _identity_response(identity)
 
 

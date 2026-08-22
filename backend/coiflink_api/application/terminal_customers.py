@@ -55,9 +55,7 @@ class IdentifyWalkInCustomer:
     réinitialise la fenêtre — un salon à fort trafic légitime n'est jamais pénalisé.
     """
 
-    def __init__(
-        self, repository: CustomerRepository, rate_limiter: LoginRateLimiter
-    ) -> None:
+    def __init__(self, repository: CustomerRepository, rate_limiter: LoginRateLimiter) -> None:
         self._repository = repository
         self._rate_limiter = rate_limiter
 
@@ -105,9 +103,11 @@ class CreateWalkInCustomer:
 
     Miroir de `CreateCustomer` (#28) restreint à la collecte minimale de la borne :
     validation/composition domaine → pré-contrôle d'unicité `(salon_id, phone)` →
-    `create` (`user_id = NULL`, `gender`/`notes` `None`) → `CUSTOMER_CREATED`
-    (`metadata` vide) dans la même unité de travail. Retourne la projection
-    **minimale** (`WalkInIdentity`), jamais la fiche complète.
+    `create` (`user_id = NULL`, `notes` toujours `None`, `gender` optionnel transmis
+    par la borne depuis #172) → `CUSTOMER_CREATED` (`metadata` vide) dans la même
+    unité de travail. Retourne la projection **minimale** (`WalkInIdentity`), jamais
+    la fiche complète — le genre n'est jamais réverbéré à la borne (§11.3), même
+    quand il vient d'être fourni.
     """
 
     def __init__(self, repository: CustomerRepository, audit_log: AuditLog) -> None:
@@ -133,21 +133,19 @@ class CreateWalkInCustomer:
 
         # Validation/composition domaine AVANT tout accès base (aucune écriture ni
         # audit si un champ est invalide).
-        full_name, phone = validate_walk_in_customer(command)
+        full_name, phone, gender = validate_walk_in_customer(command)
 
         if self._repository.phone_exists(salon_id, phone):
             # Message **neutre** : il ne rappelle jamais le numéro soumis (§11.3).
-            raise CustomerAlreadyExists(
-                "Une fiche existe déjà pour ce numéro dans ce salon."
-            )
+            raise CustomerAlreadyExists("Une fiche existe déjà pour ce numéro dans ce salon.")
 
         customer = self._repository.create(
             CustomerToCreate(
                 salon_id=salon_id,
                 full_name=full_name,
                 phone=phone,
-                # Genre et notes ne sont **jamais** collectés par la borne (§11.3).
-                gender=None,
+                gender=gender,
+                # Les notes internes ne sont **jamais** collectées par la borne (§11.3).
                 notes=None,
             )
         )

@@ -18,6 +18,14 @@
 > matrice de permissions, garde de portée dédiée, acteur d'audit d'un device). La présente version
 > réécrit la spec pour la caler sur ce qui existe réellement dans le code : #156 devient **purement
 > additif et notablement plus simple** que l'ébauche antérieure ne l'anticipait.
+>
+> **Amendement (#172).** Cette spec documentait, à plusieurs endroits, l'exclusion **complète** du
+> genre de la collecte borne (§11.3, collecte minimale). #172 lève cette restriction **uniquement
+> pour le genre** (deux choix à l'écran, Homme/Femme, optionnel) — `notes`/mot de passe/`user_id`
+> restent hors de portée de la borne, inchangés. La **réponse** renvoyée au terminal reste la
+> projection minimale (`customer_id` + `first_name`) : seule l'**écriture** change, jamais la
+> lecture. Les passages ci-dessous qui décrivaient l'exclusion du genre à l'**écriture** ont été mis
+> à jour ; ceux qui décrivent la projection de **réponse** minimale restent vrais tels quels.
 
 ## Problem Statement
 
@@ -134,9 +142,10 @@ les permissions, la garde de portée, l'audit et le limiteur **déjà livrés**,
   d'accès), réponse limitée à `{customer_id, first_name}` — **jamais** le nom complet, le téléphone,
   le genre, les notes ni les compteurs de visites.
 - **Création de fiche walk-in depuis la borne, sans mot de passe.** Nouvel endpoint `TERMINAL` créant
-  une `CustomerProfile` à partir de **prénom + nom + téléphone** uniquement (`user_id = NULL`, aucun
-  compte, aucun mot de passe) — réutilise la validation domaine de #28 (`validate_customer_name`,
-  `normalize_phone`) et l'unicité `(salon_id, phone)` existante.
+  une `CustomerProfile` à partir de **prénom + nom + téléphone**, avec un **genre optionnel**
+  (Homme/Femme à l'écran — #172) — `user_id = NULL`, aucun compte, aucun mot de passe — réutilise la
+  validation domaine de #28 (`validate_customer_name`, `normalize_phone`, `normalize_gender`) et
+  l'unicité `(salon_id, phone)` existante.
 - **Préservation stricte de l'anti-oracle ADR-0026.** Ni le cas d'usage ni l'adapter n'importent le
   moindre port `users` : la recherche porte **exclusivement** sur `customer_profiles`. Un téléphone
   titulaire d'un compte CoifLink mais sans fiche dans le salon répond « introuvable » — aucun repli
@@ -182,9 +191,9 @@ Hors périmètre de #156 en particulier :
 - **Le rattachement d'une fiche à un compte utilisateur (`user_id`)** : la fiche créée par la borne
   est walk-in (`user_id = NULL`), comme en #28. Aucun rapprochement automatique avec `users`, ni
   maintenant ni par téléphone — c'est précisément l'anti-oracle.
-- **Modification/suppression de fiche, notes, genre depuis la borne.** La borne ne collecte que
-  prénom/nom/téléphone (collecte minimale §11.3) et ne peut rien éditer. `PATCH`/notes restent
-  MANAGER-seuls (#144/#32).
+- **Modification/suppression de fiche, notes depuis la borne.** La borne collecte
+  prénom/nom/téléphone et, depuis #172, un genre optionnel à la création — mais ne peut rien
+  **éditer** ensuite. `PATCH`/notes restent MANAGER-seuls (#144/#32).
 - **Recherche cross-salon ou déduplication multi-salons** : la portée est le salon de la borne,
   cohérent avec l'unicité par salon en base.
 - **SMS/notification au client identifié** : rien n'est envoyé par #156.
@@ -302,7 +311,9 @@ Dans `domain/customer.py` (pur, aucune dépendance) :
   **seule** projection qui franchit la frontière HTTP terminal. Ni téléphone, ni nom complet, ni
   genre, ni notes, ni compteurs : l'entité `Customer` complète ne sort **jamais** vers la borne.
 - **`@dataclass(frozen=True) WalkInCustomerCommand`** : `first_name: str`, `last_name: str`,
-  `phone: str` — les trois champs de l'acceptation, tous **requis** au terminal. Validation :
+  `phone: str` — les trois champs de l'acceptation, tous **requis** au terminal — plus
+  `gender: str | None = None`, **optionnel** (#172, ajouté après la livraison initiale de #156).
+  Validation :
   1. `first_name` et `last_name` : trim, non vides (réutilise la mécanique de
      `validate_customer_name` — erreur `InvalidCustomerName`, messages neutres) ;
   2. composition **ordonnée** `full_name = f"{first_name} {last_name}"` puis
@@ -312,11 +323,15 @@ Dans `domain/customer.py` (pur, aucune dépendance) :
      d'identification de la borne, une fiche terminal sans téléphone serait introuvable à la prochaine
      visite. Normalisation par `normalize_phone` (`domain/phone.py:36`) **directement** (sémantique
      « requis » : vide → `InvalidPhone`), pas par le wrapper optionnel `normalize_customer_phone`. La
-     colonne reste nullable — aucune migration.
+     colonne reste nullable — aucune migration ;
+  4. `gender` : **optionnel** — `normalize_gender` (même règle que le flux gérant #28,
+     `InvalidCustomerGender` si valeur hors énumération) — #172.
 
-**Aucune nouvelle erreur de domaine.** L'ancienne spec proposait un `TooManyTerminalAttempts` : la
-présente version **réutilise `TooManyLoginAttempts`** (§D), déjà mappée en `429 + Retry-After` et
-déjà employée par le login terminal de #155 — un type d'erreur de moins à introduire et à mapper.
+**Aucune nouvelle erreur de domaine à la livraison initiale de #156.** L'ancienne spec proposait un
+`TooManyTerminalAttempts` : la présente version **réutilise `TooManyLoginAttempts`** (§D), déjà
+mappée en `429 + Retry-After` et déjà employée par le login terminal de #155. #172 rend ce chemin
+également capable de lever `InvalidCustomerGender` (type d'erreur préexistant, réutilisé de #28 — pas
+une nouvelle classe d'erreur).
 
 ### (C) Cas d'usage — `application/terminal_customers.py` (nouveau module)
 
@@ -343,9 +358,10 @@ exécutable de l'anti-oracle (docstring de module explicite, comme `application/
   2. pré-contrôle `phone_exists(salon_id, phone)` → `CustomerAlreadyExists` (message neutre
      existant : « Une fiche existe déjà pour ce numéro dans ce salon. ») — en concurrence, l'index
      unique base tranche et le dépôt retraduit (patron #28 inchangé) ;
-  3. `repository.create(CustomerToCreate(salon_id=salon_id, full_name=..., phone=..., gender=None,
-     notes=None))` — `user_id` reste `NULL` (walk-in), genre et notes **jamais** collectés par la
-     borne (collecte minimale §11.3) ;
+  3. `repository.create(CustomerToCreate(salon_id=salon_id, full_name=..., phone=...,
+     gender=validated_gender, notes=None))` — `user_id` reste `NULL` (walk-in) ; `gender` est
+     **optionnel**, normalisé par `normalize_gender` (#172) ; `notes` reste **jamais** collecté par
+     la borne (collecte minimale §11.3) ;
   4. `audit_log.record(AuditEntry(action=CUSTOMER_CREATED, actor_user_id=actor_user_id,
      salon_id=..., entity_type=ENTITY_TYPE_CUSTOMER, entity_id=..., metadata={}))` — même action et
      même neutralité que #28 ; l'acteur est `principal.id` du compte device (résolu, pas de risque) ;
@@ -413,7 +429,8 @@ de `terminal_devices.py:110-142`.
 | Numéro saisi au clavier tactile (formats libres) | `phone` (lookup **et** création) | `normalize_phone` (`domain/phone.py:36-69`) : séparateurs espace/point/tiret/parenthèses retirés, `00` → `+`, national préfixé **`+225`** sans retirer le `0` de tête, bornes 8-15 chiffres, idempotente |
 | Prénom | `first_name` → 1er composant de `full_name` | trim + non vide (mécanique `validate_customer_name`, `domain/customer.py:59-78`) |
 | Nom | `last_name` → 2e composant de `full_name` | idem ; composition « Prénom Nom » puis `validate_customer_name` sur le tout (≤ 255) |
-| *(non collectés)* | `gender`, `notes`, mot de passe, `user_id` | jamais demandés ni acceptés par la borne (collecte minimale §11.3 ; `extra="ignore"`) |
+| Genre (Homme/Femme, optionnel — #172) | `gender` (création uniquement) | `normalize_gender` (`domain/customer.py:101-119`) : `null`/vide → `None`, valeur fermée sinon (`InvalidCustomerGender`) ; jamais réverbéré dans la réponse |
+| *(non collectés)* | `notes`, mot de passe, `user_id` | jamais demandés ni acceptés par la borne (collecte minimale §11.3 ; `extra="ignore"`) |
 
 **Normalisation unique côté serveur, idempotente** : `07 00 00 00 00`, `0700000000`,
 `+225 07-00-00-00-00` et `00 225 07000000 00` produisent tous `+2250700000000` et retrouvent **la
@@ -492,17 +509,19 @@ Deux **nouveaux** endpoints, tous deux **protégés** (`require_salon_scope` exi
 ```
 
 Contrats croisés fixés par cette API : le `customer_id` retourné est le `customer_profile_id` attendu
-par la création de ticket #157 ; le corps de création `{first_name, last_name, phone}` et la réponse
-`{customer_id, first_name}` sont le contrat canonique du jalon, sur lequel l'`identityGateway`
-Flutter de #159 est aligné. Aucune modification de CLI, de variable d'environnement ni de contrat
-inter-paquet existant.
+par la création de ticket #157 ; le corps de création `{first_name, last_name, phone, gender?}`
+(`gender` optionnel depuis #172) et la réponse `{customer_id, first_name}` — **inchangée**, jamais
+de genre en sortie — sont le contrat canonique du jalon, sur lequel l'`identityGateway` Flutter de
+#159 est aligné. Aucune modification de CLI, de variable d'environnement ni de contrat inter-paquet
+existant.
 
 ## Data Model / Protocol Changes
 
 **Aucune migration.** Le schéma actuel couvre le besoin :
 
-- `customer_profiles` porte déjà `full_name`/`phone`/`user_id NULL` (walk-in) — la fiche créée par la
-  borne est **exactement** celle de #28, sans genre ni notes (colonnes laissées `NULL`) ;
+- `customer_profiles` porte déjà `full_name`/`phone`/`gender`/`user_id NULL` (walk-in) — la fiche
+  créée par la borne réutilise les mêmes colonnes que #28, `gender` optionnel depuis #172 (`NULL` si
+  non renseigné), `notes` toujours laissé `NULL` ;
 - l'index unique partiel `uq_customer_profiles_salon_phone` (`models.py:459-465`) garantit l'unicité
   **et** sert la recherche par égalité `(salon_id, phone)` — aucun index à ajouter ;
 - la forme canonique E.164 stockée depuis #28 rend l'égalité stricte correcte (pas de `LIKE`).
@@ -557,9 +576,10 @@ différent il crée.** L'analyse tient en trois points :
   vert ; permissions **déjà** dédiées au rôle `TERMINAL`, aucun élargissement de `CUSTOMER_MANAGE`
   (MANAGER-seul, `permissions.py:136`) ni d'`APPOINTMENT_BOOK` (CLIENT-seul) ; tests RBAC négatifs
   bidirectionnels.
-- **Collecte minimale (§11.3)** : prénom, nom, téléphone — rien d'autre (`extra="ignore"`). Pas de
-  mot de passe : aucune surface de credential n'est créée. `salon_id` vient toujours du chemin validé
-  par la portée, jamais du corps (anti-élévation, patron #28/#155).
+- **Collecte minimale (§11.3)** : prénom, nom, téléphone, et depuis #172 un genre optionnel
+  (Homme/Femme) — `notes` et mot de passe restent hors de portée (`extra="ignore"`) : aucune surface
+  de credential n'est créée. `salon_id` vient toujours du chemin validé par la portée, jamais du
+  corps (anti-élévation, patron #28/#155).
 - **Bornes d'entrée** : nom composé ≤ 255, téléphone E.164 8-15 chiffres — pas de corps non borné
   (budget §12.1).
 - **Sécurité résiduelle assumée** : un client légitime peut composer le numéro d'un tiers présent

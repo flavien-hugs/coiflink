@@ -6,7 +6,7 @@ Couvre les fonctions et dataclasses ajoutées à `domain/customer.py` pour la bo
 - `WalkInCustomerCommand` : dataclass frozen, champs requis ;
 - `validate_walk_in_customer` : validation/composition complète — prénom, nom,
   composition « Prénom Nom », borne 255, téléphone requis (E.164), formats de
-  saisie tactile variés.
+  saisie tactile variés, genre optionnel normalisé (#172).
 
 Aucune base, aucun réseau — domaine pur.
 """
@@ -24,7 +24,11 @@ from coiflink_api.domain.customer import (
     validate_walk_in_customer,
     walk_in_first_name,
 )
-from coiflink_api.domain.errors import InvalidCustomerName, InvalidPhone
+from coiflink_api.domain.errors import (
+    InvalidCustomerGender,
+    InvalidCustomerName,
+    InvalidPhone,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +106,17 @@ class TestWalkInCustomerCommand:
         assert cmd.last_name == "Koné"
         assert cmd.phone == "0700000000"
 
+    def test_gender_defaults_to_none(self) -> None:
+        """Optionnel (#172) : aucune valeur fournie → `None`."""
+        cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="0700000000")
+        assert cmd.gender is None
+
+    def test_gender_accepted_when_provided(self) -> None:
+        cmd = WalkInCustomerCommand(
+            first_name="Awa", last_name="Koné", phone="0700000000", gender="FEMALE"
+        )
+        assert cmd.gender == "FEMALE"
+
     def test_is_frozen(self) -> None:
         cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="0700000000")
         with pytest.raises((AttributeError, TypeError)):
@@ -118,52 +133,47 @@ class TestValidateWalkInCustomer:
 
     def test_returns_full_name_and_canonical_phone(self) -> None:
         cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="0700000000")
-        full_name, phone = validate_walk_in_customer(cmd)
+        full_name, phone, gender = validate_walk_in_customer(cmd)
         assert full_name == "Awa Koné"
         assert phone == "+2250700000000"
+        assert gender is None
 
     def test_full_name_composition_order_preserves_first_name(self) -> None:
         """L'ordre « Prénom Nom » garantit walk_in_first_name(full_name) == first_name."""
         cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="0700000000")
-        full_name, _ = validate_walk_in_customer(cmd)
+        full_name, _, _ = validate_walk_in_customer(cmd)
         assert walk_in_first_name(full_name) == "Awa"
 
     def test_trims_first_name_and_last_name(self) -> None:
         cmd = WalkInCustomerCommand(first_name="  Awa  ", last_name="  Koné  ", phone="0700000000")
-        full_name, _ = validate_walk_in_customer(cmd)
+        full_name, _, _ = validate_walk_in_customer(cmd)
         assert full_name == "Awa Koné"
 
     # --- Formats de saisie tactile (normalisation idempotente E.164) ---
 
     def test_local_10_digit_format(self) -> None:
         cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="0700000000")
-        _, phone = validate_walk_in_customer(cmd)
+        _, phone, _ = validate_walk_in_customer(cmd)
         assert phone == "+2250700000000"
 
     def test_spaced_local_format(self) -> None:
         cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="07 00 00 00 00")
-        _, phone = validate_walk_in_customer(cmd)
+        _, phone, _ = validate_walk_in_customer(cmd)
         assert phone == "+2250700000000"
 
     def test_international_prefix_with_separator(self) -> None:
-        cmd = WalkInCustomerCommand(
-            first_name="Awa", last_name="Koné", phone="+225 07-00-00-00-00"
-        )
-        _, phone = validate_walk_in_customer(cmd)
+        cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="+225 07-00-00-00-00")
+        _, phone, _ = validate_walk_in_customer(cmd)
         assert phone == "+2250700000000"
 
     def test_double_zero_international_prefix(self) -> None:
-        cmd = WalkInCustomerCommand(
-            first_name="Awa", last_name="Koné", phone="002250700000000"
-        )
-        _, phone = validate_walk_in_customer(cmd)
+        cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="002250700000000")
+        _, phone, _ = validate_walk_in_customer(cmd)
         assert phone == "+2250700000000"
 
     def test_already_e164_idempotent(self) -> None:
-        cmd = WalkInCustomerCommand(
-            first_name="Awa", last_name="Koné", phone="+2250700000000"
-        )
-        _, phone = validate_walk_in_customer(cmd)
+        cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="+2250700000000")
+        _, phone, _ = validate_walk_in_customer(cmd)
         assert phone == "+2250700000000"
 
     def test_all_formats_yield_same_canonical(self) -> None:
@@ -172,7 +182,7 @@ class TestValidateWalkInCustomer:
         results = set()
         for raw in formats:
             cmd = WalkInCustomerCommand(first_name="A", last_name="B", phone=raw)
-            _, phone = validate_walk_in_customer(cmd)
+            _, phone, _ = validate_walk_in_customer(cmd)
             results.add(phone)
         assert len(results) == 1
 
@@ -246,3 +256,31 @@ class TestValidateWalkInCustomer:
         except InvalidCustomerName as exc:
             # Le message ne doit pas refléter la valeur soumise (§11.3).
             assert "Koné" not in str(exc)
+
+    # --- Genre optionnel (#172) ---
+
+    def test_gender_none_when_omitted(self) -> None:
+        cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="0700000000")
+        _, _, gender = validate_walk_in_customer(cmd)
+        assert gender is None
+
+    def test_gender_female_normalized(self) -> None:
+        cmd = WalkInCustomerCommand(
+            first_name="Awa", last_name="Koné", phone="0700000000", gender="FEMALE"
+        )
+        _, _, gender = validate_walk_in_customer(cmd)
+        assert gender == "FEMALE"
+
+    def test_gender_male_normalized(self) -> None:
+        cmd = WalkInCustomerCommand(
+            first_name="Awa", last_name="Koné", phone="0700000000", gender="MALE"
+        )
+        _, _, gender = validate_walk_in_customer(cmd)
+        assert gender == "MALE"
+
+    def test_invalid_gender_raises_invalid_customer_gender(self) -> None:
+        cmd = WalkInCustomerCommand(
+            first_name="Awa", last_name="Koné", phone="0700000000", gender="NOT_A_GENDER"
+        )
+        with pytest.raises(InvalidCustomerGender):
+            validate_walk_in_customer(cmd)

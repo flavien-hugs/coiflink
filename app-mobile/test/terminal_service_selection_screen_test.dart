@@ -26,6 +26,7 @@ import 'package:coiflink_mobile/application/ports/terminal_queue_gateway.dart';
 import 'package:coiflink_mobile/application/ports/salon_catalog_gateway.dart';
 import 'package:coiflink_mobile/application/ports/ticket_printer_gateway.dart';
 import 'package:coiflink_mobile/application/use_cases/get_salon_detail.dart';
+import 'package:coiflink_mobile/domain/customer/walk_in_gender.dart';
 import 'package:coiflink_mobile/domain/salon/salon_detail.dart';
 import 'package:coiflink_mobile/domain/salon/salon_service.dart';
 import 'package:coiflink_mobile/domain/ticket/ticket_print_payload.dart';
@@ -72,6 +73,7 @@ class _StubIdentityGateway implements TerminalIdentityGateway {
     required String firstName,
     required String lastName,
     required String phone,
+    WalkInGender? gender,
   }) =>
       throw UnimplementedError();
 }

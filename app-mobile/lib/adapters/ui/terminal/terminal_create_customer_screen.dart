@@ -1,14 +1,16 @@
 // Création de fiche walk-in (US-003, #159 · consomme #156).
 //
 // Formulaire minimal : prénom, nom, téléphone (repris de l'écran précédent,
-// **non modifiable**). Saisie alphabétique → clavier logiciel standard (un pavé
-// numérique ne conviendrait pas ; cet écran n'est emprunté que par les **nouveaux**
-// clients). Appelle `identityGateway.createCustomer(...)` (#156, trois champs
-// requis, **sans mot de passe**) puis enchaîne vers le choix de prestation.
+// **non modifiable**), genre optionnel (Homme/Femme, #172). Saisie alphabétique →
+// clavier logiciel standard (un pavé numérique ne conviendrait pas ; cet écran
+// n'est emprunté que par les **nouveaux** clients). Appelle
+// `identityGateway.createCustomer(...)` (#156/#172, prénom/nom/téléphone requis,
+// genre optionnel, **sans mot de passe**) puis enchaîne vers le choix de prestation.
 
 import 'package:flutter/material.dart';
 
 import '../../../application/ports/terminal_identity_gateway.dart';
+import '../../../domain/customer/walk_in_gender.dart';
 import 'terminal_deps.dart';
 import 'terminal_service_selection_screen.dart';
 import 'terminal_theme.dart';
@@ -33,6 +35,7 @@ class _TerminalCreateCustomerScreenState extends State<TerminalCreateCustomerScr
   final TextEditingController _firstName = TextEditingController();
   final TextEditingController _lastName = TextEditingController();
 
+  WalkInGender? _gender;
   bool _submitting = false;
   String? _error;
 
@@ -59,6 +62,7 @@ class _TerminalCreateCustomerScreenState extends State<TerminalCreateCustomerScr
         firstName: _firstName.text.trim(),
         lastName: _lastName.text.trim(),
         phone: widget.phone,
+        gender: _gender,
       );
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
@@ -85,6 +89,25 @@ class _TerminalCreateCustomerScreenState extends State<TerminalCreateCustomerScr
         _submitting = false;
       });
     }
+  }
+
+  /// Retaper l'option déjà sélectionnée la désélectionne (retour à `null`) —
+  /// cohérent avec le caractère optionnel du champ (#172).
+  void _onGenderTap(WalkInGender value) {
+    setState(() => _gender = _gender == value ? null : value);
+  }
+
+  Widget _genderOption({required String label, required WalkInGender value}) {
+    final selected = _gender == value;
+    return selected
+        ? FilledButton(
+            onPressed: _submitting ? null : () => _onGenderTap(value),
+            child: Text(label),
+          )
+        : OutlinedButton(
+            onPressed: _submitting ? null : () => _onGenderTap(value),
+            child: Text(label),
+          );
   }
 
   @override
@@ -136,6 +159,29 @@ class _TerminalCreateCustomerScreenState extends State<TerminalCreateCustomerScr
                     labelText: 'Nom',
                     prefixIcon: Icon(Icons.badge_outlined),
                   ),
+                ),
+                const SizedBox(height: TerminalDimensions.touchSpacing),
+                Text(
+                  'Genre (optionnel)',
+                  style: theme.textTheme.labelLarge?.copyWith(color: TerminalColors.muted),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: _genderOption(
+                        label: 'Femme',
+                        value: WalkInGender.female,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _genderOption(
+                        label: 'Homme',
+                        value: WalkInGender.male,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: TerminalDimensions.touchSpacing),
                 TextField(
