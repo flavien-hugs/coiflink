@@ -4,8 +4,9 @@
 // TerminalIdentityException) ; createCustomer (mapping succès, 409 →
 // TerminalCustomerAlreadyExistsException, autre erreur → TerminalIdentityException) ;
 // panne réseau / corps illisible → TerminalIdentityException ; téléphone transmis dans
-// le corps (jamais l'URL) ; retry unique après ré-authentification sur 401 (succès
-// et échec de la ré-authentification).
+// le corps (jamais l'URL) ; genre optionnel transmis dans le corps quand fourni, absent
+// sinon (#172) ; retry unique après ré-authentification sur 401 (succès et échec de la
+// ré-authentification).
 // Aucun réseau réel : un `http.BaseClient` factice intercepte les requêtes.
 
 import 'dart:convert';
@@ -18,6 +19,7 @@ import 'package:coiflink_mobile/adapters/data/http_terminal_identity_gateway.dar
 import 'package:coiflink_mobile/application/terminal_device_session.dart';
 import 'package:coiflink_mobile/application/ports/terminal_auth_gateway.dart';
 import 'package:coiflink_mobile/application/ports/terminal_identity_gateway.dart';
+import 'package:coiflink_mobile/domain/customer/walk_in_gender.dart';
 
 // ---------------------------------------------------------------------------
 // Faux clients HTTP
@@ -287,6 +289,45 @@ void main() {
       expect(sentBody['first_name'], 'Fatou');
       expect(sentBody['last_name'], 'Koné');
       expect(sentBody['phone'], '0700000000');
+    });
+
+    test('transmet le genre quand fourni (#172)', () async {
+      final session = await _authenticatedSession();
+      http.BaseRequest? captured;
+      final client = _CapturingClient(
+        onRequest: (r) => captured = r,
+        statusCode: 201,
+        body: jsonEncode({'customer_id': 'cust-new', 'first_name': 'Fatou'}),
+      );
+
+      await _gateway(client, session).createCustomer(
+        firstName: 'Fatou',
+        lastName: 'Koné',
+        phone: '0700000000',
+        gender: WalkInGender.female,
+      );
+
+      final sentBody = jsonDecode((captured! as http.Request).body) as Map;
+      expect(sentBody['gender'], 'FEMALE');
+    });
+
+    test('omet la clé genre quand non fourni', () async {
+      final session = await _authenticatedSession();
+      http.BaseRequest? captured;
+      final client = _CapturingClient(
+        onRequest: (r) => captured = r,
+        statusCode: 201,
+        body: jsonEncode({'customer_id': 'cust-new', 'first_name': 'Fatou'}),
+      );
+
+      await _gateway(client, session).createCustomer(
+        firstName: 'Fatou',
+        lastName: 'Koné',
+        phone: '0700000000',
+      );
+
+      final sentBody = jsonDecode((captured! as http.Request).body) as Map;
+      expect(sentBody.containsKey('gender'), isFalse);
     });
   });
 

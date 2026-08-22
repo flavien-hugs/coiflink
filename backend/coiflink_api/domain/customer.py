@@ -72,8 +72,7 @@ def validate_customer_name(name: str) -> str:
         raise InvalidCustomerName("Le nom du client est requis.")
     if len(cleaned) > CUSTOMER_NAME_MAX_LENGTH:
         raise InvalidCustomerName(
-            f"Le nom du client ne doit pas dépasser "
-            f"{CUSTOMER_NAME_MAX_LENGTH} caractères."
+            f"Le nom du client ne doit pas dépasser {CUSTOMER_NAME_MAX_LENGTH} caractères."
         )
     return cleaned
 
@@ -136,8 +135,7 @@ def normalize_notes(notes: str | None) -> str | None:
         return None
     if len(cleaned) > NOTES_MAX_LENGTH:
         raise InvalidCustomerNotes(
-            f"Les notes internes ne doivent pas dépasser "
-            f"{NOTES_MAX_LENGTH} caractères."
+            f"Les notes internes ne doivent pas dépasser {NOTES_MAX_LENGTH} caractères."
         )
     return cleaned
 
@@ -219,20 +217,23 @@ class WalkInIdentity:
 class WalkInCustomerCommand:
     """Champs saisis à la borne pour créer une fiche walk-in (US-8.2, #156).
 
-    Les **trois** champs de l'acceptation, tous **requis** au terminal (contrairement
-    au flux gérant #28 où le téléphone est optionnel : à la borne, le téléphone est
-    la **clé d'identification** — une fiche sans numéro serait introuvable à la
-    visite suivante). Aucun `gender`, `notes`, mot de passe ni `user_id` :
-    collecte minimale (§11.3), la fiche reste walk-in (`user_id = NULL`).
+    Prénom/nom/téléphone sont **requis** au terminal (contrairement au flux gérant
+    #28 où le téléphone est optionnel : à la borne, le téléphone est la **clé
+    d'identification** — une fiche sans numéro serait introuvable à la visite
+    suivante). `gender` est **optionnel** (#172 — deux choix à l'écran borne,
+    Homme/Femme ; `normalize_gender` accepte aussi `OTHER` si jamais transmis).
+    `notes` et mot de passe restent hors de portée de la borne : collecte minimale
+    (§11.3), la fiche reste walk-in (`user_id = NULL`).
     """
 
     first_name: str
     last_name: str
     phone: str
+    gender: str | None = None
 
 
-def validate_walk_in_customer(command: WalkInCustomerCommand) -> tuple[str, str]:
-    """Valide/compose la commande borne → `(full_name, phone canonique)` (US-8.2, #156).
+def validate_walk_in_customer(command: WalkInCustomerCommand) -> tuple[str, str, str | None]:
+    """Valide/compose la commande borne → `(full_name, phone canonique, genre)` (US-8.2, #156).
 
     Règles (toutes en amont de **tout** accès base) :
 
@@ -243,14 +244,17 @@ def validate_walk_in_customer(command: WalkInCustomerCommand) -> tuple[str, str]
        l'ordre garantit `walk_in_first_name(full_name) == first_name` saisi ;
     3. `phone` : **requis** — normalisé E.164 par `normalize_phone` **directement**
        (sémantique « requis » : vide/malformé → `InvalidPhone`), jamais par le
-       wrapper optionnel `normalize_customer_phone`.
+       wrapper optionnel `normalize_customer_phone` ;
+    4. `gender` : **optionnel** — `normalize_gender` (même règle que le flux gérant
+       #28, `InvalidCustomerGender` si valeur hors énumération).
     """
 
     first_name = validate_customer_name(command.first_name)
     last_name = validate_customer_name(command.last_name)
     full_name = validate_customer_name(f"{first_name} {last_name}")
     phone = normalize_phone(command.phone)
-    return full_name, phone
+    gender = normalize_gender(command.gender)
+    return full_name, phone, gender
 
 
 @dataclass(frozen=True)

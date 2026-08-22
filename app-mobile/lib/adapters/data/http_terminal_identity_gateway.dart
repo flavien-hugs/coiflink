@@ -18,8 +18,16 @@ import 'package:http/http.dart' as http;
 
 import '../../application/terminal_device_session.dart';
 import '../../application/ports/terminal_identity_gateway.dart';
+import '../../domain/customer/walk_in_gender.dart';
 import 'api_config.dart';
 import 'terminal_http_retry.dart';
+
+/// Valeur transmise à l'API pour chaque choix (miroir de `domain.enums.Gender`
+/// côté backend, restreint aux deux valeurs exposées à l'écran borne, #172).
+String _genderWireValue(WalkInGender gender) => switch (gender) {
+      WalkInGender.female => 'FEMALE',
+      WalkInGender.male => 'MALE',
+    };
 
 class HttpTerminalIdentityGateway implements TerminalIdentityGateway {
   HttpTerminalIdentityGateway({
@@ -59,16 +67,16 @@ class HttpTerminalIdentityGateway implements TerminalIdentityGateway {
     required String firstName,
     required String lastName,
     required String phone,
+    WalkInGender? gender,
   }) async {
     final uri = config.resolve('/salons/${session.salonId}/terminal/customers');
-    final response = await _send(
-      uri,
-      jsonEncode(<String, String>{
-        'first_name': firstName,
-        'last_name': lastName,
-        'phone': phone,
-      }),
-    );
+    final body = <String, dynamic>{
+      'first_name': firstName,
+      'last_name': lastName,
+      'phone': phone,
+    };
+    if (gender != null) body['gender'] = _genderWireValue(gender);
+    final response = await _send(uri, jsonEncode(body));
 
     if (response.statusCode == 409) {
       throw const TerminalCustomerAlreadyExistsException();

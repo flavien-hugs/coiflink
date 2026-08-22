@@ -14,9 +14,10 @@ Couvre :
 - **POST /lookup 404** neutre (sans écho du numéro soumis) ;
 - **POST /lookup 422** téléphone invalide ;
 - **POST /lookup 429** + `Retry-After` quand le limiteur est verrouillé ;
-- **POST (create) 201** : corps minimal, champs privilégiés du corps ignorés ;
+- **POST (create) 201** : corps minimal, champs privilégiés du corps ignorés, genre
+  optionnel accepté et persisté sans jamais être réverbéré (#172) ;
 - **POST (create) 409** doublon de téléphone ;
-- **POST (create) 422** champ manquant ou invalide ;
+- **POST (create) 422** champ manquant ou invalide (y compris genre hors énumération) ;
 - **RBAC négatif** :
   - `401` sans credential sur les deux routes ;
   - `403` pour un JWT `CLIENT`, `MANAGER`, `HAIRDRESSER`, `ADMIN` sur les routes
@@ -117,9 +118,7 @@ def _seed_customer(
 ) -> object:
     from coiflink_api.domain.customer import CustomerToCreate
 
-    return repo.create(
-        CustomerToCreate(salon_id=salon_id, full_name=full_name, phone=phone)
-    )
+    return repo.create(CustomerToCreate(salon_id=salon_id, full_name=full_name, phone=phone))
 
 
 # ---------------------------------------------------------------------------
@@ -575,14 +574,14 @@ class TestCreateWalkIn201:
         assert "notes" not in r.json()
 
     def test_privileged_fields_in_body_ignored(self, terminal_client: TestClient) -> None:
-        """`extra="ignore"` : `salon_id`, `user_id`, `gender`, `notes` ignorés."""
+        """`extra="ignore"` : `salon_id`, `user_id`, `notes` ignorés (`gender` ne l'est
+        plus depuis #172 — voir `TestCreateWalkInGender` ci-dessous)."""
         r = terminal_client.post(
             _CREATE_URL,
             json={
                 **self._VALID_BODY,
                 "salon_id": str(_OTHER_SALON_ID),
                 "user_id": str(uuid.uuid4()),
-                "gender": "FEMALE",
                 "notes": "Note interne.",
                 "total_visits": 999,
             },
@@ -609,6 +608,55 @@ class TestCreateWalkIn201:
             headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"},
         )
         assert audit_log.recorded[0].metadata == {}
+
+
+# ---------------------------------------------------------------------------
+# POST /terminal/customers — genre optionnel (#172)
+# ---------------------------------------------------------------------------
+
+
+class TestCreateWalkInGender:
+    def test_gender_persisted_when_provided(
+        self, terminal_client: TestClient, customer_repo: FakeCustomerRepository
+    ) -> None:
+        r = terminal_client.post(
+            _CREATE_URL,
+            json={
+                "first_name": "Awa",
+                "last_name": "Koné",
+                "phone": "0700000000",
+                "gender": "FEMALE",
+            },
+            headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"},
+        )
+        assert r.status_code == 201
+        assert customer_repo.created[0].gender == "FEMALE"
+
+    def test_gender_null_when_omitted(
+        self, terminal_client: TestClient, customer_repo: FakeCustomerRepository
+    ) -> None:
+        r = terminal_client.post(
+            _CREATE_URL,
+            json={"first_name": "Awa", "last_name": "Koné", "phone": "0700000000"},
+            headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"},
+        )
+        assert r.status_code == 201
+        assert customer_repo.created[0].gender is None
+
+    def test_response_still_never_contains_gender(self, terminal_client: TestClient) -> None:
+        """Le genre est désormais accepté en écriture mais reste absent de la
+        projection minimale renvoyée à la borne (§11.3, inchangé par #172)."""
+        r = terminal_client.post(
+            _CREATE_URL,
+            json={
+                "first_name": "Awa",
+                "last_name": "Koné",
+                "phone": "0700000000",
+                "gender": "MALE",
+            },
+            headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"},
+        )
+        assert "gender" not in r.json()
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +753,19 @@ class TestCreateWalkIn422:
         )
         assert r.status_code == 422
 
+    def test_invalid_gender_returns_422(self, terminal_client: TestClient) -> None:
+        r = terminal_client.post(
+            _CREATE_URL,
+            json={
+                "first_name": "Awa",
+                "last_name": "Koné",
+                "phone": "0700000000",
+                "gender": "NOT_A_GENDER",
+            },
+            headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"},
+        )
+        assert r.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # RBAC négatif — 401 sans credential
@@ -732,12 +793,15 @@ class TestRbacNoCredential:
 class TestRbacWrongRoleOnTerminalRoutes:
     """Un JWT CLIENT/MANAGER/HAIRDRESSER/ADMIN est refusé sur les routes terminal (403)."""
 
-    @pytest.mark.parametrize("token", [
-        _MANAGER_TOKEN,
-        _CLIENT_TOKEN,
-        _HAIRDRESSER_TOKEN,
-        _ADMIN_TOKEN,
-    ])
+    @pytest.mark.parametrize(
+        "token",
+        [
+            _MANAGER_TOKEN,
+            _CLIENT_TOKEN,
+            _HAIRDRESSER_TOKEN,
+            _ADMIN_TOKEN,
+        ],
+    )
     def test_lookup_non_terminal_role_returns_403(
         self, base_client: TestClient, token: str
     ) -> None:
@@ -748,12 +812,15 @@ class TestRbacWrongRoleOnTerminalRoutes:
         )
         assert r.status_code == 403
 
-    @pytest.mark.parametrize("token", [
-        _MANAGER_TOKEN,
-        _CLIENT_TOKEN,
-        _HAIRDRESSER_TOKEN,
-        _ADMIN_TOKEN,
-    ])
+    @pytest.mark.parametrize(
+        "token",
+        [
+            _MANAGER_TOKEN,
+            _CLIENT_TOKEN,
+            _HAIRDRESSER_TOKEN,
+            _ADMIN_TOKEN,
+        ],
+    )
     def test_create_non_terminal_role_returns_403(
         self, base_client: TestClient, token: str
     ) -> None:
@@ -764,9 +831,7 @@ class TestRbacWrongRoleOnTerminalRoutes:
         )
         assert r.status_code == 403
 
-    def test_403_detail_is_generic_and_constant(
-        self, base_client: TestClient
-    ) -> None:
+    def test_403_detail_is_generic_and_constant(self, base_client: TestClient) -> None:
         """Le message 403 est générique — aucun oracle sur les permissions (§11.1)."""
         r = base_client.post(
             _LOOKUP_URL,
@@ -792,9 +857,7 @@ class TestRbacTerminalRefusedOnManagerRoutes:
     `CUSTOMER_LOOKUP_TERMINAL` + `CUSTOMER_CREATE_WALKIN` + `QUEUE_TICKET_CREATE`.
     """
 
-    def test_terminal_cannot_access_customer_manage(
-        self, base_client: TestClient
-    ) -> None:
+    def test_terminal_cannot_access_customer_manage(self, base_client: TestClient) -> None:
         r = base_client.post(
             _MANAGER_CUSTOMERS_URL,
             json={"full_name": "Awa Koné"},
@@ -811,9 +874,7 @@ class TestRbacTerminalRefusedOnManagerRoutes:
 class TestRbacCrossSalonScope:
     """Un credential TERMINAL du salon A ne peut pas interroger le salon B."""
 
-    def test_lookup_cross_salon_returns_403(
-        self, terminal_client: TestClient
-    ) -> None:
+    def test_lookup_cross_salon_returns_403(self, terminal_client: TestClient) -> None:
         r = terminal_client.post(
             _LOOKUP_URL_B,
             json={"phone": "0700000000"},
@@ -821,9 +882,7 @@ class TestRbacCrossSalonScope:
         )
         assert r.status_code == 403
 
-    def test_create_cross_salon_returns_403(
-        self, terminal_client: TestClient
-    ) -> None:
+    def test_create_cross_salon_returns_403(self, terminal_client: TestClient) -> None:
         r = terminal_client.post(
             _CREATE_URL_B,
             json={"first_name": "Awa", "last_name": "Koné", "phone": "0700000000"},

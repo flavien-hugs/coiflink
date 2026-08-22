@@ -10,10 +10,12 @@ Couvre `IdentifyWalkInCustomer` et `CreateWalkInCustomer` avec des fakes :
 - Isolation §11.2 : le `salon_id` transmis au dépôt est celui de la portée,
   jamais du corps.
 - Lookup **sans audit** : aucune entrée d'audit lors d'une recherche.
-- Création : `full_name` composé « Prénom Nom », téléphone canonique,
-  `gender`/`notes` `None` ; audit `CUSTOMER_CREATED` une fois, `metadata={}` ;
-  acteur = `actor_user_id` du device ; doublon → `CustomerAlreadyExists` sans
-  écriture ni audit ; validation invalide → aucune écriture, aucun audit.
+- Création : `full_name` composé « Prénom Nom », téléphone canonique, `notes`
+  toujours `None`, `gender` optionnel transmis tel quel après normalisation
+  (#172) ; audit `CUSTOMER_CREATED` une fois, `metadata={}` ; acteur =
+  `actor_user_id` du device ; doublon → `CustomerAlreadyExists` sans écriture ni
+  audit ; validation invalide (nom, téléphone, genre) → aucune écriture, aucun
+  audit.
 - Isolation §11.2 création : même téléphone dans un autre salon → accepté.
 - Anti-oracle structurel : `application/terminal_customers.py` n'importe aucun
   port `users` (assertion d'import statique).
@@ -36,6 +38,7 @@ from coiflink_api.domain.audit import AuditAction, ENTITY_TYPE_CUSTOMER
 from coiflink_api.domain.customer import WalkInCustomerCommand, WalkInIdentity
 from coiflink_api.domain.errors import (
     CustomerAlreadyExists,
+    InvalidCustomerGender,
     InvalidCustomerName,
     InvalidPhone,
     TooManyLoginAttempts,
@@ -67,9 +70,7 @@ def _seed_customer(
     """Crée une fiche en mémoire directement dans le dépôt (via `create`)."""
     from coiflink_api.domain.customer import CustomerToCreate
 
-    return repo.create(
-        CustomerToCreate(salon_id=salon_id, full_name=full_name, phone=phone)
-    )
+    return repo.create(CustomerToCreate(salon_id=salon_id, full_name=full_name, phone=phone))
 
 
 def _make_lookup(
@@ -310,8 +311,11 @@ class TestCreateWalkInCustomerSuccess:
         first_name: str = "Awa",
         last_name: str = "Koné",
         phone: str = "0700000000",
+        gender: str | None = None,
     ) -> WalkInIdentity:
-        cmd = WalkInCustomerCommand(first_name=first_name, last_name=last_name, phone=phone)
+        cmd = WalkInCustomerCommand(
+            first_name=first_name, last_name=last_name, phone=phone, gender=gender
+        )
         return self.uc.execute(_SALON_A, cmd, actor_user_id=_DEVICE_ID)
 
     def test_returns_walk_in_identity(self) -> None:
@@ -336,11 +340,22 @@ class TestCreateWalkInCustomerSuccess:
         created = self.repo.created[0]
         assert created.phone == "+2250700000000"
 
-    def test_gender_none(self) -> None:
-        """La borne ne collecte pas le genre (collecte minimale §11.3)."""
+    def test_gender_none_by_default(self) -> None:
+        """Aucun genre fourni par la borne → colonne `NULL` (comportement par défaut)."""
         self._exec()
         created = self.repo.created[0]
         assert created.gender is None
+
+    def test_gender_male_round_trips(self) -> None:
+        """Genre fourni par la borne (#172) → persisté tel quel."""
+        self._exec(gender="MALE")
+        created = self.repo.created[0]
+        assert created.gender == "MALE"
+
+    def test_gender_female_round_trips(self) -> None:
+        self._exec(gender="FEMALE")
+        created = self.repo.created[0]
+        assert created.gender == "FEMALE"
 
     def test_notes_none(self) -> None:
         """La borne ne collecte pas les notes (collecte minimale §11.3)."""
@@ -474,6 +489,19 @@ class TestCreateWalkInCustomerInvalidInput:
         uc = _make_create(repo, audit)
         cmd = WalkInCustomerCommand(first_name="Awa", last_name="Koné", phone="not-a-phone")
         with pytest.raises(InvalidPhone):
+            uc.execute(_SALON_A, cmd, actor_user_id=_DEVICE_ID)
+        assert len(repo.created) == 0
+        assert len(audit.recorded) == 0
+
+    def test_invalid_gender_raises_before_repo(self) -> None:
+        """#172 : un genre hors énumération est refusé avant tout accès dépôt."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        uc = _make_create(repo, audit)
+        cmd = WalkInCustomerCommand(
+            first_name="Awa", last_name="Koné", phone="0700000000", gender="NOT_A_GENDER"
+        )
+        with pytest.raises(InvalidCustomerGender):
             uc.execute(_SALON_A, cmd, actor_user_id=_DEVICE_ID)
         assert len(repo.created) == 0
         assert len(audit.recorded) == 0

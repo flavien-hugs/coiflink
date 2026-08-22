@@ -7,7 +7,10 @@
 // #159 **consomme** les contrats de #156 sans les réimplémenter : aucune
 // normalisation de téléphone ni validation de nom côté client, aucune écriture
 // `customer_profiles`. La projection retournée est **minimale** (prénom seul) —
-// jamais le nom complet ni le téléphone (borne = terminal public partagé, §11.3).
+// jamais le nom complet, le téléphone ni le genre (borne = terminal public
+// partagé, §11.3), même quand le genre vient d'être transmis à la création (#172).
+
+import '../../domain/customer/walk_in_gender.dart';
 
 /// Projection minimale d'une fiche client renvoyée à la borne (#156) : le
 /// `customerId` (= `customer_profile_id` que #157 consommera) et le **prénom seul**.
@@ -50,11 +53,15 @@ abstract class TerminalIdentityGateway {
   /// Crée une fiche walk-in **sans mot de passe**
   /// (`POST /salons/{salon_id}/terminal/customers`, #156) et retourne sa projection.
   ///
+  /// [gender] est **optionnel** (#172, deux choix à l'écran borne) — `null` si le
+  /// client n'a rien sélectionné.
+  ///
   /// Lève [TerminalCustomerAlreadyExistsException] si le téléphone est déjà fiché
   /// (`409`), [TerminalIdentityException] pour tout autre échec.
   Future<WalkInIdentity> createCustomer({
     required String firstName,
     required String lastName,
     required String phone,
+    WalkInGender? gender,
   });
 }

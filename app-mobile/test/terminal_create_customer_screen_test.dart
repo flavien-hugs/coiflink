@@ -1,9 +1,11 @@
 // Tests widget — TerminalCreateCustomerScreen (US-8.5, #159).
 //
 // Couverture : téléphone pré-rempli non modifiable ; bouton désactivé tant qu'un
-// champ est vide ; appel createCustomer avec les bons arguments ; gestion d'un
-// conflit 409 (TerminalCustomerAlreadyExistsException) ; gestion d'une erreur réseau
-// (TerminalIdentityException) ; navigation vers TerminalServiceSelectionScreen sur succès.
+// champ est vide ; appel createCustomer avec les bons arguments ; sélecteur de
+// genre optionnel (#172, mutuellement exclusif, désélectionnable, ne bloque jamais
+// la validation) ; gestion d'un conflit 409 (TerminalCustomerAlreadyExistsException) ;
+// gestion d'une erreur réseau (TerminalIdentityException) ; navigation vers
+// TerminalServiceSelectionScreen sur succès.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,6 +18,7 @@ import 'package:coiflink_mobile/application/ports/terminal_queue_gateway.dart';
 import 'package:coiflink_mobile/application/ports/salon_catalog_gateway.dart';
 import 'package:coiflink_mobile/application/ports/ticket_printer_gateway.dart';
 import 'package:coiflink_mobile/application/use_cases/get_salon_detail.dart';
+import 'package:coiflink_mobile/domain/customer/walk_in_gender.dart';
 import 'package:coiflink_mobile/domain/salon/salon_detail.dart';
 import 'package:coiflink_mobile/domain/ticket/ticket_print_payload.dart';
 
@@ -31,6 +34,7 @@ class _StubIdentityGateway implements TerminalIdentityGateway {
   String? lastFirstName;
   String? lastLastName;
   String? lastPhone;
+  WalkInGender? lastGender;
 
   @override
   Future<WalkInIdentity?> findByPhone(String phone) =>
@@ -41,10 +45,12 @@ class _StubIdentityGateway implements TerminalIdentityGateway {
     required String firstName,
     required String lastName,
     required String phone,
+    WalkInGender? gender,
   }) async {
     lastFirstName = firstName;
     lastLastName = lastName;
     lastPhone = phone;
+    lastGender = gender;
     if (error != null) throw error!;
     return result ??
         WalkInIdentity(customerId: 'new-cust', firstName: firstName);
@@ -185,6 +191,88 @@ void main() {
         find.widgetWithText(FilledButton, 'Valider'),
       );
       expect(button.onPressed, isNotNull);
+    });
+  });
+
+  group('TerminalCreateCustomerScreen — genre (#172)', () {
+    testWidgets('aucune option sélectionnée par défaut', (tester) async {
+      await tester.pumpWidget(_buildScreen(gateway: _StubIdentityGateway()));
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(FilledButton, 'Femme'), findsNothing);
+      expect(find.widgetWithText(FilledButton, 'Homme'), findsNothing);
+      expect(find.widgetWithText(OutlinedButton, 'Femme'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, 'Homme'), findsOneWidget);
+    });
+
+    testWidgets('tap sur Homme le sélectionne', (tester) async {
+      await tester.pumpWidget(_buildScreen(gateway: _StubIdentityGateway()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Homme'));
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(FilledButton, 'Homme'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, 'Femme'), findsOneWidget);
+    });
+
+    testWidgets('tap sur Femme après Homme change la sélection (exclusif)',
+        (tester) async {
+      await tester.pumpWidget(_buildScreen(gateway: _StubIdentityGateway()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Homme'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Femme'));
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(FilledButton, 'Femme'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, 'Homme'), findsOneWidget);
+    });
+
+    testWidgets('retaper l\'option déjà sélectionnée la désélectionne',
+        (tester) async {
+      await tester.pumpWidget(_buildScreen(gateway: _StubIdentityGateway()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Homme'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Homme'));
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(OutlinedButton, 'Homme'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Homme'), findsNothing);
+    });
+
+    testWidgets('soumission sans genre sélectionné fonctionne (optionnel)',
+        (tester) async {
+      final gateway = _StubIdentityGateway();
+      await tester.pumpWidget(_buildScreen(gateway: gateway));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.widgetWithText(TextField, 'Prénom'), 'Fatou');
+      await tester.enterText(find.widgetWithText(TextField, 'Nom'), 'Koné');
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, 'Valider'));
+      await tester.pumpAndSettle();
+
+      expect(gateway.lastGender, isNull);
+    });
+
+    testWidgets('soumission avec Femme sélectionnée transmet WalkInGender.female',
+        (tester) async {
+      final gateway = _StubIdentityGateway();
+      await tester.pumpWidget(_buildScreen(gateway: gateway));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.widgetWithText(TextField, 'Prénom'), 'Fatou');
+      await tester.enterText(find.widgetWithText(TextField, 'Nom'), 'Koné');
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Femme'));
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, 'Valider'));
+      await tester.pumpAndSettle();
+
+      expect(gateway.lastGender, WalkInGender.female);
     });
   });
 
