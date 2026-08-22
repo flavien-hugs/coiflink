@@ -1650,13 +1650,15 @@ class FakeQueueTicketRepository:
         import dataclasses as _dc
 
         from coiflink_api.domain.errors import InvalidQueueTicketTransition
-        from coiflink_api.domain.queue_ticket import QUEUE_TICKET_PENDING_STATUSES
+        from coiflink_api.domain.queue_ticket import (
+            QUEUE_TICKET_SERVICES_EDITABLE_STATUSES,
+        )
 
         ticket = self._tickets.get(ticket_id)
         if (
             ticket is None
             or ticket.salon_id != salon_id  # type: ignore[union-attr]
-            or ticket.status not in QUEUE_TICKET_PENDING_STATUSES  # type: ignore[union-attr]
+            or ticket.status not in QUEUE_TICKET_SERVICES_EDITABLE_STATUSES  # type: ignore[union-attr]
         ):
             raise InvalidQueueTicketTransition("Ce ticket ne peut plus être modifié dans cet état.")
         updated = _dc.replace(ticket, service_ids=tuple(service_ids))

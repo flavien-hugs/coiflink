@@ -107,11 +107,12 @@ export function canCompleteTicket(ticket: WalkInTicket): boolean {
 }
 
 // `services` (édition des prestations, #161) exige les mêmes bornes que le
-// backend (`PUT .../services`) : un ticket `waiting`/`in_progress` reste
-// modifiable (erreur de saisie à la borne, ajout en cours d'attente) ; un
-// ticket `called`/`done`/`expired` ne l'est plus.
+// backend (`PUT .../services`) : seul un ticket `waiting` reste modifiable
+// (erreur de saisie à la borne, ajout en cours d'attente) — un ticket déjà pris
+// en charge (`in_progress`) ne l'est plus depuis #174 (la prise en charge fige
+// les prestations), ni `called`/`done`/`expired`.
 export function canEditTicketServices(ticket: WalkInTicket): boolean {
-  return ticket.status === "waiting" || ticket.status === "in_progress";
+  return ticket.status === "waiting";
 }
 
 // `canCancelTicket` mirroir de la règle métier serveur (`POST .../cancel`) :

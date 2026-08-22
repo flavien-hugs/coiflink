@@ -107,8 +107,8 @@ describe("canCancelTicket", () => {
 });
 
 describe("canEditTicketServices", () => {
-  it.each(WALK_IN_TICKET_STATUSES)("statut %s", (status) => {
-    const expected = status === "waiting" || status === "in_progress";
+  it.each(WALK_IN_TICKET_STATUSES)("statut %s (#174 : waiting uniquement)", (status) => {
+    const expected = status === "waiting";
     expect(canEditTicketServices(ticket({ status }))).toBe(expected);
   });
 });

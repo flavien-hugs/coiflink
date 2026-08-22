@@ -166,13 +166,32 @@ Décisions :
   ticket en cours) — les deux listes partagent désormais un roster commun plutôt que l'une dérivant
   de l'autre, pour éviter qu'un filtrage se propage involontairement à l'autre usage.
 
+### 9. Les prestations d'un ticket ne sont plus modifiables une fois pris en charge (#174)
+
+`UpdateQueueTicketServices` (point structurel non numéroté ci-dessus, #161) acceptait jusqu'ici
+`waiting` **et** `in_progress`. Resserré à `waiting` seul (nouvelle constante domaine
+`QUEUE_TICKET_SERVICES_EDITABLE_STATUSES = ("waiting",)`) : une fois la prise en charge commencée,
+les prestations sont figées — corriger une erreur de saisie ne reste possible qu'**avant** le
+démarrage. Distinction à retenir : `QUEUE_TICKET_PENDING_STATUSES` (`waiting`/`in_progress`, pèse
+sur l'estimation d'attente) **n'a pas changé** et ne doit pas être confondue avec cette nouvelle
+constante — un ticket `in_progress` continue de compter dans l'ETA tout en n'étant plus éditable.
+Même mécanique que les points 1 et 8 : garde applicative (`UpdateQueueTicketServices.execute`) +
+garde TOCTOU dépôt (`SqlQueueTicketRepository.update_services`, `WHERE status = 'waiting'`),
+`InvalidQueueTicketTransition` → `409`. Côté web, `canEditTicketServices` (`domain/queue/queue.ts`)
+suit le même resserrement — les deux points d'entrée de l'édition dans `queue-board.tsx`
+(bouton de ligne et lien dans le panneau détail) le consomment déjà, aucun câblage supplémentaire.
+Aucune nouvelle contrainte base : contrairement au point 8, il ne s'agit que d'un resserrement
+d'une garde applicative déjà existante, pas d'une notion absente jusque-là.
+
 ## Conséquences
 
 - **Positif** : parcours walk-in complet et cohérent sans toucher au chemin d'écriture éprouvé de la
   réservation (#21/#22) ; numérotation robuste réutilisant un patron déjà en production ; PII minimisée
   à l'écran partagé (prénom seul, aligné #156) ; aucune nouvelle frontière de transaction ni de droit ;
   impression papier livrée sans exposer de sélection d'imprimante au client (#160) ; une coiffeuse ne
-  peut plus être affectée à deux tickets `in_progress` à la fois, garanti au niveau base (#173).
+  peut plus être affectée à deux tickets `in_progress` à la fois, garanti au niveau base (#173) ; les
+  prestations d'un ticket sont figées dès la prise en charge, plus de correction accidentelle en
+  cours de service (#174).
 - **Limites assumées (V1)** : l'estimation d'attente est heuristique ; le walk-in **ne pèse pas** dans
   les statistiques revenu/fréquentation (qui s'appuient sur `Appointment`/`Payment.appointment_id`) —
   un travail de schéma dédié serait nécessaire s'il le fallait, hors #157 ; l'**expiration** d'un ticket

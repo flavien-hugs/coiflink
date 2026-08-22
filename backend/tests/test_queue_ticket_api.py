@@ -47,11 +47,10 @@ Couvre :
   - `409` ticket déjà `in_progress` (règle métier centrale) ; `409` ticket `done` ;
   - `422` `reason` absent, vide, ou blanc (min_length Pydantic **et** garde domaine).
 - `PUT .../services` (#161) :
-  - `200` succès sur `waiting` **et** `in_progress` — corps contient les nouveaux
-    `service_ids` ;
+  - `200` succès sur `waiting` uniquement — corps contient les nouveaux `service_ids` ;
   - `401` sans jeton ; `403` `CLIENT` ;
   - `404` ticket hors salon/inexistant ;
-  - `409` ticket `done`/`expired` (plus éditable) ;
+  - `409` ticket `in_progress` (plus éditable depuis #174) ou `done`/`expired` ;
   - `422` `service_ids` vide, inactive ou hors salon.
 - Invariant de sécurité : aucune route walk-in dans `PUBLIC_ROUTE_PATHS`.
 """
@@ -987,13 +986,14 @@ class TestUpdateQueueTicketServicesAPI:
         )
         assert resp.json()["service_ids"] == [str(_SERVICE_ID)]
 
-    def test_success_on_in_progress_ticket(self) -> None:
+    def test_in_progress_ticket_returns_409(self) -> None:
+        """#174 : un ticket déjà pris en charge n'est plus éditable."""
         tickets = FakeQueueTicketRepository()
         tickets.seed(_make_ticket(status="in_progress"))
         resp = _build_client(tickets=tickets).put(
             _SERVICES_URL, json=self._BODY, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 409
 
     def test_unknown_ticket_returns_404(self) -> None:
         resp = _build_client().put(

@@ -65,6 +65,13 @@ QUEUE_TICKET_ACTIVE_STATUSES: tuple[QueueTicketStatus, ...] = (
 # tickets non encore servis et en cours de service.
 QUEUE_TICKET_PENDING_STATUSES: tuple[QueueTicketStatus, ...] = ("waiting", "in_progress")
 
+# Statuts où les prestations d'un ticket restent modifiables (#174). Distinct de
+# `QUEUE_TICKET_PENDING_STATUSES` ci-dessus, qui a un sens différent : un ticket
+# `in_progress` pèse toujours sur l'estimation d'attente, mais ses prestations ne
+# sont plus éditables une fois la prise en charge commencée (erreur de saisie à
+# corriger seulement **avant** le démarrage).
+QUEUE_TICKET_SERVICES_EDITABLE_STATUSES: tuple[QueueTicketStatus, ...] = ("waiting",)
+
 # Machine à états **fermée** (miroir `ALLOWED_STATUS_TRANSITIONS`) : toute
 # transition hors de cette table lève `InvalidQueueTicketTransition`.
 #   waiting -> called -> in_progress -> done
@@ -105,9 +112,7 @@ def assert_transition(current: str, target: str) -> None:
     """
 
     if not can_transition(current, target):
-        raise InvalidQueueTicketTransition(
-            "Cette transition de ticket n'est pas autorisée."
-        )
+        raise InvalidQueueTicketTransition("Cette transition de ticket n'est pas autorisée.")
 
 
 def validate_service_ids(
@@ -146,9 +151,7 @@ def validate_cancellation_reason(reason: str | None) -> str:
 
     trimmed = reason.strip() if reason is not None else ""
     if not trimmed:
-        raise InvalidQueueTicketCancellationReason(
-            "Le motif d'annulation est obligatoire."
-        )
+        raise InvalidQueueTicketCancellationReason("Le motif d'annulation est obligatoire.")
     if len(trimmed) > CANCELLATION_REASON_MAX_LENGTH:
         raise InvalidQueueTicketCancellationReason(
             "Le motif d'annulation dépasse la longueur autorisée."
@@ -278,6 +281,7 @@ __all__ = [
     "QUEUE_TICKET_STATUSES",
     "QUEUE_TICKET_ACTIVE_STATUSES",
     "QUEUE_TICKET_PENDING_STATUSES",
+    "QUEUE_TICKET_SERVICES_EDITABLE_STATUSES",
     "ALLOWED_QUEUE_TICKET_TRANSITIONS",
     "DEFAULT_WAIT_MINUTES_NO_STAFF",
     "CANCELLATION_REASON_MAX_LENGTH",

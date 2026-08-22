@@ -34,8 +34,9 @@ Expose les opérations du ticket de passage sous
   du jour (« Annulée » + motif) — jamais retiré de la liste.
 - `PUT /salons/{salon_id}/queue/tickets/{ticket_id}/services` — **édition des
   prestations** (coiffeuse / gérant, permission `QUEUE_TICKET_UPDATE_STATUS`,
-  #161) : remplace intégralement les prestations d'un ticket `waiting`/
-  `in_progress` (erreur de saisie à la borne, ajout en cours d'attente).
+  #161) : remplace intégralement les prestations d'un ticket `waiting` (erreur de
+  saisie à la borne, ajout en cours d'attente) — un ticket déjà pris en charge
+  (`in_progress`) n'est plus éditable (#174).
 - `GET /salons/{salon_id}/queue/tickets/{ticket_id}/customer` — **nom complet
   de la cliente** d'un ticket `in_progress` **pris en charge par le coiffeur
   appelant lui-même** (zone coiffeur « Mes tickets », permission dédiée
@@ -672,12 +673,13 @@ def update_queue_ticket_services(
         Principal, Depends(require_permission(Permission.QUEUE_TICKET_UPDATE_STATUS))
     ],
 ) -> QueueTicketResponse:
-    """Remplace les prestations d'un ticket `waiting`/`in_progress` (erreur de saisie, ajout).
+    """Remplace les prestations d'un ticket `waiting` (erreur de saisie, ajout).
 
     `service_ids` remplace **intégralement** la liste courante — jamais une fusion.
     Un ticket hors salon/inexistant est un `404` indiscernable ; une prestation
-    inactive/hors salon ou une liste vide → `422` ; un ticket `called`/`done`/
-    `expired` (plus éditable) → `409`. Journalisé `QUEUE_TICKET_SERVICES_UPDATED`.
+    inactive/hors salon ou une liste vide → `422` ; un ticket déjà pris en charge
+    (`in_progress`, #174) ou `called`/`done`/`expired` (plus éditable) → `409`.
+    Journalisé `QUEUE_TICKET_SERVICES_UPDATED`.
     """
 
     try:

@@ -31,10 +31,11 @@ ticket de passage est **indépendant** d'`Appointment` (ADR-0042) : aucune ligne
   **plus jamais** annulable ainsi — déjà garanti par la machine à états
   (`ALLOWED_QUEUE_TICKET_TRANSITIONS` n'autorise pas `in_progress → expired`),
   ré-affirmé ici par une double garde (pré-contrôle applicatif + TOCTOU dépôt).
-- `UpdateQueueTicketServices` — modifie les prestations d'un ticket `waiting`/
-  `in_progress` (coiffeuse / gérant, #161) : revalide les prestations (actives,
-  du salon) puis remplace la jonction, journalise `QUEUE_TICKET_SERVICES_UPDATED`.
-  Un ticket `called`/`done`/`expired` n'est plus éditable.
+- `UpdateQueueTicketServices` — modifie les prestations d'un ticket `waiting`
+  (coiffeuse / gérant, #161) : revalide les prestations (actives, du salon) puis
+  remplace la jonction, journalise `QUEUE_TICKET_SERVICES_UPDATED`. Un ticket déjà
+  pris en charge (`in_progress`) ou `called`/`done`/`expired` n'est plus éditable
+  (#174 — la prise en charge fige les prestations).
 - `ListSalonQueueTickets` — lecture pure des tickets actifs du jour (file gérant #157
   et écran borne #159), triés `ticket_number`. Aucune écriture, aucun audit.
 - `GetAssignedTicketCustomer` — nom complet de la cliente d'un ticket `in_progress`
@@ -74,7 +75,7 @@ from coiflink_api.domain.errors import (
     QueueTicketNotFound,
 )
 from coiflink_api.domain.queue_ticket import (
-    QUEUE_TICKET_PENDING_STATUSES,
+    QUEUE_TICKET_SERVICES_EDITABLE_STATUSES,
     QueueTicket,
     QueueTicketEntry,
     QueueTicketToCreate,
@@ -369,13 +370,16 @@ class CancelQueueTicket:
 
 
 class UpdateQueueTicketServices:
-    """Modifie les prestations d'un ticket `waiting`/`in_progress` (US-8.3, #161).
+    """Modifie les prestations d'un ticket `waiting` (US-8.3, #161).
 
     Aucun moyen n'existait jusqu'ici de corriger les prestations d'un ticket déjà
     émis (erreur de saisie à la borne, ajout demandé en cours d'attente). Revalide
     les prestations contre le catalogue **actif du salon** (même garde que
-    `JoinQueue._resolve_durations`) puis remplace la jonction. Un ticket `called`/
-    `done`/`expired` n'est plus éditable (`QUEUE_TICKET_PENDING_STATUSES`).
+    `JoinQueue._resolve_durations`) puis remplace la jonction. Un ticket déjà pris
+    en charge (`in_progress`) ou `called`/`done`/`expired` n'est plus éditable
+    (`QUEUE_TICKET_SERVICES_EDITABLE_STATUSES`, #174 — la prise en charge fige les
+    prestations, distinct de `QUEUE_TICKET_PENDING_STATUSES` qui continue d'inclure
+    `in_progress` pour l'estimation d'attente).
     """
 
     def __init__(
@@ -399,7 +403,7 @@ class UpdateQueueTicketServices:
         current = self._tickets.get(salon_id, ticket_id)
         if current is None:
             raise QueueTicketNotFound("Ticket de passage introuvable.")
-        if current.status not in QUEUE_TICKET_PENDING_STATUSES:
+        if current.status not in QUEUE_TICKET_SERVICES_EDITABLE_STATUSES:
             raise InvalidQueueTicketTransition("Ce ticket ne peut plus être modifié dans cet état.")
 
         active = {s.id for s in self._catalog.list_active_services(salon_id)}
