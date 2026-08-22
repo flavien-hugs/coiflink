@@ -12,6 +12,12 @@
 // numéro reste visible (aperçu à l'écran) quel que soit le résultat, et « Terminer »
 // reste utilisable pendant l'impression (le matériel n'a pas à répondre pour que le
 // client parte).
+//
+// « Réessayer » (#171, #160) : bouton de reprise manuelle affiché **uniquement**
+// après un échec (`_printError != null`), sous le message d'erreur — relance la même
+// séquence (`_runPrintSequence`). Décision produit : ne remplace pas « Terminer »
+// (toujours disponible, quel que soit le résultat) et ne s'affiche pas dans le cas
+// nominal — seul le cas d'échec que #171 signalait est couvert.
 
 import 'package:flutter/material.dart';
 
@@ -144,7 +150,7 @@ class _TerminalPrintScreenState extends State<TerminalPrintScreen> {
                       ),
                     ],
                   ),
-                if (_printError != null)
+                if (_printError != null) ...<Widget>[
                   Padding(
                     padding: const EdgeInsets.only(bottom: 4),
                     child: Text(
@@ -154,6 +160,11 @@ class _TerminalPrintScreenState extends State<TerminalPrintScreen> {
                       style: TextStyle(color: theme.colorScheme.error),
                     ),
                   ),
+                  OutlinedButton(
+                    onPressed: _printing ? null : _runPrintSequence,
+                    child: const Text('Réessayer'),
+                  ),
+                ],
                 const SizedBox(height: TerminalDimensions.touchSpacing),
                 Text(
                   'Récupérez votre ticket au bac d\'impression.',

@@ -101,17 +101,56 @@ salle d'accueil), pas le régime d'authentification (deny-by-default inchangé).
 ticket par la borne n'est **pas** journalisée au journal d'audit gérant (aucune action humaine de
 gestion, aucune PII propre au ticket).
 
+### 7. Impression physique du ticket (#160) — packages, sélection imprimante, portée V1
+
+Le ticket **papier** annoncé au point 3 (« M7 assume un ticket papier #160 ») livre
+`EscPosTicketPrinterGateway` (`app-mobile/lib/adapters/data/`), qui implémente le port
+`TicketPrinterGateway` déjà posé par #159 (`connect`/`print`/`status` + trois exceptions typées neutres).
+Décisions structurantes prises pour cette livraison :
+
+- **Deux packages, séparation formatage/transport** : `esc_pos_utils_plus` (générateur ESC/POS pur,
+  `TicketEscPosFormatter`, aucune dépendance de transport — testable sans matériel ni plugin) et
+  `flutter_thermal_printer` (transport Bluetooth, `EscPosTicketPrinterGateway`). Alternative écartée :
+  `esc_pos_bluetooth`, obsolète (~4 ans) et sans story Android 12+ claire.
+- **Code page `CP1252`** (Windows-1252/Western Europe, profil `default` d'`esc_pos_utils_plus`) pour les
+  accents français du ticket — pas de `PosCodeTable` dédié dans ce package, la table est un simple nom de
+  code page résolu par le profil de capacités chargé au runtime.
+- **Bluetooth uniquement en V1**, pas d'USB : le parc de bornes n'a pas de port USB accessible côté
+  client, et une imprimante thermique 80mm Bluetooth reste le matériel courant. Le port
+  `PrinterDeviceScanGateway` isole ce choix — l'USB pourra être ajouté plus tard sans changer le contrat.
+- **Sélection de l'imprimante — setup ponctuel, jamais au moment d'imprimer.** Aucun appairage OS
+  préalable n'est supposé : `TerminalPrinterSetupScreen` (nouvel état `printerSetup` de
+  `TerminalBootstrap`) lance une recherche Bluetooth active, affichée **une seule fois**, juste après la
+  première activation de la borne — tant que `TicketPrinterDeviceStore` (persistance sécurisée de
+  l'identifiant choisi, même mécanisme que `TerminalCredentialStore`) n'a rien enregistré. Non bloquant
+  (« Configurer plus tard » mène quand même à l'accueil, cohérent avec la décision n°9 « toujours en
+  direct » de la spec #159) — `EscPosTicketPrinterGateway.connect()` relit ensuite cet identifiant à
+  chaque connexion, sans jamais proposer de choix pendant le parcours client.
+- **Reprise manuelle après échec (#171)** : `TerminalPrintScreen` affiche un bouton « Réessayer »
+  **uniquement** après un échec d'impression (relance `print`), sans remplacer « Terminer » — le client
+  peut toujours repartir quel que soit le résultat, seul le cas d'échec que #171 signalait est couvert.
+- **Pas d'ETA imprimée** : l'estimation (point 3) reste volatile et propre à l'écran, jamais reportée sur
+  le papier. **Pas de PII client** sur le ticket (déjà garanti par `TicketPrintPayload`, #159).
+- **Panne papier non détectée** : `flutter_thermal_printer` ne remonte aucun signal dédié « hors papier »
+  — un échec d'écriture matériel se traduit toujours par `PrinterWriteFailedException`, jamais
+  `PrinterOutOfPaperException` (réservée à un futur plugin/firmware qui l'exposerait).
+
 ## Conséquences
 
 - **Positif** : parcours walk-in complet et cohérent sans toucher au chemin d'écriture éprouvé de la
   réservation (#21/#22) ; numérotation robuste réutilisant un patron déjà en production ; PII minimisée
-  à l'écran partagé (prénom seul, aligné #156) ; aucune nouvelle frontière de transaction ni de droit.
+  à l'écran partagé (prénom seul, aligné #156) ; aucune nouvelle frontière de transaction ni de droit ;
+  impression papier livrée sans exposer de sélection d'imprimante au client (#160).
 - **Limites assumées (V1)** : l'estimation d'attente est heuristique ; le walk-in **ne pèse pas** dans
   les statistiques revenu/fréquentation (qui s'appuient sur `Appointment`/`Payment.appointment_id`) —
   un travail de schéma dédié serait nécessaire s'il le fallait, hors #157 ; l'**expiration** d'un ticket
   oublié (`waiting → expired`) est un statut **atteignable** mais non déclenché automatiquement (aucun
   ordonnanceur dans le dépôt) ; le **rate-limiting** de la création de tickets relève de la garde
-  `TERMINAL` (#155) ou d'un middleware transverse, à vérifier avant généralisation.
+  `TERMINAL` (#155) ou d'un middleware transverse, à vérifier avant généralisation ; l'impression papier
+  (#160) est Bluetooth-only et suppose une imprimante déjà sélectionnée au setup, sans détection de panne
+  papier ni changement d'imprimante après coup (redémarrage/réinstallation requis, hors #161).
 - **Suivis** : facturation liée au ticket (aucun `ticket_id` sur `Payment` — l'encaissement walk-in
-  reste un encaissement `service_id`-only classique, déjà possible) ; notifications au client walk-in
-  (M7 assume un ticket **papier** #160) ; affinage de l'ETA (données historiques).
+  reste un encaissement `service_id`-only classique, déjà possible) ; affinage de l'ETA (données
+  historiques) ; transport USB pour l'impression si un besoin terrain apparaît ; changement d'imprimante
+  après le setup initial, probablement via le menu de maintenance protégé par PIN gérant que #161 doit
+  encore trancher (`showTerminalExitGate`, actuellement inerte).

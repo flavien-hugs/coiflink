@@ -4,7 +4,8 @@
 // d'impression déclenchée automatiquement (pauseForPrinting → print →
 // resumeAfterPrinting dans le finally, y compris sur exception) ; message d'erreur
 // neutre par type d'exception d'impression ; l'aperçu reste visible après un échec ;
-// Terminer revient à l'écran d'accueil (première route).
+// Terminer revient à l'écran d'accueil (première route) ; « Réessayer » (#171)
+// n'apparaît qu'après un échec et relance la séquence d'impression.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -48,9 +49,16 @@ class _FakeController implements TerminalInactivityController {
 // ---------------------------------------------------------------------------
 
 class _StubPrinterGateway implements TicketPrinterGateway {
-  _StubPrinterGateway({this.error});
+  _StubPrinterGateway({this.error, this.errors});
 
+  /// Erreur unique, levée à chaque appel.
   final Object? error;
+
+  /// Erreur par appel (index = `printCount` avant incrément) — `null` à un index
+  /// donné signifie un succès pour cet appel. Permet de tester le retry (#171) :
+  /// échec au premier appel, succès au second.
+  final List<Object?>? errors;
+
   int printCount = 0;
 
   @override
@@ -58,7 +66,13 @@ class _StubPrinterGateway implements TicketPrinterGateway {
 
   @override
   Future<void> print(TicketPrintPayload payload) async {
+    final callIndex = printCount;
     printCount++;
+    if (errors != null) {
+      final err = callIndex < errors!.length ? errors![callIndex] : null;
+      if (err != null) throw err;
+      return;
+    }
     if (error != null) throw error!;
   }
 
@@ -265,6 +279,75 @@ void main() {
 
       // Le numéro doit toujours être affiché malgré l'échec d'impression
       expect(find.text('N° 042'), findsOneWidget);
+    });
+  });
+
+  group('TerminalPrintScreen — Réessayer (#171)', () {
+    testWidgets('n\'apparaît pas quand l\'impression réussit', (tester) async {
+      await tester.pumpWidget(_buildScreen(printer: _StubPrinterGateway()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Réessayer'), findsNothing);
+    });
+
+    testWidgets('apparaît après un échec d\'impression', (tester) async {
+      final printer = _StubPrinterGateway(
+        error: const PrinterNotConnectedException(),
+      );
+
+      await tester.pumpWidget(_buildScreen(printer: printer));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Réessayer'), findsOneWidget);
+    });
+
+    testWidgets('tap relance la séquence d\'impression (pauseForPrinting/print/resumeAfterPrinting)',
+        (tester) async {
+      final printer = _StubPrinterGateway(
+        errors: <Object?>[const PrinterNotConnectedException(), null],
+      );
+      final controller = _FakeController();
+
+      await tester.pumpWidget(_buildScreen(printer: printer, controller: controller));
+      await tester.pumpAndSettle();
+      expect(printer.printCount, 1);
+      expect(controller.pauseForPrintingCount, 1);
+      expect(controller.resumeAfterPrintingCount, 1);
+
+      await tester.tap(find.text('Réessayer'));
+      await tester.pumpAndSettle();
+
+      expect(printer.printCount, 2);
+      expect(controller.pauseForPrintingCount, 2);
+      expect(controller.resumeAfterPrintingCount, 2);
+    });
+
+    testWidgets('un retry réussi efface le message d\'erreur et le bouton', (tester) async {
+      final printer = _StubPrinterGateway(
+        errors: <Object?>[const PrinterNotConnectedException(), null],
+      );
+
+      await tester.pumpWidget(_buildScreen(printer: printer));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Imprimante indisponible'), findsOneWidget);
+
+      await tester.tap(find.text('Réessayer'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Imprimante indisponible'), findsNothing);
+      expect(find.text('Réessayer'), findsNothing);
+    });
+
+    testWidgets('Terminer reste utilisable même après un échec (n\'est pas remplacé)',
+        (tester) async {
+      final printer = _StubPrinterGateway(
+        error: const PrinterNotConnectedException(),
+      );
+
+      await tester.pumpWidget(_buildScreen(printer: printer));
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(FilledButton, 'Terminer'), findsOneWidget);
     });
   });
 

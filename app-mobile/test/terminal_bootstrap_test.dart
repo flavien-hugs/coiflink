@@ -6,9 +6,10 @@
 // (401) → credential effacé + retour à l'activation ; échec réseau →
 // TerminalUnavailableScreen (credential conservé) + Réessayer relance
 // l'authentification ; activation réussie depuis l'écran d'activation → enchaîne
-// sur l'authentification silencieuse. seedDevSalon (--dart-define=TERMINAL_SALON_ID)
-// n'est pas testé ici (lit une constante de compilation globale, non substituable
-// par test).
+// sur l'authentification silencieuse ; imprimante jamais configurée →
+// TerminalPrinterSetupScreen une seule fois avant l'accueil (#160). seedDevSalon
+// (--dart-define=TERMINAL_SALON_ID) n'est pas testé ici (lit une constante de
+// compilation globale, non substituable par test).
 //
 // `TerminalBootstrap` est extrait de `TerminalApp` précisément pour être testable sans le
 // binaire réel (aucun écran de saisie de credential : le credential est injecté au
@@ -23,14 +24,17 @@ import 'package:coiflink_mobile/adapters/ui/terminal/terminal_activation_screen.
 import 'package:coiflink_mobile/adapters/ui/terminal/terminal_bootstrap.dart';
 import 'package:coiflink_mobile/adapters/ui/terminal/terminal_deps.dart';
 import 'package:coiflink_mobile/adapters/ui/terminal/terminal_home_screen.dart';
+import 'package:coiflink_mobile/adapters/ui/terminal/terminal_printer_setup_screen.dart';
 import 'package:coiflink_mobile/adapters/ui/terminal/terminal_unavailable_screen.dart';
 import 'package:coiflink_mobile/application/terminal_device_session.dart';
+import 'package:coiflink_mobile/application/ports/printer_device_scan_gateway.dart';
 import 'package:coiflink_mobile/application/ports/terminal_activation_gateway.dart';
 import 'package:coiflink_mobile/application/ports/terminal_auth_gateway.dart';
 import 'package:coiflink_mobile/application/ports/terminal_credential_store.dart';
 import 'package:coiflink_mobile/application/ports/terminal_identity_gateway.dart';
 import 'package:coiflink_mobile/application/ports/terminal_queue_gateway.dart';
 import 'package:coiflink_mobile/application/ports/salon_catalog_gateway.dart';
+import 'package:coiflink_mobile/application/ports/ticket_printer_device_store.dart';
 import 'package:coiflink_mobile/application/ports/ticket_printer_gateway.dart';
 import 'package:coiflink_mobile/application/use_cases/get_salon_detail.dart';
 import 'package:coiflink_mobile/domain/salon/salon_detail.dart';
@@ -137,6 +141,34 @@ class _StubPrinterGateway implements TicketPrinterGateway {
 }
 
 // ---------------------------------------------------------------------------
+// Faux ports — setup imprimante (#160)
+// ---------------------------------------------------------------------------
+
+class _InMemoryPrinterDeviceStore implements TicketPrinterDeviceStore {
+  _InMemoryPrinterDeviceStore({String? initial}) : _stored = initial;
+
+  String? _stored;
+
+  @override
+  Future<String?> read() async => _stored;
+
+  @override
+  Future<void> save(String deviceId) async => _stored = deviceId;
+
+  @override
+  Future<void> clear() async => _stored = null;
+}
+
+class _StubPrinterScanGateway implements PrinterDeviceScanGateway {
+  _StubPrinterScanGateway({this.devices = const <PrinterDeviceInfo>[]});
+
+  final List<PrinterDeviceInfo> devices;
+
+  @override
+  Future<List<PrinterDeviceInfo>> scan() async => devices;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -156,6 +188,8 @@ Widget _buildBootstrap({
   TerminalAuthGateway? auth,
   TerminalCredentialStore? credentialStore,
   TerminalActivationGateway? activationGateway,
+  PrinterDeviceScanGateway? printerScanGateway,
+  TicketPrinterDeviceStore? printerDeviceStore,
 }) {
   final session = TerminalDeviceSession(
     auth ??
@@ -168,6 +202,11 @@ Widget _buildBootstrap({
       session: session,
       credentialStore: credentialStore ?? _InMemoryCredentialStore(initial: _credential),
       activationGateway: activationGateway ?? _StubActivationGateway(),
+      printerScanGateway: printerScanGateway ?? _StubPrinterScanGateway(),
+      // Déjà configurée par défaut : les tests qui ne portent pas sur #160 ne
+      // doivent pas transiter par `TerminalPrinterSetupScreen`.
+      printerDeviceStore:
+          printerDeviceStore ?? _InMemoryPrinterDeviceStore(initial: 'printer-1'),
       buildDeps: () => TerminalDeps(
         salonId: session.salonId,
         getSalonDetail: GetSalonDetail(_StubCatalogGateway()),
@@ -293,6 +332,70 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(await store.read(), _credential);
+      expect(find.byType(TerminalHomeScreen), findsOneWidget);
+    });
+  });
+
+  group('TerminalBootstrap — setup imprimante (#160)', () {
+    testWidgets(
+        'imprimante jamais configurée → affiche TerminalPrinterSetupScreen après authentification',
+        (tester) async {
+      await tester.pumpWidget(
+        _buildBootstrap(printerDeviceStore: _InMemoryPrinterDeviceStore()),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(TerminalPrinterSetupScreen), findsOneWidget);
+      expect(find.byType(TerminalHomeScreen), findsNothing);
+    });
+
+    testWidgets('« Configurer plus tard » enchaîne sur TerminalHomeScreen sans persister',
+        (tester) async {
+      final printerStore = _InMemoryPrinterDeviceStore();
+      await tester.pumpWidget(_buildBootstrap(printerDeviceStore: printerStore));
+      await tester.pumpAndSettle();
+      expect(find.byType(TerminalPrinterSetupScreen), findsOneWidget);
+
+      await tester.tap(find.text('Configurer plus tard'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(TerminalHomeScreen), findsOneWidget);
+      expect(await printerStore.read(), isNull);
+    });
+
+    testWidgets('sélection d\'une imprimante persiste puis enchaîne sur TerminalHomeScreen',
+        (tester) async {
+      final printerStore = _InMemoryPrinterDeviceStore();
+      await tester.pumpWidget(
+        _buildBootstrap(
+          printerDeviceStore: printerStore,
+          printerScanGateway: _StubPrinterScanGateway(
+            devices: const <PrinterDeviceInfo>[
+              PrinterDeviceInfo(id: 'AA:BB:CC', name: 'Imprimante Salon'),
+            ],
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Imprimante Salon'), findsOneWidget);
+
+      await tester.tap(find.text('Imprimante Salon'));
+      await tester.pumpAndSettle();
+
+      expect(await printerStore.read(), 'AA:BB:CC');
+      expect(find.byType(TerminalHomeScreen), findsOneWidget);
+    });
+
+    testWidgets('imprimante déjà configurée → passe directement à TerminalHomeScreen',
+        (tester) async {
+      await tester.pumpWidget(
+        _buildBootstrap(
+          printerDeviceStore: _InMemoryPrinterDeviceStore(initial: 'printer-1'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(TerminalPrinterSetupScreen), findsNothing);
       expect(find.byType(TerminalHomeScreen), findsOneWidget);
     });
   });

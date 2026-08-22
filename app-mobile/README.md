@@ -90,12 +90,16 @@ connexion, aucun formulaire de mot de passe visible du client).
 - Échec réseau/serveur → `TerminalUnavailableScreen` (message neutre, bouton Réessayer) ; le credential
   stocké est **conservé** (il est peut-être toujours valide, c'est le serveur qui est momentanément
   indisponible).
-- Succès → le `salon_id` de la borne provient de la réponse du login (aucune valeur de salon compilée en
-  dur) → écran d'accueil.
+- Succès, imprimante **déjà** configurée (`TicketPrinterDeviceStore`, #160) → écran d'accueil directement.
+- Succès, imprimante **jamais** configurée → `TerminalPrinterSetupScreen` (setup ponctuel, #160) une seule
+  fois avant l'accueil : recherche Bluetooth active (aucun appairage OS préalable requis), sélection par le
+  technicien, identifiant persisté (`SecureTicketPrinterDeviceStore`) puis relu par
+  `EscPosTicketPrinterGateway.connect()` à chaque impression — plus jamais de sélection ensuite. Non
+  bloquant : « Configurer plus tard » mène quand même à l'accueil (décision n°9, « toujours en direct »).
 
-Voir `adapters/ui/terminal/terminal_bootstrap.dart` (widget public, testable directement, machine à 4 états :
-chargement / activation / indisponible / prêt), `adapters/ui/terminal/terminal_activation_screen.dart` et
-`application/terminal_device_session.dart`.
+Voir `adapters/ui/terminal/terminal_bootstrap.dart` (widget public, testable directement, machine à 5 états :
+chargement / activation / indisponible / setup imprimante / prêt), `adapters/ui/terminal/terminal_activation_screen.dart`,
+`adapters/ui/terminal/terminal_printer_setup_screen.dart` et `application/terminal_device_session.dart`.
 
 ## Parcours borne (`lib/adapters/ui/terminal/`)
 
@@ -121,7 +125,9 @@ huit écrans :
 7. **Impression** (`terminal_print_screen.dart`, #160) — aperçu imprimable (`ticket_preview.dart`, bordure
    pointillée), séquence d'impression encadrée par le minuteur d'inactivité, message neutre par type
    d'échec (`PrinterNotConnected`/`OutOfPaper`/`WriteFailed`) — un échec d'impression **n'interrompt
-   jamais** le parcours, le numéro reste affiché. « Terminer » revient à l'accueil.
+   jamais** le parcours, le numéro reste affiché. « Terminer » revient à l'accueil, toujours disponible ;
+   un bouton « Réessayer » (#171) apparaît **uniquement** après un échec, sous le message d'erreur, et
+   relance la séquence d'impression sans remplacer « Terminer ».
 
 `terminal_unavailable_screen.dart` couvre tout échec réseau bloquant (amorçage, catalogue) ;
 `terminal_exit_gate.dart` pose le geste caché de sortie (PIN gérant, vérification non tranchée, §H — geste
@@ -140,11 +146,19 @@ saisie du PIN gérant (`pauseForModal`).
 `application/ports/{terminal_activation,terminal_auth,terminal_identity,terminal_queue,salon_catalog,ticket_printer}_gateway.dart`
 + `application/ports/terminal_credential_store.dart`, implémentés respectivement par
 `adapters/data/http_{terminal_activation,terminal_auth,terminal_identity,terminal_queue,salon_catalog}_gateway.dart`,
-`adapters/data/noop_ticket_printer_gateway.dart` (place-tenant jusqu'à l'adaptateur ESC/POS de #160) et
+`adapters/data/esc_pos_ticket_printer_gateway.dart` (#160, Bluetooth via `flutter_thermal_printer`,
+formatage ESC/POS pur délégué à `adapters/data/ticket_escpos_formatter.dart`) et
 `adapters/data/secure_terminal_credential_store.dart` (routes réservées au rôle **TERMINAL**, en-tête
 `Authorization: Bearer` du device, jamais un jeton personnel — retry unique après ré-authentification sur
 `401`, `adapters/data/terminal_http_retry.dart`). `application/terminal_device_session.dart` échange le
 credential contre une session device et expose le `salon_id`.
+
+Setup imprimante (#160) : `application/ports/printer_device_scan_gateway.dart` (recherche) et
+`application/ports/ticket_printer_device_store.dart` (persistance de la sélection), implémentés par
+`adapters/data/flutter_thermal_printer_scan_gateway.dart` et
+`adapters/data/secure_ticket_printer_device_store.dart` — consommés uniquement par
+`terminal_printer_setup_screen.dart` (setup ponctuel) et `esc_pos_ticket_printer_gateway.dart` (relecture
+de la sélection à la connexion), jamais pendant le parcours client.
 
 ## Garde-fous (§11)
 

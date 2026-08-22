@@ -32,6 +32,6 @@ class TerminalDeps {
   /// Création du ticket de passage (#157).
   final TerminalQueueGateway queueGateway;
 
-  /// Impression du ticket (#160) — no-op tant que l'adaptateur ESC/POS n'est pas livré.
+  /// Impression du ticket (#160) — `EscPosTicketPrinterGateway` en production.
   final TicketPrinterGateway printerGateway;
 }
