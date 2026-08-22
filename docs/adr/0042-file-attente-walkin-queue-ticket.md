@@ -135,12 +135,44 @@ Décisions structurantes prises pour cette livraison :
   — un échec d'écriture matériel se traduit toujours par `PrinterWriteFailedException`, jamais
   `PrinterOutOfPaperException` (réservée à un futur plugin/firmware qui l'exposerait).
 
+### 8. Une coiffeuse ne sert qu'un seul ticket `in_progress` à la fois, portée globale (#173)
+
+Rien n'empêchait jusqu'ici d'affecter la même coiffeuse à deux tickets `in_progress`
+simultanément — ni le sélecteur « Choisir une coiffeuse » du dashboard gérant (aucun filtre), ni
+`StartQueueTicket.execute()` (seules préconditions : ticket `waiting`, coiffeuse `ACTIVE` du
+salon), ni la garde TOCTOU du dépôt (`WHERE status = 'waiting'`, ne porte que sur le ticket cible).
+Décisions :
+
+- **Contrainte base comme arbitre final**, pas seulement un filtre cosmétique — même patron que
+  `CustomerAlreadyExists`/`uq_customer_profiles_salon_phone` (ADR implicite du point 1) : index
+  unique partiel `uq_queue_tickets_hairdresser_in_progress` sur `queue_tickets(hairdresser_id)
+  WHERE status = 'in_progress'` (migration `0021`), retraduit par `SqlQueueTicketRepository.start()`
+  en `HairdresserAlreadyBusy` (`409`) ; pré-contrôle applicatif
+  (`QueueTicketRepository.is_hairdresser_busy`) pour un message immédiat, sans attendre la course.
+- **Portée volontairement globale, pas par salon** — dérogation délibérée à l'isolation stricte
+  §11.2 suivie partout ailleurs dans ce schéma : une personne ne peut physiquement servir qu'un
+  seul client à la fois, quel que soit le salon où elle est staff. Aujourd'hui sans conséquence
+  pratique observable (`POST .../employees` refuse tout doublon de téléphone, aucune route ne
+  permet encore de rattacher une coiffeuse existante à un second salon) mais la contrainte est
+  posée correctement dès maintenant plutôt que d'être resserrée plus tard par erreur.
+  **Alternative écartée** : contrainte par salon (`UNIQUE (salon_id, hairdresser_id) WHERE status
+  = 'in_progress'`) — rejetée car elle autoriserait, si le multi-salon devient possible, qu'une
+  même personne apparaisse « en cours » dans deux salons à la fois.
+- **Prédicat frontend purement cosmétique** (`isHairdresserBusy`, `web-dashboard/src/domain/
+  queue/queue.ts`) : exclut du sélecteur d'assignation une coiffeuse déjà `in_progress` sur un
+  autre ticket **du jour consulté**, sans appel serveur dédié — recalculé à chaque rendu à partir
+  des tickets déjà chargés par la page. Le filtre toolbar « Filtrer par coiffeuse » reste
+  volontairement **non filtré** (une coiffeuse occupée doit rester trouvable pour retrouver son
+  ticket en cours) — les deux listes partagent désormais un roster commun plutôt que l'une dérivant
+  de l'autre, pour éviter qu'un filtrage se propage involontairement à l'autre usage.
+
 ## Conséquences
 
 - **Positif** : parcours walk-in complet et cohérent sans toucher au chemin d'écriture éprouvé de la
   réservation (#21/#22) ; numérotation robuste réutilisant un patron déjà en production ; PII minimisée
   à l'écran partagé (prénom seul, aligné #156) ; aucune nouvelle frontière de transaction ni de droit ;
-  impression papier livrée sans exposer de sélection d'imprimante au client (#160).
+  impression papier livrée sans exposer de sélection d'imprimante au client (#160) ; une coiffeuse ne
+  peut plus être affectée à deux tickets `in_progress` à la fois, garanti au niveau base (#173).
 - **Limites assumées (V1)** : l'estimation d'attente est heuristique ; le walk-in **ne pèse pas** dans
   les statistiques revenu/fréquentation (qui s'appuient sur `Appointment`/`Payment.appointment_id`) —
   un travail de schéma dédié serait nécessaire s'il le fallait, hors #157 ; l'**expiration** d'un ticket
@@ -153,4 +185,6 @@ Décisions structurantes prises pour cette livraison :
   reste un encaissement `service_id`-only classique, déjà possible) ; affinage de l'ETA (données
   historiques) ; transport USB pour l'impression si un besoin terrain apparaît ; changement d'imprimante
   après le setup initial, probablement via le menu de maintenance protégé par PIN gérant que #161 doit
-  encore trancher (`showTerminalExitGate`, actuellement inerte).
+  encore trancher (`showTerminalExitGate`, actuellement inerte) ; la portée globale de la contrainte
+  coiffeuse-occupée (#173) reste non exercée en pratique tant qu'aucune route ne permet le staffing
+  multi-salon — à revisiter si cette fonctionnalité est introduite.

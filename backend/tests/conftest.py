@@ -20,7 +20,11 @@ from coiflink_api.domain.enums import (
     NotificationChannel,
 )
 from coiflink_api.domain.employee import Employee
-from coiflink_api.domain.errors import EmployeeAlreadyInSalon, PhoneAlreadyInUse, TooManyLoginAttempts
+from coiflink_api.domain.errors import (
+    EmployeeAlreadyInSalon,
+    PhoneAlreadyInUse,
+    TooManyLoginAttempts,
+)
 from coiflink_api.domain.membership import SalonMembershipToCreate
 from coiflink_api.domain.salon import Salon as SalonEntity
 from coiflink_api.domain.salon import SalonPhoto as SalonPhotoEntity
@@ -134,9 +138,7 @@ class FakeUserRepository:
             created_at=_CREATED_AT,
         )
 
-    def update_password(
-        self, user_id: Union[uuid.UUID, str], new_password_hash: str
-    ) -> None:
+    def update_password(self, user_id: Union[uuid.UUID, str], new_password_hash: str) -> None:
         """Enregistre le remplacement du condensat (réinitialisation, #11)."""
 
         self.updated_passwords.append((str(user_id), new_password_hash))
@@ -225,9 +227,7 @@ class FakeAuthUserRepository(FakeUserRepository):
             created_at=_CREATED_AT,
         )
 
-    def update_password(
-        self, user_id: Union[uuid.UUID, str], new_password_hash: str
-    ) -> None:
+    def update_password(self, user_id: Union[uuid.UUID, str], new_password_hash: str) -> None:
         """Enregistre l'appel **et** met à jour le condensat des credentials stockés.
 
         Remplace `password_hash` dans les tables de recherche pour le compte
@@ -240,9 +240,7 @@ class FakeAuthUserRepository(FakeUserRepository):
         for table in (self._by_phone, self._by_email, self._by_id):
             for lookup_key, cred in list(table.items()):
                 if str(cred.id) == uid:
-                    table[lookup_key] = dataclasses.replace(
-                        cred, password_hash=new_password_hash
-                    )
+                    table[lookup_key] = dataclasses.replace(cred, password_hash=new_password_hash)
 
 
 class FakeTokenService:
@@ -315,9 +313,7 @@ class FakeLoginRateLimiter:
     def check(self, key: str) -> None:
         self.checks.append(key)
         if self._locked:
-            raise TooManyLoginAttempts(
-                "Trop de tentatives.", retry_after=self._retry_after
-            )
+            raise TooManyLoginAttempts("Trop de tentatives.", retry_after=self._retry_after)
 
     def record_failure(self, key: str) -> None:
         self.failures.append(key)
@@ -334,9 +330,7 @@ class FakeSalonScopeRepository:
     court-circuitée par `AccessPolicy`).
     """
 
-    def __init__(
-        self, scopes: dict[uuid.UUID, frozenset[uuid.UUID]] | None = None
-    ) -> None:
+    def __init__(self, scopes: dict[uuid.UUID, frozenset[uuid.UUID]] | None = None) -> None:
         self.scopes: dict[uuid.UUID, frozenset[uuid.UUID]] = scopes or {}
         self.calls: list[tuple[uuid.UUID, str]] = []
 
@@ -470,9 +464,7 @@ class FakeSalonMemberRepository:
 
     def list_for_salon(self, salon_id: uuid.UUID) -> tuple[Employee, ...]:
         return tuple(
-            employee
-            for (salon, _user), employee in self._employees.items()
-            if salon == salon_id
+            employee for (salon, _user), employee in self._employees.items() if salon == salon_id
         )
 
     def find_by_id(self, salon_id: uuid.UUID, user_id: uuid.UUID) -> Employee | None:
@@ -490,15 +482,11 @@ class FakeSalonMemberRepository:
         current = self._employees.get(key)
         if current is None:
             return None
-        updated = dataclasses.replace(
-            current, specialties=specialties, hired_at=hired_at
-        )
+        updated = dataclasses.replace(current, specialties=specialties, hired_at=hired_at)
         self._employees[key] = updated
         return updated
 
-    def set_status(
-        self, salon_id: uuid.UUID, user_id: uuid.UUID, status: str
-    ) -> Employee | None:
+    def set_status(self, salon_id: uuid.UUID, user_id: uuid.UUID, status: str) -> Employee | None:
         key = (salon_id, user_id)
         current = self._employees.get(key)
         if current is None:
@@ -556,9 +544,7 @@ class FakeSalonRepository:
         return self._salons.get(salon_id)
 
     def list_for_owner(self, owner_id: uuid.UUID):  # type: ignore[no-untyped-def]
-        return tuple(
-            s for s in self._salons.values() if s.owner_id == owner_id
-        )
+        return tuple(s for s in self._salons.values() if s.owner_id == owner_id)
 
     def update(self, salon_id: uuid.UUID, changes):  # type: ignore[no-untyped-def]
         import dataclasses as _dc
@@ -784,9 +770,7 @@ class FakeServiceRepository:
         return photo
 
     def list_photos(self, salon_id: uuid.UUID, service_id: uuid.UUID):  # type: ignore[no-untyped-def]
-        return tuple(
-            p for p in self._photos.get(service_id, []) if p.salon_id == salon_id
-        )
+        return tuple(p for p in self._photos.get(service_id, []) if p.salon_id == salon_id)
 
     def count_photos(self, salon_id: uuid.UUID, service_id: uuid.UUID) -> int:
         return len(self.list_photos(salon_id, service_id))
@@ -860,9 +844,7 @@ class FakeSalonCatalogRepository:
         return None
 
     def list_active_services(self, salon_id):  # type: ignore[no-untyped-def]
-        services = [
-            s for s in self._services.get(salon_id, []) if s.is_active
-        ]
+        services = [s for s in self._services.get(salon_id, []) if s.is_active]
         return tuple(sorted(services, key=lambda s: s.name))
 
     def list_photos(self, salon_id):  # type: ignore[no-untyped-def]
@@ -871,16 +853,11 @@ class FakeSalonCatalogRepository:
     def list_service_photos(self, salon_id):  # type: ignore[no-untyped-def]
         self.list_service_photos_calls.append(salon_id)
         return tuple(
-            p
-            for photos in self._service_photos.values()
-            for p in photos
-            if p.salon_id == salon_id
+            p for photos in self._service_photos.values() for p in photos if p.salon_id == salon_id
         )
 
     def list_active_hairdressers(self, salon_id):  # type: ignore[no-untyped-def]
-        hairdressers = [
-            h for h in self._hairdressers.get(salon_id, []) if h.status == "ACTIVE"
-        ]
+        hairdressers = [h for h in self._hairdressers.get(salon_id, []) if h.status == "ACTIVE"]
         return tuple(sorted(hairdressers, key=lambda h: h.full_name))
 
 
@@ -939,9 +916,7 @@ class FakeCustomerRepository:
         from coiflink_api.domain.errors import CustomerAlreadyExists
 
         if self.raise_conflict:
-            raise CustomerAlreadyExists(
-                "Une fiche existe déjà pour ce numéro dans ce salon."
-            )
+            raise CustomerAlreadyExists("Une fiche existe déjà pour ce numéro dans ce salon.")
         entity = Customer(
             id=uuid.uuid4(),
             salon_id=customer.salon_id,
@@ -1040,9 +1015,7 @@ class FakeCustomerRepository:
             c.phone == phone and c.id != customer_id  # type: ignore[union-attr]
             for c in self._for_salon(salon_id)
         ):
-            raise CustomerAlreadyExists(
-                "Une fiche existe déjà pour ce numéro dans ce salon."
-            )
+            raise CustomerAlreadyExists("Une fiche existe déjà pour ce numéro dans ce salon.")
         # Seule l'identité change ; `notes`/compteurs inchangés, `updated_at`
         # régénéré (miroir du `onupdate` SQL).
         updated = replace(
@@ -1111,7 +1084,9 @@ class FakeCampaignRepository:
 
     def list_for_salon(self, salon_id: uuid.UUID, *, limit: int, offset: int):  # type: ignore[no-untyped-def]
         matches = [
-            c for c in self._campaigns.values() if c.salon_id == salon_id  # type: ignore[union-attr]
+            c
+            for c in self._campaigns.values()
+            if c.salon_id == salon_id  # type: ignore[union-attr]
         ]
         # Tri déterministe : created_at DESC, id DESC (miroir du SQL).
         matches.sort(key=lambda c: (c.created_at, c.id), reverse=True)  # type: ignore[union-attr]
@@ -1119,7 +1094,9 @@ class FakeCampaignRepository:
 
     def count_for_salon(self, salon_id: uuid.UUID) -> int:
         return sum(
-            1 for c in self._campaigns.values() if c.salon_id == salon_id  # type: ignore[union-attr]
+            1
+            for c in self._campaigns.values()
+            if c.salon_id == salon_id  # type: ignore[union-attr]
         )
 
 
@@ -1230,8 +1207,7 @@ class FakePaymentRepository:
         matches.sort(key=lambda p: (p.created_at, p.id), reverse=True)
         page = matches[offset : offset + limit]
         return tuple(
-            Transaction(payment=p, client_name=self._client_names.get(p.client_id))
-            for p in page
+            Transaction(payment=p, client_name=self._client_names.get(p.client_id)) for p in page
         )
 
     def count_for_salon(self, salon_id, *, filter):  # type: ignore[no-untyped-def]
@@ -1281,7 +1257,7 @@ class FakePaymentRepository:
     ):
         self.list_completed_calls.append((salon_id, filter, limit, offset))
         matches = self._matching_discrepancies(salon_id, filter)
-        return tuple(matches[offset: offset + limit])
+        return tuple(matches[offset : offset + limit])
 
     def count_completed_without_payment(self, salon_id: uuid.UUID, *, filter) -> int:  # type: ignore[no-untyped-def]
         self.count_completed_calls.append((salon_id, filter))
@@ -1608,6 +1584,13 @@ class FakeQueueTicketRepository:
             )
         return tuple(entries)
 
+    def is_hairdresser_busy(self, hairdresser_id: uuid.UUID) -> bool:
+        # Portée **globale** (miroir du dépôt réel, #173) : pas de filtre `salon_id`.
+        return any(
+            t.hairdresser_id == hairdresser_id and t.status == "in_progress"  # type: ignore[union-attr]
+            for t in self._tickets.values()
+        )
+
     def start(self, salon_id, ticket_id, hairdresser_id, *, now):  # type: ignore[no-untyped-def]
         import dataclasses as _dc
 
@@ -1634,11 +1617,11 @@ class FakeQueueTicketRepository:
 
         ticket = self._tickets.get(ticket_id)
         if ticket is None or ticket.salon_id != salon_id or ticket.status != "in_progress":  # type: ignore[union-attr]
-            raise InvalidQueueTicketTransition(
-                "Ce ticket ne peut pas être clôturé dans cet état."
-            )
+            raise InvalidQueueTicketTransition("Ce ticket ne peut pas être clôturé dans cet état.")
         updated = _dc.replace(
-            ticket, status="done", completed_at=ticket.completed_at or now  # type: ignore[union-attr]
+            ticket,
+            status="done",
+            completed_at=ticket.completed_at or now,  # type: ignore[union-attr]
         )
         self._tickets[ticket_id] = updated
         return updated
@@ -1654,11 +1637,11 @@ class FakeQueueTicketRepository:
             or ticket.salon_id != salon_id  # type: ignore[union-attr]
             or ticket.status not in ("waiting", "called")  # type: ignore[union-attr]
         ):
-            raise InvalidQueueTicketTransition(
-                "Ce ticket ne peut pas être annulé dans cet état."
-            )
+            raise InvalidQueueTicketTransition("Ce ticket ne peut pas être annulé dans cet état.")
         updated = _dc.replace(
-            ticket, status="expired", cancellation_reason=reason  # type: ignore[union-attr]
+            ticket,
+            status="expired",
+            cancellation_reason=reason,  # type: ignore[union-attr]
         )
         self._tickets[ticket_id] = updated
         return updated
@@ -1675,9 +1658,7 @@ class FakeQueueTicketRepository:
             or ticket.salon_id != salon_id  # type: ignore[union-attr]
             or ticket.status not in QUEUE_TICKET_PENDING_STATUSES  # type: ignore[union-attr]
         ):
-            raise InvalidQueueTicketTransition(
-                "Ce ticket ne peut plus être modifié dans cet état."
-            )
+            raise InvalidQueueTicketTransition("Ce ticket ne peut plus être modifié dans cet état.")
         updated = _dc.replace(ticket, service_ids=tuple(service_ids))
         self._tickets[ticket_id] = updated
         return updated
@@ -1726,9 +1707,7 @@ class FakeQueueTicketRepository:
     def count_waiting_beyond_estimate(self, salon_id, *, now):  # type: ignore[no-untyped-def]
         """Retourne `waiting_beyond_estimate` (préconfiguré) et enregistre l'appel (#148)."""
 
-        self.count_waiting_beyond_estimate_calls.append(
-            {"salon_id": salon_id, "now": now}
-        )
+        self.count_waiting_beyond_estimate_calls.append({"salon_id": salon_id, "now": now})
         return self.waiting_beyond_estimate
 
     def list_in_progress_details(self, salon_id):  # type: ignore[no-untyped-def]

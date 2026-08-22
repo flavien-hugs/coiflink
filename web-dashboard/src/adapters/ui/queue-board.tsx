@@ -63,6 +63,7 @@ import {
   canStartTicket,
   countPeopleAhead,
   formatTicketNumber,
+  isHairdresserBusy,
   isTicketPaid,
   type WalkInTicket,
 } from "@/src/domain/queue/queue";
@@ -90,8 +91,10 @@ export interface QueueBoardProps {
   // Tickets de passage walk-in du **jour consulté** (US-8.3, #157) — seule vue
   // désormais, le RDV n'existe plus côté backend.
   walkInTickets: WalkInTicket[];
-  // Coiffeuses **disponibles** (déjà filtrées `ACTIVE`, #150) — options du
-  // sélecteur d'assignation à la prise en charge.
+  // Coiffeuses **disponibles** (déjà filtrées `ACTIVE`, #150) — roster complet du
+  // salon pour le filtre « Filtrer par coiffeuse » ; le sélecteur d'assignation à
+  // la prise en charge en retire en plus celles déjà `in_progress` sur un autre
+  // ticket (#173, `isHairdresserBusy`), croisé avec `walkInTickets` ci-dessous.
   availableHairdressers: Employee[];
   // Catalogue du salon — résout prix/durée des prestations dans le détail du
   // ticket (#161), sans dupliquer ces champs dans la ligne de file d'attente.
@@ -145,7 +148,9 @@ export function QueueBoard({
     [],
   );
 
-  const hairdresserAssignOptions = useMemo(
+  // Roster complet (`{value, label}`), indépendant de toute charge actuelle —
+  // base commune des deux dérivés ci-dessous (#173).
+  const allHairdresserOptions = useMemo(
     () =>
       availableHairdressers.map((hairdresser) => ({
         value: hairdresser.id,
@@ -154,9 +159,23 @@ export function QueueBoard({
     [availableHairdressers],
   );
 
+  // Sélecteur d'assignation par ligne (« Choisir une coiffeuse ») : exclut celles
+  // déjà `in_progress` sur un autre ticket (#173) — ne fait que cacher l'option,
+  // le backend reste l'arbitre (`409` sinon, cf. `isHairdresserBusy`).
+  const hairdresserAssignOptions = useMemo(
+    () =>
+      allHairdresserOptions.filter(
+        (option) => !isHairdresserBusy(walkInTickets, option.value),
+      ),
+    [allHairdresserOptions, walkInTickets],
+  );
+
+  // Filtre toolbar « Filtrer par coiffeuse » : volontairement **non filtré** par
+  // charge actuelle — une coiffeuse occupée doit rester trouvable pour retrouver
+  // son ticket en cours.
   const hairdresserOptions = useMemo(
-    () => [{ value: "", label: "Toutes les coiffeuses" }, ...hairdresserAssignOptions],
-    [hairdresserAssignOptions],
+    () => [{ value: "", label: "Toutes les coiffeuses" }, ...allHairdresserOptions],
+    [allHairdresserOptions],
   );
 
   const filtered = useMemo(() => {

@@ -231,6 +231,19 @@ class HairdresserNotInSalon(DomainError):
     """
 
 
+class HairdresserAlreadyBusy(DomainError):
+    """La coiffeuse a déjà un ticket `in_progress` — un seul service à la fois (#173).
+
+    Levée par le pré-contrôle applicatif (`QueueTicketRepository.is_hairdresser_busy`)
+    **et** par la retraduction de la violation de l'index unique partiel **global**
+    `uq_queue_tickets_hairdresser_in_progress` (filet de la course concurrente —
+    même patron que `CustomerAlreadyExists`/`uq_customer_profiles_salon_phone`).
+    Portée volontairement **globale**, pas par salon : une personne ne peut
+    physiquement servir qu'un seul client à la fois. Message neutre — l'adapter
+    entrant la traduit en `409 Conflict`.
+    """
+
+
 class AppointmentServiceRequired(DomainError):
     """Réservation sans prestation (§8.1, #21).
 
@@ -761,6 +774,7 @@ __all__ = [
     "SlotUnavailable",
     "SalonNotBookable",
     "HairdresserNotInSalon",
+    "HairdresserAlreadyBusy",
     "AppointmentServiceRequired",
     "AppointmentNotFound",
     "AppointmentNotModifiable",

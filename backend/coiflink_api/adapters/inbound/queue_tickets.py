@@ -21,7 +21,8 @@ Expose les opérations du ticket de passage sous
   immédiatement, préalable de #160) ;
 - `POST /salons/{salon_id}/queue/tickets/{ticket_id}/start` — **prise en charge**
   (coiffeuse / gérant, permission dédiée `QUEUE_TICKET_UPDATE_STATUS`, #148) :
-  assigne une coiffeuse et passe `in_progress` ;
+  assigne une coiffeuse et passe `in_progress` — refuse une coiffeuse déjà
+  occupée sur un autre ticket `in_progress` (`409`, portée globale, #173) ;
 - `POST /salons/{salon_id}/queue/tickets/{ticket_id}/complete` — **clôture** (idem) :
   passe `in_progress → done`.
 - `POST /salons/{salon_id}/queue/tickets/{ticket_id}/cancel` — **annulation
@@ -101,6 +102,7 @@ from coiflink_api.application.queue_ticket import (
 )
 from coiflink_api.domain.access import SalonScope
 from coiflink_api.domain.errors import (
+    HairdresserAlreadyBusy,
     HairdresserNotInSalon,
     InvalidQueueTicketCancellationReason,
     InvalidQueueTicketServices,
@@ -139,9 +141,7 @@ class JoinQueueRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     customer_profile_id: uuid.UUID | None = None
-    service_ids: list[uuid.UUID] = Field(
-        min_length=1, max_length=_MAX_SERVICES_PER_TICKET
-    )
+    service_ids: list[uuid.UUID] = Field(min_length=1, max_length=_MAX_SERVICES_PER_TICKET)
 
 
 class StartQueueTicketRequest(BaseModel):
@@ -181,9 +181,7 @@ class UpdateQueueTicketServicesRequest(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    service_ids: list[uuid.UUID] = Field(
-        min_length=1, max_length=_MAX_SERVICES_PER_TICKET
-    )
+    service_ids: list[uuid.UUID] = Field(min_length=1, max_length=_MAX_SERVICES_PER_TICKET)
 
 
 class QueueTicketResponse(BaseModel):
@@ -438,11 +436,7 @@ def get_assigned_ticket_customer(
     response_model=QueueTicketListResponse,
     summary="Lister la file d'attente walk-in du salon pour un jour donné (gérant/coiffeuse, #148/#157)",
     responses={
-        200: {
-            "description": (
-                "Tickets actifs du jour (waiting/called/in_progress/done/expired)"
-            )
-        },
+        200: {"description": ("Tickets actifs du jour (waiting/called/in_progress/done/expired)")},
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
     },
@@ -504,9 +498,7 @@ def join_queue(
     # `salon_id` est lu du chemin par `require_salon_scope` ; les deux dépendances
     # résolvent le même `Principal` (pas de double lecture de compte).
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
-    _principal: Annotated[
-        Principal, Depends(require_permission(Permission.QUEUE_TICKET_CREATE))
-    ],
+    _principal: Annotated[Principal, Depends(require_permission(Permission.QUEUE_TICKET_CREATE))],
 ) -> QueueTicketResponse:
     """Délivre un ticket `waiting` pour le salon de la portée (borne `TERMINAL`).
 
@@ -531,9 +523,7 @@ def join_queue(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
     except QueueTicketNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _ticket_response(result.ticket, people_ahead_count=result.people_ahead_count)
 
 
@@ -563,21 +553,21 @@ def start_queue_ticket(
 
     Un ticket hors salon/inexistant est un `404` indiscernable ; une coiffeuse hors
     salon également (`HairdresserNotInSalon` → `404`, aucun oracle). Une transition
-    depuis un statut non-`waiting` → `409`. Journalisé `QUEUE_TICKET_STARTED`.
+    depuis un statut non-`waiting`, ou une coiffeuse déjà occupée sur un autre
+    ticket `in_progress` (`HairdresserAlreadyBusy`, portée globale, #173) → `409`.
+    Journalisé `QUEUE_TICKET_STARTED`.
     """
 
     try:
-        ticket = usecase.execute(
-            salon_id, ticket_id, payload.hairdresser_id, principal.id
-        )
-    except (InvalidQueueTicketTransition, QueueTicketHairdresserRequired) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        ticket = usecase.execute(salon_id, ticket_id, payload.hairdresser_id, principal.id)
+    except (
+        InvalidQueueTicketTransition,
+        QueueTicketHairdresserRequired,
+        HairdresserAlreadyBusy,
+    ) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except (QueueTicketNotFound, HairdresserNotInSalon) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _action_response(ticket)
 
 
@@ -607,13 +597,9 @@ def complete_queue_ticket(
     try:
         ticket = usecase.execute(salon_id, ticket_id, principal.id)
     except InvalidQueueTicketTransition as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except QueueTicketNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _action_response(ticket)
 
 
@@ -657,13 +643,9 @@ def cancel_queue_ticket(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
     except InvalidQueueTicketTransition as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except QueueTicketNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _action_response(ticket)
 
 
@@ -684,9 +666,7 @@ def update_queue_ticket_services(
     salon_id: uuid.UUID,
     ticket_id: uuid.UUID,
     payload: UpdateQueueTicketServicesRequest,
-    usecase: Annotated[
-        UpdateQueueTicketServices, Depends(get_update_queue_ticket_services)
-    ],
+    usecase: Annotated[UpdateQueueTicketServices, Depends(get_update_queue_ticket_services)],
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
     principal: Annotated[
         Principal, Depends(require_permission(Permission.QUEUE_TICKET_UPDATE_STATUS))
@@ -701,21 +681,15 @@ def update_queue_ticket_services(
     """
 
     try:
-        ticket = usecase.execute(
-            salon_id, ticket_id, tuple(payload.service_ids), principal.id
-        )
+        ticket = usecase.execute(salon_id, ticket_id, tuple(payload.service_ids), principal.id)
     except InvalidQueueTicketServices as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
     except InvalidQueueTicketTransition as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except QueueTicketNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _ticket_response(ticket)
 
 
@@ -738,9 +712,7 @@ def update_queue_ticket_services(
 def get_ticket_customer(
     salon_id: uuid.UUID,
     ticket_id: uuid.UUID,
-    usecase: Annotated[
-        GetAssignedTicketCustomer, Depends(get_assigned_ticket_customer)
-    ],
+    usecase: Annotated[GetAssignedTicketCustomer, Depends(get_assigned_ticket_customer)],
     _scope: Annotated[SalonScope, Depends(require_salon_scope)],
     principal: Annotated[
         Principal, Depends(require_permission(Permission.QUEUE_TICKET_UPDATE_STATUS))
@@ -758,9 +730,7 @@ def get_ticket_customer(
     try:
         full_name = usecase.execute(salon_id, ticket_id, principal.id)
     except QueueTicketNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return AssignedTicketCustomerResponse(full_name=full_name)
 
 

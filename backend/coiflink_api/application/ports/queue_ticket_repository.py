@@ -94,6 +94,19 @@ class QueueTicketRepository(Protocol):
         `QUEUE_TICKET_ACTIVE_STATUSES`."""
         ...
 
+    def is_hairdresser_busy(self, hairdresser_id: uuid.UUID) -> bool:
+        """Vrai si la coiffeuse a déjà un ticket `in_progress` (#173).
+
+        **Exception délibérée** à l'isolation §11.2 rappelée en tête de ce fichier :
+        cette méthode ne filtre **pas** par `salon_id`, portée volontairement
+        **globale** — une personne ne peut physiquement servir qu'un seul client à
+        la fois, quel que soit le salon où elle est staff. Pré-contrôle rapide
+        avant `start()` (même rôle que `phone_exists` pour `CustomerAlreadyExists`)
+        — l'index unique partiel global `uq_queue_tickets_hairdresser_in_progress`
+        reste l'arbitre final contre la course concurrente.
+        """
+        ...
+
     def start(
         self,
         salon_id: uuid.UUID,
@@ -106,8 +119,11 @@ class QueueTicketRepository(Protocol):
 
         `UPDATE ... WHERE status = 'waiting'` **conditionnel** (garde TOCTOU, miroir
         `mark_started`) : lève `domain.errors.InvalidQueueTicketTransition` si le
-        ticket n'est plus `waiting` (déjà pris en charge, terminé). `flush` sans
-        `commit`.
+        ticket n'est plus `waiting` (déjà pris en charge, terminé). Lève aussi
+        `domain.errors.HairdresserAlreadyBusy` (#173) si l'écriture viole l'index
+        unique partiel global `uq_queue_tickets_hairdresser_in_progress` (filet de
+        la course concurrente, même patron que `CustomerAlreadyExists`). `flush`
+        sans `commit`.
         """
         ...
 
