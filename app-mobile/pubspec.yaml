@@ -51,6 +51,18 @@ dependencies:
   # cache par le paquet — aucun appel réseau au runtime après le premier lancement.
   google_fonts: ^6.2.1
 
+  # Impression du ticket de passage (#160) : formateur ESC/POS pur (aucune
+  # dépendance de transport, testable sans matériel) — génère les octets envoyés
+  # par `EscPosTicketPrinterGateway`. `PosCodeTable.westEur` couvre les accents
+  # français du ticket (nom du salon, prestations).
+  esc_pos_utils_plus: ^2.0.4
+
+  # Transport matériel de l'impression (#160) : Bluetooth (Classic/BLE) et USB sur
+  # Android, utilisé par `EscPosTicketPrinterGateway` et
+  # `FlutterThermalPrinterScanGateway` (recherche/connexion à l'imprimante appairée
+  # lors du setup ponctuel, `TerminalPrinterSetupScreen`).
+  flutter_thermal_printer: ^2.2.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

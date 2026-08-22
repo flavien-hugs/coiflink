@@ -10,6 +10,15 @@
 > Dart/Python/TypeScript), en-têtes de section en **anglais** (attendus par le gabarit ADW),
 > identifiants techniques (noms de classes, champs, symboles) inchangés. **Aucune signature IA**
 > dans le code, les commits ou la PR.
+>
+> **État : implémenté.** §A/§B/§E/§F ont été livrés par #159 avant même le début de
+> l'implémentation de #160. §C/§D (formateur pur, adaptateur matériel) ainsi que la sélection
+> d'imprimante et le retry manuel (#171) sont maintenant livrés — voir `docs/adr/0042-file-attente-
+> walkin-queue-ticket.md` §7 pour les décisions finales (certaines affinent les recommandations
+> ci-dessous, notamment l'USB abandonné en V1 et la sélection d'imprimante par setup ponctuel, une
+> question que cette spec n'avait pas résolue). Les annotations « **[livré]** » ci-dessous marquent
+> les sections mises à jour ; le reste du document est conservé tel quel comme trace de la
+> planification d'origine.
 
 ## Problem Statement
 
@@ -335,7 +344,7 @@ Ce découpage à trois exceptions typées (plutôt qu'une exception générique 
 client, sans jamais laisser fuiter un message brut de plugin (adresse MAC, code d'erreur natif,
 nom de classe Java/Kotlin) — même posture que `ReceiptGatewayException` (aucune URL, jeton ni PII).
 
-### (C) Formateur pur — `lib/adapters/data/ticket_escpos_formatter.dart` (nouveau, sans plugin)
+### (C) Formateur pur — `lib/adapters/data/ticket_escpos_formatter.dart` **[livré]**
 
 Séparé de l'adaptateur matériel pour rester **testable sans aucun plugin ni matériel** (patron
 `formatReceiptShareText` / `_appointmentFromJson`, fonctions pures dans des fichiers d'adaptateur) :
@@ -375,7 +384,12 @@ accents en amont. Le formateur doit **choisir explicitement** l'un des deux (pag
 au français si le firmware la supporte, sinon repli sur une translittération ASCII) — voir *Risks*,
 ce point n'est tranché par aucune des décisions produit fournies et doit l'être avant l'implé.
 
-### (D) Adaptateur matériel — `lib/adapters/data/esc_pos_ticket_printer_gateway.dart` (nouveau)
+**[livré]** Formateur construit sur `esc_pos_utils_plus` (`Generator`), page de code **`CP1252`**
+(profil `default`, résolue via `CapabilityProfile.load()` — pas de translittération, la page couvre
+nativement les accents français). Tests dans `test/ticket_escpos_formatter_test.dart` (contenu,
+numéro formaté, accents, commande de découpe).
+
+### (D) Adaptateur matériel — `lib/adapters/data/esc_pos_ticket_printer_gateway.dart` **[livré]**
 
 `EscPosTicketPrinterGateway implements TicketPrinterGateway` :
 
@@ -401,6 +415,25 @@ ce point n'est tranché par aucune des décisions produit fournies et doit l'êt
     (`usb_serial`/`flutter_usb_printer`) si le choix se porte sur l'USB plutôt que le Bluetooth.
   Ce choix est **explicitement une décision à valider** avant l'implémentation réelle (voir *Risks*),
   pas un fait acquis de cette spec — la mission de #160 formulait déjà cette réserve.
+
+**[livré]** Paquet retenu : `flutter_thermal_printer` (transport), Bluetooth **uniquement** en V1
+(pas d'USB — voir ADR-0042 §7). `EscPosTicketPrinterGateway` compose `TicketEscPosFormatter` (§C) et
+`TicketPrinterDeviceStore` (identifiant d'imprimante persisté, jamais de sélection au moment
+d'imprimer — voir la section suivante). Le plugin ne remonte pas de signal « hors papier » distinct :
+tout échec d'écriture devient `PrinterWriteFailedException`, jamais `PrinterOutOfPaperException` en
+pratique. Tests dans `test/esc_pos_ticket_printer_gateway_test.dart`, volontairement limités au seul
+chemin testable sans plugin natif (imprimante non configurée) — le reste (mapping des échecs
+plugin réels, connexion effective) relève du test manuel sur device physique (checklist, étape 13).
+
+**Sélection de l'imprimante — question non résolue par cette spec, tranchée pendant
+l'implémentation.** Cette section n'aborde jamais *comment* choisir laquelle des imprimantes
+disponibles utiliser. Résolu par un écran de setup ponctuel, **`TerminalPrinterSetupScreen`**
+(`lib/adapters/ui/terminal/`), affiché une seule fois juste après la première activation de la
+borne (nouvel état `printerSetup` de `TerminalBootstrap`) : recherche Bluetooth active (pas
+d'appairage OS préalable requis), sélection par le technicien, identifiant persisté via
+`TicketPrinterDeviceStore` (`flutter_secure_storage`, même mécanisme que `TerminalCredentialStore`).
+Non bloquant (« Configurer plus tard » mène quand même à l'accueil). Aucune sélection n'a lieu
+pendant le parcours client.
 
 ### (E) Aperçu à l'écran — `lib/adapters/ui/terminal/ticket_preview.dart` *(chemin confirmé par la spec #159)*
 
@@ -441,28 +474,40 @@ emplacement.
 
 ## Affected Files / Packages / Modules
 
-### Mobile (`app-mobile/`) — à créer
+**[livré]** Table mise à jour a posteriori — reflète les fichiers réellement créés/modifiés, qui
+diffèrent de la proposition initiale sur deux points : `esc_pos_ticket_printer_gateway_test.dart` a
+une portée plus restreinte que prévu (voir §D), et trois fichiers supplémentaires ont été nécessaires
+pour la sélection d'imprimante (question non anticipée par cette spec).
+
+### Mobile (`app-mobile/`) — créés
 
 | Fichier | Rôle |
 | --- | --- |
-| `lib/domain/ticket/ticket_print_payload.dart` | objet de transfert pur (salon, numéro en entier brut, date/heure, prestations en liste) |
-| `lib/application/ports/ticket_printer_gateway.dart` | port `TicketPrinterGateway` + `TicketPrinterStatus` + exceptions typées |
-| `lib/adapters/data/ticket_escpos_formatter.dart` | formateur ESC/POS **pur**, sans plugin (payload → octets) |
-| `lib/adapters/data/esc_pos_ticket_printer_gateway.dart` | adaptateur matériel Bluetooth/USB (paquet à choisir) |
-| `lib/adapters/ui/terminal/ticket_preview.dart` *(chemin confirmé par la spec #159)* | aperçu à l'écran du contenu du ticket |
+| `lib/domain/ticket/ticket_print_payload.dart` | objet de transfert pur (salon, numéro en entier brut, date/heure, prestations en liste) — livré par #159 |
+| `lib/application/ports/ticket_printer_gateway.dart` | port `TicketPrinterGateway` + `TicketPrinterStatus` + exceptions typées — livré par #159 |
+| `lib/adapters/data/ticket_escpos_formatter.dart` | formateur ESC/POS **pur**, sans plugin (payload → octets), `esc_pos_utils_plus` |
+| `lib/adapters/data/esc_pos_ticket_printer_gateway.dart` | adaptateur matériel Bluetooth, `flutter_thermal_printer` |
+| `lib/application/ports/printer_device_scan_gateway.dart` | port de recherche d'imprimantes (setup ponctuel) — non anticipé par cette spec |
+| `lib/application/ports/ticket_printer_device_store.dart` | port de persistance de l'imprimante sélectionnée — non anticipé par cette spec |
+| `lib/adapters/data/secure_ticket_printer_device_store.dart` | implémentation `flutter_secure_storage` du port ci-dessus |
+| `lib/adapters/data/flutter_thermal_printer_scan_gateway.dart` | implémentation `PrinterDeviceScanGateway` |
+| `lib/adapters/ui/terminal/terminal_printer_setup_screen.dart` | écran de setup ponctuel — non anticipé par cette spec |
+| `lib/adapters/ui/terminal/ticket_preview.dart` | aperçu à l'écran du contenu du ticket — livré par #159 |
 | `test/ticket_escpos_formatter_test.dart` | tests du formatage (contenu, page de code, structure des commandes) |
-| `test/esc_pos_ticket_printer_gateway_test.dart` | tests du mapping d'erreurs via un faux transport injecté |
-| `test/ticket_preview_test.dart` | test widget de l'aperçu (§E) |
+| `test/esc_pos_ticket_printer_gateway_test.dart` | portée réduite (§D) : seul le chemin testable sans plugin natif |
+| `test/terminal_printer_setup_screen_test.dart` | tests widget de l'écran de setup |
 
-### Mobile — à modifier
+### Mobile — modifiés
 
 | Fichier | Modification |
 | --- | --- |
-| `app-mobile/pubspec.yaml` | ajout du/des paquet(s) ESC/POS/Bluetooth/USB retenu(s), avec un commentaire explicatif (patron des dépendances existantes) |
-| `app-mobile/android/app/src/main/AndroidManifest.xml` | permissions Bluetooth (`BLUETOOTH_CONNECT`/`BLUETOOTH_SCAN`, Android 12+) et/ou `android.hardware.usb.host` selon le transport retenu |
-| `app-mobile/lib/adapters/ui/terminal/*` *(livré par #159)* | câblage de `TicketPrinterGateway.print` dans l'écran de confirmation, gestion des trois exceptions (§F) |
-| `app-mobile/lib/main_terminal.dart` *(livré par #159)* | instanciation de `EscPosTicketPrinterGateway` (ou d'un faux en dev) dans la composition root |
-| `app-mobile/README.md` | nouvelle section « Ticket de passage — impression thermique (US-8.6, #160) » |
+| `app-mobile/pubspec.yaml` | ajout `esc_pos_utils_plus` + `flutter_thermal_printer`, commentés |
+| `app-mobile/android/app/src/main/AndroidManifest.xml` | permissions Bluetooth (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` + variantes legacy `maxSdkVersion="30"`) — pas de `android.hardware.usb.host` (USB abandonné en V1) |
+| `app-mobile/lib/adapters/ui/terminal/terminal_print_screen.dart` | ajout du bouton « Réessayer », affiché seulement après un échec (#171) + tests |
+| `app-mobile/lib/adapters/ui/terminal/terminal_bootstrap.dart` | nouvel état `printerSetup`, une seule fois avant l'accueil + tests |
+| `app-mobile/lib/adapters/ui/terminal/terminal_app.dart` | câblage de `EscPosTicketPrinterGateway`/`FlutterThermalPrinterScanGateway`/`SecureTicketPrinterDeviceStore` en production, à la place du `NoopTicketPrinterGateway` (retiré, devenu mort) |
+| `docs/adr/0042-file-attente-walkin-queue-ticket.md` | nouvelle section de décision §7 (pas de nouvel ADR, comme prévu par cette spec) |
+| `app-mobile/README.md` | machine à 5 états (setup imprimante ajouté), écran 7 (bouton Réessayer), ports & adaptateurs à jour |
 
 ### À lire (sans modifier) pour rester fidèle aux patrons
 
@@ -625,6 +670,14 @@ web (aucun fichier de ces paquets n'est touché).
 
 ## Risks and Open Questions
 
+**[livré]** Voir ADR-0042 §7 pour l'état final de chaque décision ci-dessous. Résumé : (1) Bluetooth
+retenu, **USB abandonné en V1** (pas seulement « en premier ») ; (2) `connect()` reste **paresseux**
+(au premier `print()`, pas proactif à l'accueil) — non traité par cette implémentation, risque
+résiduel sur le budget des 15 s si la connexion doit être rétablie, à surveiller au test manuel ; (3)
+non applicable tel quel — le setup ponctuel effectue sa propre recherche Bluetooth active, il ne
+suppose plus d'appairage OS préalable ; (4) tranché **« librement accessible »**, bouton « Réessayer »
+sans PIN (#171). Le paragraphe original est conservé ci-dessous pour trace.
+
 Seules les décisions de la liste produit **directement concernées par #160** sont reprises
 ci-dessous, comme choix à valider par le porteur produit avant l'implémentation réelle :
 
@@ -687,42 +740,55 @@ ci-dessous, comme choix à valider par le porteur produit avant l'implémentatio
   par la spec #159** (`specs/borne-app-mobile-mode-kiosque.md`), qui y attend `ticket_preview.dart` ;
   ce n'est plus une question ouverte, seule l'implémentation de #159 reste à livrer. Le port et le
   formateur (§B/§C) n'en dépendent de toute façon pas.
+- **[livré]** ETA sur le ticket : **omise**, comme recommandé. Accents/page de code : **`CP1252`**
+  (§C), pas de translittération nécessaire. Absence nom/téléphone client : déjà garantie par la forme
+  de `TicketPrintPayload` (#159), rien à confirmer de plus. Alerte personnel à distance : **non
+  ajoutée**, reste hors périmètre comme recommandé (aucun signal local d'accueil ajouté non plus —
+  au-delà de ce que #159 fournissait déjà via `TicketPrinterStatus`, un signal idle dédié n'a pas été
+  construit ; à reconsidérer si le pilote terrain le juge nécessaire).
+- **[livré, hors périmètre spec initiale]** Sélection de l'imprimante parmi plusieurs appareils
+  Bluetooth : voir §D ci-dessus (`TerminalPrinterSetupScreen`). Changer d'imprimante après le setup
+  initial reste **non couvert** (redémarrage/réinstallation de l'app requis) — suivi noté dans
+  ADR-0042 §7, probablement à rattacher au menu de maintenance protégé par PIN que #161 doit encore
+  définir (`terminal_exit_gate.dart`, actuellement inerte).
 
 ## Implementation Checklist
 
-1. **Lire** `app-mobile/lib/application/ports/receipt_gateway.dart`,
-   `app-mobile/lib/application/ports/token_store.dart`,
-   `app-mobile/lib/adapters/ui/receipts/{receipt_detail_screen,receipt_share_text}.dart`,
-   `web-dashboard/src/adapters/ui/receipt-print-modal.tsx`, `web-dashboard/app/globals.css`,
-   `docs/adr/0040-impression-recu-encaissement-gerant.md` — s'imprégner du gabarit et des limites déjà
-   documentées.
-2. **Trancher les questions ouvertes** structurantes (transport Bluetooth vs USB en premier, page de
-   code/accents, inclusion ou non de l'ETA, absence du nom/téléphone client) avant d'écrire du code.
-3. **Domaine** : créer `lib/domain/ticket/ticket_print_payload.dart` (objet de transfert pur, cinq
-   champs, aucune PII client).
-4. **Port** : créer `lib/application/ports/ticket_printer_gateway.dart`
-   (`TicketPrinterGateway`, `TicketPrinterStatus`, `TicketPrinterException` et ses trois sous-types).
-5. **Formateur pur** : créer `lib/adapters/data/ticket_escpos_formatter.dart` (payload → octets ESC/
-   POS), avec la gestion explicite de la page de code/accents tranchée à l'étape 2.
-6. **Tests du formateur d'abord** : `test/ticket_escpos_formatter_test.dart` (contenu, ordre des
-   commandes, accents) — avant l'adaptateur matériel.
-7. **Choisir et auditer un paquet** ESC/POS/Bluetooth (ou USB) parmi les candidats identifiés (§D) —
-   vérifier maintenance, licence, compatibilité Android 12+, support du transport retenu à l'étape 2.
-8. **Adaptateur** : créer `lib/adapters/data/esc_pos_ticket_printer_gateway.dart`
-   (`connect`/`print`/`status`, mapping d'erreurs vers les exceptions du port, jamais d'exception
-   plugin brute qui fuite).
-9. **Tests de l'adaptateur** : `test/esc_pos_ticket_printer_gateway_test.dart` via un faux transport
-   injecté (pas de dépendance au plugin réel en CI).
-10. **Manifeste Android** : ajouter les permissions Bluetooth (`BLUETOOTH_CONNECT`/`BLUETOOTH_SCAN`)
-    et/ou `android.hardware.usb.host` selon le transport retenu ; `pubspec.yaml` : ajouter la
-    dépendance avec un commentaire explicatif.
-11. **Aperçu à l'écran** : créer le widget d'aperçu (§E, chemin `adapters/ui/terminal/` confirmé par
-    la spec #159) + son test widget.
-12. **Câblage** (dépend de #159 livré) : instancier `EscPosTicketPrinterGateway` dans
-    `main_terminal.dart`, brancher `print()` dans l'écran de confirmation avec la gestion des trois
-    messages d'échec (§F), vérifier que le retour auto à l'accueil n'est jamais bloqué.
-13. **Test manuel sur device physique** : appairage réel, impression, simulation panne papier,
-    déconnexion en cours d'impression — documenté pour nourrir la procédure de provisioning de #161.
+1. ✅ **Lire** les fichiers de référence du reçu de paiement (#154/ADR-0040) — fait pendant la
+   planification initiale de cette spec.
+2. ✅ **Questions ouvertes tranchées** : Bluetooth retenu, **USB abandonné** en V1 (pas juste
+   priorisé) ; page de code `CP1252` (pas de translittération) ; ETA omise ; nom/téléphone client déjà
+   absent par construction (#159). Sélection d'imprimante (question non anticipée par cette spec) :
+   setup ponctuel, voir §D.
+3. ✅ **Domaine** — `lib/domain/ticket/ticket_print_payload.dart` : livré par #159, avant même le début
+   de #160.
+4. ✅ **Port** — `lib/application/ports/ticket_printer_gateway.dart` : livré par #159.
+5. ✅ **Formateur pur** — `lib/adapters/data/ticket_escpos_formatter.dart` : `esc_pos_utils_plus`,
+   `CP1252`.
+6. ✅ **Tests du formateur** — `test/ticket_escpos_formatter_test.dart` : contenu, numéro formaté,
+   accents, commande de découpe.
+7. ✅ **Paquet choisi et audité** — `esc_pos_utils_plus` (formatage, stable, publisher vérifié) +
+   `flutter_thermal_printer` (transport Bluetooth, activement maintenu). `esc_pos_bluetooth` écarté
+   (obsolète).
+8. ✅ **Adaptateur** — `lib/adapters/data/esc_pos_ticket_printer_gateway.dart` : `connect`/`print`/
+   `status`, mapping d'erreurs vers les trois exceptions du port.
+9. ✅ **Tests de l'adaptateur** — `test/esc_pos_ticket_printer_gateway_test.dart` : portée réduite au
+   seul chemin testable sans plugin natif (imprimante non configurée) — voir §D pour la justification.
+10. ✅ **Manifeste Android** — `BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` (Android 12+) + variantes legacy
+    (`maxSdkVersion="30"`), pas de `android.hardware.usb.host` (USB abandonné). `pubspec.yaml` : deux
+    dépendances ajoutées, commentées.
+11. ✅ **Aperçu à l'écran** — `ticket_preview.dart` : livré par #159.
+12. ✅ **Câblage** — `EscPosTicketPrinterGateway` instancié dans `terminal_app.dart` (composition root
+    réelle du paquet — `main_terminal.dart` n'existe pas, le point d'entrée est `lib/main.dart` →
+    `TerminalApp`), `terminal_print_screen.dart` déjà branché sur `print()` par #159 ; ajout du bouton
+    « Réessayer » (#171, non anticipé par cette spec) sur échec uniquement. Setup imprimante ponctuel
+    ajouté dans `terminal_bootstrap.dart`/`terminal_app.dart` (non anticipé par cette spec, voir §D).
+13. ⬜ **Test manuel sur device physique** — **non fait dans cette itération** : appairage réel,
+    impression, simulation panne papier, déconnexion en cours d'impression, vérification du build
+    `flutter build apk` (release) avec les nouvelles permissions Bluetooth. Reste à faire avant mise en
+    production sur un vrai salon — voir la note sur `flutter_thermal_printer` (§D) : son `ConnectionType`
+    ne distingue pas Bluetooth Classic (SPP) de BLE, à vérifier contre le matériel réel du parc
+    (beaucoup d'imprimantes 80mm bon marché en Côte d'Ivoire utilisent le SPP classique, pas le BLE).
 14. **Documentation** : section dédiée dans `app-mobile/README.md` ; transmettre les décisions
     structurantes (paquet retenu, taxonomie d'erreurs, limite de confirmation matérielle) à
     l'ADR-0042 (file d'attente walk-in & QueueTicket, committée avec #157 — #161 en vérifie la

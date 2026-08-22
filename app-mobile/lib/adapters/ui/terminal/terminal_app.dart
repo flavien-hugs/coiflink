@@ -14,21 +14,25 @@
 import 'package:flutter/material.dart';
 
 import '../../../application/terminal_device_session.dart';
+import '../../../application/ports/printer_device_scan_gateway.dart';
 import '../../../application/ports/terminal_activation_gateway.dart';
 import '../../../application/ports/terminal_auth_gateway.dart';
 import '../../../application/ports/terminal_credential_store.dart';
 import '../../../application/ports/terminal_identity_gateway.dart';
 import '../../../application/ports/terminal_queue_gateway.dart';
+import '../../../application/ports/ticket_printer_device_store.dart';
 import '../../../application/ports/ticket_printer_gateway.dart';
 import '../../../application/use_cases/get_salon_detail.dart';
 import '../../data/api_config.dart';
+import '../../data/esc_pos_ticket_printer_gateway.dart';
+import '../../data/flutter_thermal_printer_scan_gateway.dart';
 import '../../data/http_terminal_activation_gateway.dart';
 import '../../data/http_terminal_auth_gateway.dart';
 import '../../data/http_terminal_identity_gateway.dart';
 import '../../data/http_terminal_queue_gateway.dart';
 import '../../data/http_salon_catalog_gateway.dart';
-import '../../data/noop_ticket_printer_gateway.dart';
 import '../../data/secure_terminal_credential_store.dart';
+import '../../data/secure_ticket_printer_device_store.dart';
 import 'terminal_bootstrap.dart';
 import 'terminal_deps.dart';
 import 'terminal_inactivity_guard.dart';
@@ -43,6 +47,8 @@ class TerminalApp extends StatefulWidget {
     this.identityGateway,
     this.queueGateway,
     this.printerGateway,
+    this.printerScanGateway,
+    this.printerDeviceStore,
     this.getSalonDetail,
     this.apiConfig,
   });
@@ -55,6 +61,8 @@ class TerminalApp extends StatefulWidget {
   final TerminalIdentityGateway? identityGateway;
   final TerminalQueueGateway? queueGateway;
   final TicketPrinterGateway? printerGateway;
+  final PrinterDeviceScanGateway? printerScanGateway;
+  final TicketPrinterDeviceStore? printerDeviceStore;
   final GetSalonDetail? getSalonDetail;
   final ApiConfig? apiConfig;
 
@@ -75,7 +83,9 @@ class _TerminalAppState extends State<TerminalApp> {
   late final GetSalonDetail _getSalonDetail;
   late final TerminalIdentityGateway _identityGateway;
   late final TerminalQueueGateway _queueGateway;
+  late final TicketPrinterDeviceStore _printerDeviceStore;
   late final TicketPrinterGateway _printerGateway;
+  late final PrinterDeviceScanGateway _printerScanGateway;
 
   @override
   void initState() {
@@ -94,7 +104,12 @@ class _TerminalAppState extends State<TerminalApp> {
         HttpTerminalIdentityGateway(config: _apiConfig, session: _session);
     _queueGateway = widget.queueGateway ??
         HttpTerminalQueueGateway(config: _apiConfig, session: _session);
-    _printerGateway = widget.printerGateway ?? const NoopTicketPrinterGateway();
+    _printerDeviceStore =
+        widget.printerDeviceStore ?? SecureTicketPrinterDeviceStore();
+    _printerGateway = widget.printerGateway ??
+        EscPosTicketPrinterGateway(deviceStore: _printerDeviceStore);
+    _printerScanGateway =
+        widget.printerScanGateway ?? FlutterThermalPrinterScanGateway();
   }
 
   TerminalDeps _buildDeps() => TerminalDeps(
@@ -120,6 +135,8 @@ class _TerminalAppState extends State<TerminalApp> {
         session: _session,
         credentialStore: _credentialStore,
         activationGateway: _activationGateway,
+        printerScanGateway: _printerScanGateway,
+        printerDeviceStore: _printerDeviceStore,
         buildDeps: _buildDeps,
       ),
     );

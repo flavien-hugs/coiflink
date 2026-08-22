@@ -20,24 +20,32 @@
 //            - échec réseau/serveur → `TerminalUnavailableScreen` + réessai (le
 //              credential stocké reste, il est peut-être valide, c'est le serveur
 //              qui est momentanément indisponible) ;
-//            - succès → `TerminalHomeScreen` (le `salon_id` de la borne provient de la
-//              réponse du login, un APK unique pour toutes les bornes).
+//            - succès, imprimante **déjà** configurée (`TicketPrinterDeviceStore`,
+//              #160) → `TerminalHomeScreen` directement ;
+//            - succès, imprimante **jamais** configurée → `TerminalPrinterSetupScreen`
+//              (setup ponctuel, #160) une seule fois, avant l'accueil — non bloquant
+//              (« Configurer plus tard » mène aussi à l'accueil) ; le `salon_id` de
+//              la borne provient de la réponse du login, un APK unique pour toutes
+//              les bornes.
 
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 
 import '../../../application/terminal_device_session.dart';
+import '../../../application/ports/printer_device_scan_gateway.dart';
 import '../../../application/ports/terminal_activation_gateway.dart';
 import '../../../application/ports/terminal_auth_gateway.dart';
 import '../../../application/ports/terminal_credential_store.dart';
+import '../../../application/ports/ticket_printer_device_store.dart';
 import '../../data/terminal_config.dart';
 import 'terminal_activation_screen.dart';
 import 'terminal_deps.dart';
 import 'terminal_home_screen.dart';
+import 'terminal_printer_setup_screen.dart';
 import 'terminal_unavailable_screen.dart';
 
-enum _BootState { loading, activation, unavailable, ready }
+enum _BootState { loading, activation, unavailable, printerSetup, ready }
 
 /// Amorce la session device puis affiche l'écran adapté (activation,
 /// indisponibilité, ou accueil).
@@ -47,12 +55,22 @@ class TerminalBootstrap extends StatefulWidget {
     required this.session,
     required this.credentialStore,
     required this.activationGateway,
+    required this.printerScanGateway,
+    required this.printerDeviceStore,
     required this.buildDeps,
   });
 
   final TerminalDeviceSession session;
   final TerminalCredentialStore credentialStore;
   final TerminalActivationGateway activationGateway;
+
+  /// Recherche des imprimantes disponibles pour `TerminalPrinterSetupScreen` (#160).
+  final PrinterDeviceScanGateway printerScanGateway;
+
+  /// Sélection persistée de l'imprimante (#160) : `null` déclenche le setup
+  /// ponctuel une seule fois, avant le premier accès à l'accueil.
+  final TicketPrinterDeviceStore printerDeviceStore;
+
   final TerminalDeps Function() buildDeps;
 
   @override
@@ -94,7 +112,12 @@ class _TerminalBootstrapState extends State<TerminalBootstrap> {
     try {
       await widget.session.authenticate(credential);
       if (!mounted) return;
-      setState(() => _state = _BootState.ready);
+      final printerDeviceId = await widget.printerDeviceStore.read();
+      if (!mounted) return;
+      setState(
+        () => _state =
+            printerDeviceId == null ? _BootState.printerSetup : _BootState.ready,
+      );
     } on TerminalInvalidCredentialException {
       // Credential refusé (révoqué/faux) : rien de réparable depuis l'écran — la
       // borne doit être réactivée avec un nouveau code.
@@ -113,6 +136,11 @@ class _TerminalBootstrapState extends State<TerminalBootstrap> {
     unawaited(_authenticate(credential));
   }
 
+  void _onPrinterSetupDone() {
+    if (!mounted) return;
+    setState(() => _state = _BootState.ready);
+  }
+
   @override
   Widget build(BuildContext context) {
     switch (_state) {
@@ -128,6 +156,12 @@ class _TerminalBootstrapState extends State<TerminalBootstrap> {
         );
       case _BootState.unavailable:
         return TerminalUnavailableScreen(onRetry: _bootstrap);
+      case _BootState.printerSetup:
+        return TerminalPrinterSetupScreen(
+          scanGateway: widget.printerScanGateway,
+          deviceStore: widget.printerDeviceStore,
+          onDone: _onPrinterSetupDone,
+        );
       case _BootState.ready:
         return TerminalHomeScreen(deps: widget.buildDeps());
     }

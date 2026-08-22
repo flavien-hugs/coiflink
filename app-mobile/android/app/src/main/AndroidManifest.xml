@@ -5,6 +5,23 @@
          n'hérite pas de ces manifestes et ne pouvait donc joindre aucun serveur,
          quelle que soit l'URL configurée. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- Imprimante ticket Bluetooth (#160, flutter_thermal_printer). Deux jeux de
+         permissions, comme recommandé par Android pour couvrir toutes les versions
+         du parc de bornes :
+           - avant Android 12 (API 30 et moins) : BLUETOOTH/BLUETOOTH_ADMIN classiques,
+             plus ACCESS_FINE_LOCATION (la recherche BLE y était historiquement liée à
+             la localisation) ;
+           - Android 12 et plus (API 31+) : BLUETOOTH_SCAN/BLUETOOTH_CONNECT, permissions
+             dédiées qui remplacent les précédentes. usesPermissionFlags="neverForLocation"
+             dispense de la permission de localisation runtime, la recherche ne servant
+             qu'à trouver l'imprimante (aucune donnée de position dérivée du scan). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+
     <application
         android:label="coiflink_mobile"
         android:name="${applicationName}"
