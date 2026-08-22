@@ -24,14 +24,13 @@ import 'ticket_escpos_formatter.dart';
 
 class EscPosTicketPrinterGateway implements TicketPrinterGateway {
   EscPosTicketPrinterGateway({
-    required TicketPrinterDeviceStore deviceStore,
+    required this.deviceStore,
     this.formatter = const TicketEscPosFormatter(),
     FlutterThermalPrinter? plugin,
     this.scanTimeout = const Duration(seconds: 3),
-  })  : _deviceStore = deviceStore,
-        _plugin = plugin ?? FlutterThermalPrinter.instance;
+  }) : _plugin = plugin ?? FlutterThermalPrinter.instance;
 
-  final TicketPrinterDeviceStore _deviceStore;
+  final TicketPrinterDeviceStore deviceStore;
   final TicketEscPosFormatter formatter;
   final FlutterThermalPrinter _plugin;
   final Duration scanTimeout;
@@ -40,7 +39,7 @@ class EscPosTicketPrinterGateway implements TicketPrinterGateway {
 
   @override
   Future<void> connect() async {
-    final deviceId = await _deviceStore.read();
+    final deviceId = await deviceStore.read();
     if (deviceId == null) {
       // Setup jamais fait (ou effacé) : rien à quoi se connecter.
       throw const PrinterNotConnectedException();
