@@ -18,6 +18,7 @@ import {
   canStartTicket,
   countPeopleAhead,
   formatTicketNumber,
+  isHairdresserBusy,
   isTicketPaid,
   isWalkInTicketStatus,
   type WalkInTicket,
@@ -180,6 +181,43 @@ describe("countPeopleAhead", () => {
   it("exclut le ticket lui-même de son propre compte", () => {
     const current = ticket({ ticketId: "ticket-current", ticketNumber: 5, status: "waiting" });
     expect(countPeopleAhead([current], current)).toBe(0);
+  });
+});
+
+describe("isHairdresserBusy", () => {
+  it("aucun ticket in_progress pour cette coiffeuse → false", () => {
+    const tickets = [
+      ticket({ ticketId: "ticket-1", status: "waiting", hairdresserId: null }),
+    ];
+    expect(isHairdresserBusy(tickets, "hairdresser-1")).toBe(false);
+  });
+
+  it("un ticket in_progress assigné à cette coiffeuse → true", () => {
+    const tickets = [
+      ticket({ ticketId: "ticket-1", status: "in_progress", hairdresserId: "hairdresser-1" }),
+    ];
+    expect(isHairdresserBusy(tickets, "hairdresser-1")).toBe(true);
+  });
+
+  it("un ticket in_progress assigné à une autre coiffeuse → false", () => {
+    const tickets = [
+      ticket({ ticketId: "ticket-1", status: "in_progress", hairdresserId: "hairdresser-2" }),
+    ];
+    expect(isHairdresserBusy(tickets, "hairdresser-1")).toBe(false);
+  });
+
+  it("un ticket done déjà terminé pour cette coiffeuse → false", () => {
+    const tickets = [
+      ticket({ ticketId: "ticket-1", status: "done", hairdresserId: "hairdresser-1" }),
+    ];
+    expect(isHairdresserBusy(tickets, "hairdresser-1")).toBe(false);
+  });
+
+  it("un ticket waiting sans coiffeuse assignée → false", () => {
+    const tickets = [
+      ticket({ ticketId: "ticket-1", status: "waiting", hairdresserId: null }),
+    ];
+    expect(isHairdresserBusy(tickets, "hairdresser-1")).toBe(false);
   });
 });
 

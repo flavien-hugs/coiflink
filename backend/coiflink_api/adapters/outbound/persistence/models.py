@@ -72,9 +72,7 @@ def _fk_uuid(*, nullable: bool) -> Mapped[uuid.UUID]:
 
 
 def _created_at() -> Mapped[datetime.datetime]:
-    return mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
+    return mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 def _updated_at() -> Mapped[datetime.datetime]:
@@ -271,9 +269,7 @@ class Service(Base):
     price: Mapped[decimal.Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     category: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("true")
-    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime.datetime] = _created_at()
     updated_at: Mapped[datetime.datetime] = _updated_at()
 
@@ -348,9 +344,7 @@ class CustomerProfile(Base):
     last_visit_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    total_visits: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("0")
-    )
+    total_visits: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[datetime.datetime] = _created_at()
     updated_at: Mapped[datetime.datetime] = _updated_at()
 
@@ -402,9 +396,7 @@ class Payment(Base):
     queue_ticket_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
     client_id: Mapped[uuid.UUID | None] = _fk_uuid(nullable=True)
     amount: Mapped[decimal.Decimal] = mapped_column(Numeric(12, 2), nullable=False)
-    currency: Mapped[str] = mapped_column(
-        String(3), nullable=False, server_default=text("'XOF'")
-    )
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, server_default=text("'XOF'"))
     payment_method: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(
         String(32),
@@ -454,9 +446,7 @@ class Payment(Base):
         ),
         # Cible de la FK composite (salon_id, transaction_id) du journal de caisse.
         UniqueConstraint("salon_id", "id", name="uq_payments_salon_id"),
-        UniqueConstraint(
-            "salon_id", "receipt_number", name="uq_payments_salon_receipt_number"
-        ),
+        UniqueConstraint("salon_id", "receipt_number", name="uq_payments_salon_receipt_number"),
         enum_check("payment_method", enums.PaymentMethod, name="payment_method"),
         enum_check("status", enums.PaymentStatus, name="status"),
         CheckConstraint("amount >= 0", name="amount_positive"),
@@ -705,6 +695,15 @@ class QueueTicket(Base):
         # Lectures filtrées par statut (file gérant, compteur d'attente).
         Index("ix_queue_tickets_salon_id", "salon_id", "issued_date"),
         Index("ix_queue_tickets_salon_status", "salon_id", "status"),
+        # Une coiffeuse ne sert qu'un seul ticket `in_progress` à la fois (#173) —
+        # portée **globale**, volontairement sans `salon_id` (une personne ne peut
+        # physiquement servir qu'un client à la fois, quel que soit le salon).
+        Index(
+            "uq_queue_tickets_hairdresser_in_progress",
+            "hairdresser_id",
+            unique=True,
+            postgresql_where=text("status = 'in_progress'"),
+        ),
     )
 
 
@@ -725,9 +724,7 @@ class QueueTicketService(Base):
     created_at: Mapped[datetime.datetime] = _created_at()
 
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "queue_ticket_id", "service_id", name="pk_queue_ticket_services"
-        ),
+        PrimaryKeyConstraint("queue_ticket_id", "service_id", name="pk_queue_ticket_services"),
         ForeignKeyConstraint(
             ["salon_id", "queue_ticket_id"],
             ["queue_tickets.salon_id", "queue_tickets.id"],

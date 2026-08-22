@@ -31,7 +31,8 @@ Couvre :
   - `404` ticket hors salon/inexistant ;
   - `404` coiffeuse hors salon (`HairdresserNotInSalon`) ;
   - `409` ticket déjà `in_progress` (transition invalide) ;
-  - `409` ticket `done` (transition invalide).
+  - `409` ticket `done` (transition invalide) ;
+  - `409` coiffeuse déjà `in_progress` sur un autre ticket (`HairdresserAlreadyBusy`, #173).
 - `POST .../complete` :
   - `200` succès — corps contient `status=done`, `completed_at` présent ;
   - `401` sans jeton ;
@@ -131,21 +132,31 @@ _CUSTOMER_URL = f"/salons/{_SALON_ID}/queue/tickets/{_TICKET_ID}/customer"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _user_repo() -> FakeAuthUserRepository:
     """Credentials pour tous les rôles testés."""
 
     creds = {
         str(_DEVICE_ID): UserCredentials(
-            id=_DEVICE_ID, role=Role.TERMINAL.value, status=UserStatus.ACTIVE.value, password_hash="x"
+            id=_DEVICE_ID,
+            role=Role.TERMINAL.value,
+            status=UserStatus.ACTIVE.value,
+            password_hash="x",
         ),
         str(_MANAGER_ID): UserCredentials(
-            id=_MANAGER_ID, role=Role.MANAGER.value, status=UserStatus.ACTIVE.value, password_hash="x"
+            id=_MANAGER_ID,
+            role=Role.MANAGER.value,
+            status=UserStatus.ACTIVE.value,
+            password_hash="x",
         ),
         str(_CLIENT_ID): UserCredentials(
             id=_CLIENT_ID, role=Role.CLIENT.value, status=UserStatus.ACTIVE.value, password_hash="x"
         ),
         str(_HAIRDRESSER_ID): UserCredentials(
-            id=_HAIRDRESSER_ID, role=Role.HAIRDRESSER.value, status=UserStatus.ACTIVE.value, password_hash="x"
+            id=_HAIRDRESSER_ID,
+            role=Role.HAIRDRESSER.value,
+            status=UserStatus.ACTIVE.value,
+            password_hash="x",
         ),
     }
     return FakeAuthUserRepository(credentials_by_id=creds)
@@ -228,15 +239,19 @@ def _build_client(
     cat = catalog if catalog is not None else _catalog()
     cus = customers if customers is not None else FakeCustomerRepository()
     # Portée globale (gérant / borne) — inclut device TERMINAL + manager sur _SALON_ID.
-    global_scope = scope or FakeSalonScopeRepository({
-        _DEVICE_ID: frozenset({_SALON_ID}),
-        _MANAGER_ID: frozenset({_SALON_ID}),
-        _HAIRDRESSER_ID: frozenset({_SALON_ID}),
-    })
+    global_scope = scope or FakeSalonScopeRepository(
+        {
+            _DEVICE_ID: frozenset({_SALON_ID}),
+            _MANAGER_ID: frozenset({_SALON_ID}),
+            _HAIRDRESSER_ID: frozenset({_SALON_ID}),
+        }
+    )
     # Portée coiffeuse pour `StartQueueTicket._require_salon_hairdresser`.
-    hd_scope = hairdresser_scope or FakeSalonScopeRepository({
-        _HAIRDRESSER_ID: frozenset({_SALON_ID}),
-    })
+    hd_scope = hairdresser_scope or FakeSalonScopeRepository(
+        {
+            _HAIRDRESSER_ID: frozenset({_SALON_ID}),
+        }
+    )
 
     app.dependency_overrides[get_queue_ticket_repository] = lambda: tix
     app.dependency_overrides[get_catalog_repository] = lambda: cat
@@ -383,9 +398,7 @@ class TestListSalonQueueTicketsAPI:
         assert resp.status_code == 403
 
     def test_missing_day_defaults_to_today_without_422(self) -> None:
-        resp = _build_client().get(
-            _LIST_URL, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
-        )
+        resp = _build_client().get(_LIST_URL, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"})
         assert resp.status_code == 200
 
     def test_invalid_day_returns_422(self) -> None:
@@ -561,8 +574,12 @@ class TestJoinQueueAPI:
 
     def test_sequential_ticket_numbers_on_successive_calls(self) -> None:
         client = _build_client()
-        r1 = client.post(_JOIN_URL, json=self._BODY, headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"})
-        r2 = client.post(_JOIN_URL, json=self._BODY, headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"})
+        r1 = client.post(
+            _JOIN_URL, json=self._BODY, headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"}
+        )
+        r2 = client.post(
+            _JOIN_URL, json=self._BODY, headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"}
+        )
         assert r1.status_code == 201
         assert r2.status_code == 201
         assert r2.json()["ticket_number"] == r1.json()["ticket_number"] + 1
@@ -571,8 +588,12 @@ class TestJoinQueueAPI:
         # Même token/salon, deux tickets créés à la suite : le premier n'a personne
         # devant lui (0), le second trouve le premier toujours `waiting` (1).
         client = _build_client()
-        r1 = client.post(_JOIN_URL, json=self._BODY, headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"})
-        r2 = client.post(_JOIN_URL, json=self._BODY, headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"})
+        r1 = client.post(
+            _JOIN_URL, json=self._BODY, headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"}
+        )
+        r2 = client.post(
+            _JOIN_URL, json=self._BODY, headers={"Authorization": f"Bearer {_TERMINAL_TOKEN}"}
+        )
         assert r1.status_code == 201
         assert r2.status_code == 201
         assert r1.json()["people_ahead_count"] == 0
@@ -652,6 +673,7 @@ class TestStartQueueTicketAPI:
         tickets = FakeQueueTicketRepository()
         # Même id que _TICKET_ID mais appartient au salon B.
         import dataclasses as _dc
+
         t = _dc.replace(_make_ticket(status="waiting"), salon_id=_OTHER_SALON_ID)
         tickets._tickets[t.id] = t
         resp = _build_client(tickets=tickets).post(
@@ -680,6 +702,18 @@ class TestStartQueueTicketAPI:
     def test_done_ticket_returns_409(self) -> None:
         tickets = FakeQueueTicketRepository()
         tickets.seed(_make_ticket(status="done"))
+        resp = _build_client(tickets=tickets).post(
+            _START_URL, json=self._BODY, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
+        )
+        assert resp.status_code == 409
+
+    def test_hairdresser_already_busy_returns_409(self) -> None:
+        """#173 : la coiffeuse a déjà un ticket `in_progress` (un autre ticket)."""
+        tickets = FakeQueueTicketRepository()
+        tickets.seed(
+            _make_ticket(id_=uuid.uuid4(), status="in_progress", hairdresser_id=_HAIRDRESSER_ID)
+        )
+        tickets.seed(_make_ticket(status="waiting"))
         resp = _build_client(tickets=tickets).post(
             _START_URL, json=self._BODY, headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"}
         )
@@ -1225,11 +1259,9 @@ class TestQueueTicketRoutesSecurity:
     def test_join_queue_not_in_public_route_paths(self) -> None:
         """POST /salons/{id}/queue/tickets ne doit pas être public (deny-by-default)."""
 
-        assert not any(
-            "queue/tickets" in path for path in PUBLIC_ROUTE_PATHS
-        ), "Une route walk-in est listée dans PUBLIC_ROUTE_PATHS — deny-by-default violé"
+        assert not any("queue/tickets" in path for path in PUBLIC_ROUTE_PATHS), (
+            "Une route walk-in est listée dans PUBLIC_ROUTE_PATHS — deny-by-default violé"
+        )
 
     def test_start_not_in_public_route_paths(self) -> None:
-        assert not any(
-            "queue/tickets" in path for path in PUBLIC_ROUTE_PATHS
-        )
+        assert not any("queue/tickets" in path for path in PUBLIC_ROUTE_PATHS)

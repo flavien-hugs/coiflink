@@ -28,13 +28,14 @@ import uuid
 from collections.abc import Mapping
 
 from sqlalchemy import case, delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from coiflink_api.adapters.outbound.persistence import models
 from coiflink_api.domain.customer import walk_in_first_name
 from coiflink_api.domain.dashboard import InProgressService
 from coiflink_api.domain.discrepancy import PAID_PAYMENT_STATUSES
-from coiflink_api.domain.errors import InvalidQueueTicketTransition
+from coiflink_api.domain.errors import HairdresserAlreadyBusy, InvalidQueueTicketTransition
 from coiflink_api.domain.hairdresser_performance import HairdresserActivityCounts
 from coiflink_api.domain.queue_ticket import (
     QUEUE_TICKET_ACTIVE_STATUSES,
@@ -47,6 +48,11 @@ from coiflink_api.domain.service_demand import ServiceDemand
 
 _AMOUNT_QUANTUM = decimal.Decimal("0.01")
 
+# Nom + SQLSTATE de l'index unique partiel global qui garantit qu'une coiffeuse
+# ne sert qu'un seul ticket `in_progress` à la fois (#173, migration `0021`).
+_HAIRDRESSER_IN_PROGRESS_UNIQUE_INDEX = "uq_queue_tickets_hairdresser_in_progress"
+_UNIQUE_SQLSTATE = "23505"
+
 
 class SqlQueueTicketRepository:
     """Dépôt de tickets de passage adossé à une `Session` SQLAlchemy."""
@@ -54,9 +60,7 @@ class SqlQueueTicketRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def create(
-        self, ticket: QueueTicketToCreate, *, issued_date: datetime.date
-    ) -> QueueTicket:
+    def create(self, ticket: QueueTicketToCreate, *, issued_date: datetime.date) -> QueueTicket:
         """Insère le ticket (`status = waiting`) + sa jonction — `flush` sans `commit`.
 
         Alloue un `ticket_number` séquentiel par salon **et** jour civil sous verrou
@@ -71,9 +75,7 @@ class SqlQueueTicketRepository:
             {"lock_key": lock_key},
         )
         next_number = self._session.execute(
-            select(
-                func.coalesce(func.max(models.QueueTicket.ticket_number), 0) + 1
-            ).where(
+            select(func.coalesce(func.max(models.QueueTicket.ticket_number), 0) + 1).where(
                 models.QueueTicket.salon_id == ticket.salon_id,
                 models.QueueTicket.issued_date == issued_date,
             )
@@ -102,9 +104,7 @@ class SqlQueueTicketRepository:
         self._session.refresh(row)
         return _to_domain(row, ticket.service_ids)
 
-    def get(
-        self, salon_id: uuid.UUID, ticket_id: uuid.UUID
-    ) -> QueueTicket | None:
+    def get(self, salon_id: uuid.UUID, ticket_id: uuid.UUID) -> QueueTicket | None:
         """Charge le ticket `(salon_id, ticket_id)` — filtre d'isolation §11.2."""
 
         row = self._get_row(salon_id, ticket_id)
@@ -112,9 +112,7 @@ class SqlQueueTicketRepository:
             return None
         return _to_domain(row, self._load_service_ids(ticket_id))
 
-    def count_waiting(
-        self, salon_id: uuid.UUID, *, issued_date: datetime.date
-    ) -> int:
+    def count_waiting(self, salon_id: uuid.UUID, *, issued_date: datetime.date) -> int:
         """Nombre de tickets `waiting` du salon pour `issued_date` (position file)."""
 
         stmt = (
@@ -213,9 +211,7 @@ class SqlQueueTicketRepository:
                 models.CustomerProfile,
                 models.CustomerProfile.id == models.QueueTicket.customer_profile_id,
             )
-            .outerjoin(
-                models.User, models.User.id == models.QueueTicket.hairdresser_id
-            )
+            .outerjoin(models.User, models.User.id == models.QueueTicket.hairdresser_id)
             .where(
                 models.QueueTicket.salon_id == salon_id,
                 models.QueueTicket.issued_date == issued_date,
@@ -233,9 +229,7 @@ class SqlQueueTicketRepository:
                 ticket_number=ticket.ticket_number,
                 customer_profile_id=ticket.customer_profile_id,
                 customer_first_name=(
-                    walk_in_first_name(customer_name)
-                    if customer_name is not None
-                    else None
+                    walk_in_first_name(customer_name) if customer_name is not None else None
                 ),
                 service_ids=ids_by_ticket.get(ticket.id, ()),
                 service_names=names_by_ticket.get(ticket.id, ()),
@@ -252,6 +246,18 @@ class SqlQueueTicketRepository:
             for ticket, customer_name, hairdresser_name, payment_id in rows
         )
 
+    def is_hairdresser_busy(self, hairdresser_id: uuid.UUID) -> bool:
+        """Vrai si la coiffeuse a déjà un ticket `in_progress` — portée **globale** (#173)."""
+
+        return bool(
+            self._session.scalar(
+                select(models.QueueTicket.id).where(
+                    models.QueueTicket.hairdresser_id == hairdresser_id,
+                    models.QueueTicket.status == "in_progress",
+                )
+            )
+        )
+
     def start(
         self,
         salon_id: uuid.UUID,
@@ -264,7 +270,11 @@ class SqlQueueTicketRepository:
 
         Chargement **conditionnel** `status = 'waiting'` (garde TOCTOU, miroir
         `mark_started`) : un ticket qui n'est plus `waiting` (déjà pris en charge,
-        double-clic concurrent) lève `InvalidQueueTicketTransition`.
+        double-clic concurrent) lève `InvalidQueueTicketTransition`. La violation de
+        l'index unique partiel global `uq_queue_tickets_hairdresser_in_progress`
+        (course concurrente perdue sur la même coiffeuse) est retraduite en
+        `HairdresserAlreadyBusy` (#173) — toute autre `IntegrityError` (FK/CHECK
+        inattendu) est relevée telle quelle.
         """
 
         row = self._session.scalar(
@@ -282,7 +292,15 @@ class SqlQueueTicketRepository:
         row.hairdresser_id = hairdresser_id
         if row.started_at is None:
             row.started_at = now
-        self._session.flush()
+        try:
+            self._session.flush()
+        except IntegrityError as exc:
+            if _is_hairdresser_busy_conflict(exc):
+                self._session.rollback()
+                raise HairdresserAlreadyBusy(
+                    "Cette coiffeuse est déjà occupée sur un autre ticket."
+                ) from exc
+            raise
         self._session.refresh(row)
         return _to_domain(row, self._load_service_ids(ticket_id))
 
@@ -299,9 +317,7 @@ class SqlQueueTicketRepository:
             )
         )
         if row is None:
-            raise InvalidQueueTicketTransition(
-                "Ce ticket ne peut pas être clôturé dans cet état."
-            )
+            raise InvalidQueueTicketTransition("Ce ticket ne peut pas être clôturé dans cet état.")
         row.status = "done"
         if row.completed_at is None:
             row.completed_at = now
@@ -337,9 +353,7 @@ class SqlQueueTicketRepository:
             )
         )
         if row is None:
-            raise InvalidQueueTicketTransition(
-                "Ce ticket ne peut pas être annulé dans cet état."
-            )
+            raise InvalidQueueTicketTransition("Ce ticket ne peut pas être annulé dans cet état.")
         row.status = "expired"
         row.cancellation_reason = reason
         self._session.flush()
@@ -369,9 +383,7 @@ class SqlQueueTicketRepository:
             )
         )
         if row is None:
-            raise InvalidQueueTicketTransition(
-                "Ce ticket ne peut plus être modifié dans cet état."
-            )
+            raise InvalidQueueTicketTransition("Ce ticket ne peut plus être modifié dans cet état.")
         self._session.execute(
             delete(models.QueueTicketService).where(
                 models.QueueTicketService.queue_ticket_id == ticket_id
@@ -423,9 +435,7 @@ class SqlQueueTicketRepository:
         Un ticket anonyme (`customer_profile_id IS NULL`) n'est jamais compté.
         """
 
-        stmt = select(
-            func.count(func.distinct(models.QueueTicket.customer_profile_id))
-        ).where(
+        stmt = select(func.count(func.distinct(models.QueueTicket.customer_profile_id))).where(
             models.QueueTicket.salon_id == salon_id,
             models.QueueTicket.status == "done",
             models.QueueTicket.customer_profile_id.is_not(None),
@@ -467,15 +477,11 @@ class SqlQueueTicketRepository:
         )
         return int(self._session.scalar(stmt) or 0)
 
-    def count_waiting_beyond_estimate(
-        self, salon_id: uuid.UUID, *, now: datetime.datetime
-    ) -> int:
+    def count_waiting_beyond_estimate(self, salon_id: uuid.UUID, *, now: datetime.datetime) -> int:
         """Tickets `waiting` dont l'attente réelle dépasse `estimated_wait_minutes` (#148)."""
 
         now_ts = now
-        elapsed_minutes = func.extract(
-            "epoch", now_ts - models.QueueTicket.created_at
-        ) / 60
+        elapsed_minutes = func.extract("epoch", now_ts - models.QueueTicket.created_at) / 60
         stmt = (
             select(func.count())
             .select_from(models.QueueTicket)
@@ -487,9 +493,7 @@ class SqlQueueTicketRepository:
         )
         return int(self._session.scalar(stmt) or 0)
 
-    def list_in_progress_details(
-        self, salon_id: uuid.UUID
-    ) -> tuple[InProgressService, ...]:
+    def list_in_progress_details(self, salon_id: uuid.UUID) -> tuple[InProgressService, ...]:
         """Tickets `in_progress`, enrichis des noms d'affichage (#148).
 
         Décompte **direct** sur `status = 'in_progress'` (contrairement à l'ancien
@@ -507,12 +511,8 @@ class SqlQueueTicketRepository:
                 models.QueueTicket.started_at,
                 models.QueueTicket.status,
             )
-            .outerjoin(
-                customer, customer.id == models.QueueTicket.customer_profile_id
-            )
-            .outerjoin(
-                hairdresser, hairdresser.id == models.QueueTicket.hairdresser_id
-            )
+            .outerjoin(customer, customer.id == models.QueueTicket.customer_profile_id)
+            .outerjoin(hairdresser, hairdresser.id == models.QueueTicket.hairdresser_id)
             .where(
                 models.QueueTicket.salon_id == salon_id,
                 models.QueueTicket.status == "in_progress",
@@ -644,9 +644,7 @@ class SqlQueueTicketRepository:
             HairdresserActivityCounts(
                 hairdresser_id=row.hairdresser_id,
                 name=row.full_name,
-                services_completed=services_by_hairdresser.get(
-                    row.hairdresser_id, 0
-                ),
+                services_completed=services_by_hairdresser.get(row.hairdresser_id, 0),
                 cancelled_count=int(row.cancelled_count),
                 total_count=int(row.total_count),
             )
@@ -656,9 +654,7 @@ class SqlQueueTicketRepository:
     # ----------------------------------------------------------------------- #
     # Helpers privés.
     # ----------------------------------------------------------------------- #
-    def _get_row(
-        self, salon_id: uuid.UUID, ticket_id: uuid.UUID
-    ) -> models.QueueTicket | None:
+    def _get_row(self, salon_id: uuid.UUID, ticket_id: uuid.UUID) -> models.QueueTicket | None:
         return self._session.scalar(
             select(models.QueueTicket).where(
                 models.QueueTicket.salon_id == salon_id,
@@ -682,9 +678,7 @@ class SqlQueueTicketRepository:
         if not ticket_ids:
             return {}
         rows = self._session.execute(
-            select(
-                models.QueueTicketService.queue_ticket_id, models.Service.name
-            )
+            select(models.QueueTicketService.queue_ticket_id, models.Service.name)
             .join(
                 models.Service,
                 models.Service.id == models.QueueTicketService.service_id,
@@ -721,9 +715,31 @@ class SqlQueueTicketRepository:
         return {ticket_id: tuple(ids) for ticket_id, ids in grouped.items()}
 
 
-def _to_domain(
-    row: models.QueueTicket, service_ids: tuple[uuid.UUID, ...]
-) -> QueueTicket:
+def _is_hairdresser_busy_conflict(exc: IntegrityError) -> bool:
+    """Vrai si l'`IntegrityError` provient de l'index unique partiel global
+    `uq_queue_tickets_hairdresser_in_progress` (miroir `_is_phone_duplicate`,
+    `customer_repository.py`).
+
+    Inspecte le driver psycopg (`orig`) : SQLSTATE `23505` (*unique_violation*)
+    **et** nom de contrainte. On ne masque **que** cette violation — une FK ou un
+    `CHECK` inattendu doivent remonter.
+    """
+
+    orig = getattr(exc, "orig", None)
+    if orig is None:
+        return False
+    diag = getattr(orig, "diag", None)
+    if (
+        diag is not None
+        and getattr(diag, "constraint_name", None) == _HAIRDRESSER_IN_PROGRESS_UNIQUE_INDEX
+    ):
+        return True
+    if getattr(orig, "sqlstate", None) != _UNIQUE_SQLSTATE:
+        return False
+    return _HAIRDRESSER_IN_PROGRESS_UNIQUE_INDEX in str(orig)
+
+
+def _to_domain(row: models.QueueTicket, service_ids: tuple[uuid.UUID, ...]) -> QueueTicket:
     return QueueTicket(
         id=row.id,
         salon_id=row.salon_id,

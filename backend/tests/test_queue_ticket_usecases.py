@@ -11,7 +11,9 @@ Couvre :
   par salon).
 - `StartQueueTicket` : ticket hors salon/inexistant, ticket non-`waiting`, coiffeuse
   hors salon, succès, audit `QUEUE_TICKET_STARTED` exactement une fois avec
-  `metadata={}`.
+  `metadata={}`. Coiffeuse déjà `in_progress` sur un autre ticket → `HairdresserAlreadyBusy`
+  sans écriture, portée **globale** (deux salons différents comptent), coiffeuse distincte
+  → succès, redevient assignable après `CompleteQueueTicket` sur son ticket précédent (#173).
 - `CompleteQueueTicket` : ticket non-`in_progress`, ticket hors salon, succès, audit
   `QUEUE_TICKET_COMPLETED`.
 - `CancelQueueTicket` : motif absent/blanc/hors bornes → `InvalidQueueTicketCancellationReason`
@@ -48,6 +50,7 @@ from coiflink_api.application.queue_ticket import (
 )
 from coiflink_api.domain.audit import AuditAction, ENTITY_TYPE_QUEUE_TICKET
 from coiflink_api.domain.errors import (
+    HairdresserAlreadyBusy,
     HairdresserNotInSalon,
     InvalidQueueTicketCancellationReason,
     InvalidQueueTicketServices,
@@ -87,6 +90,7 @@ def _fixed_clock() -> datetime.datetime:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _service(**overrides):  # type: ignore[no-untyped-def]
     """Construit un objet Service minimal (duck-typing, pas d'import du domain)."""
@@ -173,14 +177,20 @@ class TestJoinQueue:
     def test_first_ticket_gets_number_one(self) -> None:
         tickets = FakeQueueTicketRepository()
         svc = _service(salon_id=_SALON_A)
-        uc = JoinQueue(tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock)
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        uc = JoinQueue(
+            tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock
+        )
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         assert result.ticket.ticket_number == 1
 
     def test_second_ticket_same_salon_same_day_increments(self) -> None:
         tickets = FakeQueueTicketRepository()
         svc = _service(salon_id=_SALON_A)
-        uc = JoinQueue(tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock)
+        uc = JoinQueue(
+            tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock
+        )
         cmd = JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
         first = uc.execute(_SALON_A, cmd)
         second = uc.execute(_SALON_A, cmd)
@@ -194,8 +204,12 @@ class TestJoinQueue:
         catalog_b = _catalog_with_service(svc_b)
         uc_a = JoinQueue(tickets, catalog_a, FakeCustomerRepository(), clock=_fixed_clock)
         uc_b = JoinQueue(tickets, catalog_b, FakeCustomerRepository(), clock=_fixed_clock)
-        t_a = uc_a.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_a.id,)))
-        t_b = uc_b.execute(_SALON_B, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_b.id,)))
+        t_a = uc_a.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_a.id,))
+        )
+        t_b = uc_b.execute(
+            _SALON_B, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_b.id,))
+        )
         # Chaque salon démarre à 1 indépendamment.
         assert t_a.ticket.ticket_number == 1
         assert t_b.ticket.ticket_number == 1
@@ -203,20 +217,28 @@ class TestJoinQueue:
     def test_anonymous_ticket_is_accepted(self) -> None:
         svc = _service(salon_id=_SALON_A)
         uc = self._usecase(catalog=_catalog_with_service(svc))
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         assert result.ticket.customer_profile_id is None
         assert result.ticket.status == "waiting"
 
     def test_customer_profile_from_other_salon_raises_not_found(self) -> None:
         customers = FakeCustomerRepository()
         # Fiche créée pour le salon B ; `JoinQueue` sur salon A ne peut pas la trouver.
-        customer = customers.create(type("C", (), {
-            "salon_id": _SALON_B,
-            "full_name": "Awa",
-            "phone": None,
-            "gender": None,
-            "notes": None,
-        })())
+        customer = customers.create(
+            type(
+                "C",
+                (),
+                {
+                    "salon_id": _SALON_B,
+                    "full_name": "Awa",
+                    "phone": None,
+                    "gender": None,
+                    "notes": None,
+                },
+            )()
+        )
         svc = _service(salon_id=_SALON_A)
         uc = self._usecase(catalog=_catalog_with_service(svc), customers=customers)
         with pytest.raises(QueueTicketNotFound):
@@ -228,13 +250,19 @@ class TestJoinQueue:
     def test_customer_from_other_salon_creates_no_ticket(self) -> None:
         tickets = FakeQueueTicketRepository()
         customers = FakeCustomerRepository()
-        customer = customers.create(type("C", (), {
-            "salon_id": _SALON_B,
-            "full_name": "Awa",
-            "phone": None,
-            "gender": None,
-            "notes": None,
-        })())
+        customer = customers.create(
+            type(
+                "C",
+                (),
+                {
+                    "salon_id": _SALON_B,
+                    "full_name": "Awa",
+                    "phone": None,
+                    "gender": None,
+                    "notes": None,
+                },
+            )()
+        )
         svc = _service(salon_id=_SALON_A)
         uc = JoinQueue(tickets, _catalog_with_service(svc), customers, clock=_fixed_clock)
         with pytest.raises(QueueTicketNotFound):
@@ -259,14 +287,20 @@ class TestJoinQueue:
             clock=_fixed_clock,
         )
         with pytest.raises(InvalidQueueTicketServices):
-            uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_other.id,)))
+            uc.execute(
+                _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_other.id,))
+            )
 
     def test_eta_is_zero_when_queue_is_empty_and_one_hairdresser(self) -> None:
         # File vide → position=0 → ETA=0, quelle que soit la durée ou le nb coiffeuses.
         svc = _service(salon_id=_SALON_A, duration_minutes=45)
         catalog = _catalog_with_service(svc)
-        uc = JoinQueue(FakeQueueTicketRepository(), catalog, FakeCustomerRepository(), clock=_fixed_clock)
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        uc = JoinQueue(
+            FakeQueueTicketRepository(), catalog, FakeCustomerRepository(), clock=_fixed_clock
+        )
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         assert result.ticket.estimated_wait_minutes == 0
 
     def test_eta_uses_fallback_constant_when_no_active_hairdresser(self) -> None:
@@ -281,7 +315,9 @@ class TestJoinQueue:
         existing = _make_ticket(salon_id=_SALON_A, status="waiting")
         tickets.seed(existing)
         uc = JoinQueue(tickets, catalog, FakeCustomerRepository(), clock=_fixed_clock)
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         assert result.ticket.estimated_wait_minutes == DEFAULT_WAIT_MINUTES_NO_STAFF
 
     def test_eta_uses_own_duration_when_queue_is_empty_and_hairdresser_exists(self) -> None:
@@ -292,7 +328,9 @@ class TestJoinQueue:
         tickets = FakeQueueTicketRepository(average_duration=None)
         uc = JoinQueue(tickets, catalog, FakeCustomerRepository(), clock=_fixed_clock)
         # File vide : position=0 → ETA=0 même avec durée=30.
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         assert result.ticket.estimated_wait_minutes == 0
 
     def test_eta_computed_from_waiting_position_and_average(self) -> None:
@@ -315,38 +353,50 @@ class TestJoinQueue:
             hairdressers={_SALON_A: [_Two(), _Two()]},
         )
         uc = JoinQueue(tickets, catalog, FakeCustomerRepository(), clock=_fixed_clock)
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         # 2 × 30 / 2 = 30
         assert result.ticket.estimated_wait_minutes == 30
 
     def test_ticket_status_is_waiting_on_creation(self) -> None:
         svc = _service(salon_id=_SALON_A)
         uc = self._usecase(catalog=_catalog_with_service(svc))
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         assert result.ticket.status == "waiting"
 
     def test_ticket_salon_matches_requested_salon(self) -> None:
         svc = _service(salon_id=_SALON_A)
         uc = self._usecase(catalog=_catalog_with_service(svc))
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         assert result.ticket.salon_id == _SALON_A
 
     def test_service_ids_stored_in_ticket(self) -> None:
         svc = _service(salon_id=_SALON_A)
         uc = self._usecase(catalog=_catalog_with_service(svc))
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         assert svc.id in result.ticket.service_ids
 
     def test_people_ahead_count_is_zero_for_first_ticket_in_empty_queue(self) -> None:
         svc = _service(salon_id=_SALON_A)
         uc = self._usecase(catalog=_catalog_with_service(svc))
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         assert result.people_ahead_count == 0
 
     def test_people_ahead_count_is_one_when_first_ticket_still_waiting(self) -> None:
         tickets = FakeQueueTicketRepository()
         svc = _service(salon_id=_SALON_A)
-        uc = JoinQueue(tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock)
+        uc = JoinQueue(
+            tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock
+        )
         cmd = JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
         first = uc.execute(_SALON_A, cmd)
         second = uc.execute(_SALON_A, cmd)
@@ -361,8 +411,12 @@ class TestJoinQueue:
         existing = _make_ticket(salon_id=_SALON_A, status="in_progress")
         tickets.seed(existing)
         svc = _service(salon_id=_SALON_A)
-        uc = JoinQueue(tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock)
-        result = uc.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,)))
+        uc = JoinQueue(
+            tickets, _catalog_with_service(svc), FakeCustomerRepository(), clock=_fixed_clock
+        )
+        result = uc.execute(
+            _SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc.id,))
+        )
         assert result.ticket.ticket_number > existing.ticket_number
         assert result.people_ahead_count == 0
 
@@ -377,7 +431,9 @@ class TestJoinQueue:
         # Deux tickets `waiting` sur le salon A avant le premier ticket du salon B.
         uc_a.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_a.id,)))
         uc_a.execute(_SALON_A, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_a.id,)))
-        t_b = uc_b.execute(_SALON_B, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_b.id,)))
+        t_b = uc_b.execute(
+            _SALON_B, JoinQueueCommand(customer_profile_id=None, service_ids=(svc_b.id,))
+        )
         # Le compteur du salon B est indépendant : aucun ticket devant lui.
         assert t_b.people_ahead_count == 0
 
@@ -538,6 +594,100 @@ class TestStartQueueTicket:
         with pytest.raises(InvalidQueueTicketTransition):
             uc.execute(_SALON_A, ticket.id, _HAIRDRESSER_ID, _ACTOR_ID)
         assert log.recorded == []
+
+
+# ---------------------------------------------------------------------------
+# StartQueueTicket — coiffeuse déjà occupée (#173)
+# ---------------------------------------------------------------------------
+
+
+class TestStartQueueTicketHairdresserAlreadyBusy:
+    def _usecase(
+        self,
+        tickets: FakeQueueTicketRepository,
+        scope: FakeSalonScopeRepository | None = None,
+    ) -> StartQueueTicket:
+        hairdresser_scope = scope or FakeSalonScopeRepository(
+            {_HAIRDRESSER_ID: frozenset({_SALON_A})}
+        )
+        return StartQueueTicket(
+            queue_ticket_repository=tickets,
+            scope_repository=hairdresser_scope,
+            audit_log=FakeAuditLog(),
+            clock=_fixed_clock,
+        )
+
+    def test_hairdresser_already_in_progress_raises_error(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        busy_ticket = _make_ticket(
+            salon_id=_SALON_A, status="in_progress", hairdresser_id=_HAIRDRESSER_ID
+        )
+        waiting_ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(busy_ticket)
+        tickets.seed(waiting_ticket)
+        uc = self._usecase(tickets)
+        with pytest.raises(HairdresserAlreadyBusy):
+            uc.execute(_SALON_A, waiting_ticket.id, _HAIRDRESSER_ID, _ACTOR_ID)
+
+    def test_no_write_when_hairdresser_already_busy(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        busy_ticket = _make_ticket(
+            salon_id=_SALON_A, status="in_progress", hairdresser_id=_HAIRDRESSER_ID
+        )
+        waiting_ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(busy_ticket)
+        tickets.seed(waiting_ticket)
+        uc = self._usecase(tickets)
+        with pytest.raises(HairdresserAlreadyBusy):
+            uc.execute(_SALON_A, waiting_ticket.id, _HAIRDRESSER_ID, _ACTOR_ID)
+        # Le ticket ciblé n'a pas bougé : toujours `waiting`, aucune coiffeuse.
+        untouched = tickets.get(_SALON_A, waiting_ticket.id)
+        assert untouched.status == "waiting"  # type: ignore[union-attr]
+        assert untouched.hairdresser_id is None  # type: ignore[union-attr]
+
+    def test_busy_scope_is_global_across_salons(self) -> None:
+        """#173 : portée volontairement globale, pas par salon."""
+        tickets = FakeQueueTicketRepository()
+        busy_ticket = _make_ticket(
+            salon_id=_SALON_B, status="in_progress", hairdresser_id=_HAIRDRESSER_ID
+        )
+        waiting_ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(busy_ticket)
+        tickets.seed(waiting_ticket)
+        # La coiffeuse est membre des deux salons.
+        scope = FakeSalonScopeRepository({_HAIRDRESSER_ID: frozenset({_SALON_A, _SALON_B})})
+        uc = self._usecase(tickets, scope=scope)
+        with pytest.raises(HairdresserAlreadyBusy):
+            uc.execute(_SALON_A, waiting_ticket.id, _HAIRDRESSER_ID, _ACTOR_ID)
+
+    def test_different_hairdresser_succeeds(self) -> None:
+        tickets = FakeQueueTicketRepository()
+        other_hairdresser = uuid.UUID("aa000000-0000-0000-0000-000000000099")
+        busy_ticket = _make_ticket(
+            salon_id=_SALON_A, status="in_progress", hairdresser_id=other_hairdresser
+        )
+        waiting_ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(busy_ticket)
+        tickets.seed(waiting_ticket)
+        uc = self._usecase(tickets)
+        result = uc.execute(_SALON_A, waiting_ticket.id, _HAIRDRESSER_ID, _ACTOR_ID)
+        assert result.status == "in_progress"
+
+    def test_hairdresser_free_again_after_completing_previous_ticket(self) -> None:
+        """Une fois son ticket `done`, la coiffeuse redevient assignable (#173)."""
+        tickets = FakeQueueTicketRepository()
+        first_ticket = _make_ticket(
+            salon_id=_SALON_A, status="in_progress", hairdresser_id=_HAIRDRESSER_ID
+        )
+        second_ticket = _make_ticket(salon_id=_SALON_A, status="waiting")
+        tickets.seed(first_ticket)
+        tickets.seed(second_ticket)
+        tickets.complete(_SALON_A, first_ticket.id, now=_CREATED_AT)
+
+        uc = self._usecase(tickets)
+        result = uc.execute(_SALON_A, second_ticket.id, _HAIRDRESSER_ID, _ACTOR_ID)
+        assert result.status == "in_progress"
+        assert result.hairdresser_id == _HAIRDRESSER_ID
 
 
 # ---------------------------------------------------------------------------
@@ -1038,7 +1188,9 @@ class TestListSalonQueueTickets:
 
 
 class TestGetAssignedTicketCustomer:
-    def _customer(self, customers: FakeCustomerRepository, *, salon_id=_SALON_A, full_name="Awa Koné"):  # type: ignore[no-untyped-def]
+    def _customer(
+        self, customers: FakeCustomerRepository, *, salon_id=_SALON_A, full_name="Awa Koné"
+    ):  # type: ignore[no-untyped-def]
         return customers.create(
             type(
                 "C",

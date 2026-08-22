@@ -137,6 +137,22 @@ export function canPayTicket(ticket: WalkInTicket): boolean {
   return ticket.status === "done" && ticket.paymentId === null;
 }
 
+// `isHairdresserBusy` : vrai si la coiffeuse a déjà un ticket `in_progress` parmi
+// ceux fournis (#173) — pilote l'exclusion du sélecteur « Choisir une coiffeuse »
+// (`queue-board.tsx`). Portée **globale** côté backend (`HairdresserAlreadyBusy`,
+// index unique partiel `uq_queue_tickets_hairdresser_in_progress`) ; ici la liste
+// fournie est déjà celle du salon consulté, donc la vérification reste locale à
+// cette liste. Ce prédicat ne fait que **cacher** l'option, le backend reste
+// l'arbitre (`409` sinon) — même principe que `canStartTicket`/`canCancelTicket`.
+export function isHairdresserBusy(
+  tickets: readonly WalkInTicket[],
+  hairdresserId: string,
+): boolean {
+  return tickets.some(
+    (ticket) => ticket.status === "in_progress" && ticket.hairdresserId === hairdresserId,
+  );
+}
+
 // `countPeopleAhead` : nombre de personnes encore devant ce ticket dans la
 // file — mirroir du concept « personnes encore devant » de la borne kiosque
 // mobile, mais calculé **en direct côté client** à partir de la liste des

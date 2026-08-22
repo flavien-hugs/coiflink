@@ -13,7 +13,12 @@ couvrir :
     - l'effet réel de la désactivation (`salon_members.status = INACTIVE`) sur
       `_require_salon_hairdresser` : une coiffeuse désactivée est refusée à
       la prise en charge d'un ticket walk-in (`404 HairdresserNotInSalon`),
-      puis acceptée après réactivation.
+      puis acceptée après réactivation ;
+    - la retraduction réelle (SQLSTATE `23505`) de l'index unique partiel
+      **global** `uq_queue_tickets_hairdresser_in_progress` en
+      `HairdresserAlreadyBusy` (`409`) : une coiffeuse déjà `in_progress` sur
+      un ticket est refusée sur un second, puis acceptée une fois le premier
+      clôturé (#173).
 
 La lecture de la file d'attente (jointures de noms, filtre de statuts,
 dérivation « payée ») a été retirée avec la simplification de la route
@@ -390,3 +395,61 @@ class TestEmployeeAndQueueE2E:
         assert start_again.status_code == 200
         assert start_again.json()["status"] == "in_progress"
         assert start_again.json()["hairdresser_id"] == employee["id"]
+
+    def test_hairdresser_already_busy_rejected_by_real_unique_index(
+        self, _e2e_client: TestClient
+    ) -> None:
+        """#173 : l'index unique partiel global `uq_queue_tickets_hairdresser_in_progress`
+        refuse réellement (SQLSTATE 23505, retraduit par
+        `SqlQueueTicketRepository.start` en `HairdresserAlreadyBusy`, 409) d'affecter une
+        coiffeuse déjà `in_progress` sur un autre ticket. Ni le pré-contrôle applicatif
+        (`is_hairdresser_busy`) ni la garde TOCTOU habituelle (`WHERE status = 'waiting'`)
+        ne suffiraient seuls à couvrir la course concurrente : c'est la contrainte base
+        qui est exercée ici, pas seulement `StartQueueTicket.execute` (déjà couvert par
+        les fakes, `test_queue_ticket_usecases.py`).
+
+        Le scénario multi-salons (portée volontairement **globale**, pas par salon) est
+        déjà couvert au niveau applicatif par `test_busy_scope_is_global_across_salons`
+        (fake `SalonScopeRepository`) — non reproduit ici : `POST .../employees` refuse
+        aujourd'hui tout doublon de téléphone (`PhoneAlreadyInUse`), il n'existe encore
+        aucune route produit pour rattacher une coiffeuse existante à un second salon.
+        """
+        client = _e2e_client
+        _register_manager(client, phone=_PHONE_MANAGER_A_LOCAL)
+        token = _login(client, phone=_PHONE_MANAGER_A_LOCAL)
+        salon_id = _create_salon(client, token, name=_SALON_NAME_A)
+        employee = _create_employee(
+            client, token, salon_id, phone=_PHONE_HAIRDRESSER_1_LOCAL
+        )
+
+        ticket_1 = _seed_ticket(salon_id, day=datetime.date(2026, 8, 13), ticket_number=1)
+        ticket_2 = _seed_ticket(salon_id, day=datetime.date(2026, 8, 13), ticket_number=2)
+
+        start_first = client.post(
+            f"/salons/{salon_id}/queue/tickets/{ticket_1}/start",
+            json={"hairdresser_id": employee["id"]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert start_first.status_code == 200
+
+        start_second = client.post(
+            f"/salons/{salon_id}/queue/tickets/{ticket_2}/start",
+            json={"hairdresser_id": employee["id"]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert start_second.status_code == 409
+
+        # Une fois le premier ticket clôturé, la coiffeuse redevient assignable.
+        complete_first = client.post(
+            f"/salons/{salon_id}/queue/tickets/{ticket_1}/complete",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert complete_first.status_code == 200
+
+        start_second_retry = client.post(
+            f"/salons/{salon_id}/queue/tickets/{ticket_2}/start",
+            json={"hairdresser_id": employee["id"]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert start_second_retry.status_code == 200
+        assert start_second_retry.json()["hairdresser_id"] == employee["id"]

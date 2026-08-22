@@ -16,11 +16,13 @@ ticket de passage est **indépendant** d'`Appointment` (ADR-0042) : aucune ligne
   instantané). **Aucun audit** : émettre un ticket n'est pas une action humaine de
   gestion et le ticket ne porte aucune PII propre.
 - `StartQueueTicket` — prise en charge (coiffeuse / gérant) : assigne une coiffeuse
-  **membre `ACTIVE`** du salon et passe le ticket `in_progress` en un seul geste
-  (un walk-in n'a jamais de coiffeuse pré-assignée), pose `started_at`, journalise
+  **membre `ACTIVE`** du salon, **pas déjà occupée** sur un autre ticket `in_progress`
+  (#173, portée globale) et passe le ticket `in_progress` en un seul geste (un
+  walk-in n'a jamais de coiffeuse pré-assignée), pose `started_at`, journalise
   `QUEUE_TICKET_STARTED` (`metadata={}`). Préconditions vérifiées **ici**, puis
-  **ré-affirmées à l'écriture** par le dépôt (`UPDATE ... WHERE status = 'waiting'`,
-  garde TOCTOU, miroir `StartAppointmentService`).
+  **ré-affirmées à l'écriture** par le dépôt (`UPDATE ... WHERE status = 'waiting'`
+  + index unique partiel global anti-double-affectation, garde TOCTOU, miroir
+  `StartAppointmentService`).
 - `CompleteQueueTicket` — clôture (coiffeuse / gérant) : passe `in_progress → done`,
   pose `completed_at`, journalise `QUEUE_TICKET_COMPLETED`.
 - `CancelQueueTicket` — annulation manuelle (coiffeuse / gérant, no-show client) :
@@ -65,6 +67,7 @@ from coiflink_api.domain.audit import (
 )
 from coiflink_api.domain.enums import Role
 from coiflink_api.domain.errors import (
+    HairdresserAlreadyBusy,
     HairdresserNotInSalon,
     InvalidQueueTicketServices,
     InvalidQueueTicketTransition,
@@ -139,17 +142,13 @@ class JoinQueue:
         self._customers = customer_repository
         self._clock = clock if clock is not None else _utc_now
 
-    def execute(
-        self, salon_id: uuid.UUID, command: JoinQueueCommand
-    ) -> JoinQueueResult:
+    def execute(self, salon_id: uuid.UUID, command: JoinQueueCommand) -> JoinQueueResult:
         service_ids = validate_service_ids(command.service_ids)
         own_durations = self._resolve_durations(salon_id, service_ids)
 
         if command.customer_profile_id is not None:
             # Fiche hors salon / inexistante : indiscernable (§11.2), jamais un oracle.
-            customer = self._customers.find_by_id(
-                salon_id, command.customer_profile_id
-            )
+            customer = self._customers.find_by_id(salon_id, command.customer_profile_id)
             if customer is None:
                 raise QueueTicketNotFound("Fiche client introuvable pour ce salon.")
 
@@ -212,9 +211,7 @@ class JoinQueue:
             salon_id, issued_date=issued_date
         )
         if average is None:
-            average = (
-                sum(own_durations) / len(own_durations) if own_durations else 0.0
-            )
+            average = sum(own_durations) / len(own_durations) if own_durations else 0.0
         active_count = len(self._catalog.list_active_hairdressers(salon_id))
         return estimate_wait_minutes(
             position=position,
@@ -261,10 +258,12 @@ class StartQueueTicket:
                 "Ce ticket ne peut pas être pris en charge dans cet état."
             )
         _require_salon_hairdresser(self._scope, salon_id, hairdresser_id)
+        if self._tickets.is_hairdresser_busy(hairdresser_id):
+            # Pré-contrôle (#173) — portée globale, l'index unique partiel reste
+            # l'arbitre final contre la course concurrente (voir `start()`).
+            raise HairdresserAlreadyBusy("Cette coiffeuse est déjà occupée sur un autre ticket.")
 
-        updated = self._tickets.start(
-            salon_id, ticket_id, hairdresser_id, now=self._clock()
-        )
+        updated = self._tickets.start(salon_id, ticket_id, hairdresser_id, now=self._clock())
         self._audit_log.record(
             AuditEntry(
                 action=AuditAction.QUEUE_TICKET_STARTED.value,
@@ -299,9 +298,7 @@ class CompleteQueueTicket:
         if current is None:
             raise QueueTicketNotFound("Ticket de passage introuvable.")
         if current.status != "in_progress":
-            raise InvalidQueueTicketTransition(
-                "Ce ticket ne peut pas être clôturé dans cet état."
-            )
+            raise InvalidQueueTicketTransition("Ce ticket ne peut pas être clôturé dans cet état.")
 
         updated = self._tickets.complete(salon_id, ticket_id, now=self._clock())
         self._audit_log.record(
@@ -355,13 +352,9 @@ class CancelQueueTicket:
         if current is None:
             raise QueueTicketNotFound("Ticket de passage introuvable.")
         if current.status not in ("waiting", "called"):
-            raise InvalidQueueTicketTransition(
-                "Ce ticket ne peut pas être annulé dans cet état."
-            )
+            raise InvalidQueueTicketTransition("Ce ticket ne peut pas être annulé dans cet état.")
 
-        updated = self._tickets.cancel(
-            salon_id, ticket_id, validated_reason, now=self._clock()
-        )
+        updated = self._tickets.cancel(salon_id, ticket_id, validated_reason, now=self._clock())
         self._audit_log.record(
             AuditEntry(
                 action=AuditAction.QUEUE_TICKET_CANCELLED.value,
@@ -407,9 +400,7 @@ class UpdateQueueTicketServices:
         if current is None:
             raise QueueTicketNotFound("Ticket de passage introuvable.")
         if current.status not in QUEUE_TICKET_PENDING_STATUSES:
-            raise InvalidQueueTicketTransition(
-                "Ce ticket ne peut plus être modifié dans cet état."
-            )
+            raise InvalidQueueTicketTransition("Ce ticket ne peut plus être modifié dans cet état.")
 
         active = {s.id for s in self._catalog.list_active_services(salon_id)}
         for service_id in service_ids:
@@ -476,9 +467,7 @@ class GetAssignedTicketCustomer:
         self._tickets = queue_ticket_repository
         self._customers = customer_repository
 
-    def execute(
-        self, salon_id: uuid.UUID, ticket_id: uuid.UUID, hairdresser_id: uuid.UUID
-    ) -> str:
+    def execute(self, salon_id: uuid.UUID, ticket_id: uuid.UUID, hairdresser_id: uuid.UUID) -> str:
         ticket = self._tickets.get(salon_id, ticket_id)
         if (
             ticket is None
@@ -486,15 +475,11 @@ class GetAssignedTicketCustomer:
             or ticket.status != "in_progress"
             or ticket.customer_profile_id is None
         ):
-            raise QueueTicketNotFound(
-                "Ticket introuvable ou fiche client non accessible."
-            )
+            raise QueueTicketNotFound("Ticket introuvable ou fiche client non accessible.")
 
         customer = self._customers.find_by_id(salon_id, ticket.customer_profile_id)
         if customer is None:
-            raise QueueTicketNotFound(
-                "Ticket introuvable ou fiche client non accessible."
-            )
+            raise QueueTicketNotFound("Ticket introuvable ou fiche client non accessible.")
         return customer.full_name
 
 
