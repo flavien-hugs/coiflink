@@ -49,7 +49,7 @@ dependencies:
   # numéro de ticket) + Outfit (corps/formulaires/clavier/boutons), identité visuelle
   # alignée sur le dashboard web (mêmes familles). Chargées une fois puis mises en
   # cache par le paquet — aucun appel réseau au runtime après le premier lancement.
-  google_fonts: ^6.2.1
+  google_fonts: ^8.2.1
 
   # Impression du ticket de passage (#160) : formateur ESC/POS pur (aucune
   # dépendance de transport, testable sans matériel) — génère les octets envoyés
