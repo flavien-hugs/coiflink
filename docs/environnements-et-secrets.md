@@ -257,6 +257,34 @@ démarrage (fail-fast attendu — cf. `session.py` qui lève si `DATABASE_URL` m
   `API_BASE_URL_PROD`/`API_BASE_URL_STAGING` (Settings → Secrets and variables → Actions → *Variables*,
   non sensibles) — tant qu'elles sont absentes, l'APK de CI reste construit sans URL injectée (défaut
   dev), sans erreur.
+- **Signature stable de l'APK (borne, [ADR-0044](./adr/0044-signature-stable-apk-android.md))** : sans
+  une signature **stable**, chaque APK produit par la CI (clé de debug régénérée à chaque run éphémère)
+  force une **désinstallation** à la mise à jour — qui efface le credential borne et l'imprimante
+  sélectionnée (`flutter_secure_storage`/Keystore Android), d'où la ré-activation observée après
+  chaque mise à jour. `android/key.properties` (gitignoré) fournit cette identité stable ; `ci.yml` la
+  restaure depuis **4 secrets GitHub Actions** (de vrais secrets, contrairement à `API_BASE_URL_*`) :
+  `ANDROID_UPLOAD_KEYSTORE_BASE64`, `ANDROID_UPLOAD_KEYSTORE_PASSWORD`, `ANDROID_UPLOAD_KEY_ALIAS`,
+  `ANDROID_UPLOAD_KEY_PASSWORD`. **Suivi non bloquant** (CI fonctionne sans, comme aujourd'hui) — runbook
+  de provisionnement, à exécuter **en local**, jamais par un agent (secret permanent et critique : sa
+  perte rend toute future mise à jour en place impossible pour le parc déjà activé) :
+
+  ```bash
+  # 1. Générer le keystore — à sauvegarder précieusement, hors dépôt (seule copie
+  #    humainement récupérable : un secret GitHub Actions n'est jamais relisible) :
+  keytool -genkeypair -v -keystore coiflink-upload.jks -alias coiflink-upload \
+    -keyalg RSA -keysize 2048 -validity 10000 -storetype JKS
+
+  # 2. Provisionner les 4 secrets :
+  gh secret set ANDROID_UPLOAD_KEYSTORE_BASE64 --body "$(base64 -i coiflink-upload.jks)"
+  gh secret set ANDROID_UPLOAD_KEYSTORE_PASSWORD   # saisi interactivement
+  gh secret set ANDROID_UPLOAD_KEY_ALIAS --body "coiflink-upload"
+  gh secret set ANDROID_UPLOAD_KEY_PASSWORD        # saisi interactivement
+  ```
+
+  Propriétaire : Ops/Mobile. Contrairement aux autres secrets de ce document, **non rotable sans casser
+  la compatibilité de mise à jour** du parc de bornes déjà activées avec l'ancienne signature — une
+  rotation équivaut à perdre le keystore précédent du point de vue de ces bornes (chacune nécessite
+  alors une réactivation manuelle unique).
 
 ## 7. Renvois
 
@@ -264,6 +292,8 @@ démarrage (fail-fast attendu — cf. `session.py` qui lève si `DATABASE_URL` m
   magasin de secrets, environnements, sauvegardes.
 - **[ADR-0043](./adr/0043-registre-images-ghcr-deploiement-railway-depuis-image.md)** — registre
   d'images GHCR & déploiement Railway depuis l'image (reformule le registre d'ADR-0011).
+- **[ADR-0044](./adr/0044-signature-stable-apk-android.md)** — signature stable de l'APK Android, pour
+  que les mises à jour de la borne se fassent en place (sans effacer credential/imprimante).
 - **[CONTRIBUTING](../CONTRIBUTING.md)** (« Secrets ») — règle « aucun secret committé ».
 - **Invariants CI/Docker** : [ADR-0010](./adr/0010-ci-cd-docker-packaging.md), `.github/workflows/ci.yml`
   (build + smoke test à chaque PR ; publication GHCR sur `main`, images non-root sans secret).

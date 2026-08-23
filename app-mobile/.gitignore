@@ -43,3 +43,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Signature APK (#178-signature-borne, ADR-0044) : jamais committer le keystore
+# ni ses mots de passe — provisionnés en CI via secrets, générés localement par
+# l'utilisateur (voir docs/adr/0044-signature-stable-apk-android.md).
+/android/key.properties
+*.jks
+*.keystore
