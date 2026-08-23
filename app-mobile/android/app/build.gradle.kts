@@ -23,7 +23,7 @@ if (hasUploadKeystore) {
 }
 
 android {
-    namespace = "com.coiflink.coiflink_mobile"
+    namespace = "com.incubtek.coiflink"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -34,7 +34,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.coiflink.coiflink_mobile"
+        applicationId = "com.incubtek.coiflink"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

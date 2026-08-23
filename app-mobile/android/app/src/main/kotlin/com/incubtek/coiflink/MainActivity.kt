@@ -1,4 +1,4 @@
-package com.coiflink.coiflink_mobile
+package com.incubtek.coiflink
 
 import io.flutter.embedding.android.FlutterActivity
 
