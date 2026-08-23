@@ -21,8 +21,9 @@ Couvre :
   `done`/`expired` → `InvalidQueueTicketTransition`, succès depuis `waiting`/
   `called`, audit `QUEUE_TICKET_CANCELLED` exactement une fois avec `metadata={}`.
 - `UpdateQueueTicketServices` (#161) : ticket introuvable/hors salon, ticket
-  `done`/`expired`, prestation vide/inactive/hors salon, succès sur `waiting` et
-  `in_progress`, audit `QUEUE_TICKET_SERVICES_UPDATED`.
+  `in_progress`/`done`/`expired` → `InvalidQueueTicketTransition` (#174 — plus
+  éditable une fois pris en charge), prestation vide/inactive/hors salon, succès
+  sur `waiting` uniquement, audit `QUEUE_TICKET_SERVICES_UPDATED`.
 - `ListSalonQueueTickets` : retourne les tickets actifs du salon/jour (y compris
   `expired`), triés `ticket_number` ; exclut les tickets d'autres salons/jours.
 - `GetAssignedTicketCustomer` : nom complet renvoyé seulement si le ticket est
@@ -1048,14 +1049,15 @@ class TestUpdateQueueTicketServices:
         result = uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
         assert result.service_ids == (svc.id,)
 
-    def test_success_on_in_progress_ticket_replaces_services(self) -> None:
+    def test_in_progress_ticket_raises_invalid_transition(self) -> None:
+        """#174 : un ticket déjà pris en charge n'est plus éditable."""
         tickets = FakeQueueTicketRepository()
         ticket = _make_ticket(salon_id=_SALON_A, status="in_progress")
         tickets.seed(ticket)
         svc = _service(salon_id=_SALON_A)
         uc, _ = self._usecase(tickets=tickets, catalog=_catalog_with_service(svc))
-        result = uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
-        assert result.service_ids == (svc.id,)
+        with pytest.raises(InvalidQueueTicketTransition):
+            uc.execute(_SALON_A, ticket.id, (svc.id,), _ACTOR_ID)
 
     def test_audit_recorded_exactly_once(self) -> None:
         tickets = FakeQueueTicketRepository()

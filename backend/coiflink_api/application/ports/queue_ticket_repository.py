@@ -31,9 +31,7 @@ from coiflink_api.domain.service_demand import ServiceDemand
 class QueueTicketRepository(Protocol):
     """Contrat de persistance des tickets de passage d'un salon."""
 
-    def create(
-        self, ticket: QueueTicketToCreate, *, issued_date: datetime.date
-    ) -> QueueTicket:
+    def create(self, ticket: QueueTicketToCreate, *, issued_date: datetime.date) -> QueueTicket:
         """Insère le ticket en allouant un `ticket_number` séquentiel par salon+jour.
 
         Le numéro est alloué **atomiquement** sous verrou consultatif
@@ -45,15 +43,11 @@ class QueueTicketRepository(Protocol):
         """
         ...
 
-    def get(
-        self, salon_id: uuid.UUID, ticket_id: uuid.UUID
-    ) -> QueueTicket | None:
+    def get(self, salon_id: uuid.UUID, ticket_id: uuid.UUID) -> QueueTicket | None:
         """Retourne le ticket `(salon_id, ticket_id)`, sinon `None` (isolation §11.2)."""
         ...
 
-    def count_waiting(
-        self, salon_id: uuid.UUID, *, issued_date: datetime.date
-    ) -> int:
+    def count_waiting(self, salon_id: uuid.UUID, *, issued_date: datetime.date) -> int:
         """Nombre de tickets `waiting` du salon pour le jour (position dans la file)."""
         ...
 
@@ -165,14 +159,14 @@ class QueueTicketRepository(Protocol):
         ticket_id: uuid.UUID,
         service_ids: tuple[uuid.UUID, ...],
     ) -> QueueTicket:
-        """Remplace les prestations d'un ticket `waiting`/`in_progress` (#161).
+        """Remplace les prestations d'un ticket `waiting` (#161, #174).
 
-        `UPDATE ... WHERE status IN ('waiting', 'in_progress')` **conditionnel**
-        (garde TOCTOU, même patron que `start`/`complete`) : lève
-        `domain.errors.InvalidQueueTicketTransition` si le ticket n'est plus dans
-        un état éditable (déjà servi, expiré). La jonction `queue_ticket_services`
-        est intégralement remplacée (delete + insert, miroir `create`). `flush`
-        sans `commit`.
+        `UPDATE ... WHERE status = 'waiting'` **conditionnel** (garde TOCTOU, même
+        patron que `start`/`complete`) : lève `domain.errors.InvalidQueueTicketTransition`
+        si le ticket n'est plus `waiting` — un ticket `in_progress` n'est plus éditable
+        depuis #174 (la prise en charge fige les prestations), ni `done`/`expired`. La
+        jonction `queue_ticket_services` est intégralement remplacée (delete + insert,
+        miroir `create`). `flush` sans `commit`.
         """
         ...
 
@@ -232,9 +226,7 @@ class QueueTicketRepository(Protocol):
         """
         ...
 
-    def count_waiting_beyond_estimate(
-        self, salon_id: uuid.UUID, *, now: datetime.datetime
-    ) -> int:
+    def count_waiting_beyond_estimate(self, salon_id: uuid.UUID, *, now: datetime.datetime) -> int:
         """Tickets `waiting` dont l'attente **réelle** dépasse l'estimation figée (#148).
 
         `now - created_at > estimated_wait_minutes` — alerte « attente prolongée »,
@@ -243,9 +235,7 @@ class QueueTicketRepository(Protocol):
         """
         ...
 
-    def list_in_progress_details(
-        self, salon_id: uuid.UUID
-    ) -> tuple[InProgressService, ...]:
+    def list_in_progress_details(self, salon_id: uuid.UUID) -> tuple[InProgressService, ...]:
         """Tickets `in_progress`, enrichis des noms d'affichage (#148).
 
         Émet **uniquement** des noms d'affichage (`customer_profiles.full_name`,

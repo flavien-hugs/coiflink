@@ -40,6 +40,7 @@ from coiflink_api.domain.hairdresser_performance import HairdresserActivityCount
 from coiflink_api.domain.queue_ticket import (
     QUEUE_TICKET_ACTIVE_STATUSES,
     QUEUE_TICKET_PENDING_STATUSES,
+    QUEUE_TICKET_SERVICES_EDITABLE_STATUSES,
     QueueTicket,
     QueueTicketEntry,
     QueueTicketToCreate,
@@ -366,20 +367,21 @@ class SqlQueueTicketRepository:
         ticket_id: uuid.UUID,
         service_ids: tuple[uuid.UUID, ...],
     ) -> QueueTicket:
-        """Remplace les prestations d'un ticket `waiting`/`in_progress` (#161).
+        """Remplace les prestations d'un ticket `waiting` (#161, #174).
 
-        Chargement **conditionnel** `status IN ('waiting', 'in_progress')` (garde
-        TOCTOU, miroir `start`/`complete`) : un ticket qui n'est plus dans un état
-        éditable (déjà servi, expiré) lève `InvalidQueueTicketTransition`. La
-        jonction `queue_ticket_services` est intégralement remplacée (delete puis
-        insert, même patron que `create`).
+        Chargement **conditionnel** `status = 'waiting'` (garde TOCTOU, miroir
+        `start`/`complete`) : un ticket qui n'est plus `waiting` (déjà pris en
+        charge, servi, expiré) lève `InvalidQueueTicketTransition` — un ticket
+        `in_progress` n'est plus éditable depuis #174 (la prise en charge fige les
+        prestations). La jonction `queue_ticket_services` est intégralement
+        remplacée (delete puis insert, même patron que `create`).
         """
 
         row = self._session.scalar(
             select(models.QueueTicket).where(
                 models.QueueTicket.salon_id == salon_id,
                 models.QueueTicket.id == ticket_id,
-                models.QueueTicket.status.in_(QUEUE_TICKET_PENDING_STATUSES),
+                models.QueueTicket.status.in_(QUEUE_TICKET_SERVICES_EDITABLE_STATUSES),
             )
         )
         if row is None:
