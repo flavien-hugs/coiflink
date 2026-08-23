@@ -139,4 +139,10 @@ d'environnements (`dev`/`staging`/`prod`) et ses sauvegardes restent inchangés.
     lecture à Railway) ;
   - décider si les images `<X.Y.Z>_RC`/`<X.Y.Z>` (branches `rc/**`, tags git) alimentent un
     environnement Railway dédié ou restent des artefacts de vérification manuelle hors Railway ;
-  - mettre à jour `docs/environnements-et-secrets.md` une fois la bascule effectuée et vérifiée.
+  - mettre à jour `docs/environnements-et-secrets.md` une fois la bascule effectuée et vérifiée ;
+  - provisionner les variables GitHub Actions (non secrètes) `API_BASE_URL_PROD`/`API_BASE_URL_STAGING`
+    — la correspondance de branche posée par cet ADR pour les tags d'image (`main`→`latest`/prod,
+    `develop`→`dev`/staging) est réutilisée telle quelle par le job `mobile` pour injecter
+    `API_BASE_URL` au build de l'APK (`--dart-define`, voir `docs/environnements-et-secrets.md` §2
+    « app-mobile ») ; tant qu'elles sont absentes, l'APK de CI reste construit sans URL injectée
+    (défaut dev), sans erreur.

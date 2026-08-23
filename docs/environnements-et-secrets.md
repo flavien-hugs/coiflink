@@ -64,6 +64,19 @@ secret est une valeur dont la divulgation compromet la sécurité ; il n'est **j
 
 > ⚠ **`NEXT_PUBLIC_*` est intégré au bundle envoyé au navigateur** : n'y placer **jamais** un secret.
 
+### app-mobile (Flutter)
+
+| Variable | Nature | Exposée | Source (staging/prod) | Consommée par |
+| --- | --- | --- | --- | --- |
+| `API_BASE_URL` | non secret | oui (compilée dans l'APK) | Variables GitHub Actions `API_BASE_URL_PROD`/`API_BASE_URL_STAGING`, injectées via `--dart-define` au build CI (`main`→prod, `develop`→staging) | `adapters/data/api_config.dart::ApiConfig.fromEnvironment()` |
+
+> Contrairement au backend/web (valeur lue **à l'exécution** depuis Railway), un APK Flutter compile
+> `API_BASE_URL` **dans le binaire** : la valeur doit donc être disponible **au moment du build CI**,
+> pas au déploiement — d'où deux variables GitHub Actions dédiées plutôt qu'une variable Railway. Hors
+> `main`/`develop` (PR, `rc/**`, tags git), aucune URL n'est injectée : l'APK retombe sur le défaut de
+> dev `http://10.0.2.2:8000` (hôte de la machine de dev vu depuis l'émulateur Android) — artefact de
+> vérification, pas distribuable.
+
 ### Surface future (réservée — **non câblée**, ne pas ajouter aux `.env.example`)
 
 Documentée ici pour l'inventaire de la politique de secrets ; ces variables ne sont **pas** lues par
@@ -238,6 +251,12 @@ démarrage (fail-fast attendu — cf. `session.py` qui lève si `DATABASE_URL` m
   continue de builder depuis le source (`deploy-from-source`, comportement inchangé). Voir les
   Conséquences d'ADR-0043 pour la checklist de bascule (source du service, report des réglages
   `deploy/railway/*.json`, visibilité du package GHCR).
+- **Build mobile (APK)** : la même correspondance `main`→prod / `develop`→staging alimente aussi
+  l'injection d'`API_BASE_URL` au build de l'APK (job `mobile`, `--dart-define`, voir §2 « app-mobile »
+  ci-dessus). **Suivi non bloquant** : provisionner les deux variables GitHub Actions
+  `API_BASE_URL_PROD`/`API_BASE_URL_STAGING` (Settings → Secrets and variables → Actions → *Variables*,
+  non sensibles) — tant qu'elles sont absentes, l'APK de CI reste construit sans URL injectée (défaut
+  dev), sans erreur.
 
 ## 7. Renvois
 
