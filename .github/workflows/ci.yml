@@ -9,6 +9,8 @@
 #   - branche `rc/<X.Y.Z>`  → tag `<X.Y.Z>_RC`
 #   - tag git `[v]X.Y.Z`    → tag `<X.Y.Z>` (le `v` initial est retiré s'il existe)
 # Chaque image porte aussi le SHA long en second tag (traçabilité/rollback).
+# La même correspondance `main`→prod / `develop`→staging alimente aussi
+# l'injection d'`API_BASE_URL` au build de l'APK (job `mobile`, ADR-0043).
 #
 # Distincte de `adw-sdlc.yml` (control plane ADW) : groupe de concurrence propre
 # (`ci-…`) pour ne pas s'annuler mutuellement. Jobs séparés mobile/web/backend
@@ -183,8 +185,36 @@ jobs:
       - name: Tests (flutter test)
         run: flutter test
 
+      - name: Déterminer l'URL du backend (main → prod, develop → staging, ADR-0043)
+        # Miroir du calcul de tag `image-tag` (même correspondance branche →
+        # environnement) — appliqué ici à API_BASE_URL plutôt qu'à un tag
+        # d'image Docker. Hors main/develop (PR, rc/**, tags git) : aucune URL
+        # injectée, ApiConfig.fromEnvironment() retombe sur son défaut dev
+        # (http://10.0.2.2:8000) — l'APK de CI sur ces refs reste un artefact
+        # de vérification, pas un artefact distribuable. Les deux variables
+        # (non secrètes, API_BASE_URL_PROD/_STAGING) sont à provisionner
+        # (Settings → Secrets and variables → Actions → Variables) ; tant
+        # qu'elles sont absentes, le comportement actuel (aucune injection)
+        # est préservé sans erreur.
+        id: api-url
+        run: |
+          URL=""
+          if [ "${{ github.event_name }}" = "push" ]; then
+            if [ "${{ github.ref_name }}" = "main" ]; then
+              URL="${{ secrets.API_BASE_URL_PROD }}"
+            elif [ "${{ github.ref_name }}" = "develop" ]; then
+              URL="${{ secrets.API_BASE_URL_STAGING }}"
+            fi
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
       - name: Build APK (debug, non signé)
-        run: flutter build apk --debug
+        run: |
+          if [ -n "${{ steps.api-url.outputs.url }}" ]; then
+            flutter build apk --debug --dart-define=API_BASE_URL="${{ steps.api-url.outputs.url }}"
+          else
+            flutter build apk --debug
+          fi
 
       - name: Téléverser l'artefact mobile (APK)
         uses: actions/upload-artifact@v4
