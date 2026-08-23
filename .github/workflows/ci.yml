@@ -208,7 +208,33 @@ jobs:
           fi
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
-      - name: Build APK (debug, non signé)
+      - name: Restaurer la clé de signature stable si provisionnée (ADR-0044)
+        # Sans ça, `flutter build apk --debug` signe avec la clé de debug
+        # auto-générée par Gradle — différente à chaque run sur un runner
+        # éphémère : Android refuse alors toute mise à jour en place d'un APK
+        # déjà installé (désinstallation forcée, qui efface le credential borne
+        # activé et l'imprimante sélectionnée). Branchement fait **dans le
+        # script** (pas via `if:`, qui n'expose pas `secrets.*`) : secret absent
+        # (pas encore provisionné) → sortie immédiate, comportement actuel
+        # préservé, aucune erreur. `android/key.properties`/le `.jks` décodé
+        # sont gitignorés (jamais committés) ; le runner est détruit en fin de
+        # job, pas de nettoyage explicite nécessaire.
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_UPLOAD_KEYSTORE_BASE64" ]; then
+            echo "Clé de signature stable non provisionnée — build avec la clé de debug éphémère (comportement actuel)."
+            exit 0
+          fi
+          echo "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF
+          storeFile=upload-keystore.jks
+          storePassword=${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          EOF
+
+      - name: Build APK (debug, signature stable si provisionnée sinon debug éphémère)
         run: |
           if [ -n "${{ steps.api-url.outputs.url }}" ]; then
             flutter build apk --debug --dart-define=API_BASE_URL="${{ steps.api-url.outputs.url }}"
