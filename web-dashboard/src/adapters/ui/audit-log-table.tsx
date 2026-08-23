@@ -3,11 +3,14 @@
 // Journal d'audit — adapter UI (hexagonal, ADR-0008), page gérante « Journal
 // d'audit » (réorganisation du tableau de bord, sidebar catégorie Salon).
 // Même patron que `TransactionHistory` : filtres (catégorie + plage de dates)
-// + tableau + pagination, tous **serveur** — une soumission du formulaire met
+// + tableau + pagination, tous **serveur** — toute mise à jour des filtres met
 // à jour les `searchParams` de la page (nouveau rendu serveur, relecture de la
-// source de vérité `audit-logs`). Aucune recherche libre (pas de PII/texte à
-// chercher, seulement action/catégorie/acteur/date). Lecture seule : aucune
-// action de gestion sur cette page, le journal est **append-only**.
+// source de vérité `audit-logs`). La catégorie s'applique **immédiatement** à la
+// sélection (#175 — un choix unique n'a pas besoin d'un second clic) ; la plage
+// de dates reste derrière le bouton « Filtrer » (deux champs à renseigner
+// ensemble). Aucune recherche libre (pas de PII/texte à chercher, seulement
+// action/catégorie/acteur/date). Lecture seule : aucune action de gestion sur
+// cette page, le journal est **append-only**.
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition, type FormEvent } from "react";
@@ -63,14 +66,29 @@ export function AuditLogTable({
     setValues((prev) => ({ ...prev, [key]: value }));
   }
 
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function applyFilters(next: typeof values) {
     const params = new URLSearchParams();
-    if (values.dateFrom) params.set("date_from", values.dateFrom);
-    if (values.dateTo) params.set("date_to", values.dateTo);
-    if (values.category) params.set("category", values.category);
+    if (next.dateFrom) params.set("date_from", next.dateFrom);
+    if (next.dateTo) params.set("date_to", next.dateTo);
+    if (next.category) params.set("category", next.category);
     const query = params.toString();
     router.push(query ? `${basePath}?${query}` : basePath);
+  }
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    applyFilters(values);
+  }
+
+  // Filtre catégorie **auto-appliqué** dès la sélection (#175) : contrairement à
+  // la plage de dates (deux champs à renseigner ensemble avant de valider), un
+  // choix de catégorie est une action unique — le faire attendre le bouton
+  // « Filtrer » se lisait comme « le filtre ne marche pas ». Met à jour l'état
+  // local **et** navigue dans le même geste, sans attendre un second clic.
+  function onCategoryChange(next: string) {
+    const updated = { ...values, category: next };
+    setValues(updated);
+    applyFilters(updated);
   }
 
   function onReset() {
@@ -116,7 +134,7 @@ export function AuditLogTable({
               className="w-full sm:w-56"
               value={values.category}
               options={CATEGORY_FILTER_OPTIONS}
-              onChange={(next) => set("category", next)}
+              onChange={onCategoryChange}
               placeholder="Toutes les catégories"
               searchPlaceholder="Rechercher une catégorie"
               emptyLabel="Aucune catégorie trouvée"
