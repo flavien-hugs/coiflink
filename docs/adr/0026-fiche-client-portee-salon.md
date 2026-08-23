@@ -131,9 +131,12 @@ décisions ci-dessous.
   point d'entrée stable.
 - **Négatives / suivis** : la migration `0005` **modifie le schéma** (colonne + `CHECK` + index) — le
   round-trip Alembic de la CI en est l'arbitre ; l'unicité `(salon_id, phone)` **refuse** deux fiches
-  partageant un numéro (téléphone familial — échappatoire documentée) ; ni modification, ni suppression
-  de fiche (l'édition de la **note privée** est US-4.5/#32) ; **aucun rattachement** à un compte
-  utilisateur (anti-oracle — évolution ultérieure explicite) ; **pas de recherche** plein texte ni de
-  filtres avancés ; le **chiffrement au repos des notes** reste ouvert (#52) ; le **recueil du
-  consentement** (§11.3) est un **processus métier hors code** au MVP — aucune fonctionnalité
-  d'effacement/droit à l'oubli n'est promise par cette issue (durcissement M6, #52).
+  partageant un numéro (téléphone familial — échappatoire documentée) ; modification de l'identité
+  livrée par #144 (`PATCH .../{customer_id}`, US-4.6) et de la note par #32 ; **suppression** de fiche
+  reste hors périmètre ; depuis **#177**, le **téléphone** devient **verrouillé** dès qu'il est
+  renseigné — seule une fiche encore sans numéro peut s'en voir attribuer un, tout changement ou
+  effacement d'un numéro déjà enregistré étant refusé (`409 CustomerPhoneLocked`) ; **aucun
+  rattachement** à un compte utilisateur (anti-oracle — évolution ultérieure explicite) ; **pas de
+  recherche** plein texte ni de filtres avancés ; le **chiffrement au repos des notes** reste ouvert
+  (#52) ; le **recueil du consentement** (§11.3) est un **processus métier hors code** au MVP — aucune
+  fonctionnalité d'effacement/droit à l'oubli n'est promise par cette issue (durcissement M6, #52).

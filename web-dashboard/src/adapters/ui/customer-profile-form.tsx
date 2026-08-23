@@ -10,10 +10,14 @@
 // tableau, `CustomerList`).
 //
 // **Seule l'identité** est éditée ici : la note privée garde son éditeur dédié
-// (#32). Le nom reste obligatoire ; vider le téléphone ou le genre efface le
-// champ. Le téléphone est **unique au sein du salon** : un doublon renvoie un
-// message neutre (`409`, sans rappeler le numéro, PRD §11.3). Messages
-// génériques ; aucune PII journalisée. Le backend reste l'autorité (#144).
+// (#32). Le nom reste obligatoire ; vider le genre efface le champ. Le
+// téléphone est **unique au sein du salon** : un doublon renvoie un message
+// neutre (`409`, sans rappeler le numéro, PRD §11.3). Une fois enregistré, le
+// téléphone est **verrouillé** (#177) : le champ devient non modifiable côté
+// UI (`isCustomerPhoneLocked`), et le backend refuse également tout
+// changement ou effacement (`409 CustomerPhoneLocked`) — seule une fiche
+// encore sans numéro peut s'en voir attribuer un. Messages génériques ; aucune
+// PII journalisée. Le backend reste l'autorité (#144).
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
@@ -24,11 +28,13 @@ import { SearchableSelect } from "@/src/adapters/ui/searchable-select";
 import {
   CUSTOMER_NAME_MAX_LENGTH,
   GENDER_OPTIONS,
+  isCustomerPhoneLocked,
   validateCustomer,
 } from "@/src/domain/customer/customer";
 
 const INPUT_WITH_ICON_CLASS =
   "rounded-lg border border-border bg-surface py-2.5 pl-9 pr-3 text-foreground transition outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/25";
+const INPUT_WITH_ICON_LOCKED_CLASS = `${INPUT_WITH_ICON_CLASS} cursor-not-allowed opacity-60`;
 
 export interface CustomerProfileFormProps {
   salonId: string;
@@ -59,6 +65,9 @@ export function CustomerProfileForm({
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [pending, setPending] = useState(false);
+  // Dérivé de la valeur ENREGISTRÉE (`initialPhone`), jamais de l'état local
+  // `phone` — le verrou ne doit pas bouger pendant la frappe (#177).
+  const phoneLocked = isCustomerPhoneLocked(initialPhone);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -153,17 +162,20 @@ export function CustomerProfileForm({
               type="tel"
               inputMode="tel"
               name="phone"
-              className={INPUT_WITH_ICON_CLASS}
+              className={phoneLocked ? INPUT_WITH_ICON_LOCKED_CLASS : INPUT_WITH_ICON_CLASS}
               value={phone}
               onChange={(e) => {
                 setPhone(e.target.value);
                 setSaved(false);
               }}
               placeholder="07 00 00 00 00"
+              disabled={phoneLocked}
             />
           </div>
           <span className="text-xs font-normal text-muted">
-            Unique au sein du salon. Laisser vide pour retirer le numéro.
+            {phoneLocked
+              ? "Numéro verrouillé : il ne peut plus être modifié une fois enregistré."
+              : "Unique au sein du salon. Laisser vide pour retirer le numéro."}
           </span>
         </label>
         <div className="flex flex-col gap-1.5 text-sm font-medium">

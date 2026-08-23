@@ -12,6 +12,8 @@ injection de dépendances FastAPI, puis retraduit les erreurs de domaine :
 - `InvalidCustomerName` / `InvalidPhone` / `InvalidCustomerGender` /
   `InvalidCustomerNotes` → **422** ;
 - `CustomerAlreadyExists` (téléphone déjà fiché dans ce salon) → **409** ;
+- `CustomerPhoneLocked` (téléphone déjà enregistré sur la fiche, modification ou
+  effacement refusé, #177) → **409** ;
 - `CustomerNotFound` → **404** *(uniquement après validation de portée)*.
 
 Sécurité (RBAC #12, ADR-0015 ; ADR-0026) :
@@ -78,6 +80,7 @@ from coiflink_api.domain.customer import (
 from coiflink_api.domain.errors import (
     CustomerAlreadyExists,
     CustomerNotFound,
+    CustomerPhoneLocked,
     InvalidCustomerFilter,
     InvalidCustomerGender,
     InvalidCustomerName,
@@ -139,15 +142,20 @@ class UpdateCustomerRequest(BaseModel):
     """Corps de `PATCH /salons/{salon_id}/customers/{customer_id}` (US-4.6, #144).
 
     **Seule l'identité** est éditable : `full_name` (**requis**, non vide),
-    `phone` et `gender` (**optionnels**, `null`/vide **efface** le champ). Tout
-    champ privilégié présent au corps (`salon_id`, `id`, `user_id`, `notes`,
-    `total_visits`, `last_visit_at`, `created_at`, `updated_at`) est **ignoré**
-    (`extra="ignore"`) : la note garde sa route dédiée `PUT …/notes` (#32), le
-    reste est généré ou non éditable.
+    `phone` et `gender` (**optionnels**). Tout champ privilégié présent au corps
+    (`salon_id`, `id`, `user_id`, `notes`, `total_visits`, `last_visit_at`,
+    `created_at`, `updated_at`) est **ignoré** (`extra="ignore"`) : la note garde
+    sa route dédiée `PUT …/notes` (#32), le reste est généré ou non éditable.
 
     Le formulaire est **pré-rempli** des valeurs courantes : « modifier le nom, le
     téléphone **et/ou** le genre » se ramène à renvoyer le triplet complet avec les
     seuls champs voulus changés (évite l'ambiguïté « champ omis vs `null` »).
+
+    **Téléphone verrouillé une fois enregistré (#177)** : `null`/vide efface le
+    champ **tant qu'aucun numéro n'est encore présent** sur la fiche ; dès qu'un
+    numéro est enregistré, le changer ou l'effacer renvoie `409`
+    (`CustomerPhoneLocked`) — seule une fiche encore sans numéro peut s'en voir
+    attribuer un.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -581,7 +589,10 @@ def get_customer(
         401: {"description": "Jeton absent, invalide ou expiré"},
         403: {"description": "Rôle insuffisant ou salon hors périmètre (générique)"},
         404: {"description": "Fiche introuvable (portée déjà validée)"},
-        409: {"description": "Une fiche porte déjà ce téléphone dans ce salon"},
+        409: {
+            "description": "Téléphone déjà pris par une autre fiche, ou déjà "
+            "enregistré et verrouillé sur celle-ci (#177)"
+        },
         422: {"description": "Nom, téléphone ou genre invalides"},
     },
 )
@@ -600,12 +611,14 @@ def update_customer(
 
     **Seule l'identité** est éditée ; `null`/vide efface `phone`/`gender`, le nom
     reste obligatoire. La note (#32) n'est pas touchée. Le `salon_id` vient du
-    chemin (portée), jamais du corps. L'unicité `(salon_id, phone)` est respectée
-    au changement de numéro (`409` neutre, sans le numéro) ; conserver son propre
-    numéro ne déclenche aucun faux conflit. Journalise `CUSTOMER_UPDATED`
-    (§11.4/§11.3) dans la même unité de travail, `metadata.changed` = **noms** des
-    champs modifiés (aucune PII). `404` (fiche hors salon/inconnue) est renvoyé
-    **après** validation de portée (sans oracle).
+    chemin (portée), jamais du corps. **Téléphone verrouillé une fois enregistré
+    (#177)** : dès que la fiche porte déjà un numéro, le changer ou l'effacer
+    renvoie `409` (`CustomerPhoneLocked`) ; seule une fiche encore sans numéro
+    peut s'en voir attribuer un, sous réserve de l'unicité `(salon_id, phone)`
+    (`409` neutre `CustomerAlreadyExists`, sans le numéro). Journalise
+    `CUSTOMER_UPDATED` (§11.4/§11.3) dans la même unité de travail,
+    `metadata.changed` = **noms** des champs modifiés (aucune PII). `404` (fiche
+    hors salon/inconnue) est renvoyé **après** validation de portée (sans oracle).
     """
 
     try:
@@ -628,6 +641,10 @@ def update_customer(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
     except CustomerAlreadyExists as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except CustomerPhoneLocked as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc

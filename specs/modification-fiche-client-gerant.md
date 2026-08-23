@@ -11,6 +11,14 @@
 > Dart/Python/TypeScript), en-têtes de section en **anglais** (attendus par le gabarit ADW),
 > identifiants techniques (noms de routes, champs JSON, symboles, valeurs d'enum SQL) inchangés.
 > **Aucune signature IA** dans le code, les commits ou la PR.
+>
+> **Suivi — #177 (Amélioration)** : depuis l'implémentation de cette spec, le téléphone d'une
+> fiche devient **verrouillé** dès qu'il est renseigné — seule une fiche encore sans numéro peut
+> s'en voir attribuer un ; changer ou effacer un numéro déjà enregistré renvoie désormais `409`
+> (`CustomerPhoneLocked`). Les passages ci-dessous qui décrivent un téléphone librement
+> modifiable après création reflètent l'état **au moment de #144** ; voir
+> `domain/errors.py::CustomerPhoneLocked` et `application/customers.py::UpdateCustomer` pour le
+> comportement actuel.
 
 ## Problem Statement
 

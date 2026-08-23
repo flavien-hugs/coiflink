@@ -44,7 +44,7 @@ protégé** ; les sections Planning, Clients, Encaissements, Employés sont affi
 | `/gerant/parametres` | **protégée** | `MANAGER` — création/consultation du salon (#15) |
 | `/gerant/prestations` | **protégée** | `MANAGER` — catalogue et gestion des prestations (#17) |
 | `/gerant/planning` | **protégée** | `MANAGER` — planning du salon, jour/semaine/mois (#26) |
-| `/gerant/clients` | **protégée** | `MANAGER` — fichier client du salon, création de fiche (#28) |
+| `/gerant/clients` | **protégée** | `MANAGER` — fichier client du salon, création de fiche (#28), identité éditable (nom/téléphone/genre) en drawer (#144 ; téléphone verrouillé une fois enregistré, #177) |
 | `/gerant/clients/[customerId]` | **protégée** | `MANAGER` — fiche client + note privée éditable (#32) + historique des visites terminées (#29) + prestations préférées (#31) |
 | `/gerant/employes` | **protégée** | `MANAGER` — gestion des coiffeuses : création, modification de profil, activation/désactivation (#13/#150) |
 | `/gerant/file-attente` | **protégée** | `MANAGER` — file d'attente du jour : pointage arrivée/début, assignation d'une coiffeuse, cycle de statut jusqu'à payée (#150) |
@@ -250,6 +250,23 @@ l'autorité** : il normalise le téléphone en E.164, refuse un doublon de numé
 création (§11.4/§11.3). Les **notes internes** sont annoncées comme « visible uniquement par le salon »
 et ne sortent jamais de cette vue gérant (PRD §11.3). La note privée éditable (#32) et les statistiques
 (#31) restent hors périmètre.
+
+### Clients — modification de l'identité (#144, verrou du téléphone #177)
+
+Chaque ligne du fichier client (`/gerant/clients`) porte une icône **« Modifier »** qui ouvre le
+**même drawer** que la création, basculé en mode édition (`CustomerList`) : `CustomerProfileForm`
+remplace `CustomerForm`, pré-rempli des valeurs courantes (`initialFullName`/`initialPhone`/
+`initialGender`) et postant en `PATCH` vers `/api/salons/[id]/customers/[customerId]` (le `PUT` du
+même Route Handler reste réservé à la note, #32). Validation **côté client** (`validateCustomer`,
+parité domaine) puis `router.refresh()` au succès.
+
+**Le téléphone se verrouille dès qu'il est enregistré (#177)** : dès que `initialPhone` porte une
+valeur, le champ est **désactivé** (`isCustomerPhoneLocked`, `src/domain/customer/customer.ts`) et
+le texte d'aide l'explique — seule une fiche encore sans numéro reste éditable sur ce champ. Le
+**backend reste l'arbitre** : toute tentative de changement ou d'effacement d'un numéro déjà
+enregistré renvoie `409` (`CustomerPhoneLocked`), indépendamment de l'état du champ côté UI. Le nom
+reste obligatoire ; le genre s'efface librement. Un doublon de numéro (première attribution
+seulement) renvoie le même `409` neutre que la création (sans rappeler le numéro, §11.3).
 
 ### Clients — historique des visites (#29)
 

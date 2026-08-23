@@ -41,7 +41,11 @@ from coiflink_api.domain.customer import (
     normalize_notes,
     validate_customer_name,
 )
-from coiflink_api.domain.errors import CustomerAlreadyExists, CustomerNotFound
+from coiflink_api.domain.errors import (
+    CustomerAlreadyExists,
+    CustomerNotFound,
+    CustomerPhoneLocked,
+)
 from coiflink_api.domain.visit import (
     HISTORY_STATUSES,
     CustomerPayment,
@@ -207,11 +211,14 @@ class UpdateCustomer:
     2. **Résolution dans le salon** : `find_by_id` filtre `(salon_id, id)`
        (isolation §11.2) — `CustomerNotFound` levée **avant** l'audit → aucune
        trace pour une cible hors salon/inconnue ;
-    3. **Pré-contrôle d'unicité uniquement si le numéro change** : conserver son
-       propre numéro ne déclenche **jamais** de faux `409` (le numéro courant
-       appartient à la fiche éditée) ; en concurrence, l'index unique partiel base
-       tranche (le dépôt retraduit l'`IntegrityError` en `CustomerAlreadyExists`) ;
-    4. **Diff neutre puis écriture + audit** dans la même unité de travail :
+    3. **Verrou du téléphone déjà enregistré (#177)** : dès que la fiche porte
+       **déjà** un numéro, le changer ou l'effacer lève `CustomerPhoneLocked` —
+       seule une fiche **sans** numéro peut encore s'en voir attribuer un ;
+    4. **Pré-contrôle d'unicité** — n'est plus atteignable que lors d'une première
+       attribution (`current.phone is None`, l'étape 3 couvrant le reste) : en
+       concurrence, l'index unique partiel base tranche (le dépôt retraduit
+       l'`IntegrityError` en `CustomerAlreadyExists`) ;
+    5. **Diff neutre puis écriture + audit** dans la même unité de travail :
        `metadata = {"changed": [...]}` ne porte que les **noms** des champs
        modifiés — jamais une **valeur** (§11.3/§11.4 : « sans fuite de PII dans les
        métadonnées d'audit », critère d'acceptation).
@@ -248,8 +255,17 @@ class UpdateCustomer:
         if current is None:
             raise CustomerNotFound("Fiche client introuvable.")
 
-        # 3. Pré-contrôle d'unicité UNIQUEMENT si le numéro change (jamais de faux
-        #    409 contre soi-même). En concurrence, l'index base tranche (repository.update).
+        # 3. Téléphone déjà enregistré → verrouillé (#177). Seule une fiche SANS
+        #    numéro peut encore s'en voir attribuer un — changer ou effacer un
+        #    numéro existant est refusé, quel que soit le nouveau numéro visé
+        #    (y compris libre).
+        if current.phone is not None and phone != current.phone:
+            raise CustomerPhoneLocked(
+                "Le numéro de téléphone est déjà enregistré et ne peut plus être modifié."
+            )
+
+        # 4. Pré-contrôle d'unicité — n'est plus atteignable que lors d'une première
+        #    attribution (current.phone is None), l'étape 3 couvrant le reste.
         if (
             phone is not None
             and phone != current.phone
@@ -260,7 +276,7 @@ class UpdateCustomer:
                 "Une fiche existe déjà pour ce numéro dans ce salon."
             )
 
-        # 4. Diff NEUTRE (noms de champs uniquement — jamais de valeur, §11.3/§11.4).
+        # 5. Diff NEUTRE (noms de champs uniquement — jamais de valeur, §11.3/§11.4).
         candidate = {"full_name": full_name, "phone": phone, "gender": gender}
         changed = [
             name

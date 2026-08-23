@@ -118,6 +118,15 @@ export function validateCustomer(raw: RawCustomerInput): CustomerValidationResul
   };
 }
 
+// `isCustomerPhoneLocked` : vrai dès qu'un numéro est déjà enregistré — pilote la
+// désactivation du champ téléphone dans l'éditeur d'identité (#177). Miroir de la
+// garde serveur (`UpdateCustomer.execute`, `CustomerPhoneLocked` → 409) : seule une
+// fiche SANS numéro peut encore s'en voir attribuer un. Ce prédicat ne fait que
+// désactiver le champ, le backend reste l'arbitre.
+export function isCustomerPhoneLocked(initialPhone: string | null): boolean {
+  return (initialPhone ?? "").trim().length > 0;
+}
+
 export type NoteValidationResult =
   | { ok: true; value: string | null }
   | { ok: false; reason: "invalid-notes" };

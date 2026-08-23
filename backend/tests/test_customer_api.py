@@ -1183,9 +1183,13 @@ class TestUpdateCustomerApi:
 
     Couvre :
     - 200 : mise à jour complète, notes inchangées, `user_id` absent, `updated_at` rafraîchi ;
-    - 200 : effacement (`phone: null`, `gender: null`) ;
+    - 200 : première attribution du téléphone (fiche encore sans numéro), effacement
+      du genre (`gender: null`) ;
     - 200 : champs privilégiés dans le corps ignorés (`notes`, `salon_id`, `id`, `user_id`) ;
-    - 409 : doublon de numéro, message neutre sans le numéro (§11.3) ;
+    - 409 : doublon de numéro lors d'une première attribution, message neutre sans le
+      numéro (§11.3) ;
+    - 409 : téléphone déjà enregistré → changement ou effacement refusés
+      (`CustomerPhoneLocked`, #177) ;
     - 422 : nom vide, téléphone invalide, genre inconnu ;
     - 404 : fiche inconnue, fiche d'un autre salon (isolation §11.2) ;
     - 401 : sans jeton ;
@@ -1309,13 +1313,34 @@ class TestUpdateCustomerApi:
         assert r.status_code == 200
         assert r.json()["salon_id"] == str(_SALON_ID)
 
-    def test_200_erasure_phone_null(
+    def test_200_first_phone_assignment(
         self,
         customer_repo: FakeCustomerRepository,
         audit_log: FakeAuditLog,
     ) -> None:
-        """Effacement : `phone: null` → NULL en base (client walk-in acceptable)."""
-        customer = self._create_with_phone(customer_repo, audit_log, "0700000000")
+        """Fiche encore sans numéro → première attribution acceptée (#177)."""
+        customer = _make_customer_in_repo(customer_repo)
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Awa Koné", "phone": "0700000000", "gender": None},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 200
+        assert r.json()["phone"] == "+2250700000000"
+
+    def test_200_erasure_gender_null_phone_still_unset(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Effacement du genre sur une fiche encore sans numéro → `200` (téléphone non touché)."""
+        customer = _make_customer_in_repo(customer_repo)
         client = _make_client_with_overrides(
             customer_repo, audit_log, role=Role.MANAGER.value
         )
@@ -1395,8 +1420,13 @@ class TestUpdateCustomerApi:
         customer_repo: FakeCustomerRepository,
         audit_log: FakeAuditLog,
     ) -> None:
-        """Numéro déjà fiché par une autre fiche du salon → 409."""
-        customer_a = self._create_with_phone(customer_repo, audit_log, "0700000001")
+        """Première attribution, numéro déjà fiché par une autre fiche du salon → 409.
+
+        Fiche A créée **sans** numéro : le verrou #177 n'est pas encore en jeu, seule
+        l'unicité l'est — sinon la garde de verrouillage interceptait avant même
+        d'atteindre le pré-contrôle d'unicité que ce test veut exercer.
+        """
+        customer_a = _make_customer_in_repo(customer_repo)
         self._create_with_phone(customer_repo, FakeAuditLog(), "0700000002")
         client = _make_client_with_overrides(
             customer_repo, audit_log, role=Role.MANAGER.value
@@ -1417,7 +1447,7 @@ class TestUpdateCustomerApi:
         audit_log: FakeAuditLog,
     ) -> None:
         """§11.3 : le message 409 ne rappelle jamais le numéro soumis."""
-        customer_a = self._create_with_phone(customer_repo, audit_log, "0700000001")
+        customer_a = _make_customer_in_repo(customer_repo)
         self._create_with_phone(customer_repo, FakeAuditLog(), "0700000002")
         client = _make_client_with_overrides(
             customer_repo, audit_log, role=Role.MANAGER.value
@@ -1433,6 +1463,47 @@ class TestUpdateCustomerApi:
         detail = r.json().get("detail", "")
         assert "0700000002" not in detail
         assert "+225" not in detail
+
+    def test_409_phone_locked_on_change(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Numéro déjà enregistré → tout changement refusé, même vers un numéro
+        **libre** (`CustomerPhoneLocked`, pas un conflit d'unicité, #177)."""
+        customer = self._create_with_phone(customer_repo, audit_log, "0700000001")
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Awa Koné", "phone": "0700999999"},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 409
+
+    def test_409_phone_locked_on_erasure(
+        self,
+        customer_repo: FakeCustomerRepository,
+        audit_log: FakeAuditLog,
+    ) -> None:
+        """Numéro déjà enregistré, tentative d'effacement (`phone: null`) → verrouillé (#177)."""
+        customer = self._create_with_phone(customer_repo, audit_log, "0700000001")
+        client = _make_client_with_overrides(
+            customer_repo, audit_log, role=Role.MANAGER.value
+        )
+        try:
+            r = client.patch(
+                _customer_url(_SALON_ID, customer.id),
+                json={"full_name": "Awa Koné", "phone": None},
+                headers={"Authorization": f"Bearer {_MANAGER_TOKEN}"},
+            )
+        finally:
+            _cleanup_overrides()
+        assert r.status_code == 409
 
     # -- 422 ----------------------------------------------------------------
 

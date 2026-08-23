@@ -922,6 +922,7 @@ isolation §11.2) et **toutes protégées** ; #28 est la **première mise en ser
 | `POST` | `/salons/{salon_id}/customers` | `CUSTOMER_MANAGE` + portée | `201` + fiche \| `409` doublon \| `422` | `CUSTOMER_CREATED` |
 | `GET` | `/salons/{salon_id}/customers?limit=&offset=` | `CUSTOMER_MANAGE` + portée | `200` + page (`items`, `total`, `limit`, `offset`) | — |
 | `GET` | `/salons/{salon_id}/customers/{customer_id}` | `CUSTOMER_MANAGE` + portée | `200` \| `404` | — |
+| `PATCH` | `/salons/{salon_id}/customers/{customer_id}` | `CUSTOMER_MANAGE` + portée | `200` + fiche à jour \| `401` \| `403` \| `404` fiche hors salon \| `409` doublon ou téléphone verrouillé \| `422` | `CUSTOMER_UPDATED` |
 
 ```bash
 curl -X POST "$API/salons/$SALON_ID/customers" \
@@ -946,6 +947,22 @@ curl -X POST "$API/salons/$SALON_ID/customers" \
   **jamais** interrogée par téléphone (ce serait un **oracle d'existence de compte**, §11.1/§11.3).
   `last_visit_at`/`total_visits` restent à leurs défauts (`NULL`/`0`) — l'historique des visites est
   l'objet de #29.
+- **Édition de l'identité (`PATCH`, US-4.6, #144)** : modifie `full_name`/`phone`/`gender` d'une fiche
+  existante ; le nom reste obligatoire, `null`/vide efface `phone`/`gender` **tant qu'aucun numéro
+  n'est encore enregistré** (voir ci-dessous). Journalise `CUSTOMER_UPDATED`, `metadata.changed` = noms
+  de champs modifiés uniquement (aucune valeur, §11.3/§11.4).
+
+  ```bash
+  curl -X PATCH "$API/salons/$SALON_ID/customers/$CUSTOMER_ID" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+    -d '{"full_name":"Awa Koné","phone":"0700000000","gender":"FEMALE"}'
+  ```
+
+- **Téléphone verrouillé une fois enregistré (`409 CustomerPhoneLocked`, #177)** : dès que la fiche
+  porte déjà un numéro, le `PATCH` refuse tout changement **ou** effacement de `phone` — même vers un
+  numéro par ailleurs libre. Seule une fiche **encore sans numéro** peut s'en voir attribuer un, sous
+  réserve de l'unicité `(salon_id, phone)` ci-dessus. Conserver son propre numéro (valeur inchangée)
+  n'est jamais bloqué.
 
 **Journalisation §11.4/§11.3** — chaque création écrit une `AuditEntry` `CUSTOMER_CREATED`
 (entité `customer`) dans la **même `Session`** que l'écriture (commit/rollback conjoint). Elle est
