@@ -188,6 +188,16 @@ class CustomerAlreadyExists(DomainError):
     """
 
 
+class CustomerPhoneLocked(DomainError):
+    """Le téléphone est déjà enregistré sur la fiche : il ne peut plus être modifié (#177).
+
+    Une fois qu'un numéro est renseigné, il devient l'identifiant stable utilisé par la
+    recherche téléphonique à la borne (#156) et par l'historique de visites (#29) : le
+    changer ou l'effacer romprait ce rattachement. Seule une fiche **sans** numéro peut
+    encore s'en voir attribuer un. L'adapter entrant la traduit en `409 Conflict`.
+    """
+
+
 class SlotAlreadyBooked(DomainError):
     """Le créneau est déjà réservé pour ce coiffeur (anti double-réservation, §8.1, #21).
 
@@ -739,6 +749,7 @@ __all__ = [
     "InvalidCustomerNotes",
     "CustomerNotFound",
     "CustomerAlreadyExists",
+    "CustomerPhoneLocked",
     "InvalidQueueTicketServices",
     "QueueTicketNotFound",
     "InvalidQueueTicketTransition",

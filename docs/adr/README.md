@@ -38,7 +38,7 @@ n'est jamais réécrite : on en crée une nouvelle qui remplace l'ancienne (stat
 | [0023](./0023-moteur-disponibilite-anti-double-reservation.md) | Moteur de disponibilité & anti double-réservation — garantie portée par la contrainte d'exclusion base, moteur pur au-dessus | Accepté | #21 |
 | [0024](./0024-reservation-cote-client.md) | Réservation côté client — tunnel mobile & session cliente au-dessus des endpoints #21 | Accepté | #22 |
 | [0025](./0025-annulation-rendez-vous-client.md) | Annulation d'un rendez-vous côté client — transition d'état soft, motif optionnel & invariant CA | Accepté | #24 |
-| [0026](./0026-fiche-client-portee-salon.md) | Fiche client — portée salon, genre optionnel & unicité du téléphone | Accepté | #28 |
+| [0026](./0026-fiche-client-portee-salon.md) | Fiche client — portée salon, genre optionnel & unicité du téléphone ; édition de l'identité (#144, `PATCH .../{customer_id}`, diff neutre `metadata.changed`) ; téléphone **verrouillé** dès qu'il est renseigné (#177) — `CustomerPhoneLocked` en `409`, seule une fiche encore sans numéro peut s'en voir attribuer un | Accepté | #28 |
 | [0027](./0027-encaissement-coherence-montant.md) | Encaissement — cohérence du montant avec la prestation liée & enregistrement d'un paiement | Accepté | #33 |
 | [0028](./0028-detection-ecarts-de-caisse.md) | Détection des écarts de caisse — rapprochement RDV terminés ↔ paiements, en lecture | Accepté | #36 |
 | [0029](./0029-supervision-agregee-transactions-admin.md) | Supervision agrégée des transactions (admin) — lecture plateforme `STATS_READ_PLATFORM`, net via `cash_journal`, non-PII | Accepté | #37 |

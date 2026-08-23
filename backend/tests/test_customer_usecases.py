@@ -39,6 +39,7 @@ from coiflink_api.domain.customer import CustomerFilter
 from coiflink_api.domain.errors import (
     CustomerAlreadyExists,
     CustomerNotFound,
+    CustomerPhoneLocked,
     InvalidCustomerGender,
     InvalidCustomerName,
     InvalidCustomerNotes,
@@ -1089,8 +1090,12 @@ class TestUpdateCustomer:
     - `metadata["changed"]` ne contient que les **noms** des champs modifiés,
       jamais leurs valeurs (§11.3/§11.4 — PII-neutral).
     - Numéro inchangé : pas de faux 409 contre soi-même.
-    - Numéro changé, slot libre : succès ; pris par une autre fiche → 409, pas d'audit.
-    - Effacement : `phone=""` / `None` → `None` ; `gender=""` / `None` → `None`.
+    - Téléphone déjà enregistré : tout changement ou effacement → `CustomerPhoneLocked`,
+      quel que soit le numéro visé (#177). Première attribution (fiche encore sans
+      numéro) : succès, sous réserve de l'unicité — pris par une autre fiche → 409,
+      pas d'audit.
+    - Effacement : `gender=""` / `None` → `None` ; `phone` idem **uniquement** tant
+      qu'aucun numéro n'est encore enregistré (#177).
     - Validation avant écriture : erreurs ne produisent aucune écriture ni audit.
     - Fiche inconnue ou d'un autre salon → `CustomerNotFound`, pas d'audit (§11.2).
     """
@@ -1120,7 +1125,8 @@ class TestUpdateCustomer:
         """Mise à jour complète : les trois champs d'identité sont reflétés."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo)
+        # `phone=None` : première attribution, sinon #177 verrouille le changement.
+        customer = self._create_customer(repo, phone=None)
         result = UpdateCustomer(repo, audit).execute(
             _SALON_ID,
             customer.id,
@@ -1135,7 +1141,7 @@ class TestUpdateCustomer:
         """Invariant anti-élévation : `salon_id` du résultat = argument de portée."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo)
+        customer = self._create_customer(repo, phone=None)
         result = UpdateCustomer(repo, audit).execute(
             _SALON_ID,
             customer.id,
@@ -1148,7 +1154,7 @@ class TestUpdateCustomer:
         """Le nom est normalisé (espaces en bordure supprimés)."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo)
+        customer = self._create_customer(repo, phone=None)
         result = UpdateCustomer(repo, audit).execute(
             _SALON_ID,
             customer.id,
@@ -1163,7 +1169,7 @@ class TestUpdateCustomer:
         """Invariant #144 : la note privée n'est jamais touchée par l'édition d'identité."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo, notes="Note privée.")
+        customer = self._create_customer(repo, phone=None, notes="Note privée.")
         result = UpdateCustomer(repo, audit).execute(
             _SALON_ID,
             customer.id,
@@ -1177,7 +1183,7 @@ class TestUpdateCustomer:
     def test_audit_recorded_once(self) -> None:
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo)
+        customer = self._create_customer(repo, phone=None)
         audit.recorded.clear()
         UpdateCustomer(repo, audit).execute(
             _SALON_ID,
@@ -1193,7 +1199,7 @@ class TestUpdateCustomer:
     def test_audit_action_is_customer_updated(self) -> None:
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo)
+        customer = self._create_customer(repo, phone=None)
         audit.recorded.clear()
         UpdateCustomer(repo, audit).execute(
             _SALON_ID,
@@ -1209,7 +1215,7 @@ class TestUpdateCustomer:
     def test_audit_actor_user_id(self) -> None:
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo)
+        customer = self._create_customer(repo, phone=None)
         audit.recorded.clear()
         UpdateCustomer(repo, audit).execute(
             _SALON_ID,
@@ -1225,7 +1231,7 @@ class TestUpdateCustomer:
     def test_audit_salon_id(self) -> None:
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo)
+        customer = self._create_customer(repo, phone=None)
         audit.recorded.clear()
         UpdateCustomer(repo, audit).execute(
             _SALON_ID,
@@ -1241,7 +1247,7 @@ class TestUpdateCustomer:
     def test_audit_entity_type_is_customer(self) -> None:
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo)
+        customer = self._create_customer(repo, phone=None)
         audit.recorded.clear()
         UpdateCustomer(repo, audit).execute(
             _SALON_ID,
@@ -1257,7 +1263,7 @@ class TestUpdateCustomer:
     def test_audit_entity_id_matches_customer(self) -> None:
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo)
+        customer = self._create_customer(repo, phone=None)
         audit.recorded.clear()
         UpdateCustomer(repo, audit).execute(
             _SALON_ID,
@@ -1276,7 +1282,7 @@ class TestUpdateCustomer:
         """Diff neutre : `metadata` contient uniquement la clé `changed`."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo)
+        customer = self._create_customer(repo, phone=None)
         audit.recorded.clear()
         UpdateCustomer(repo, audit).execute(
             _SALON_ID,
@@ -1293,7 +1299,8 @@ class TestUpdateCustomer:
         """§11.3/§11.4 : seuls les noms de champs admis (`full_name|phone|gender`)."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo, phone="0700111000", gender="FEMALE")
+        # `phone=None` : première attribution, sinon #177 verrouille le changement.
+        customer = self._create_customer(repo, phone=None, gender="FEMALE")
         audit.recorded.clear()
         UpdateCustomer(repo, audit).execute(
             _SALON_ID,
@@ -1312,7 +1319,7 @@ class TestUpdateCustomer:
         """§11.3/§11.4 : aucune valeur d'identité dans metadata (nom, numéro, genre)."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo, phone="0700111000", gender="FEMALE")
+        customer = self._create_customer(repo, phone=None, gender="FEMALE")
         audit.recorded.clear()
         UpdateCustomer(repo, audit).execute(
             _SALON_ID,
@@ -1386,10 +1393,14 @@ class TestUpdateCustomer:
         )
         assert entry.metadata["changed"] == []
 
-    # -- Unicité du numéro --------------------------------------------------
+    # -- Unicité du numéro (première attribution uniquement, #177) ----------
 
     def test_unchanged_phone_no_false_409(self) -> None:
-        """Numéro inchangé : pas de faux 409 contre soi-même (invariant d'identité)."""
+        """Numéro inchangé : pas de faux 409 contre soi-même (invariant d'identité).
+
+        Distinct du verrou #177 : re-soumettre son propre numéro n'est jamais un
+        « changement », donc jamais bloqué — seul un numéro **différent** l'est.
+        """
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
         customer = self._create_customer(repo, phone="0700000000")
@@ -1401,28 +1412,12 @@ class TestUpdateCustomer:
         )
         assert result.phone == "+2250700000000"
 
-    def test_changed_phone_free_slot_succeeds(self) -> None:
-        """Nouveau numéro libre → succès ; `phone` dans `changed`."""
-        repo = FakeCustomerRepository()
-        audit = FakeAuditLog()
-        customer = self._create_customer(repo, phone="0700000001")
-        audit.recorded.clear()
-        result = UpdateCustomer(repo, audit).execute(
-            _SALON_ID,
-            customer.id,
-            CustomerCommand(full_name="Awa Koné", phone="0700999999"),
-            actor_user_id=_ACTOR_ID,
-        )
-        assert result.phone == "+2250700999999"
-        entry = next(
-            e for e in audit.recorded if e.action == AuditAction.CUSTOMER_UPDATED.value
-        )
-        assert "phone" in entry.metadata["changed"]
-
     def test_changed_phone_conflict_raises(self) -> None:
-        """Numéro déjà fiché par une **autre** fiche du salon → `CustomerAlreadyExists`."""
+        """Première attribution, numéro déjà fiché par une **autre** fiche du salon
+        → `CustomerAlreadyExists` (fiche A encore sans numéro : le verrou #177 n'est
+        pas encore en jeu, seule l'unicité l'est)."""
         repo = FakeCustomerRepository()
-        customer_a = self._create_customer(repo, phone="0700000001")
+        customer_a = self._create_customer(repo, phone=None)
         self._create_customer(repo, phone="0700000002")
         audit = FakeAuditLog()
         with pytest.raises(CustomerAlreadyExists):
@@ -1436,7 +1431,7 @@ class TestUpdateCustomer:
     def test_changed_phone_conflict_no_audit(self) -> None:
         """Conflit de numéro → aucune trace `CUSTOMER_UPDATED` dans l'audit."""
         repo = FakeCustomerRepository()
-        customer_a = self._create_customer(repo, phone="0700000001")
+        customer_a = self._create_customer(repo, phone=None)
         self._create_customer(repo, phone="0700000002")
         audit = FakeAuditLog()
         with pytest.raises(CustomerAlreadyExists):
@@ -1454,7 +1449,7 @@ class TestUpdateCustomer:
         """Cloisonnement §11.2 : numéro pris dans un **autre** salon → aucun conflit ici."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer_a = self._create_customer(repo, salon_id=_SALON_ID, phone="0700000001")
+        customer_a = self._create_customer(repo, salon_id=_SALON_ID, phone=None)
         # Fiche B dans l'autre salon avec le numéro qu'on veut attribuer à A.
         self._create_customer(repo, salon_id=_OTHER_SALON_ID, phone="0700000002")
         result = UpdateCustomer(repo, audit).execute(
@@ -1465,44 +1460,90 @@ class TestUpdateCustomer:
         )
         assert result.phone == "+2250700000002"
 
-    # -- Effacement (erasure) -----------------------------------------------
+    # -- Verrou du téléphone déjà enregistré (#177) --------------------------
 
-    def test_erase_phone_with_none(self) -> None:
-        """`phone=None` → NULL en base ; `phone` apparaît dans `changed`."""
+    def test_phone_first_assignment_succeeds(self) -> None:
+        """Fiche encore sans numéro → première attribution acceptée, `phone` dans `changed`."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo, phone="0700000000")
+        customer = self._create_customer(repo, phone=None)
         audit.recorded.clear()
         result = UpdateCustomer(repo, audit).execute(
             _SALON_ID,
             customer.id,
-            CustomerCommand(full_name="Awa Koné", phone=None, gender="FEMALE"),
+            CustomerCommand(full_name="Awa Koné", phone="0700999999"),
             actor_user_id=_ACTOR_ID,
         )
-        assert result.phone is None
+        assert result.phone == "+2250700999999"
         entry = next(
             e for e in audit.recorded if e.action == AuditAction.CUSTOMER_UPDATED.value
         )
         assert "phone" in entry.metadata["changed"]
 
-    def test_erase_phone_with_empty_string(self) -> None:
-        """`phone=""` normalisé en `None` → effacement du champ."""
+    def test_phone_change_raises_locked_once_set(self) -> None:
+        """Numéro déjà enregistré → tout changement refusé, même vers un numéro
+        **libre** (`CustomerPhoneLocked`, pas un conflit d'unicité, #177)."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo, phone="0700000001")
+        with pytest.raises(CustomerPhoneLocked):
+            UpdateCustomer(repo, audit).execute(
+                _SALON_ID,
+                customer.id,
+                CustomerCommand(full_name="Awa Koné", phone="0700999999"),
+                actor_user_id=_ACTOR_ID,
+            )
+
+    def test_phone_erase_with_none_raises_locked(self) -> None:
+        """Numéro déjà enregistré, tentative d'effacement (`phone=None`) → verrouillé."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
         customer = self._create_customer(repo, phone="0700000000")
-        result = UpdateCustomer(repo, audit).execute(
-            _SALON_ID,
-            customer.id,
-            CustomerCommand(full_name="Awa Koné", phone=""),
-            actor_user_id=_ACTOR_ID,
+        with pytest.raises(CustomerPhoneLocked):
+            UpdateCustomer(repo, audit).execute(
+                _SALON_ID,
+                customer.id,
+                CustomerCommand(full_name="Awa Koné", phone=None, gender="FEMALE"),
+                actor_user_id=_ACTOR_ID,
+            )
+
+    def test_phone_erase_with_empty_string_raises_locked(self) -> None:
+        """`phone=""` normalisé en `None` → même verrou que `phone=None`."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo, phone="0700000000")
+        with pytest.raises(CustomerPhoneLocked):
+            UpdateCustomer(repo, audit).execute(
+                _SALON_ID,
+                customer.id,
+                CustomerCommand(full_name="Awa Koné", phone=""),
+                actor_user_id=_ACTOR_ID,
+            )
+
+    def test_phone_locked_no_audit(self) -> None:
+        """Tentative bloquée par le verrou → aucune trace `CUSTOMER_UPDATED`."""
+        repo = FakeCustomerRepository()
+        audit = FakeAuditLog()
+        customer = self._create_customer(repo, phone="0700000001")
+        audit.recorded.clear()
+        with pytest.raises(CustomerPhoneLocked):
+            UpdateCustomer(repo, audit).execute(
+                _SALON_ID,
+                customer.id,
+                CustomerCommand(full_name="Awa Koné", phone="0700999999"),
+                actor_user_id=_ACTOR_ID,
+            )
+        assert not any(
+            e.action == AuditAction.CUSTOMER_UPDATED.value for e in audit.recorded
         )
-        assert result.phone is None
+
+    # -- Effacement du genre (erasure) ---------------------------------------
 
     def test_erase_gender_with_none(self) -> None:
         """`gender=None` → NULL en base ; `gender` apparaît dans `changed`."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo, gender="FEMALE")
+        customer = self._create_customer(repo, phone=None, gender="FEMALE")
         audit.recorded.clear()
         result = UpdateCustomer(repo, audit).execute(
             _SALON_ID,
@@ -1520,7 +1561,7 @@ class TestUpdateCustomer:
         """`gender=""` normalisé en `None` → effacement du champ."""
         repo = FakeCustomerRepository()
         audit = FakeAuditLog()
-        customer = self._create_customer(repo, gender="FEMALE")
+        customer = self._create_customer(repo, phone=None, gender="FEMALE")
         result = UpdateCustomer(repo, audit).execute(
             _SALON_ID,
             customer.id,

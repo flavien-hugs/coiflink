@@ -11,6 +11,7 @@ import {
   GENDER_OPTIONS,
   GENDER_VALUES,
   NOTES_MAX_LENGTH,
+  isCustomerPhoneLocked,
   validateCustomer,
   validateNote,
 } from "../src/domain/customer/customer";
@@ -332,5 +333,23 @@ describe("GENDER_OPTIONS", () => {
     for (const opt of GENDER_OPTIONS) {
       expect(opt.label.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("isCustomerPhoneLocked", () => {
+  it("null (fiche sans numéro) → false", () => {
+    expect(isCustomerPhoneLocked(null)).toBe(false);
+  });
+
+  it("chaîne vide → false", () => {
+    expect(isCustomerPhoneLocked("")).toBe(false);
+  });
+
+  it("espaces seuls → false", () => {
+    expect(isCustomerPhoneLocked("   ")).toBe(false);
+  });
+
+  it("numéro déjà enregistré → true", () => {
+    expect(isCustomerPhoneLocked("+2250700000000")).toBe(true);
   });
 });
