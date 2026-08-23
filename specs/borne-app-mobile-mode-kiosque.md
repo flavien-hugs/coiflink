@@ -58,7 +58,7 @@ de #159 parmi les cinq écrans à livrer (voir plus bas) et que cette spec chois
   `ApiConfig`, les gateways HTTP, `AuthSession`/`InMemoryTokenStore` et pousse `AccueilEcran`
   (`app.dart:195-276`) comme `home:` du `MaterialApp`. **Aucun second point d'entrée n'existe.**
 - **Aucun flavor Android ni variante iOS.** `android/app/build.gradle.kts:19` ne déclare qu'un seul
-  `applicationId = "com.coiflink.coiflink_mobile"`, sans `flavorDimensions` ni `productFlavors` ;
+  `applicationId = "com.incubtek.coiflink"`, sans `flavorDimensions` ni `productFlavors` ;
   `android/app/src/main/AndroidManifest.xml` ne déclare qu'une seule `<activity>` avec
   `android:name=".MainActivity"` et une unique `<category android:name="android.intent.category.
   LAUNCHER"/>` ; `ios/Runner.xcodeproj/xcshareddata/xcschemes/` ne contient qu'un seul schéma
