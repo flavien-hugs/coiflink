@@ -10,6 +10,14 @@
 > Dart/Python/TypeScript), en-têtes de section en **anglais** (attendus par le gabarit ADW),
 > identifiants techniques (noms de routes, champs JSON, symboles, valeurs d'enum SQL) inchangés.
 > **Aucune signature IA** dans le code, les commits ou la PR.
+>
+> **Suivi — #179 (Amélioration)** : le mode générique `MOBILE_MONEY_MANUAL` décrit ci-dessous a été
+> remplacé, pour tout **nouveau** paiement, par quatre fournisseurs nommés — `ORANGE_MONEY_MANUAL`,
+> `MTN_MONEY_MANUAL`, `MOOV_MONEY_MANUAL`, `WAVE_MANUAL` (mêmes exigences téléphone + référence).
+> `MOBILE_MONEY_MANUAL` reste une valeur valide en base (paiements déjà enregistrés, filtre de
+> l'historique) mais n'est plus proposable à la création (`422` sinon). Voir
+> `domain/payment.py::PAYMENT_METHOD_CREATE_VALUES`/`MOBILE_MONEY_METHODS` et la migration `0022`
+> pour le comportement actuel.
 
 ## Problem Statement
 

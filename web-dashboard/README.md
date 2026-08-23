@@ -357,8 +357,11 @@ Elle charge **côté serveur** (jeton du cookie httpOnly, jamais exposé au navi
 salon du gérant puis ses **prestations actives**, et rend le formulaire d'enregistrement d'un paiement
 (`RecordPaymentForm`, client component) : sélection de la **prestation à encaisser**, montant
 **pré-rempli** avec son prix (guidage de la cohérence — le **backend reste l'autorité** et rejette tout
-écart, §5.3/§8.2), mode de paiement (`CASH` / `MOBILE_MONEY_MANUAL` / `CARD_MANUAL` / `OTHER`) et
-référence optionnelle. Au succès, `router.refresh()` recharge la page.
+écart, §5.3/§8.2), mode de paiement (`CASH` / `ORANGE_MONEY_MANUAL` / `MTN_MONEY_MANUAL` /
+`MOOV_MONEY_MANUAL` / `WAVE_MANUAL` / `CARD_MANUAL` / `OTHER` — quatre fournisseurs Mobile Money
+nommés depuis #179, le mode générique hérité `MOBILE_MONEY_MANUAL` n'étant plus proposé pour un
+nouveau paiement, `CREATABLE_PAYMENT_METHOD_OPTIONS`) et référence optionnelle. Au succès,
+`router.refresh()` recharge la page.
 
 Le Route Handler BFF `POST /api/salons/[id]/payments` lit le jeton du cookie httpOnly **côté serveur**,
 valide la saisie (`validatePayment`, `src/domain/payments/payment.ts`, parité `domain/payment.py`) puis

@@ -12,10 +12,15 @@ Couvre :
 - `require_reference_present` : prestation et ticket absents → erreur ; l'un ou
   l'autre présent → OK ; les deux présents → OK.
 - `validate_mobile_money_phone` : autre mode → toujours `None` (même si fourni) ;
-  Mobile Money sans téléphone → erreur ; Mobile Money avec téléphone → normalisé
-  E.164 ; format invalide → `InvalidPhone`.
-- `require_mobile_money_reference` : Mobile Money sans référence → erreur ; avec
-  référence → OK ; autre mode sans référence → OK.
+  chacun des 4 fournisseurs (#179 : Orange/MTN/Moov Money, Wave) sans téléphone
+  → erreur, avec téléphone → normalisé E.164, format invalide → `InvalidPhone` ;
+  mode générique hérité `MOBILE_MONEY_MANUAL` → toujours `None` (plus dans
+  `MOBILE_MONEY_METHODS`).
+- `require_mobile_money_reference` : chacun des 4 fournisseurs sans référence →
+  erreur, avec référence → OK ; autre mode (dont le mode hérité) sans référence
+  → OK.
+- `MOBILE_MONEY_METHODS` : contient exactement les 4 fournisseurs nommés, jamais
+  le mode générique hérité.
 - `validate_amount_matches` : égalité stricte au centime ; message neutre (§11.3).
 - `expected_amount_for_prices` : somme vide → 0.00 ; somme simple ; somme multiple ;
   résultat quantifié ; retour `Decimal`.
@@ -44,6 +49,7 @@ from coiflink_api.domain.payment import (
     AMOUNT_MAX,
     AMOUNT_MIN,
     DEFAULT_CURRENCY,
+    MOBILE_MONEY_METHODS,
     PAYMENT_METHOD_VALUES,
     REFERENCE_MAX_LENGTH,
     expected_amount_for_prices,
@@ -55,6 +61,15 @@ from coiflink_api.domain.payment import (
     validate_currency,
     validate_mobile_money_phone,
     validate_payment_method,
+)
+
+# Les quatre fournisseurs nommés (#179) — utilisés partout où l'ancienne
+# suite testait le mode générique unique `MOBILE_MONEY_MANUAL`.
+_MOBILE_MONEY_PROVIDERS = (
+    "ORANGE_MONEY_MANUAL",
+    "MTN_MONEY_MANUAL",
+    "MOOV_MONEY_MANUAL",
+    "WAVE_MANUAL",
 )
 
 
@@ -176,6 +191,13 @@ class TestValidatePaymentMethod:
         result = validate_payment_method(PAYMENT_METHOD_VALUES[0])
         assert isinstance(result, str)
 
+    def test_legacy_mobile_money_manual_still_generally_valid(self) -> None:
+        """Hérité (#179) : reste valide en général (filtre de l'historique via
+        `domain/transaction.py::_validate_method`) — seule la création d'un
+        nouveau paiement le refuse (`RecordPayment.execute`, pas cette fonction).
+        """
+        assert validate_payment_method("MOBILE_MONEY_MANUAL") == "MOBILE_MONEY_MANUAL"
+
 
 # ---------------------------------------------------------------------------
 # validate_currency
@@ -289,29 +311,35 @@ class TestValidateMobileMoneyPhone:
     def test_other_method_with_no_phone_returns_none(self) -> None:
         assert validate_mobile_money_phone("CARD_MANUAL", None) is None
 
-    def test_mobile_money_without_phone_raises(self) -> None:
-        with pytest.raises(MobileMoneyPhoneRequired):
-            validate_mobile_money_phone("MOBILE_MONEY_MANUAL", None)
+    def test_legacy_mobile_money_manual_returns_none_even_if_phone_provided(self) -> None:
+        """Hérité (#179) : plus dans `MOBILE_MONEY_METHODS` — jamais exigé,
+        jamais persisté, même si un téléphone est fourni (inatteignable en
+        pratique, `RecordPayment` refuse déjà ce mode pour un nouveau paiement)."""
+        assert validate_mobile_money_phone("MOBILE_MONEY_MANUAL", "0700000000") is None
 
-    def test_mobile_money_with_blank_phone_raises(self) -> None:
-        with pytest.raises(MobileMoneyPhoneRequired):
-            validate_mobile_money_phone("MOBILE_MONEY_MANUAL", "   ")
+    def test_all_four_providers_without_phone_raises(self) -> None:
+        for method in _MOBILE_MONEY_PROVIDERS:
+            with pytest.raises(MobileMoneyPhoneRequired):
+                validate_mobile_money_phone(method, None)
 
-    def test_mobile_money_with_valid_phone_normalizes_to_e164(self) -> None:
-        assert (
-            validate_mobile_money_phone("MOBILE_MONEY_MANUAL", "0700000000")
-            == "+2250700000000"
-        )
+    def test_all_four_providers_with_blank_phone_raises(self) -> None:
+        for method in _MOBILE_MONEY_PROVIDERS:
+            with pytest.raises(MobileMoneyPhoneRequired):
+                validate_mobile_money_phone(method, "   ")
+
+    def test_all_four_providers_with_valid_phone_normalizes_to_e164(self) -> None:
+        for method in _MOBILE_MONEY_PROVIDERS:
+            assert validate_mobile_money_phone(method, "0700000000") == "+2250700000000"
 
     def test_mobile_money_with_already_international_phone_is_idempotent(self) -> None:
         assert (
-            validate_mobile_money_phone("MOBILE_MONEY_MANUAL", "+2250700000000")
+            validate_mobile_money_phone("ORANGE_MONEY_MANUAL", "+2250700000000")
             == "+2250700000000"
         )
 
     def test_mobile_money_with_malformed_phone_raises_invalid_phone(self) -> None:
         with pytest.raises(InvalidPhone):
-            validate_mobile_money_phone("MOBILE_MONEY_MANUAL", "not-a-phone")
+            validate_mobile_money_phone("ORANGE_MONEY_MANUAL", "not-a-phone")
 
 
 # ---------------------------------------------------------------------------
@@ -320,12 +348,32 @@ class TestValidateMobileMoneyPhone:
 
 
 class TestRequireMobileMoneyReference:
-    def test_mobile_money_without_reference_raises(self) -> None:
-        with pytest.raises(MobileMoneyReferenceRequired):
-            require_mobile_money_reference("MOBILE_MONEY_MANUAL", None)
+    def test_all_four_providers_without_reference_raises(self) -> None:
+        for method in _MOBILE_MONEY_PROVIDERS:
+            with pytest.raises(MobileMoneyReferenceRequired):
+                require_mobile_money_reference(method, None)
 
-    def test_mobile_money_with_reference_passes(self) -> None:
-        require_mobile_money_reference("MOBILE_MONEY_MANUAL", "MM-TX-0001")
+    def test_all_four_providers_with_reference_passes(self) -> None:
+        for method in _MOBILE_MONEY_PROVIDERS:
+            require_mobile_money_reference(method, "MM-TX-0001")
+
+    def test_legacy_mobile_money_manual_without_reference_passes(self) -> None:
+        """Hérité (#179) : plus dans `MOBILE_MONEY_METHODS` — n'exige plus de
+        référence (inatteignable en pratique, cf. test ci-dessus sur le téléphone)."""
+        require_mobile_money_reference("MOBILE_MONEY_MANUAL", None)
+
+
+# ---------------------------------------------------------------------------
+# MOBILE_MONEY_METHODS
+# ---------------------------------------------------------------------------
+
+
+class TestMobileMoneyMethods:
+    def test_contains_exactly_the_four_named_providers(self) -> None:
+        assert MOBILE_MONEY_METHODS == frozenset(_MOBILE_MONEY_PROVIDERS)
+
+    def test_legacy_generic_mode_excluded(self) -> None:
+        assert "MOBILE_MONEY_MANUAL" not in MOBILE_MONEY_METHODS
 
     def test_other_method_without_reference_passes(self) -> None:
         require_mobile_money_reference("CASH", None)

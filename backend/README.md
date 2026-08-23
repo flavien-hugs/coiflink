@@ -1216,7 +1216,7 @@ une ligne `ADJUSTMENT` au journal.
 | `date_from` / `date_to` | `date` (`YYYY-MM-DD`) | plage **inclusive**, jour civil **`Africa/Abidjan`** (UTC+0) → bornes UTC `[00:00, 23:59:59.999999]` |
 | `client_id` | `uuid` | client lié (`payments.client_id`) ; un `client_id` étranger au salon → **liste vide** (aucun oracle §11.2) |
 | `amount_min` / `amount_max` | `Decimal` (≥ 0, ≤ 2 déc.) | plage de montants |
-| `payment_method` | `str` ∈ `PaymentMethod` | `CASH` \| `MOBILE_MONEY_MANUAL` \| `CARD_MANUAL` \| `OTHER` |
+| `payment_method` | `str` ∈ `PaymentMethod` | `CASH` \| `ORANGE_MONEY_MANUAL` \| `MTN_MONEY_MANUAL` \| `MOOV_MONEY_MANUAL` \| `WAVE_MANUAL` \| `CARD_MANUAL` \| `OTHER` \| `MOBILE_MONEY_MANUAL` (mode générique hérité, #179 — toujours filtrable, plus proposé à la création) |
 | `limit` / `offset` | `int` (1..200, défaut 50) / (≥ 0) | pagination |
 
 **Validation (§11.3).** Une plage incohérente (`date_from > date_to`, `amount_min > amount_max`), un mode
@@ -1227,12 +1227,12 @@ hors énumération ou un montant mal formé → `422` **« Filtre de transaction
 `null` sinon).
 
 ```bash
-# Paiements en Mobile Money de mars 2026 ≥ 10 000 FCFA (plus récent d'abord) → 200
+# Paiements Orange Money de mars 2026 ≥ 10 000 FCFA (plus récent d'abord) → 200
 curl -G "$API/salons/$SALON_ID/payments" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   --data-urlencode "date_from=2026-03-01" \
   --data-urlencode "date_to=2026-03-31" \
-  --data-urlencode "payment_method=MOBILE_MONEY_MANUAL" \
+  --data-urlencode "payment_method=ORANGE_MONEY_MANUAL" \
   --data-urlencode "amount_min=10000.00"
 
 # Plage de dates incohérente → 422 « Filtre de transactions invalide. »

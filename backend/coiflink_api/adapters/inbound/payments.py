@@ -169,8 +169,10 @@ class CreatePaymentRequest(BaseModel):
     `created_at` sont générés côté serveur. Un champ privilégié présent est
     **ignoré** (`extra="ignore"`). Le paiement doit référencer une prestation
     **ou** un ticket walk-in (§8.2). `reference`/`mobile_money_phone` sont
-    optionnels — sauf pour `payment_method = MOBILE_MONEY_MANUAL`, où les deux
-    deviennent **obligatoires** (migration 0019).
+    optionnels — sauf pour un fournisseur Mobile Money (`ORANGE_MONEY_MANUAL` |
+    `MTN_MONEY_MANUAL` | `MOOV_MONEY_MANUAL` | `WAVE_MANUAL`, #179), où les deux
+    deviennent **obligatoires** (migration 0019). `MOBILE_MONEY_MANUAL` (mode
+    générique hérité) n'est plus accepté pour un nouveau paiement (`422`).
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -501,9 +503,10 @@ def _manager_receipt_response(receipt: Receipt) -> ManagerReceiptResponse:
         409: {"description": "Ticket déjà couvert par un paiement VALIDATED/ADJUSTED"},
         422: {
             "description": (
-                "Montant, mode de paiement, devise ou référence invalides ; "
+                "Montant, mode de paiement, devise ou référence invalides "
+                "(dont le mode hérité MOBILE_MONEY_MANUAL, #179) ; "
                 "téléphone ou numéro de transaction Mobile Money absent/invalide "
-                "(payment_method = MOBILE_MONEY_MANUAL) ; "
+                "pour un fournisseur nommé (Orange/MTN/Moov Money, Wave) ; "
                 "montant incohérent avec la prestation liée ; "
                 "prestation ou ticket introuvable pour ce salon"
             )

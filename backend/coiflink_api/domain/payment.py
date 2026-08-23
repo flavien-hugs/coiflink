@@ -71,6 +71,29 @@ MOBILE_MONEY_PHONE_MAX_LENGTH = 32
 # vérité partagée avec la contrainte `CHECK` du schéma).
 PAYMENT_METHOD_VALUES: tuple[str, ...] = values(PaymentMethod)
 
+# Fournisseurs Mobile Money proposés pour un NOUVEAU paiement (#179) — chacun
+# exige téléphone + référence, au même titre que l'ancien mode générique
+# qu'ils remplacent (migration 0019). `MOBILE_MONEY_MANUAL` n'y figure pas :
+# il ne peut plus être choisi (voir `PAYMENT_METHOD_CREATE_VALUES`), donc ce
+# contrôle ne l'atteint plus en pratique.
+MOBILE_MONEY_METHODS: frozenset[str] = frozenset(
+    {
+        PaymentMethod.ORANGE_MONEY_MANUAL.value,
+        PaymentMethod.MTN_MONEY_MANUAL.value,
+        PaymentMethod.MOOV_MONEY_MANUAL.value,
+        PaymentMethod.WAVE_MANUAL.value,
+    }
+)
+
+# Modes proposables pour un NOUVEAU paiement (#179) — exclut `MOBILE_MONEY_MANUAL`,
+# conservé uniquement pour la validité des paiements déjà enregistrés sous ce
+# mode (migration 0022). `validate_payment_method` reste plus permissive
+# (accepte aussi le mode hérité) : elle sert aussi le filtre de l'historique
+# des transactions, qui doit pouvoir le retrouver.
+PAYMENT_METHOD_CREATE_VALUES: tuple[str, ...] = tuple(
+    value for value in PAYMENT_METHOD_VALUES if value != PaymentMethod.MOBILE_MONEY_MANUAL.value
+)
+
 
 def validate_amount(amount: decimal.Decimal | int | None) -> decimal.Decimal:
     """Valide le **montant obligatoire** d'un paiement : requis, `>= 0`, ≤ `AMOUNT_MAX`.
@@ -206,14 +229,15 @@ def validate_mobile_money_phone(payment_method: str, raw_phone: str | None) -> s
     """Valide le téléphone Mobile Money : requis + E.164 pour ce mode, sinon toujours `None`.
 
     Retombe systématiquement sur `None` pour un autre mode (jamais persisté hors
-    `MOBILE_MONEY_MANUAL` — évite une donnée orpheline sans rapport avec le
-    paiement réel), même si une valeur est fournie. Pour `MOBILE_MONEY_MANUAL` :
-    lève `MobileMoneyPhoneRequired` si absent, ou `InvalidPhone` (normalisation
+    fournisseur Mobile Money — évite une donnée orpheline sans rapport avec le
+    paiement réel), même si une valeur est fournie. Pour un mode de
+    `MOBILE_MONEY_METHODS` (#179 : Orange/MTN/Moov Money, Wave) : lève
+    `MobileMoneyPhoneRequired` si absent, ou `InvalidPhone` (normalisation
     partagée `domain/phone.py`, même forme canonique que le reste du domaine) si
     le format est invalide.
     """
 
-    if payment_method != PaymentMethod.MOBILE_MONEY_MANUAL.value:
+    if payment_method not in MOBILE_MONEY_METHODS:
         return None
     if not isinstance(raw_phone, str) or not raw_phone.strip():
         raise MobileMoneyPhoneRequired(
@@ -227,11 +251,12 @@ def require_mobile_money_reference(payment_method: str, reference: str | None) -
 
     `reference` est déjà normalisée (`normalize_reference`) au moment de l'appel :
     `None` signifie donc absente ou vide, quel que soit le mode. Miroir du `CHECK
-    mobile_money_details_present` (migration 0019). Lève `MobileMoneyReferenceRequired`
+    mobile_money_details_present` (migration 0019), pour tout mode de
+    `MOBILE_MONEY_METHODS` (#179). Lève `MobileMoneyReferenceRequired`
     (→ `422`) **avant** que la contrainte base ne rejette l'`INSERT`.
     """
 
-    if payment_method == PaymentMethod.MOBILE_MONEY_MANUAL.value and reference is None:
+    if payment_method in MOBILE_MONEY_METHODS and reference is None:
         raise MobileMoneyReferenceRequired(
             "Le numéro de transaction Mobile Money est requis."
         )
@@ -292,6 +317,8 @@ __all__ = [
     "REFERENCE_MAX_LENGTH",
     "MOBILE_MONEY_PHONE_MAX_LENGTH",
     "PAYMENT_METHOD_VALUES",
+    "MOBILE_MONEY_METHODS",
+    "PAYMENT_METHOD_CREATE_VALUES",
     "validate_amount",
     "expected_amount_for_prices",
     "validate_amount_matches",

@@ -18,11 +18,13 @@ import { CheckIcon, CoinsIcon, HashIcon, PhoneIcon, XIcon } from "@/src/adapters
 import { FieldLabel } from "@/src/adapters/ui/field-label";
 import { SearchableSelect } from "@/src/adapters/ui/searchable-select";
 import {
+  CREATABLE_PAYMENT_METHOD_OPTIONS,
+  MOBILE_MONEY_METHODS,
   MOBILE_MONEY_PHONE_MAX_LENGTH,
-  PAYMENT_METHOD_OPTIONS,
   REFERENCE_MAX_LENGTH,
   formatXof,
   validatePayment,
+  type CreatablePaymentMethod,
   type PaymentMethod,
 } from "@/src/domain/payments/payment";
 import type { Service } from "@/src/domain/service/service";
@@ -78,13 +80,13 @@ export function RecordPaymentForm({
   const [amount, setAmount] = useState(
     forQueueTicket ? (expectedAmount ?? "") : (services[0]?.price ?? ""),
   );
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
+  const [paymentMethod, setPaymentMethod] = useState<CreatablePaymentMethod>("CASH");
   const [reference, setReference] = useState("");
   const [mobileMoneyPhone, setMobileMoneyPhone] = useState(defaultMobileMoneyPhone ?? "");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [pending, setPending] = useState(false);
-  const isMobileMoney = paymentMethod === "MOBILE_MONEY_MANUAL";
+  const isMobileMoney = MOBILE_MONEY_METHODS.includes(paymentMethod as PaymentMethod);
 
   // La fiche client (donc `defaultMobileMoneyPhone`) se résout de façon
   // asynchrone côté appelant : si le gérant sélectionne Mobile Money **avant**
@@ -107,8 +109,11 @@ export function RecordPaymentForm({
   // modes). Changer de mode ne touche jamais au montant/à la référence déjà
   // saisis.
   function onSelectMethod(next: string) {
-    setPaymentMethod(next as PaymentMethod);
-    if (next === "MOBILE_MONEY_MANUAL" && mobileMoneyPhone.trim().length === 0) {
+    setPaymentMethod(next as CreatablePaymentMethod);
+    if (
+      MOBILE_MONEY_METHODS.includes(next as PaymentMethod) &&
+      mobileMoneyPhone.trim().length === 0
+    ) {
       setMobileMoneyPhone(defaultMobileMoneyPhone ?? "");
     }
     setError(null);
@@ -286,7 +291,7 @@ export function RecordPaymentForm({
           <SearchableSelect
             ariaLabel="Mode de paiement"
             value={paymentMethod}
-            options={PAYMENT_METHOD_OPTIONS}
+            options={CREATABLE_PAYMENT_METHOD_OPTIONS}
             onChange={onSelectMethod}
             placeholder="Sélectionner un mode"
             searchPlaceholder="Rechercher un mode"

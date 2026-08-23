@@ -37,9 +37,14 @@ from coiflink_api.application.ports.service_repository import ServiceRepository
 from coiflink_api.domain.audit import ENTITY_TYPE_PAYMENT, AuditAction, AuditEntry
 from coiflink_api.domain.cash_journal import CashJournalToAppend
 from coiflink_api.domain.enums import CashOperationType
-from coiflink_api.domain.errors import PaymentReferenceNotFound, QueueTicketAlreadyPaid
+from coiflink_api.domain.errors import (
+    InvalidPaymentMethod,
+    PaymentReferenceNotFound,
+    QueueTicketAlreadyPaid,
+)
 from coiflink_api.domain.payment import (
     DEFAULT_CURRENCY,
+    PAYMENT_METHOD_CREATE_VALUES,
     Payment,
     PaymentToCreate,
     expected_amount_for_prices,
@@ -62,7 +67,8 @@ class PaymentCommand:
     l'auteur du principal, le statut est imposé `VALIDATED`. Le paiement doit
     référencer une prestation **ou** un ticket walk-in. `client_id`/`reference`/
     `currency` sont optionnels — sauf `reference`/`mobile_money_phone`, tous deux
-    **obligatoires** pour `MOBILE_MONEY_MANUAL` (§8.2, migration 0019).
+    **obligatoires** pour un fournisseur Mobile Money (Orange/MTN/Moov Money,
+    Wave — §8.2, migration 0019, #179).
     """
 
     amount: decimal.Decimal
@@ -119,6 +125,11 @@ class RecordPayment:
         # Validation domaine AVANT toute écriture (aucun paiement ni trace si invalide).
         amount = validate_amount(command.amount)
         method = validate_payment_method(command.payment_method)
+        # Mode hérité (#179) : valide en général (historique/filtre), mais plus
+        # proposable pour un NOUVEAU paiement — voir domain/payment.py::
+        # PAYMENT_METHOD_CREATE_VALUES.
+        if method not in PAYMENT_METHOD_CREATE_VALUES:
+            raise InvalidPaymentMethod("Le mode de paiement est invalide.")
         currency = validate_currency(command.currency)
         require_reference_present(command.service_id, command.queue_ticket_id)
         reference = normalize_reference(command.reference)
