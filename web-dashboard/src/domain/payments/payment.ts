@@ -2,14 +2,24 @@
 // ADR-0008), TypeScript pur, testable sans React. **Parité stricte** avec le
 // backend (`coiflink_api/domain/payment.py`, US-5.1 #33) : montant
 // **obligatoire** `>= 0` et borné (`NUMERIC(12,2)`, au plus 2 décimales), mode
-// de paiement **fermé** (`CASH | MOBILE_MONEY_MANUAL | CARD_MANUAL | OTHER`),
-// référence optionnelle bornée — **sauf** pour `MOBILE_MONEY_MANUAL`, où elle
-// devient **obligatoire** (numéro de transaction) au même titre qu'un
-// **téléphone** dédié (migration backend 0019) ; un paiement doit être lié à
-// une **prestation OU un ticket de file d'attente** (§8.2). Le backend reste
-// l'autorité : cette validation guide l'UI et pré-remplit le montant attendu,
-// mais c'est lui qui **vérifie la cohérence du montant** (§5.3/§8.2) et la
-// forme E.164 du téléphone, et rejette tout écart.
+// de paiement **fermé** (`CASH | MOBILE_MONEY_MANUAL | ORANGE_MONEY_MANUAL |
+// MTN_MONEY_MANUAL | MOOV_MONEY_MANUAL | WAVE_MANUAL | CARD_MANUAL | OTHER`),
+// référence optionnelle bornée — **sauf** pour un fournisseur Mobile Money
+// (`MOBILE_MONEY_METHODS`, #179), où elle devient **obligatoire** (numéro de
+// transaction) au même titre qu'un **téléphone** dédié (migration backend
+// 0019) ; un paiement doit être lié à une **prestation OU un ticket de file
+// d'attente** (§8.2). Le backend reste l'autorité : cette validation guide
+// l'UI et pré-remplit le montant attendu, mais c'est lui qui **vérifie la
+// cohérence du montant** (§5.3/§8.2) et la forme E.164 du téléphone, et
+// rejette tout écart.
+//
+// `MOBILE_MONEY_MANUAL` est un mode **hérité** (#179) : remplacé par quatre
+// fournisseurs nommés (Orange/MTN/Moov Money, Wave) pour tout nouveau
+// paiement, mais conservé dans `PAYMENT_METHOD_VALUES`/`PAYMENT_METHOD_OPTIONS`
+// — il reste filtrable/affichable pour l'historique déjà enregistré sous ce
+// mode générique. `CREATABLE_PAYMENT_METHOD_VALUES`/`_OPTIONS` (sans ce mode)
+// pilotent le sélecteur de **création** (`record-payment-form.tsx`) — seul
+// point d'entrée d'un nouveau paiement.
 //
 // `amount` est porté en **chaîne décimale** (parité `NUMERIC(12,2)`) pour ne pas
 // perdre de précision via un flottant JavaScript. Aucun secret ici ; aucune PII
@@ -25,18 +35,29 @@ export const AMOUNT_MAX = 9999999999.99;
 export const DEFAULT_CURRENCY = "XOF";
 
 // Domaine fermé du mode de paiement — miroir de `domain.enums.PaymentMethod`.
+// Ensemble COMPLET (y compris le mode hérité `MOBILE_MONEY_MANUAL`, #179) :
+// utilisé pour le filtre de l'historique et l'affichage (reçu, tableau), qui
+// doivent pouvoir retrouver/étiqueter un paiement déjà enregistré sous ce mode.
 export const PAYMENT_METHOD_VALUES = [
   "CASH",
   "MOBILE_MONEY_MANUAL",
+  "ORANGE_MONEY_MANUAL",
+  "MTN_MONEY_MANUAL",
+  "MOOV_MONEY_MANUAL",
+  "WAVE_MANUAL",
   "CARD_MANUAL",
   "OTHER",
 ] as const;
 export type PaymentMethod = (typeof PAYMENT_METHOD_VALUES)[number];
 
-// Libellés français du sélecteur de mode de paiement.
+// Libellés français du sélecteur de mode de paiement (ensemble complet).
 export const PAYMENT_METHOD_OPTIONS: { value: PaymentMethod; label: string }[] = [
   { value: "CASH", label: "Espèces" },
   { value: "MOBILE_MONEY_MANUAL", label: "Mobile Money (manuel)" },
+  { value: "ORANGE_MONEY_MANUAL", label: "Orange Money (manuel)" },
+  { value: "MTN_MONEY_MANUAL", label: "MTN Money (manuel)" },
+  { value: "MOOV_MONEY_MANUAL", label: "Moov Money (manuel)" },
+  { value: "WAVE_MANUAL", label: "Wave (manuel)" },
   { value: "CARD_MANUAL", label: "Carte (manuel)" },
   { value: "OTHER", label: "Autre" },
 ];
@@ -46,6 +67,32 @@ export function paymentMethodLabel(method: string): string {
     PAYMENT_METHOD_OPTIONS.find((option) => option.value === method)?.label ?? method
   );
 }
+
+// Fournisseurs Mobile Money proposés pour un NOUVEAU paiement (#179) — miroir
+// de `domain/payment.py::MOBILE_MONEY_METHODS`. `MOBILE_MONEY_MANUAL` n'y
+// figure pas : il ne peut plus être choisi (`CREATABLE_PAYMENT_METHOD_VALUES`).
+export const MOBILE_MONEY_METHODS: readonly PaymentMethod[] = [
+  "ORANGE_MONEY_MANUAL",
+  "MTN_MONEY_MANUAL",
+  "MOOV_MONEY_MANUAL",
+  "WAVE_MANUAL",
+];
+
+// Modes proposables pour un NOUVEAU paiement (#179) — exclut le mode générique
+// hérité `MOBILE_MONEY_MANUAL`, miroir de `domain/payment.py::
+// PAYMENT_METHOD_CREATE_VALUES`. Seul consommateur : le formulaire
+// d'encaissement (`record-payment-form.tsx`) — la création est le seul flux
+// où ce mode ne doit plus apparaître.
+export const CREATABLE_PAYMENT_METHOD_VALUES = PAYMENT_METHOD_VALUES.filter(
+  (value) => value !== "MOBILE_MONEY_MANUAL",
+);
+export type CreatablePaymentMethod = Exclude<PaymentMethod, "MOBILE_MONEY_MANUAL">;
+
+export const CREATABLE_PAYMENT_METHOD_OPTIONS: { value: CreatablePaymentMethod; label: string }[] =
+  PAYMENT_METHOD_OPTIONS.filter(
+    (option): option is { value: CreatablePaymentMethod; label: string } =>
+      option.value !== "MOBILE_MONEY_MANUAL",
+  );
 
 export interface Payment {
   id: string;
@@ -131,6 +178,9 @@ function normalizeAmount(raw: string): string | null {
 // une prestation **ou** un ticket de file d'attente (§8.2). Mobile Money exige
 // en plus un **téléphone** et un **numéro de transaction** (`reference`) — le
 // téléphone retombe toujours sur `null` pour tout autre mode, même saisi.
+// Valide contre l'ensemble **créable** (#179) : le mode générique hérité
+// `MOBILE_MONEY_MANUAL` n'est plus soumissible pour un nouveau paiement, miroir
+// de `domain/payment.py::PAYMENT_METHOD_CREATE_VALUES`.
 export function validatePayment(raw: RawPaymentInput): PaymentValidationResult {
   const amount = normalizeAmount(raw.amount ?? "");
   if (amount === null) {
@@ -138,7 +188,7 @@ export function validatePayment(raw: RawPaymentInput): PaymentValidationResult {
   }
 
   const method = (raw.paymentMethod ?? "").trim();
-  if (!PAYMENT_METHOD_VALUES.includes(method as PaymentMethod)) {
+  if (!CREATABLE_PAYMENT_METHOD_VALUES.includes(method as CreatablePaymentMethod)) {
     return { ok: false, reason: "invalid-method" };
   }
 
@@ -148,7 +198,7 @@ export function validatePayment(raw: RawPaymentInput): PaymentValidationResult {
   }
   const reference = rawReference.length > 0 ? rawReference : null;
 
-  const isMobileMoney = method === "MOBILE_MONEY_MANUAL";
+  const isMobileMoney = MOBILE_MONEY_METHODS.includes(method as PaymentMethod);
   let mobileMoneyPhone: string | null = null;
   if (isMobileMoney) {
     const rawPhone = (raw.mobileMoneyPhone ?? "").trim();

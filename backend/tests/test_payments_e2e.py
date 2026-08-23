@@ -746,6 +746,12 @@ class TestRecordPaymentE2E:
 class TestMobileMoneyPaymentE2E:
     """Mobile Money exige un téléphone ET un numéro de transaction (§8.2, migration 0019).
 
+    Depuis #179, quatre fournisseurs nommés (Orange/MTN/Moov Money, Wave) —
+    `ORANGE_MONEY_MANUAL` sert d'exemple représentatif ci-dessous, les quatre
+    étant prouvés équivalents au niveau domaine (`test_domain_payment.py`) et
+    cas d'usage (`test_cash_journal_usecases.py`). Le mode générique hérité
+    `MOBILE_MONEY_MANUAL` n'est plus proposable pour un nouveau paiement.
+
     Validation **applicative uniquement** (`domain/payment.py`, appelée par
     `RecordPayment.execute` avant toute écriture) — délibérément aucun `CHECK`
     base (voir la migration 0019 pour le raisonnement : un tel `CHECK`
@@ -765,7 +771,7 @@ class TestMobileMoneyPaymentE2E:
             _payments_url(salon_id),
             json={
                 "amount": _SERVICE_PRICE,
-                "payment_method": "MOBILE_MONEY_MANUAL",
+                "payment_method": "ORANGE_MONEY_MANUAL",
                 "service_id": service_id,
                 "reference": "MM-TX-0001",
                 "mobile_money_phone": "0700000000",
@@ -788,7 +794,7 @@ class TestMobileMoneyPaymentE2E:
             _payments_url(salon_id),
             json={
                 "amount": _SERVICE_PRICE,
-                "payment_method": "MOBILE_MONEY_MANUAL",
+                "payment_method": "ORANGE_MONEY_MANUAL",
                 "service_id": service_id,
                 "reference": "MM-TX-0002",
             },
@@ -807,7 +813,7 @@ class TestMobileMoneyPaymentE2E:
             _payments_url(salon_id),
             json={
                 "amount": _SERVICE_PRICE,
-                "payment_method": "MOBILE_MONEY_MANUAL",
+                "payment_method": "ORANGE_MONEY_MANUAL",
                 "service_id": service_id,
                 "mobile_money_phone": "0700000000",
             },
@@ -826,7 +832,7 @@ class TestMobileMoneyPaymentE2E:
             _payments_url(salon_id),
             json={
                 "amount": _SERVICE_PRICE,
-                "payment_method": "MOBILE_MONEY_MANUAL",
+                "payment_method": "ORANGE_MONEY_MANUAL",
                 "service_id": service_id,
                 "reference": "MM-TX-0003",
                 "mobile_money_phone": "abc",
@@ -856,6 +862,28 @@ class TestMobileMoneyPaymentE2E:
         assert resp.status_code == 201, resp.text
         assert resp.json()["mobile_money_phone"] is None
 
+    def test_legacy_generic_mode_returns_422(self, _e2e_client: TestClient) -> None:
+        """`MOBILE_MONEY_MANUAL` (mode générique hérité) refusé pour un nouveau
+        paiement (#179) — seuls les 4 fournisseurs nommés restent proposables."""
+        _register_manager(_e2e_client)
+        token = _login(_e2e_client)
+        salon_id = _create_salon(_e2e_client, token)
+        service_id = _create_service(_e2e_client, token, salon_id)
+
+        resp = _e2e_client.post(
+            _payments_url(salon_id),
+            json={
+                "amount": _SERVICE_PRICE,
+                "payment_method": "MOBILE_MONEY_MANUAL",
+                "service_id": service_id,
+                "reference": "MM-TX-0004",
+                "mobile_money_phone": "0700000000",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422
+        assert _count_payments(salon_id) == 0
+
     def test_adjusting_a_historical_mobile_money_payment_without_phone_succeeds(
         self, _e2e_client: TestClient
     ) -> None:
@@ -865,7 +893,11 @@ class TestMobileMoneyPaymentE2E:
         (US-5.3/#34). C'est précisément pour préserver ceci qu'aucun `CHECK`
         base n'impose téléphone+référence pour `MOBILE_MONEY_MANUAL` : un tel
         `CHECK` s'appliquerait aussi à l'`UPDATE status` de `mark_adjusted`, qui
-        ne touche pourtant ni l'un ni l'autre champ (voir migration 0019)."""
+        ne touche pourtant ni l'un ni l'autre champ (voir migration 0019). Même
+        raisonnement pour la contrainte `payment_method` elle-même (#179,
+        migration 0022) : `MOBILE_MONEY_MANUAL` y reste autorisé pour la même
+        raison — ce test insère une ligne avec cette valeur et vérifie que la
+        contrainte élargie ne bloque pas sa correction."""
         manager_id = _register_manager(_e2e_client)
         token = _login(_e2e_client)
         salon_id = _create_salon(_e2e_client, token)

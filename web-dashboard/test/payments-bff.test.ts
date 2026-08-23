@@ -177,7 +177,7 @@ describe("POST /api/salons/[id]/payments — validation BFF", () => {
     const res = await POST(
       makePostRequest({
         ...VALID_BODY,
-        paymentMethod: "MOBILE_MONEY_MANUAL",
+        paymentMethod: "ORANGE_MONEY_MANUAL",
         reference: "MM-TX-0001",
       }),
       makeContext(SALON_ID),
@@ -194,7 +194,25 @@ describe("POST /api/salons/[id]/payments — validation BFF", () => {
     const res = await POST(
       makePostRequest({
         ...VALID_BODY,
+        paymentMethod: "ORANGE_MONEY_MANUAL",
+        mobileMoneyPhone: "0700000000",
+      }),
+      makeContext(SALON_ID),
+    );
+
+    expect(res.status).toBe(422);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("mode générique hérité MOBILE_MONEY_MANUAL → 422 avant tout appel backend (#179)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await POST(
+      makePostRequest({
+        ...VALID_BODY,
         paymentMethod: "MOBILE_MONEY_MANUAL",
+        reference: "MM-TX-0001",
         mobileMoneyPhone: "0700000000",
       }),
       makeContext(SALON_ID),
@@ -341,7 +359,7 @@ describe("POST /api/salons/[id]/payments — propagation backend", () => {
     await POST(
       makePostRequest({
         ...VALID_BODY,
-        paymentMethod: "MOBILE_MONEY_MANUAL",
+        paymentMethod: "ORANGE_MONEY_MANUAL",
         reference: "MM-TX-0001",
         mobileMoneyPhone: "0700000000",
       }),
@@ -351,7 +369,7 @@ describe("POST /api/salons/[id]/payments — propagation backend", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init?.body as string);
-    expect(body.payment_method).toBe("MOBILE_MONEY_MANUAL");
+    expect(body.payment_method).toBe("ORANGE_MONEY_MANUAL");
     expect(body.mobile_money_phone).toBe("0700000000");
     expect(body.reference).toBe("MM-TX-0001");
   });

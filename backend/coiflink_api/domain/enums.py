@@ -82,10 +82,21 @@ class Gender(_StrEnum):
 
 @unique
 class PaymentMethod(_StrEnum):
-    """Modes de paiement MVP (PRD §9.6)."""
+    """Modes de paiement MVP (PRD §9.6).
+
+    `MOBILE_MONEY_MANUAL` est **hérité** (#179) : remplacé par quatre
+    fournisseurs nommés pour tout nouveau paiement, mais **conservé** dans
+    l'énumération — il reste une valeur valide en base pour les paiements déjà
+    enregistrés sous ce mode générique (voir `domain/payment.py::
+    PAYMENT_METHOD_CREATE_VALUES`, migration `0022`).
+    """
 
     CASH = "CASH"
     MOBILE_MONEY_MANUAL = "MOBILE_MONEY_MANUAL"
+    ORANGE_MONEY_MANUAL = "ORANGE_MONEY_MANUAL"
+    MTN_MONEY_MANUAL = "MTN_MONEY_MANUAL"
+    MOOV_MONEY_MANUAL = "MOOV_MONEY_MANUAL"
+    WAVE_MANUAL = "WAVE_MANUAL"
     CARD_MANUAL = "CARD_MANUAL"
     OTHER = "OTHER"
 

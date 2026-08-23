@@ -7,6 +7,11 @@
 // jamais écrasé si déjà saisi), libellé « Référence » devenant obligatoire pour
 // ce mode, blocage côté client (téléphone/référence absents) sans appel réseau,
 // et le corps posté au BFF quand tout est valide.
+//
+// Depuis #179, « Orange Money (manuel) » sert d'exemple représentatif des 4
+// fournisseurs nommés (comportement conditionnel identique pour les 4, prouvé
+// au niveau domaine) ; le sélecteur ne propose plus le mode générique hérité
+// « Mobile Money (manuel) » (voir describe dédié ci-dessous).
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,7 +64,7 @@ describe("RecordPaymentForm — champ téléphone Mobile Money", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
 
     const phoneInput = screen.getByPlaceholderText("0700000000") as HTMLInputElement;
     expect(phoneInput.value).toBe("+2250700000000");
@@ -77,7 +82,7 @@ describe("RecordPaymentForm — champ téléphone Mobile Money", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
     expect(screen.getByPlaceholderText("0700000000")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
@@ -99,14 +104,14 @@ describe("RecordPaymentForm — champ téléphone Mobile Money", () => {
     // Bascule vers Mobile Money, corrige le téléphone, repasse en Espèces puis
     // revient sur Mobile Money : la correction manuelle doit survivre.
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
     const phoneInput = screen.getByPlaceholderText("0700000000") as HTMLInputElement;
     fireEvent.change(phoneInput, { target: { value: "+2250711111111" } });
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
     fireEvent.click(screen.getByRole("option", { name: "Espèces" }));
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
 
     expect(
       (screen.getByPlaceholderText("0700000000") as HTMLInputElement).value,
@@ -125,7 +130,7 @@ describe("RecordPaymentForm — champ téléphone Mobile Money", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
 
     expect((screen.getByPlaceholderText("0700000000") as HTMLInputElement).value).toBe("");
   });
@@ -146,7 +151,7 @@ describe("RecordPaymentForm — champ téléphone Mobile Money", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
     expect((screen.getByPlaceholderText("0700000000") as HTMLInputElement).value).toBe("");
 
     // Le fetch de la fiche client résout : le composant parent re-rend avec
@@ -178,7 +183,7 @@ describe("RecordPaymentForm — champ téléphone Mobile Money", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
     fireEvent.change(screen.getByPlaceholderText("0700000000"), {
       target: { value: "+2250799999999" },
     });
@@ -199,6 +204,29 @@ describe("RecordPaymentForm — champ téléphone Mobile Money", () => {
   });
 });
 
+describe("RecordPaymentForm — fournisseurs Mobile Money nommés (#179)", () => {
+  it("propose les 4 fournisseurs nommés mais plus le mode générique hérité", () => {
+    render(
+      <RecordPaymentForm
+        salonId={SALON_ID}
+        services={[]}
+        queueTicketId={TICKET_ID}
+        expectedAmount="5000.00"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
+
+    expect(screen.getByRole("option", { name: "Orange Money (manuel)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "MTN Money (manuel)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Moov Money (manuel)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Wave (manuel)" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: "Mobile Money (manuel)" }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("RecordPaymentForm — libellé Référence dynamique", () => {
   it("« Référence » est optionnelle hors Mobile Money, obligatoire pour ce mode", () => {
     render(
@@ -213,7 +241,7 @@ describe("RecordPaymentForm — libellé Référence dynamique", () => {
     expect(screen.getByText("(Optionnel)")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
 
     expect(screen.queryByText("(Optionnel)")).not.toBeInTheDocument();
   });
@@ -235,7 +263,7 @@ describe("RecordPaymentForm — blocage côté client (Mobile Money)", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
     fireEvent.change(screen.getByPlaceholderText("Numéro de transaction Mobile Money"), {
       target: { value: "MM-TX-0001" },
     });
@@ -262,7 +290,7 @@ describe("RecordPaymentForm — blocage côté client (Mobile Money)", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
     fireEvent.click(screen.getByRole("button", { name: /enregistrer le paiement/i }));
 
     expect(
@@ -287,7 +315,7 @@ describe("RecordPaymentForm — soumission Mobile Money valide", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
     fireEvent.change(screen.getByPlaceholderText("Numéro de transaction Mobile Money"), {
       target: { value: "MM-TX-0001" },
     });
@@ -296,7 +324,7 @@ describe("RecordPaymentForm — soumission Mobile Money valide", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body.paymentMethod).toBe("MOBILE_MONEY_MANUAL");
+    expect(body.paymentMethod).toBe("ORANGE_MONEY_MANUAL");
     expect(body.mobileMoneyPhone).toBe("+2250700000000");
     expect(body.reference).toBe("MM-TX-0001");
   });
@@ -315,7 +343,7 @@ describe("RecordPaymentForm — soumission Mobile Money valide", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));
-    fireEvent.click(screen.getByRole("option", { name: "Mobile Money (manuel)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Orange Money (manuel)" }));
     // Le téléphone est déjà pré-rempli ; on bascule vers Espèces avant de
     // soumettre — le téléphone tapé ne doit jamais atteindre le BFF.
     fireEvent.click(screen.getByRole("button", { name: /mode de paiement/i }));

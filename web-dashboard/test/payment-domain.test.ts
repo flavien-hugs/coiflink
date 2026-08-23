@@ -3,13 +3,21 @@
 // >= 0 borné (au plus 2 décimales), mode de paiement fermé, référence optionnelle
 // bornée, paiement lié à une prestation OU un rendez-vous (§8.2). Le backend reste
 // l'autorité finale (vérifie la cohérence du montant §5.3/§8.2).
+//
+// Modes Mobile Money nommés depuis #179 (Orange/MTN/Moov Money, Wave) : le mode
+// générique hérité `MOBILE_MONEY_MANUAL` reste dans `PAYMENT_METHOD_VALUES`/
+// `PAYMENT_METHOD_OPTIONS` (historique, filtre) mais `validatePayment` le
+// refuse désormais (seul `CREATABLE_PAYMENT_METHOD_VALUES` est soumissible).
+//
 // Aucune dépendance réseau ni React.
 
 import { describe, expect, it } from "vitest";
 
 import {
   AMOUNT_MAX,
+  CREATABLE_PAYMENT_METHOD_VALUES,
   DEFAULT_CURRENCY,
+  MOBILE_MONEY_METHODS,
   MOBILE_MONEY_PHONE_MAX_LENGTH,
   PAYMENT_METHOD_OPTIONS,
   PAYMENT_METHOD_VALUES,
@@ -108,18 +116,29 @@ describe("validatePayment — amount", () => {
 // ---------------------------------------------------------------------------
 
 describe("validatePayment — paymentMethod", () => {
-  it("toutes les valeurs valides de l'énumération sont acceptées", () => {
-    for (const method of PAYMENT_METHOD_VALUES) {
+  it("tous les modes créables sont acceptés (#179)", () => {
+    for (const method of CREATABLE_PAYMENT_METHOD_VALUES) {
       // Mobile Money exige en plus téléphone + référence (cf. describe dédié
       // ci-dessous) — les fournir ici aussi pour isoler ce test à la seule
       // question « le mode lui-même est-il accepté ? ».
-      const extra =
-        method === "MOBILE_MONEY_MANUAL"
-          ? { reference: "MM-TX-0001", mobileMoneyPhone: "0700000000" }
-          : {};
+      const extra = MOBILE_MONEY_METHODS.includes(method)
+        ? { reference: "MM-TX-0001", mobileMoneyPhone: "0700000000" }
+        : {};
       const r = validatePayment(valid({ paymentMethod: method, ...extra }));
       expect(r.ok).toBe(true);
     }
+  });
+
+  it("mode générique hérité MOBILE_MONEY_MANUAL refusé (#179)", () => {
+    const r = validatePayment(
+      valid({
+        paymentMethod: "MOBILE_MONEY_MANUAL",
+        reference: "MM-TX-0001",
+        mobileMoneyPhone: "0700000000",
+      }),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invalid-method");
   });
 
   it("mode vide → invalid-method", () => {
@@ -217,7 +236,7 @@ describe("validatePayment — présence prestation/ticket (§8.2)", () => {
 
 function validMobileMoney(overrides: Partial<RawPaymentInput> = {}): RawPaymentInput {
   return valid({
-    paymentMethod: "MOBILE_MONEY_MANUAL",
+    paymentMethod: "ORANGE_MONEY_MANUAL",
     reference: "MM-TX-0001",
     mobileMoneyPhone: "0700000000",
     ...overrides,
@@ -231,6 +250,14 @@ describe("validatePayment — Mobile Money (téléphone + référence obligatoir
     if (r.ok) {
       expect(r.value.mobileMoneyPhone).toBe("0700000000");
       expect(r.value.reference).toBe("MM-TX-0001");
+    }
+  });
+
+  it("les 4 fournisseurs nommés se comportent identiquement (#179)", () => {
+    for (const method of MOBILE_MONEY_METHODS) {
+      const r = validatePayment(validMobileMoney({ paymentMethod: method }));
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.paymentMethod).toBe(method);
     }
   });
 

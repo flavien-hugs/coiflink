@@ -37,6 +37,7 @@ from coiflink_api.domain.enums import CashOperationType, PaymentStatus
 from coiflink_api.domain.errors import (
     InvalidAdjustment,
     InvalidPaymentAmount,
+    InvalidPaymentMethod,
     InvalidPhone,
     MobileMoneyPhoneRequired,
     MobileMoneyReferenceRequired,
@@ -588,7 +589,12 @@ class TestRecordPaymentValidation:
 
 
 class TestRecordPaymentMobileMoney:
-    """Mobile Money exige téléphone ET numéro de transaction (§8.2, migration 0019)."""
+    """Mobile Money exige téléphone ET numéro de transaction (§8.2, migration 0019).
+
+    Quatre fournisseurs nommés depuis #179 (Orange/MTN/Moov Money, Wave) — le
+    mode générique hérité `MOBILE_MONEY_MANUAL` n'est plus proposable pour un
+    nouveau paiement (voir `TestRecordPaymentLegacyMobileMoneyRejected`).
+    """
 
     def _run(self, **overrides: object) -> tuple:
         payment_repo = FakePaymentRepository()
@@ -596,7 +602,7 @@ class TestRecordPaymentMobileMoney:
         audit = FakeAuditLog()
         fields = {
             "amount": decimal.Decimal("5000.00"),
-            "payment_method": "MOBILE_MONEY_MANUAL",
+            "payment_method": "ORANGE_MONEY_MANUAL",
             "service_id": _SERVICE_ID,
             "reference": "MM-TX-0001",
             "mobile_money_phone": "0700000000",
@@ -618,13 +624,19 @@ class TestRecordPaymentMobileMoney:
         assert payment.mobile_money_phone == "+2250700000000"
         assert payment.reference == "MM-TX-0001"
 
+    def test_all_four_providers_create_payment(self) -> None:
+        for method in ("ORANGE_MONEY_MANUAL", "MTN_MONEY_MANUAL", "MOOV_MONEY_MANUAL", "WAVE_MANUAL"):
+            payment, payment_repo, _, _ = self._run(payment_method=method)
+            assert payment.payment_method == method
+            assert len(payment_repo.created) == 1
+
     def test_missing_phone_raises_no_writes(self) -> None:
         payment_repo = FakePaymentRepository()
         journal_repo = FakeCashJournalRepository()
         audit = FakeAuditLog()
         cmd = PaymentCommand(
             amount=decimal.Decimal("5000.00"),
-            payment_method="MOBILE_MONEY_MANUAL",
+            payment_method="ORANGE_MONEY_MANUAL",
             service_id=_SERVICE_ID,
             reference="MM-TX-0001",
         )
@@ -648,7 +660,7 @@ class TestRecordPaymentMobileMoney:
         audit = FakeAuditLog()
         cmd = PaymentCommand(
             amount=decimal.Decimal("5000.00"),
-            payment_method="MOBILE_MONEY_MANUAL",
+            payment_method="ORANGE_MONEY_MANUAL",
             service_id=_SERVICE_ID,
             mobile_money_phone="0700000000",
         )
@@ -676,6 +688,40 @@ class TestRecordPaymentMobileMoney:
             payment_method="CASH", reference=None, mobile_money_phone="0700000000"
         )
         assert payment.mobile_money_phone is None
+
+
+class TestRecordPaymentLegacyMobileMoneyRejected:
+    """`MOBILE_MONEY_MANUAL` (mode générique hérité) refusé pour un nouveau paiement (#179).
+
+    Reste une valeur d'énumération valide (paiements déjà enregistrés,
+    migration 0022) mais `RecordPayment` la rejette explicitement — seuls les
+    4 fournisseurs nommés restent proposables à la création.
+    """
+
+    def test_legacy_method_raises_invalid_payment_method_no_writes(self) -> None:
+        payment_repo = FakePaymentRepository()
+        journal_repo = FakeCashJournalRepository()
+        audit = FakeAuditLog()
+        cmd = PaymentCommand(
+            amount=decimal.Decimal("5000.00"),
+            payment_method="MOBILE_MONEY_MANUAL",
+            service_id=_SERVICE_ID,
+            reference="MM-TX-0001",
+            mobile_money_phone="0700000000",
+        )
+
+        with pytest.raises(InvalidPaymentMethod):
+            RecordPayment(
+                payment_repo,
+                journal_repo,
+                audit,
+                _service_repo_for(decimal.Decimal("5000.00")),
+                FakeQueueTicketRepository(),
+            ).execute(_SALON_ID, cmd, actor_user_id=_ACTOR_ID)
+
+        assert len(payment_repo.created) == 0
+        assert len(journal_repo.appended) == 0
+        assert len(audit.recorded) == 0
 
 
 # ---------------------------------------------------------------------------
