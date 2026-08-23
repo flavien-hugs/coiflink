@@ -81,6 +81,14 @@ d'impression native. L'état « impression réussie » se déduit de l'évèneme
 navigateur ne peut pas savoir si le ticket est réellement sorti de l'imprimante thermique. Documenté
 comme limite assumée plutôt que dissimulé derrière un faux état « succès ».
 
+**Suivi (#178).** Le contenu imprimable (`.receipt-print-area`) vit désormais dans un **second portail
+dédié**, monté directement sous `<body>`, **frère** de la modale plutôt que son descendant
+(`receipt-print-modal.tsx`). Niché dans la modale (`position: fixed` + `overflow: hidden` + hauteur
+plafonnée pour le défilement écran), le reçu imprimé se retrouvait rogné au cadre visible à l'écran :
+`visibility: hidden` (la technique « masquer tout sauf X ») ne supprime ni le clip d'overflow ni le
+contexte de positionnement des ancêtres. Le mécanisme `window.print()` + `@media print` et le signal
+`afterprint` best-effort décrits ci-dessus restent inchangés.
+
 ### 6. Côté mobile client : consultation + partage, pas d'impression thermique
 
 Le client n'a pas d'imprimante thermique sur son téléphone. La mobile app expose un écran « Mes reçus »

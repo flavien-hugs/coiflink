@@ -83,9 +83,23 @@ body {
   background-color: var(--background);
 }
 
-/* Impression du reçu (gérant, ADR-0040) : n'imprimer que le bloc du reçu,
+/* Impression du reçu (gérant, ADR-0040 §5) : n'imprimer que le bloc du reçu,
    à une largeur d'imprimante thermique (80mm par défaut, ajustable) — tout le
-   reste de la page (y compris les boutons du modal) est masqué. */
+   reste de la page (y compris les boutons du modal) est masqué.
+
+   `.receipt-print-area` vit dans un portail dédié, **frère** de la modale
+   (`receipt-print-modal.tsx`) plutôt que son descendant (#178) : niché dans la
+   modale (`position: fixed` + `overflow: hidden` + hauteur plafonnée pour le
+   défilement écran), le contenu restait rogné au cadre visible à l'écran à
+   l'impression — `visibility: hidden` ne supprime ni le clip d'overflow ni le
+   contexte de positionnement des ancêtres. Masqué à l'écran par défaut
+   (`display: none`, c'est un doublon dédié à l'impression, jamais visible
+   autrement) ; affiché uniquement à l'impression, sans plus aucun ancêtre
+   `overflow`/`position` à neutraliser. */
+.receipt-print-area {
+  display: none;
+}
+
 @media print {
   body * {
     visibility: hidden;
@@ -95,6 +109,7 @@ body {
     visibility: visible;
   }
   .receipt-print-area {
+    display: block;
     position: absolute;
     top: 0;
     left: 0;

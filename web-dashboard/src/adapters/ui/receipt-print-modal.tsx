@@ -15,6 +15,17 @@
 // `afterprint` — un signal **best-effort** (dialogue fermé), pas une confirmation
 // matérielle : le navigateur ne peut pas savoir si le ticket est réellement sorti
 // de l'imprimante thermique (documenté, ADR-0040 §5).
+//
+// Le contenu imprimable vit dans un **second portail dédié**, monté directement
+// sous `<body>`, **frère** de la modale plutôt que son descendant (#178) : niché
+// dans la modale (`position: fixed` + `overflow: hidden` + hauteur plafonnée pour
+// le défilement écran), `.receipt-print-area` en `position: absolute` restait
+// rogné au cadre visible à l'écran à l'impression — `visibility: hidden` (la
+// technique « masquer tout sauf X ») ne supprime ni le clip d'overflow ni le
+// contexte de positionnement des ancêtres. `ReceiptBody` reste la source unique
+// du contenu, rendue à la fois dans la modale (aperçu écran) et dans ce portail
+// (`aria-hidden`, jamais visible à l'écran — `.receipt-print-area` par défaut
+// `display: none`, montrée uniquement par `@media print`).
 
 import { createPortal } from "react-dom";
 import { useEffect, useState } from "react";
@@ -182,6 +193,15 @@ function ReceiptLoader({
           </button>
         </div>
       ) : null}
+
+      {state.status === "ready"
+        ? createPortal(
+            <div className="receipt-print-area" aria-hidden="true">
+              <ReceiptBody receipt={state.receipt} />
+            </div>,
+            document.body,
+          )
+        : null}
     </>
   );
 }
@@ -230,7 +250,7 @@ function ReceiptError({ message, onRetry }: { message: string; onRetry: () => vo
 
 function ReceiptBody({ receipt }: { receipt: ManagerReceipt }) {
   return (
-    <div className="receipt-print-area font-mono text-xs text-foreground">
+    <div className="font-mono text-xs text-foreground">
       <p className="text-center font-serif text-sm font-semibold text-ink">{receipt.salonName}</p>
       <p className="mt-1 text-center text-muted">{receipt.receiptNumber}</p>
       <p className="text-center text-muted">{formatTransactionDateTime(receipt.paidAt)}</p>
