@@ -373,7 +373,7 @@ jobs:
       # SHA long (traçabilité/rollback) sur la même image.
       - name: Connexion à GHCR
         if: needs.image-tag.outputs.tag != ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -433,7 +433,7 @@ jobs:
       # commentaires de ce job.
       - name: Connexion à GHCR
         if: needs.image-tag.outputs.tag != ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
