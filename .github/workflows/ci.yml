@@ -164,7 +164,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Java (Temurin 17, requis par le build Android)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
