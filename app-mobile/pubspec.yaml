@@ -61,7 +61,7 @@ dependencies:
   # Android, utilisé par `EscPosTicketPrinterGateway` et
   # `FlutterThermalPrinterScanGateway` (recherche/connexion à l'imprimante appairée
   # lors du setup ponctuel, `TerminalPrinterSetupScreen`).
-  flutter_thermal_printer: ^2.2.1
+  flutter_thermal_printer: ^2.2.2
 
 dev_dependencies:
   flutter_test:
